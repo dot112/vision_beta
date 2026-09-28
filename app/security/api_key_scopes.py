@@ -16,6 +16,7 @@ API_KEY_SCOPES: Dict[str, dict] = {
     "plc:configure": {"label": "Configure PLC actions", "description": "Create, edit, reload or remove PLC action cards and PLC endpoints; discover OPC UA endpoints.", "min_clearance": 2},
     "plc:operate": {"label": "Operate PLC actions", "description": "Execute or test PLC actions; may actuate production equipment.", "min_clearance": 2},
     "integrations:operate": {"label": "Operate integrations", "description": "Connect MQTT, publish/subscribe, and test configured external communication endpoints.", "min_clearance": 2},
+    "alarms:acknowledge": {"label": "Acknowledge alarms", "description": "Acknowledge active alarms (for SCADA/HMI integration).", "min_clearance": 1},
 }
 
 
@@ -55,6 +56,12 @@ def required_api_key_scopes(method: str, path: str) -> set[str] | None:
         return {"configuration:write"}
     if path.startswith("/api/v1/telemetry/"):
         return {"monitor:read"}
+    if path == "/api/v1/alarms" or path.startswith("/api/v1/alarms/"):
+        if method in {"GET", "HEAD"}:
+            return {"monitor:read"}
+        if path.endswith("/acknowledge") and method == "POST":
+            return {"alarms:acknowledge"}
+        return None
 
     if path == "/api/v1/plc/opcua/scan" and method == "POST":
         return {"plc:configure"}

@@ -74,7 +74,9 @@ class PLCDriverFactory:
         ep_id = endpoint.get("id", "")
         if fresh or ep_id not in _driver_pool:
             driver = _make_driver(endpoint)
-            if not fresh:
+            if fresh:
+                driver.report_alarms = False
+            else:
                 _driver_pool[ep_id] = driver
             return driver
         return _driver_pool[ep_id]
@@ -85,11 +87,18 @@ class PLCDriverFactory:
         driver = _driver_pool.pop(endpoint_id, None)
         if driver:
             import asyncio
+            from app.events.alarm_events import alarm_manager
+            # The endpoint's config changed or it was removed: its old alarms no longer apply.
+            alarm_manager.clear_source(driver.alarm_source, "endpoint reconfigured or removed")
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(driver.disconnect())
             except RuntimeError:
-                pass  # no running loop — driver will be GC'd
+                logger.warning(
+                    "PLC driver %s invalidated outside the event loop; its socket is left for garbage collection",
+                    endpoint_id,
+                )
+                return
+            loop.create_task(driver.disconnect())
 
     @classmethod
     def clear_all(cls) -> None:

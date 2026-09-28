@@ -26,7 +26,11 @@ from app.config import settings
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
 
-if config.config_file_name:
+# Only the alembic CLI applies alembic.ini's logging. When the app runs the
+# migrations at startup (it passes its connection in), fileConfig would disable
+# every logger the app already created and replace its log handlers, silencing
+# the application log for the rest of the run.
+if config.config_file_name and config.attributes.get("connection") is None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata

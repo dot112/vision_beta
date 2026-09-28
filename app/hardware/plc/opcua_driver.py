@@ -89,7 +89,7 @@ class OPCUADriver(PLCDriver):
                 client.set_password(str(self._ep.get("password") or ""))
             await client.connect()
             self._client = client
-            self.is_connected = True
+            self._mark_connected()
             self.last_error = ""
             logger.info("OPC UA connected: %s", self._server_url())
             return True
@@ -98,13 +98,12 @@ class OPCUADriver(PLCDriver):
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
 
-        self.is_connected = False
+        self._mark_connect_failed(self.last_error)
         if client is not None:
             try:
                 await client.disconnect()
-            except Exception:
-                pass
-        logger.warning("OPC UA connect failed for %s: %s", self._ep.get("id", ""), self.last_error)
+            except Exception as exc:
+                self._log_disconnect_error(exc)
         return False
 
     async def _configure_security(self, client) -> None:

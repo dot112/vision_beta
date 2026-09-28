@@ -110,7 +110,7 @@ class OmronFINSDriver(PLCDriver):
             self.client_node, self.server_node = struct.unpack(">II", payload[:8])
             self.client_node &= 0xFF
             self.server_node &= 0xFF
-            self.is_connected = True
+            self._mark_connected()
             self.last_error = ""
             logger.info(
                 "Omron FINS connected: %s:%d (client node %d, PLC node %d)",
@@ -119,7 +119,7 @@ class OmronFINSDriver(PLCDriver):
             return True
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
-            logger.warning("Omron FINS connect failed %s:%d — %s", self.host, self.port, self.last_error)
+            self._mark_connect_failed(self.last_error)
             await self.disconnect()
             return False
 
@@ -128,8 +128,8 @@ class OmronFINSDriver(PLCDriver):
             try:
                 self._writer.close()
                 await self._writer.wait_closed()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log_disconnect_error(exc)
         self._reader = None
         self._writer = None
         self.is_connected = False

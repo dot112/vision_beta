@@ -283,14 +283,13 @@ class S7Driver(PLCDriver):
                     self._reader, self._writer,
                     rack=self.rack, slot=self.slot, timeout=self.timeout,
                 )
-                self.is_connected = True
+                self._mark_connected()
                 self.last_error = ""
                 logger.info("S7 connected: %s:%d (rack %d, slot %d)", self.host, port, self.rack, self.slot)
                 return True
             except Exception as exc:
                 self.last_error = str(exc) or type(exc).__name__
-                logger.warning("S7 connect failed to %s:%s (rack %d, slot %d): %s", self.host, self.port, self.rack, self.slot, self.last_error)
-                self.is_connected = False
+                self._mark_connect_failed(f"{self.last_error} (rack {self.rack}, slot {self.slot})")
                 await self.disconnect()
                 return False
 
@@ -299,8 +298,8 @@ class S7Driver(PLCDriver):
             try:
                 self._writer.close()
                 await self._writer.wait_closed()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log_disconnect_error(exc)
         self._reader = None
         self._writer = None
         self.is_connected = False

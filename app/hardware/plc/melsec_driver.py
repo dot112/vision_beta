@@ -109,14 +109,13 @@ class MelsecSLMPDriver(PLCDriver):
             self._reader, self._writer = await asyncio.wait_for(
                 asyncio.open_connection(self.host, self.port), timeout=self.timeout
             )
-            self.is_connected = True
+            self._mark_connected()
             self.last_error = ""
             logger.info("MELSEC SLMP connected: %s:%d", self.host, self.port)
             return True
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
-            logger.warning("MELSEC SLMP connect failed %s:%d — %s", self.host, self.port, self.last_error)
-            self.is_connected = False
+            self._mark_connect_failed(self.last_error)
             return False
 
     async def disconnect(self) -> None:
@@ -124,8 +123,8 @@ class MelsecSLMPDriver(PLCDriver):
             try:
                 self._writer.close()
                 await self._writer.wait_closed()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log_disconnect_error(exc)
         self._reader = None
         self._writer = None
         self.is_connected = False

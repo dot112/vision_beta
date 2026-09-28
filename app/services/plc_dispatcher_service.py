@@ -11,6 +11,7 @@ Runtime engine that:
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
@@ -342,8 +343,8 @@ class PLCDispatcherService:
             if len(cls._dispatch_tasks) >= cls._max_dispatch_tasks:
                 state.status = "failed"
                 state.last_result = {"success": False, "message": "PLC dispatch capacity reached; event was dropped safely."}
+                cls._report_alarm(card, {"id": card.get("plc_endpoint_id")}, "failed", state.last_result["message"])
                 cls._notify_status_change()
-                logger.error("PLC dispatch capacity reached; skipped card '%s'", cid)
                 continue
             task = asyncio.create_task(
                 cls._dispatch(card, state, event),
@@ -411,6 +412,7 @@ class PLCDispatcherService:
                 "protocol": None,
             }
             logger.warning("PLCDispatcher card '%s' skipped: no endpoint configured", card.get("name", cid))
+            cls._report_alarm(card, {}, "failed", state.last_result["message"])
             cls._notify_status_change()
             return
 
@@ -429,6 +431,7 @@ class PLCDispatcherService:
                 "message": f"PLC endpoint '{ep_id}' not found in configuration.",
                 "endpoint": ep_id,
             }
+            cls._report_alarm(card, {"id": ep_id}, "failed", state.last_result["message"])
             cls._notify_status_change()
             return
 
@@ -439,6 +442,7 @@ class PLCDispatcherService:
                 "message": "PLC endpoint is disabled; operation was not sent.",
                 "endpoint": endpoint.get("name", ep_id),
             }
+            cls._report_alarm(card, endpoint, "failed", state.last_result["message"])
             cls._notify_status_change()
             return
 
@@ -448,6 +452,7 @@ class PLCDispatcherService:
         except ValueError as driver_err:
             state.status = "failed"
             state.last_result = {"success": False, "message": str(driver_err), "endpoint": endpoint.get("name", ep_id)}
+            cls._report_alarm(card, endpoint, "failed", str(driver_err))
             cls._notify_status_change()
             return
 
@@ -539,11 +544,43 @@ class PLCDispatcherService:
             "attempts": attempt,
         }
 
-        logger.info(
+        logger.log(
+            logging.INFO if ok else logging.WARNING,
             "PLCDispatcher: card '%s' → %s — %s",
             card.get("name", cid), state.status, msg,
         )
+        cls._report_alarm(card, endpoint, state.status, msg)
         cls._notify_status_change()
+
+    @staticmethod
+    def _report_alarm(card: dict, endpoint: dict, status: str, msg: str) -> None:
+        """Raise an alarm for a failed actuation, clear it once the card succeeds again."""
+        from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
+
+        source = f"plc_card:{card.get('id', '')}"
+        name = card.get("name") or card.get("id", "")
+        details = {
+            "card_id": card.get("id"),
+            "endpoint_id": endpoint.get("id"),
+            "operation": str(card.get("operation", "")).upper(),
+            "address": str(card.get("target_address", "")),
+        }
+        if status == "timeout":
+            # Actuation state is unknown: the reject gate may or may not have fired.
+            alarm_manager.raise_alarm(
+                AlarmCode.PLC_ACTION_TIMEOUT, source,
+                f"PLC action '{name}' timed out; actuation state is unknown: {msg}",
+                AlarmSeverity.CRITICAL, details,
+            )
+        elif status == "failed":
+            alarm_manager.raise_alarm(
+                AlarmCode.PLC_ACTION_FAILED, source,
+                f"PLC action '{name}' failed: {msg}",
+                AlarmSeverity.CRITICAL, details,
+            )
+        else:
+            alarm_manager.clear_alarm(AlarmCode.PLC_ACTION_FAILED, source, "action succeeded")
+            alarm_manager.clear_alarm(AlarmCode.PLC_ACTION_TIMEOUT, source, "action succeeded")
 
     @classmethod
     def _notify_status_change(cls) -> None:

@@ -18,7 +18,7 @@ Select the scope that matches the endpoints the client needs. The key owner must
 
 | Checkbox in the dashboard | Scope sent when creating the key | Minimum owner clearance | Endpoint access examples |
 | --- | --- | --- | --- |
-| Monitoring | `monitor:read` | Level 1 Operator | `GET /api/v1/cameras`; `GET /api/v1/cameras/{camera_id}/status`; `GET /api/v1/vision/stream/camera/{camera_id}`; `GET /api/v1/vision/annotated/camera/{camera_id}`; `GET /api/v1/qr/annotated/camera/{camera_id}`; read routes under `/api/v1/counting/`, `/api/v1/telemetry/`, and `/api/v1/plc/`; `GET /api/v1/mqtt/status` |
+| Monitoring | `monitor:read` | Level 1 Operator | `GET /api/v1/cameras`; `GET /api/v1/cameras/{camera_id}/status`; `GET /api/v1/vision/stream/camera/{camera_id}`; `GET /api/v1/vision/annotated/camera/{camera_id}`; `GET /api/v1/qr/annotated/camera/{camera_id}`; read routes under `/api/v1/counting/`, `/api/v1/telemetry/` (including `/telemetry/health` and `/telemetry/metrics`), and `/api/v1/plc/`; `GET /api/v1/mqtt/status`; `GET /api/v1/alarms` and `/api/v1/alarms/history` |
 | Inspection history | `inspection:read` | Level 1 Operator | `GET /api/v1/vision/detections` |
 | Run inspections | `inspection:trigger` | Level 2 Supervisor | Image and camera detection under `/api/v1/vision/`; QR decode and mobile scan under `/api/v1/qr/`; `/api/v1/control/trigger...` |
 | Reset production counts | `production:reset` | Level 2 Supervisor | `POST /api/v1/counting/reset` |
@@ -28,6 +28,7 @@ Select the scope that matches the endpoints the client needs. The key owner must
 | Configure PLC actions | `plc:configure` | Level 2 Supervisor | PLC action setup and endpoint changes under `/api/v1/plc/`; `POST /api/v1/plc/opcua/scan`; action configuration under `/api/v1/actions/` |
 | Operate PLC actions | `plc:operate` | Level 2 Supervisor | `POST /api/v1/plc/actions/{id}/test`; `POST /api/v1/actions/{id}/execute`; PLC operation routes; flow tests also require this scope |
 | Operate integrations | `integrations:operate` | Level 2 Supervisor | MQTT and `/api/v1/comms/` operations; `POST /api/v1/system/endpoints/{id}/test`; flow tests also require `plc:operate` |
+| Acknowledge alarms | `alarms:acknowledge` | Level 1 Operator | `POST /api/v1/alarms/{alarm_id}/acknowledge` |
 
 API key creation, listing, revealing, and user administration are admin-only and cannot be done with an API key. Flow tests require several scopes together; consult the API's route policy before granting flow permissions. Requests that lack a required scope return `403`.
 

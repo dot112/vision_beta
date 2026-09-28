@@ -2446,6 +2446,7 @@
                 <label class="api-key-scope-option"><input type="checkbox" value="plc:configure" class="api-key-scope" /> <span><b>Configure PLC actions</b><small>Create, edit, reload or remove PLC actions/endpoints</small></span></label>
                 <label class="api-key-scope-option"><input type="checkbox" value="plc:operate" class="api-key-scope" /> <span><b>Operate PLC actions</b><small>Execute or test actions; may actuate production equipment</small></span></label>
                 <label class="api-key-scope-option"><input type="checkbox" value="integrations:operate" class="api-key-scope" /> <span><b>Operate integrations</b><small>MQTT publish/subscribe and communication tests</small></span></label>
+                <label class="api-key-scope-option"><input type="checkbox" value="alarms:acknowledge" class="api-key-scope" /> <span><b>Acknowledge alarms</b><small>Acknowledge active alarms from SCADA or an HMI</small></span></label>
             </div>
         </div>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -6531,6 +6532,7 @@ const API_KEY_SCOPE_LABELS = {
     "plc:configure": "Configure PLC actions",
     "plc:operate": "Operate PLC actions",
     "integrations:operate": "Operate integrations",
+    "alarms:acknowledge": "Acknowledge alarms",
 };
 const selectedApiKeyIds = new Set();
 

@@ -45,12 +45,11 @@ class GenericTCPDriver(PLCDriver):
                 asyncio.open_connection(self.host, self.port),
                 timeout=self.timeout,
             )
-            self.is_connected = True
+            self._mark_connected()
             logger.info("GenericTCP connected: %s:%d", self.host, self.port)
             return True
         except Exception as exc:
-            logger.warning("GenericTCP connect failed %s:%d — %s", self.host, self.port, exc)
-            self.is_connected = False
+            self._mark_connect_failed(f"{type(exc).__name__}: {exc}")
             return False
 
     async def disconnect(self) -> None:
@@ -58,8 +57,8 @@ class GenericTCPDriver(PLCDriver):
             try:
                 self._writer.close()
                 await self._writer.wait_closed()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log_disconnect_error(exc)
         self._reader = None
         self._writer = None
         self.is_connected = False

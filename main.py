@@ -39,6 +39,7 @@ from app.routes.v1 import counting as counting_router
 from app.routes.v1 import auth as auth_router
 from app.routes.v1 import comms as comms_router
 from app.routes.v1 import plc as plc_router
+from app.routes.v1 import health as health_router
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -64,6 +65,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     import asyncio
     from app.services.counting_service import CountingService
     CountingService.set_event_loop(asyncio.get_running_loop())
+    from app.events.system_events import set_event_loop
+    set_event_loop(asyncio.get_running_loop())
 
     # 1. Database initialisation
     try:
@@ -155,6 +158,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         from app.engines.flow_engine import bootstrap_flow_engine
         await bootstrap_flow_engine()
 
+        from app.services.health_service import HealthMonitor
+        HealthMonitor.start()
+
     except Exception as exc:
         app_state.db_ready = False
         logger.exception("Startup initialization failed; refusing to serve an unhealthy instance")
@@ -164,10 +170,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info("Shutting down…")
     try:
+        from app.services.health_service import HealthMonitor
+        await HealthMonitor.stop()
+    except Exception:
+        logger.exception("Failed to stop health monitor cleanly")
+    try:
         from app.services.vision_service import ContinuousVisionRunner
         ContinuousVisionRunner.stop()
     except Exception:
-        pass
+        logger.exception("Failed to stop continuous vision runner cleanly")
     try:
         from app.engines.flow_engine import FlowEngine
         await FlowEngine.get().shutdown()
@@ -177,12 +188,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         from app.services.discovery_service import ServerDiscoveryService
         ServerDiscoveryService.stop()
     except Exception:
-        pass
+        logger.exception("Failed to stop discovery service cleanly")
     try:
         from app.services.mqtt_service import MQTTService
         await MQTTService.disconnect()
     except Exception:
-        pass
+        logger.exception("Failed to disconnect MQTT cleanly")
 
     try:
         from app.services.vision_service import CameraStreamPipeline
@@ -217,6 +228,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     from app.db.session import engine
     await engine.dispose()
+    from app.events.system_events import set_event_loop
+    set_event_loop(None)
     logger.info("Shutdown complete")
 
 
@@ -262,6 +275,7 @@ def create_app() -> FastAPI:
 
     API_PREFIX = "/api/v1"
     app.include_router(auth_router.router, prefix=API_PREFIX)
+    app.include_router(health_router.public_router)
 
     protected_api = APIRouter(prefix=API_PREFIX, dependencies=[Depends(require_operator)])
     for router_mod in (
@@ -279,6 +293,7 @@ def create_app() -> FastAPI:
         counting_router,
         comms_router,
         plc_router,
+        health_router,
     ):
         protected_api.include_router(router_mod.router)
     app.include_router(protected_api)

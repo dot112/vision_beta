@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio, json, time, uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -53,8 +54,22 @@ async def _emit_debug(flow_id: str, node_id: str, status: str, message: str) -> 
                 asyncio.create_task(sink(evt))
             else:
                 sink(evt)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Flow debug sink %r failed: %s: %s", sink, type(exc).__name__, exc)
+
+async def _report_action(flow_id: str, node_id: str, node_type: str, passed: bool, msg: str) -> None:
+    """Emit the node pulse and raise/clear the action alarm for this node."""
+    await _emit_debug(flow_id, node_id, "executed" if passed else "error", msg)
+    source = f"flow:{flow_id}/{node_id}"
+    if passed:
+        alarm_manager.clear_alarm(AlarmCode.FLOW_ACTION_FAILED, source, "action succeeded")
+    else:
+        alarm_manager.raise_alarm(
+            AlarmCode.FLOW_ACTION_FAILED, source,
+            f"Flow output node {node_id} ({node_type}) failed: {msg}",
+            AlarmSeverity.WARNING,
+            {"flow_id": flow_id, "node_id": node_id, "node_type": node_type},
+        )
 
 # ── Action executors ───────────────────────────────────────────────────
 async def _exec_modbus(cfg: Dict, ctx: Dict) -> str:
@@ -150,8 +165,8 @@ async def _exec_tcp(cfg: Dict, ctx: Dict, endpoint: Optional[Dict]) -> str:
             writer.close()
             try:
                 await writer.wait_closed()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("TCP output socket did not close cleanly: %s", exc)
 
 async def _exec_webhook(cfg: Dict, ctx: Dict, endpoint: Optional[Dict]) -> str:
     try:
@@ -230,7 +245,14 @@ def _resolve_endpoint(eid: Optional[str]) -> Optional[Dict]:
         from app.services.settings_persistence_service import SettingsPersistenceService
         for ep in SettingsPersistenceService.get_state().get("communication_endpoints", []):
             if ep.get("id") == eid: return ep
-    except Exception: pass
+    except Exception as exc:
+        alarm_manager.raise_alarm(
+            AlarmCode.FLOW_ENDPOINT_UNRESOLVED, f"endpoint:{eid}",
+            f"Could not read communication endpoint {eid} from settings: {type(exc).__name__}: {exc}",
+            AlarmSeverity.WARNING,
+        )
+        return None
+    alarm_manager.clear_alarm(AlarmCode.FLOW_ENDPOINT_UNRESOLVED, f"endpoint:{eid}", "settings readable")
     return None
 
 async def _inc_exec(flow_id: str) -> None:
@@ -245,7 +267,7 @@ async def _inc_exec(flow_id: str) -> None:
                         last_executed_at=datetime.now(timezone.utc)))
             await db.commit()
     except Exception as exc:
-        logger.debug("_inc_exec error: %s", exc)
+        logger.warning("Could not update execution count for flow %s: %s", flow_id, exc)
 
 # ── Node executor ──────────────────────────────────────────────────────
 async def _execute_node(fid: str, node: Dict, ctx: Dict) -> Tuple[bool, str, Dict]:
@@ -314,7 +336,8 @@ async def _execute_node(fid: str, node: Dict, ctx: Dict) -> Tuple[bool, str, Dic
             try:
                 v = float(ctx.get(field, 0.0))
                 passed = mn <= v <= mx
-            except Exception:
+            except (TypeError, ValueError):
+                # A non-numeric reading blocks the branch; the pulse below shows the value.
                 passed = False
             await _emit_debug(fid, nid, "passed" if passed else "blocked", f"Threshold {field}={ctx.get(field)} in [{mn},{mx}] -> {'PASS' if passed else 'BLOCK'}")
             return passed, "out:0", uctx
@@ -349,7 +372,7 @@ async def _execute_node(fid: str, node: Dict, ctx: Dict) -> Tuple[bool, str, Dic
                 return True, "out:0", uctx
             msg = await _exec_modbus(cfg, ctx)
             passed = not any(word in msg.lower() for word in ("error", "exception", "failed"))
-            await _emit_debug(fid, nid, "executed" if passed else "error", msg); return passed, "out:0", uctx
+            await _report_action(fid, nid, ntype, passed, msg); return passed, "out:0", uctx
 
         elif ntype in ("mqtt_out", "action_mqtt_publish"):
             if ctx.get("_test"):
@@ -359,7 +382,7 @@ async def _execute_node(fid: str, node: Dict, ctx: Dict) -> Tuple[bool, str, Dic
             ep = _resolve_endpoint(cfg.get("endpoint_id"))
             msg = await _exec_mqtt(cfg, ctx, ep)
             passed = "failed" not in msg.lower() and "exception" not in msg.lower()
-            await _emit_debug(fid, nid, "executed" if passed else "error", msg); return passed, "out:0", uctx
+            await _report_action(fid, nid, ntype, passed, msg); return passed, "out:0", uctx
 
         elif ntype in ("tcp_out", "action_tcp_publish"):
             if ctx.get("_test"):
@@ -369,7 +392,7 @@ async def _execute_node(fid: str, node: Dict, ctx: Dict) -> Tuple[bool, str, Dic
             ep = _resolve_endpoint(cfg.get("endpoint_id"))
             msg = await _exec_tcp(cfg, ctx, ep)
             passed = "exception" not in msg.lower()
-            await _emit_debug(fid, nid, "executed" if passed else "error", msg); return passed, "out:0", uctx
+            await _report_action(fid, nid, ntype, passed, msg); return passed, "out:0", uctx
 
         elif ntype in ("api_out", "action_webhook_post"):
             if ctx.get("_test"):
@@ -379,7 +402,7 @@ async def _execute_node(fid: str, node: Dict, ctx: Dict) -> Tuple[bool, str, Dic
             ep = _resolve_endpoint(cfg.get("endpoint_id"))
             msg = await _exec_webhook(cfg, ctx, ep)
             passed = "exception" not in msg.lower() and "failed" not in msg.lower()
-            await _emit_debug(fid, nid, "executed" if passed else "error", msg); return passed, "out:0", uctx
+            await _report_action(fid, nid, ntype, passed, msg); return passed, "out:0", uctx
 
         elif ntype in ("log_out", "action_dashboard_alert"):
             title = cfg.get("title", f"Event Log: {ctx.get('class_name', 'item')}")
@@ -388,7 +411,8 @@ async def _execute_node(fid: str, node: Dict, ctx: Dict) -> Tuple[bool, str, Dic
             try:
                 from app.events.event_bus import event_bus
                 await event_bus.publish("dashboard_alert", {"title": title, "severity": sev, "context": ctx})
-            except Exception: pass
+            except Exception as exc:
+                logger.warning("Flow %s could not publish dashboard alert '%s': %s", fid, title, exc)
             return True, "out:0", uctx
 
         else:
@@ -396,7 +420,14 @@ async def _execute_node(fid: str, node: Dict, ctx: Dict) -> Tuple[bool, str, Dic
             return False, "out:0", uctx
     except Exception as exc:
         await _emit_debug(fid, nid, "error", str(exc))
-        logger.error("FlowEngine node error [%s/%s]: %s", fid, nid, exc)
+        logger.exception("FlowEngine node error [%s/%s]", fid, nid)
+        if not ctx.get("_test"):
+            alarm_manager.raise_alarm(
+                AlarmCode.FLOW_NODE_ERROR, f"flow:{fid}/{nid}",
+                f"Flow node {nid} ({ntype}) raised {type(exc).__name__}: {exc}",
+                AlarmSeverity.WARNING,
+                {"flow_id": fid, "node_id": nid, "node_type": ntype},
+            )
         return False, "out:0", uctx
 
 # ── FlowEngine ─────────────────────────────────────────────────────────
@@ -469,7 +500,12 @@ class FlowEngine:
                 continue
             self._schedule_run(fid, c, event_type, dict(payload))
         if dropped:
-            logger.warning("FlowEngine dropped %s run(s): %s active run limit reached", dropped, self._max_active_runs)
+            alarm_manager.raise_alarm(
+                AlarmCode.FLOW_OVERLOAD, "flow_engine",
+                f"FlowEngine dropped {dropped} run(s) for '{event_type}': {self._max_active_runs} active run limit reached",
+                AlarmSeverity.WARNING,
+                {"event_type": event_type, "dropped": dropped},
+            )
 
     def _schedule_run(self, flow_id: str, compiled: Dict, event_type: str, payload: Dict) -> bool:
         if len(self._tasks) >= self._max_active_runs:
@@ -486,7 +522,7 @@ class FlowEngine:
         return self._schedule_run(flow_dict["id"], compiled, event_type, test_payload)
 
     def _on_task_done(self, task: asyncio.Task) -> None:
-        self._tasks.pop(task, None)
+        task_flow_id = self._tasks.pop(task, None)
         if task.cancelled():
             return
         try:
@@ -495,6 +531,13 @@ class FlowEngine:
             return
         if exc:
             logger.error("FlowEngine run failed: %s", exc, exc_info=(type(exc), exc, exc.__traceback__))
+            flow_id = task_flow_id or "unknown"
+            alarm_manager.raise_alarm(
+                AlarmCode.FLOW_RUN_FAILED, f"flow:{flow_id}",
+                f"Flow {flow_id} run aborted with {type(exc).__name__}: {exc}",
+                AlarmSeverity.WARNING,
+                {"flow_id": flow_id},
+            )
 
     async def shutdown(self) -> None:
         tasks = list(self._tasks)
@@ -581,5 +624,11 @@ async def bootstrap_flow_engine() -> None:
                 await engine.load_flow({"id": f.id, "name": f.name, "is_active": f.is_active,
                                         "nodes": f.nodes or [], "links": f.links or []})
             logger.info("FlowEngine bootstrapped with %s active flow(s)", len(flows))
+        alarm_manager.clear_alarm(AlarmCode.FLOW_BOOTSTRAP_FAILED, "flow_engine", "flows loaded")
     except Exception as exc:
-        logger.error("FlowEngine bootstrap DB error: %s", exc)
+        logger.exception("FlowEngine bootstrap DB error")
+        alarm_manager.raise_alarm(
+            AlarmCode.FLOW_BOOTSTRAP_FAILED, "flow_engine",
+            f"Could not load flows from the database; no flows are running: {type(exc).__name__}: {exc}",
+            AlarmSeverity.CRITICAL,
+        )

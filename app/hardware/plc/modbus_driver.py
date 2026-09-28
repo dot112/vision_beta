@@ -177,24 +177,24 @@ class ModbusTCPDriver(PLCDriver):
     async def connect(self) -> bool:
         try:
             ok = await asyncio.wait_for(self._client.connect(), timeout=self.timeout)
-            self.is_connected = bool(ok)
-            if self.is_connected:
-                logger.info("%s connected: %s", self._label, self._target())
-            return self.is_connected
         except asyncio.TimeoutError:
-            logger.warning("%s connect timeout: %s", self._label, self._target())
-            self.is_connected = False
+            self._mark_connect_failed(f"connect timed out after {self.timeout:g}s")
             return False
         except Exception as exc:
-            logger.error("%s connect error: %s", self._label, exc)
-            self.is_connected = False
+            self._mark_connect_failed(f"{type(exc).__name__}: {exc}")
             return False
+        if not ok:
+            self._mark_connect_failed("connection refused or unreachable")
+            return False
+        self._mark_connected()
+        logger.info("%s connected: %s", self._label, self._target())
+        return True
 
     async def disconnect(self) -> None:
         try:
             await self._client.disconnect()
-        except Exception:
-            pass
+        except Exception as exc:
+            self._log_disconnect_error(exc)
         self.is_connected = False
 
     # ── Operations ────────────────────────────────────────────────────────────

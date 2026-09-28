@@ -5,6 +5,11 @@ from abc import ABC, abstractmethod
 import asyncio
 from typing import Tuple
 
+from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
+from app.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
 
 class PLCDriver(ABC):
     """
@@ -18,6 +23,10 @@ class PLCDriver(ABC):
     def __init__(self, endpoint: dict):
         self._ep = endpoint
         self.is_connected: bool = False
+        self.last_connect_error: str = ""
+        # Throwaway drivers used for "test connection" must not raise or clear
+        # the production alarm for the endpoint; the factory turns this off.
+        self.report_alarms: bool = True
         self._operation_lock = asyncio.Lock()
 
     @property
@@ -35,6 +44,45 @@ class PLCDriver(ABC):
     @property
     def timeout(self) -> float:
         return float(self._ep.get("timeout", 3.0))
+
+    @property
+    def protocol(self) -> str:
+        return str(self._ep.get("plc_sub_protocol", type(self).__name__))
+
+    @property
+    def alarm_source(self) -> str:
+        return f"plc:{self.endpoint_id or self.host}"
+
+    # ── Connection state reporting ────────────────────────────────────────────
+
+    def _mark_connected(self) -> None:
+        """Record a successful connection and clear any connect alarm."""
+        self.is_connected = True
+        self.last_connect_error = ""
+        if self.report_alarms:
+            alarm_manager.clear_alarm(AlarmCode.PLC_CONNECT_FAILED, self.alarm_source, "connected")
+
+    def _mark_connect_failed(self, reason: str) -> None:
+        """Record a failed connection attempt and raise a critical alarm."""
+        self.is_connected = False
+        self.last_connect_error = reason
+        if self.report_alarms:
+            alarm_manager.raise_alarm(
+                AlarmCode.PLC_CONNECT_FAILED,
+                self.alarm_source,
+                f"Cannot connect to PLC {self._ep.get('name') or self.endpoint_id} at {self.host}:{self.port}: {reason}",
+                AlarmSeverity.CRITICAL,
+                {"endpoint_id": self.endpoint_id, "protocol": self.protocol, "host": self.host, "port": self.port},
+            )
+        else:
+            logger.warning("PLC test connection to %s:%s failed: %s", self.host, self.port, reason)
+
+    def _log_disconnect_error(self, exc: BaseException) -> None:
+        """Closing a socket failed. Not fatal, but never silent."""
+        logger.warning(
+            "PLC %s (%s:%s) did not close cleanly: %s: %s",
+            self.endpoint_id or "?", self.host, self.port, type(exc).__name__, exc,
+        )
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 

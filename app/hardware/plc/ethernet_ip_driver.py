@@ -303,13 +303,13 @@ class EtherNetIPDriver(PLCDriver):
                     f"RegisterSession rejected (command 0x{command:04X}, status 0x{status:08X})"
                 )
             self._session_id = session
-            self.is_connected = True
+            self._mark_connected()
             self.last_error = ""
             logger.info("EtherNet/IP connected: %s:%d  session=0x%08X", self.host, port, self._session_id)
             return True
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
-            logger.warning("EtherNet/IP connect failed: %s", self.last_error)
+            self._mark_connect_failed(self.last_error)
             await self.disconnect()
             self.is_connected = False
             return False
@@ -322,8 +322,8 @@ class EtherNetIPDriver(PLCDriver):
                     await asyncio.wait_for(self._writer.drain(), timeout=1.0)
                 self._writer.close()
                 await self._writer.wait_closed()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._log_disconnect_error(exc)
         self._reader = None
         self._writer = None
         self._session_id = 0

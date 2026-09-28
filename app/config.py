@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     INFERENCE_CONFIDENCE: float = 0.5
     INFERENCE_NMS_THRESHOLD: float = 0.45
 
+    # ─── Health monitoring ───────────────────────────────────────────────────
+    HEALTH_CHECK_INTERVAL_SECONDS: float = 2.0
+    HEALTH_CAMERA_STALE_SECONDS: float = 5.0      # no new frame for this long -> camera stalled
+    HEALTH_INFERENCE_STALE_SECONDS: float = 10.0  # frames arriving but none inferred -> inference stalled
+
     LOG_LEVEL: str = "INFO"
     LOG_DIR: str = "./logs"
 
