@@ -1,4 +1,6 @@
-﻿# Industrial Vision API
+# fastapi_vision_server
+
+## Industrial Vision API
 
 A FastAPI backend for industrial machine-vision systems, defect detection, and PLC automation.
 
