@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Terms of Use — Zagel Vision</title>
+    <style>
+        :root {
+            color-scheme: light dark;
+            --page: #f3f5f9;
+            --surface: #fff;
+            --text: #19202d;
+            --muted: #586174;
+            --border: #dce1e9;
+            --accent: #1976d2;
+            --notice: #eaf3ff;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --page: #11141c;
+                --surface: #1b202b;
+                --text: #edf1f8;
+                --muted: #a7b0c0;
+                --border: #343b49;
+                --accent: #77b7ff;
+                --notice: #1d2d42;
+            }
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            padding: 36px 18px;
+            background: var(--page);
+            color: var(--text);
+            font: 15px/1.7 system-ui, -apple-system, "Segoe UI", sans-serif;
+        }
+        main {
+            width: min(850px, 100%);
+            margin: 0 auto;
+            padding: clamp(24px, 5vw, 52px);
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            box-shadow: 0 16px 48px rgb(0 0 0 / 12%);
+        }
+        h1 { margin: 0 0 4px; font-size: clamp(28px, 5vw, 38px); line-height: 1.2; }
+        h2 { margin: 30px 0 8px; font-size: 19px; line-height: 1.35; }
+        p, ul { margin: 8px 0 14px; }
+        li { margin: 5px 0; }
+        a { color: var(--accent); }
+        .updated, .back { color: var(--muted); font-size: 13px; }
+        .notice {
+            margin: 24px 0;
+            padding: 14px 16px;
+            background: var(--notice);
+            border-left: 4px solid var(--accent);
+            border-radius: 6px;
+        }
+        footer { margin-top: 32px; padding-top: 18px; border-top: 1px solid var(--border); }
+    </style>
+</head>
+<body>
+<main>
+    <p class="back"><a href="/dashboard">← Back to sign in</a></p>
+    <h1>Terms of Use</h1>
+    <p class="updated">Zagel Vision · Effective date: September 28, 2026</p>
+
+    <p>These Terms of Use apply to Zagel Vision, including its dashboard, API, camera and video features, inspection and classification tools, communication integrations, and action or PLC controls (the “Software”). By signing in or otherwise using the Software, you agree to these terms. If you do not agree, do not use it.</p>
+
+    <div class="notice"><strong>Industrial safety:</strong> Zagel Vision is an inspection and automation tool. It is not a safety-rated control system, emergency stop, machine guard, or substitute for a properly designed and maintained safety system.</div>
+
+    <h2>1. Authorized use and accounts</h2>
+    <p>Use the Software only for systems and facilities you are authorized to access. You and your organization are responsible for following applicable laws, workplace rules, equipment instructions, and any software or hardware license terms that apply.</p>
+    <p>Keep account credentials private, use access levels appropriate to each person’s duties, and promptly remove access that is no longer needed. You are responsible for activity performed through your account and for the security of the computers and networks used to access the Software.</p>
+
+    <h2>2. Cameras, images, and other data</h2>
+    <p>You are responsible for having the rights and permissions needed to connect cameras, process images or video, and collect or use information about people, products, or facilities. Provide any notices and obtain any consent required by the rules that apply to your site.</p>
+    <p>The Software may process live camera streams and may store configuration, operational events, audit records, or other information depending on how the instance is configured. You are responsible for deciding what data may be processed, who may access it, how long it is retained, and how it is backed up or deleted.</p>
+
+    <h2>3. Inspection results and AI output</h2>
+    <p>Detection, classification, barcode, counting, and other inspection results can be inaccurate, incomplete, delayed, or unavailable. Performance depends on factors such as camera placement, lighting, product variation, training data, model choice, and configuration. Results are decision support and must be validated for your actual operating conditions.</p>
+    <p>Before relying on a model or rule in production, evaluate it with representative data, monitor its performance, and establish procedures for handling missed detections, false detections, system faults, and uncertain results.</p>
+
+    <h2>4. PLC and machine operation</h2>
+    <p>The Software can send configured commands to PLCs and other equipment, including commands initiated by automated actions or manual tests. Incorrect configuration, network faults, software errors, or unexpected equipment behavior could cause damage or injury.</p>
+    <ul>
+        <li>Have qualified personnel review and validate each connection, PLC address, operation, timing value, and action before enabling it.</li>
+        <li>Test changes in a safe commissioning environment and monitor the equipment when changes are introduced.</li>
+        <li>Maintain independent, appropriate machine guards, interlocks, emergency stops, and safety-rated controls. Do not rely on this Software to provide those protections.</li>
+        <li>Use the Software’s test controls only when the equipment and work area are in a safe condition for the commanded output.</li>
+    </ul>
+    <p>You are responsible for the risk assessment, commissioning, operation, maintenance, and safe configuration of the complete machine and control system.</p>
+
+    <h2>5. Network and integrations</h2>
+    <p>You are responsible for securing the network and devices connected to the Software, selecting appropriate authentication and encryption for your deployment, protecting communication credentials and certificates, and reviewing access to connected services. Do not expose an instance to an untrusted network unless it has been secured for that deployment.</p>
+    <p>Integrations such as cameras, PLCs, MQTT brokers, and webhooks depend on third-party devices and services. Their availability, behavior, and terms are outside the Software’s control.</p>
+
+    <h2>6. Availability and changes</h2>
+    <p>The Software may be unavailable during maintenance, updates, hardware failures, network interruptions, or failures of connected services. Keep suitable backups of important configuration and data, and maintain operating procedures that do not depend on continuous availability of the Software.</p>
+    <p>Features and these terms may be changed as the Software evolves. The operator of your instance should make the current terms available to its users. Continued use after updated terms are presented means acceptance to the extent allowed by applicable law.</p>
+
+    <h2>7. Warranty and liability</h2>
+    <p>To the extent permitted by applicable law, the Software is provided “as is” and “as available,” without a promise that it will be error-free, uninterrupted, or suitable for a particular process. You are responsible for deciding whether it is appropriate for your use and for verifying its operation in your environment.</p>
+    <p>To the extent permitted by applicable law, the project maintainers are not liable for indirect or consequential loss, including lost production, lost data, or equipment downtime, arising from use of or inability to use the Software. Nothing in these terms excludes liability or rights that cannot lawfully be excluded or limited.</p>
+
+    <h2>8. Questions and local requirements</h2>
+    <p>For account access, configuration, and deployment questions, contact the administrator responsible for your Zagel Vision instance. The operator is responsible for determining which notices, policies, and legal requirements apply at its site.</p>
+
+    <footer>
+        <p class="updated">These terms are provided as a starting point for this project. The deploying organization should review and adapt them for its jurisdiction, deployment, and business arrangements.</p>
+    </footer>
+</main>
+</body>
+</html>

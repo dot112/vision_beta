@@ -1,0 +1,876 @@
+from __future__ import annotations
+
+import os
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import cv2
+import numpy as np
+
+from app.schemas.vision import BoundingBox, DetectionItem, DetectionResponse
+from app.utils.logger import get_logger
+from app.engines.tracker import is_horizontal_movement, get_exit_line_zone, is_in_exit_zone
+
+logger = get_logger(__name__)
+
+try:
+    import onnxruntime as ort
+except ImportError:
+    ort = None
+
+
+def letterbox(
+    img: np.ndarray,
+    new_shape: Tuple[int, int] = (640, 640),
+    color: Tuple[int, int, int] = (114, 114, 114),
+) -> Tuple[np.ndarray, float, Tuple[float, float]]:
+    shape = img.shape[:2]
+    if isinstance(new_shape, int):
+        new_shape = (new_shape, new_shape)
+
+    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]
+
+    dw /= 2
+    dh /= 2
+
+    if shape[::-1] != new_unpad:
+        img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
+    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+    img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
+    return img, r, (dw, dh)
+
+
+def _detect_best_dml_adapter() -> Tuple[int, str]:
+    """
+    On Windows, queries DXGI hardware adapters to select the discrete GPU with
+    the highest dedicated video memory (e.g. NVIDIA GeForce GTX 1650 with ~4GB VRAM)
+    over integrated CPU graphics (Intel UHD with ~128MB VRAM).
+    Returns (device_id, adapter_name).
+    """
+    if sys.platform != "win32":
+        return 0, "DirectML Default GPU"
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class DXGI_ADAPTER_DESC(ctypes.Structure):
+            _fields_ = [
+                ("Description", wintypes.WCHAR * 128),
+                ("VendorId", wintypes.UINT),
+                ("DeviceId", wintypes.UINT),
+                ("SubSysId", wintypes.UINT),
+                ("Revision", wintypes.UINT),
+                ("DedicatedVideoMemory", ctypes.c_size_t),
+                ("DedicatedSystemMemory", ctypes.c_size_t),
+                ("SharedSystemMemory", ctypes.c_size_t),
+                ("AdapterLuidLowPart", wintypes.DWORD),
+                ("AdapterLuidHighPart", wintypes.LONG),
+            ]
+
+        dxgi = ctypes.windll.dxgi
+        factory = ctypes.c_void_p()
+        IID_IDXGIFactory1 = (ctypes.c_byte * 16)(
+            0x78, 0xAE, 0x0A, 0x77, 0x6F, 0xF2, 0xBA, 0x4D, 0xA8, 0x29, 0x25, 0x3C, 0x83, 0xD1, 0xB3, 0x87
+        )
+        if dxgi.CreateDXGIFactory1(ctypes.byref(IID_IDXGIFactory1), ctypes.byref(factory)) == 0:
+            vtable = ctypes.cast(factory, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+            enum_func = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, wintypes.UINT, ctypes.POINTER(ctypes.c_void_p))(vtable[7])
+            best_id = 0
+            best_vram = -1
+            best_name = "Default DirectML GPU"
+            for i in range(8):
+                ad = ctypes.c_void_p()
+                if enum_func(factory, i, ctypes.byref(ad)) != 0:
+                    break
+                avtable = ctypes.cast(ad, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+                desc_func = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.POINTER(DXGI_ADAPTER_DESC))(avtable[8])
+                desc = DXGI_ADAPTER_DESC()
+                desc_func(ad, ctypes.byref(desc))
+                name = str(desc.Description).strip()
+                vram = desc.DedicatedVideoMemory
+                # Discard basic software renderers
+                if "basic render" not in name.lower() and vram > best_vram:
+                    best_vram = vram
+                    best_id = i
+                    best_name = f"{name} ({vram // (1024 * 1024)} MB VRAM)"
+                ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(avtable[2])(ad)
+            ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtable[2])(factory)
+            return best_id, best_name
+    except Exception as e:
+        logger.debug("DXGI adapter query error: %s", e)
+    return 0, "DirectML Default GPU"
+
+
+class InferenceEngine:
+    """
+    High-Performance YOLO & ONNX Inference Engine for Machine Vision.
+    Optimized with ONNX Runtime (multi-threaded CPU execution provider) + vectorized post-processing,
+    with automatic fallback to OpenCV DNN.
+    """
+
+    def __init__(
+        self,
+        model_path: Optional[str] = None,
+        classes: Optional[List[str]] = None,
+        input_size: Tuple[int, int] = (640, 640),
+        confidence_threshold: float = 0.30,
+        nms_threshold: float = 0.65,
+        device: str = "auto",
+    ):
+        self.model_path = model_path
+        self.classes = classes or ["person", "defect", "part_ok"]
+        self.input_size = input_size
+        self.confidence_threshold = confidence_threshold
+        self.nms_threshold = nms_threshold
+        self.device = device
+        self.task: str = "detect"  # "detect" or "segment"; updated by set_model_mode
+        self.ort_session: Optional[Any] = None
+        self.input_name: Optional[str] = None
+        self.net: Optional[cv2.dnn.Net] = None
+        self.is_loaded = False
+        self._inference_lock = threading.Lock()
+
+        if model_path and os.path.exists(model_path):
+            self.load_model(model_path)
+
+    def load_model(self, model_path: str) -> bool:
+        try:
+            if not os.path.exists(model_path):
+                logger.error("Model file not found: %s", model_path)
+                return False
+
+            self.model_path = model_path
+
+            # 1. Prefer ONNX Runtime — auto-select best GPU backend available
+            if ort is not None and model_path.lower().endswith(".onnx"):
+                try:
+                    opts = ort.SessionOptions()
+                    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                    # GPU handles the heavy work so fewer CPU threads needed
+                    num_threads = min(2, os.cpu_count() or 1)
+                    opts.intra_op_num_threads = num_threads
+                    opts.inter_op_num_threads = 1
+                    opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+
+                    avail = ort.get_available_providers()
+                    dev = self.device.lower()
+                    providers = ["CPUExecutionProvider"]
+
+                    explicit_dml_id = None
+                    if ":" in dev:
+                        parts = dev.split(":", 1)
+                        if parts[0] in ("dml", "gpu", "directml"):
+                            try:
+                                explicit_dml_id = int(parts[1])
+                            except ValueError:
+                                pass
+
+                    if explicit_dml_id is not None and "DmlExecutionProvider" in avail:
+                        providers = [("DmlExecutionProvider", {"device_id": explicit_dml_id}), "CPUExecutionProvider"]
+                        logger.info("GPU backend: DirectML explicit adapter %d selected", explicit_dml_id)
+                    elif dev in ("auto", "gpu", "cuda", "directml", "dml", "tensorrt", "trt"):
+                        # Multi-platform Hardware Acceleration Auto-Detection:
+                        # 1. TensorRT (Best for NVIDIA Jetson Nano/Orin/Xavier & Linux/Windows CUDA servers)
+                        if "TensorrtExecutionProvider" in avail and dev in ("auto", "gpu", "tensorrt", "trt"):
+                            providers = ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
+                            logger.info("GPU backend: NVIDIA TensorRT (optimal for Jetson / CUDA)")
+                        # 2. CUDA (Standard NVIDIA GPU on Linux/Windows)
+                        elif "CUDAExecutionProvider" in avail and dev in ("auto", "gpu", "cuda"):
+                            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+                            logger.info("GPU backend: NVIDIA CUDA")
+                        # 3. DirectML (Windows DirectX 12 — supports NVIDIA, AMD Radeon, Intel Arc with zero CUDA install)
+                        elif "DmlExecutionProvider" in avail and dev in ("auto", "gpu", "directml", "dml"):
+                            best_id, adapter_name = _detect_best_dml_adapter()
+                            providers = [("DmlExecutionProvider", {"device_id": best_id}), "CPUExecutionProvider"]
+                            logger.info("GPU backend: DirectML adapter %d selected [%s]", best_id, adapter_name)
+                        # 4. ROCm / MIGraphX (AMD Radeon on Linux)
+                        elif "MIGraphXExecutionProvider" in avail:
+                            providers = ["MIGraphXExecutionProvider", "CPUExecutionProvider"]
+                            logger.info("GPU backend: AMD MIGraphX (ROCm)")
+                        elif "ROCMExecutionProvider" in avail:
+                            providers = ["ROCMExecutionProvider", "CPUExecutionProvider"]
+                            logger.info("GPU backend: AMD ROCm")
+                        # 5. CoreML (Apple Silicon macOS)
+                        elif "CoreMLExecutionProvider" in avail:
+                            providers = ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+                            logger.info("GPU backend: Apple CoreML")
+                        else:
+                            logger.warning("No GPU provider found in %s — falling back to CPU.", avail)
+                    else:
+                        logger.info("Inference device: CPU (forced via config)")
+
+                    self.ort_session = ort.InferenceSession(model_path, opts, providers=providers)
+
+                    # Log which provider is actually running
+                    active_prov = (self.ort_session.get_providers() or ["unknown"])[0]
+                    is_gpu = any(x in active_prov for x in ("Dml", "CUDA", "Tensorrt", "MIGraphX", "ROCM", "CoreML"))
+                    logger.info("Active execution provider: %s  [%s]", active_prov, "GPU" if is_gpu else "CPU")
+                    self.input_name = self.ort_session.get_inputs()[0].name
+                    self.is_loaded = True
+                    try:
+                        meta = self.ort_session.get_modelmeta().custom_metadata_map
+                        if "task" in meta:
+                            t = meta["task"].strip().lower()
+                            if t in ("detect", "segment"):
+                                self.task = t
+                        if "names" in meta:
+                            import ast
+                            names_dict = ast.literal_eval(meta["names"])
+                            if names_dict:
+                                self.classes = [names_dict[k] for k in sorted(names_dict.keys())]
+                    except Exception:
+                        pass
+                    logger.info("InferenceEngine loaded ONNX Runtime model: %s (%d classes, %d threads, task=%s)", model_path, len(self.classes), num_threads, self.task)
+                    return True
+                except Exception as ort_err:
+                    logger.warning("ONNX Runtime load failed, falling back to OpenCV DNN: %s", ort_err)
+
+            # 2. Fallback to OpenCV DNN
+            self.net = cv2.dnn.readNetFromONNX(model_path)
+            self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+            self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+            self.is_loaded = True
+            logger.info("InferenceEngine loaded OpenCV DNN model: %s (%d classes)", model_path, len(self.classes))
+            return True
+
+        except Exception as exc:
+            logger.error("Failed to load model %s: %s", model_path, exc)
+            self.is_loaded = False
+            return False
+
+    def predict(
+        self,
+        image_input: Any,
+        conf_threshold: Optional[float] = None,
+        nms_threshold: Optional[float] = None,
+    ) -> DetectionResponse:
+        if isinstance(image_input, bytes):
+            nparr = np.frombuffer(image_input, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        elif isinstance(image_input, np.ndarray):
+            img = image_input
+        else:
+            raise ValueError("Unsupported image input type")
+
+        if img is None:
+            raise ValueError("Failed to decode image")
+
+        return self.predict_mat(img, conf_threshold=conf_threshold, nms_threshold=nms_threshold)
+
+    def predict_mat(
+        self,
+        img: np.ndarray,
+        conf_threshold: Optional[float] = None,
+        nms_threshold: Optional[float] = None,
+    ) -> DetectionResponse:
+        """
+        High-speed inference on uncompressed BGR numpy array with ZERO decode overhead.
+        """
+        conf_thresh = conf_threshold if conf_threshold is not None else self.confidence_threshold
+        nms_thresh = nms_threshold if nms_threshold is not None else self.nms_threshold
+
+        orig_h, orig_w = img.shape[:2]
+        start_time = time.perf_counter()
+        detections: List[DetectionItem] = []
+
+        if not self.is_loaded or (self.ort_session is None and self.net is None):
+            raise RuntimeError("No valid vision model is loaded; inference is disabled")
+        try:
+                # Fast resize & transpose
+                resized = cv2.resize(img, self.input_size)
+                blob = resized[:, :, ::-1].transpose(2, 0, 1).astype(np.float32) * (1.0 / 255.0)
+                blob = np.expand_dims(blob, axis=0)
+
+                with self._inference_lock:
+                    if self.ort_session is not None:
+                        outputs = self.ort_session.run(None, {self.input_name: blob})
+                    else:
+                        self.net.setInput(blob)
+                        outputs = [self.net.forward()]
+
+                protos = outputs[1] if len(outputs) > 1 else None
+                detections = self._postprocess_fast(outputs[0], orig_w, orig_h, conf_thresh, nms_thresh, protos=protos)
+        except Exception as e:
+            logger.exception("Model forward pass failed; refusing heuristic inference")
+            raise RuntimeError("Vision model inference failed") from e
+
+        latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
+
+        return DetectionResponse(
+            model_name=Path(self.model_path).stem if self.model_path else "YOLOv8_Industrial_Base",
+            total_detections=len(detections),
+            detections=detections,
+            inference_time_ms=latency_ms,
+            image_width=orig_w,
+            image_height=orig_h,
+        )
+
+    def _postprocess_fast(
+        self,
+        output: np.ndarray,
+        orig_w: int,
+        orig_h: int,
+        conf_thresh: float,
+        nms_thresh: float,
+        protos: Optional[np.ndarray] = None,
+    ) -> List[DetectionItem]:
+        """
+        Vectorized YOLO post-processing using NumPy array operations (10x faster),
+        with support for dual-output YOLO instance segmentation masks & polygon extraction,
+        and full support for end-to-end architectures (YOLO26, YOLOv10, RT-DETR).
+        """
+        if len(output.shape) == 3:
+            output = output[0]
+        if output.shape[0] == 0:
+            return []
+
+        iw, ih = self.input_size
+        detections: List[DetectionItem] = []
+
+        # Check for end2end architectures (shape [num_boxes, 6] or [num_boxes, 38])
+        is_end2end = (output.ndim == 2 and output.shape[1] in (6, 38)) or (
+            output.ndim == 2 and output.shape[1] <= 40 and output.shape[0] >= 50 and output.shape[0] > output.shape[1]
+        )
+
+        if is_end2end:
+            has_seg = protos is not None and output.shape[1] >= 38
+            confs = output[:, 4]
+            mask = confs >= conf_thresh
+            if not np.any(mask):
+                return []
+
+            filtered_output = output[mask]
+            for i in range(len(filtered_output)):
+                row = filtered_output[i]
+                x1_val, y1_val, x2_val, y2_val = row[:4]
+                conf_val = float(row[4])
+                cid = int(round(row[5]))
+                cname = self.classes[cid] if 0 <= cid < len(self.classes) else f"class_{cid}"
+
+                if max(x2_val, y2_val) <= 1.0:
+                    bx1 = int(np.clip(x1_val * orig_w, 0, orig_w))
+                    by1 = int(np.clip(y1_val * orig_h, 0, orig_h))
+                    bx2 = int(np.clip(x2_val * orig_w, 0, orig_w))
+                    by2 = int(np.clip(y2_val * orig_h, 0, orig_h))
+                else:
+                    bx1 = int(np.clip((x1_val / iw) * orig_w, 0, orig_w))
+                    by1 = int(np.clip((y1_val / ih) * orig_h, 0, orig_h))
+                    bx2 = int(np.clip((x2_val / iw) * orig_w, 0, orig_w))
+                    by2 = int(np.clip((y2_val / ih) * orig_h, 0, orig_h))
+
+                bw = max(0, bx2 - bx1)
+                bh = max(0, by2 - by1)
+                if bw == 0 or bh == 0:
+                    continue
+
+                polygon: Optional[List[List[int]]] = None
+                mask_area: Optional[int] = None
+
+                if has_seg and protos is not None:
+                    try:
+                        coeff = row[6:38]
+                        proto_tensor = protos[0] if len(protos.shape) == 4 else protos
+                        proto_h, proto_w = proto_tensor.shape[1], proto_tensor.shape[2]
+                        mask_raw = np.matmul(coeff, proto_tensor.reshape(32, -1)).reshape(proto_h, proto_w)
+                        mask_sigmoid = 1.0 / (1.0 + np.exp(-mask_raw))
+                        mask_resized = cv2.resize(mask_sigmoid, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+
+                        cropped = np.zeros((orig_h, orig_w), dtype=np.uint8)
+                        cropped[by1:by2, bx1:bx2] = (mask_resized[by1:by2, bx1:bx2] > 0.5).astype(np.uint8)
+                        mask_area = int(np.sum(cropped))
+                        contours, _ = cv2.findContours(cropped, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        if contours:
+                            largest = max(contours, key=cv2.contourArea)
+                            if len(largest) >= 3:
+                                approx = cv2.approxPolyDP(largest, 1.5, True)
+                                polygon = [[int(pt[0][0]), int(pt[0][1])] for pt in approx]
+                    except Exception as seg_err:
+                        logger.debug("Segmentation mask extraction error: %s", seg_err)
+
+                detections.append(
+                    DetectionItem(
+                        class_id=cid,
+                        class_name=cname,
+                        confidence=round(conf_val, 4),
+                        bbox=BoundingBox(
+                            x1=bx1,
+                            y1=by1,
+                            x2=bx2,
+                            y2=by2,
+                            width=bw,
+                            height=bh,
+                        ),
+                        polygon=polygon,
+                        mask_area=mask_area,
+                    )
+                )
+            return detections
+
+        num_classes = len(self.classes)
+        if output.shape[0] in (4 + num_classes, 4 + num_classes + 32, 84, 116, 5, 37) or output.shape[0] < output.shape[1]:
+            output = output.T  # Shape: (num_boxes, 4 + num_classes + [32 mask_protos])
+
+        if output.shape[0] == 0:
+            return []
+
+        # Check if output contains mask coefficients (YOLO-seg has 4 bbox + num_classes + 32 mask coefficients)
+        has_seg = protos is not None and (output.shape[1] >= 4 + num_classes + 32)
+
+        boxes_raw = output[:, :4]
+        scores_matrix = output[:, 4:4 + num_classes] if has_seg else output[:, 4:]
+        mask_coeffs_matrix = output[:, 4 + num_classes:4 + num_classes + 32] if has_seg else None
+
+        class_ids = np.argmax(scores_matrix, axis=1)
+        confidences = scores_matrix[np.arange(len(scores_matrix)), class_ids]
+
+        mask = confidences >= conf_thresh
+        if not np.any(mask):
+            return []
+
+        filtered_boxes = boxes_raw[mask]
+        filtered_confs = confidences[mask]
+        filtered_cids = class_ids[mask]
+        filtered_coeffs = mask_coeffs_matrix[mask] if has_seg and mask_coeffs_matrix is not None else None
+
+        iw, ih = self.input_size
+
+        # Vectorized coordinate scaling
+        cx = filtered_boxes[:, 0]
+        cy = filtered_boxes[:, 1]
+        w = filtered_boxes[:, 2]
+        h = filtered_boxes[:, 3]
+
+        if np.max(cx) <= 1.0 and np.max(w) <= 1.0:
+            cx = cx * orig_w
+            cy = cy * orig_h
+            w = w * orig_w
+            h = h * orig_h
+        else:
+            cx = (cx / iw) * orig_w
+            cy = (cy / ih) * orig_h
+            w = (w / iw) * orig_w
+            h = (h / ih) * orig_h
+
+        x1 = np.clip(cx - w / 2, 0, orig_w).astype(int)
+        y1 = np.clip(cy - h / 2, 0, orig_h).astype(int)
+        box_w = np.clip(w, 0, orig_w).astype(int)
+        box_h = np.clip(h, 0, orig_h).astype(int)
+
+        boxes_list = [
+            [int(x1[i]), int(y1[i]), int(box_w[i]), int(box_h[i])]
+            for i in range(len(x1))
+        ]
+        confs_list = [float(c) for c in filtered_confs]
+
+        indices = cv2.dnn.NMSBoxes(boxes_list, confs_list, conf_thresh, nms_thresh)
+        detections: List[DetectionItem] = []
+
+        if len(indices) > 0:
+            for idx in indices.flatten():
+                bx, by, bw, bh = boxes_list[idx]
+                cid = int(filtered_cids[idx])
+                cname = self.classes[cid] if cid < len(self.classes) else f"class_{cid}"
+
+                x2 = min(orig_w, bx + bw)
+                y2 = min(orig_h, by + bh)
+
+                polygon: Optional[List[List[int]]] = None
+                mask_area: Optional[int] = None
+
+                if has_seg and filtered_coeffs is not None and protos is not None:
+                    try:
+                        proto_tensor = protos[0] if len(protos.shape) == 4 else protos
+                        coeff = filtered_coeffs[idx]
+                        proto_h, proto_w = proto_tensor.shape[1], proto_tensor.shape[2]
+                        mask_raw = np.matmul(coeff, proto_tensor.reshape(32, -1)).reshape(proto_h, proto_w)
+                        mask_sigmoid = 1.0 / (1.0 + np.exp(-mask_raw))
+                        mask_resized = cv2.resize(mask_sigmoid, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
+
+                        cropped = np.zeros((orig_h, orig_w), dtype=np.uint8)
+                        cropped[by:y2, bx:x2] = (mask_resized[by:y2, bx:x2] > 0.5).astype(np.uint8)
+                        mask_area = int(np.sum(cropped))
+                        contours, _ = cv2.findContours(cropped, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        if contours:
+                            largest = max(contours, key=cv2.contourArea)
+                            if len(largest) >= 3:
+                                approx = cv2.approxPolyDP(largest, 1.5, True)
+                                polygon = [[int(pt[0][0]), int(pt[0][1])] for pt in approx]
+                    except Exception as seg_err:
+                        logger.debug("Segmentation mask extraction error: %s", seg_err)
+
+                detections.append(
+                    DetectionItem(
+                        class_id=cid,
+                        class_name=cname,
+                        confidence=round(confs_list[idx], 4),
+                        bbox=BoundingBox(
+                            x1=bx,
+                            y1=by,
+                            x2=x2,
+                            y2=y2,
+                            width=max(0, x2 - bx),
+                            height=max(0, y2 - by),
+                        ),
+                        polygon=polygon,
+                        mask_area=mask_area,
+                    )
+                )
+
+        return detections
+
+    def draw_annotations_mat(
+        self,
+        img: np.ndarray,
+        detections: List[DetectionItem],
+        latency_ms: float = 0.0,
+        draw_wirelines: bool = True,
+        scale_x: float = 1.0,
+        scale_y: float = 1.0,
+        fps: float = 0.0,
+        camera_rotation: Optional[int] = None,
+        camera_flip_h: Optional[bool] = None,
+        camera_flip_v: Optional[bool] = None,
+    ) -> np.ndarray:
+        """
+        Directly overlays wirelines, tracking trails, HUD, and bounding boxes onto BGR array.
+        Zero JPEG encode/decode overhead!
+        """
+        h, w = img.shape[:2]
+
+        # Resolve camera rotation and flips if not explicitly provided
+        if camera_rotation is None:
+            try:
+                from app.state.application_state import app_state
+                from app.services.settings_persistence_service import SettingsPersistenceService
+                cam_id = SettingsPersistenceService.get_active_camera_id()
+                driver = app_state.cameras.get(cam_id) if cam_id else None
+                if not driver and app_state.cameras:
+                    driver = next(iter(app_state.cameras.values()), None)
+                if driver:
+                    s = getattr(driver, "settings", {})
+                    camera_rotation = int(s.get("rotation") or 90) if "rotation" in s else 90
+                    camera_flip_h = bool(s.get("flip_h", False))
+                    camera_flip_v = bool(s.get("flip_v", False))
+            except Exception:
+                pass
+
+        exit_edge, exit_rect = get_exit_line_zone(
+            w, h,
+            rotation=camera_rotation,
+            flip_h=bool(camera_flip_h),
+            flip_v=bool(camera_flip_v),
+            thickness=20,
+        )
+
+        # Build allowed class filter from counting config (expected + defect classes)
+        try:
+            from app.services.counting_service import counting_service
+            _cfg = counting_service.config
+            _exp = set(c.lower() for c in (_cfg.expected_classes or []))
+            _def = set(c.lower() for c in (_cfg.defect_classes or []))
+            _allowed = _exp | _def  # empty means draw all
+        except Exception:
+            _allowed = set()
+
+        # 1. Wirelines & Object Counting HUD
+        if draw_wirelines:
+            try:
+                from app.services.counting_service import counting_service
+
+                cfg = counting_service.config
+                total_insp = counting_service.total_inspected
+                good_c = counting_service.good_count
+                rej_c = counting_service.rejected_count
+                ppm_val = counting_service.products_per_minute
+
+                # Line 1 & 2 — 20px wide all-translucent band (no opaque line)
+                BAND = 10  # ±10px around line center = 20px total width
+                if is_horizontal_movement(cfg.orientation):
+                    # Horizontal Mode (counts horizontal moving items): wirelines are vertical lines across X
+                    l1_x = int(cfg.line1_position * w)
+                    l2_x = int(cfg.line2_position * w)
+
+                    # --- Line 1: yellow translucent 20px band ---
+                    overlay = img.copy()
+                    cv2.rectangle(overlay, (max(0, l1_x - BAND), 0), (min(w, l1_x + BAND), h), (255, 230, 0), -1)
+                    cv2.addWeighted(overlay, 0.30, img, 0.70, 0, img)
+                    cv2.putText(img, "LINE 1: ENTRY", (l1_x + BAND + 4, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 230, 0), 2)
+
+                    # --- Line 2: cyan translucent 20px band ---
+                    overlay2 = img.copy()
+                    cv2.rectangle(overlay2, (max(0, l2_x - BAND), 0), (min(w, l2_x + BAND), h), (0, 215, 255), -1)
+                    cv2.addWeighted(overlay2, 0.30, img, 0.70, 0, img)
+                    cv2.putText(img, "LINE 2: EXIT (COUNT)", (l2_x + BAND + 4, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 215, 255), 2)
+                else:
+                    # Vertical Mode (counts vertical moving items): wirelines are horizontal lines across Y
+                    l1_y = int(cfg.line1_position * h)
+                    l2_y = int(cfg.line2_position * h)
+
+                    # --- Line 1: yellow translucent 20px band ---
+                    overlay = img.copy()
+                    cv2.rectangle(overlay, (0, max(0, l1_y - BAND)), (w, min(h, l1_y + BAND)), (255, 230, 0), -1)
+                    cv2.addWeighted(overlay, 0.30, img, 0.70, 0, img)
+                    cv2.putText(img, "LINE 1: ENTRY", (12, max(20, l1_y - BAND - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 230, 0), 2)
+
+                    # --- Line 2: cyan translucent 20px band ---
+                    overlay2 = img.copy()
+                    cv2.rectangle(overlay2, (0, max(0, l2_y - BAND)), (w, min(h, l2_y + BAND)), (0, 215, 255), -1)
+                    cv2.addWeighted(overlay2, 0.30, img, 0.70, 0, img)
+                    cv2.putText(img, "LINE 2: EXIT (COUNT)", (12, max(20, l2_y - BAND - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 215, 255), 2)
+
+                # Target markers — only for CONFIRMED tracks (no trail, no ghost dots)
+                for obj in list(counting_service.tracker.objects.values()):
+                    if _allowed and obj.class_name.lower() not in _allowed:
+                        continue
+                    # Skip unconfirmed tracks to avoid ghost dots from newly-spawned tracks
+                    if not getattr(obj, "confirmed", True):
+                        continue
+
+                    # Compute scaled smoothed center
+                    if hasattr(obj, "smooth_center_x"):
+                        sc_x = int(obj.smooth_center_x * scale_x)
+                        sc_y = int(obj.smooth_center_y * scale_y)
+                    else:
+                        curr_c = obj.current_centroid
+                        sc_x = int(curr_c[0] * scale_x)
+                        sc_y = int(curr_c[1] * scale_y)
+
+                    # Skip drawing if center reached the exit line zone
+                    if is_in_exit_zone(sc_x, sc_y, exit_edge, exit_rect):
+                        continue
+
+                    # Simple solid green dot (6px radius, no tail/trail)
+                    cv2.circle(img, (sc_x, sc_y), 6, (0, 255, 0), -1)
+
+                # HUD Banner alongside counters rendered in the video
+                hud_parts = [
+                    f"TOTAL: {total_insp}",
+                    f"GOOD: {good_c}",
+                    f"REJ: {rej_c}",
+                    f"PPM: {ppm_val:.1f}",
+                ]
+                if fps > 0:
+                    hud_parts.append(f"FPS: {fps:.1f}")
+                if latency_ms > 0:
+                    hud_parts.append(f"YOLO: {latency_ms:.0f}ms")
+
+                hud_text = " | ".join(hud_parts)
+                cv2.rectangle(img, (0, 0), (w, 32), (20, 24, 33), -1)
+                cv2.putText(img, hud_text, (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1)
+            except Exception as trk_err:
+                logger.debug("Tracker HUD error: %s", trk_err)
+
+        # 2. Draw Segmentation Masks & Polygons
+        colors = [
+            (0, 255, 0), (255, 128, 0), (0, 200, 255), (255, 0, 128),
+            (0, 255, 255), (128, 0, 255), (255, 255, 0), (0, 128, 255)
+        ]
+
+        is_segment_mode = getattr(self, "task", "detect") == "segment"
+
+        # In segmentation mode: ensure each detection has pixel mask contour points
+        # If the model didn't provide dual-output protos (e.g. custom defect model or detection weights in segment mode),
+        # extract pixel mask from defect, crack, or object features inside the bbox
+        if is_segment_mode:
+            for item in detections:
+                if (not item.polygon or len(item.polygon) < 3) and item.bbox:
+                    b_x1 = max(0, min(w - 1, int(item.bbox.x1)))
+                    b_y1 = max(0, min(h - 1, int(item.bbox.y1)))
+                    b_x2 = max(0, min(w, int(item.bbox.x2)))
+                    b_y2 = max(0, min(h, int(item.bbox.y2)))
+                    if b_x2 > b_x1 + 4 and b_y2 > b_y1 + 4:
+                        try:
+                            roi = img[b_y1:b_y2, b_x1:b_x2]
+                            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+                            _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                            edges = cv2.Canny(blurred, 50, 150)
+                            combined = cv2.bitwise_or(thresh, edges)
+                            contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                            if contours:
+                                largest = max(contours, key=cv2.contourArea)
+                                if cv2.contourArea(largest) > 20 and len(largest) >= 3:
+                                    approx = cv2.approxPolyDP(largest, 1.5, True)
+                                    item.polygon = [[int(pt[0][0] + b_x1), int(pt[0][1] + b_y1)] for pt in approx]
+                                    item.mask_area = int(cv2.contourArea(largest))
+                            if not item.polygon:
+                                # Fallback: polygon spanning detection region
+                                item.polygon = [
+                                    [b_x1, b_y1], [b_x2, b_y1], [b_x2, b_y2], [b_x1, b_y2]
+                                ]
+                        except Exception as poly_err:
+                            logger.debug("Segmentation contour generation error: %s", poly_err)
+
+        # Draw semi-transparent filled masks (only for allowed classes)
+        mask_overlay = None
+        for item in detections:
+            cname_lower = item.class_name.lower()
+            if _allowed and cname_lower not in _allowed:
+                continue
+            if item.polygon and len(item.polygon) >= 3:
+                if mask_overlay is None:
+                    mask_overlay = img.copy()
+                color = colors[item.class_id % len(colors)]
+                pts = np.array([[int(p[0] * scale_x), int(p[1] * scale_y)] for p in item.polygon], dtype=np.int32)
+                cv2.fillPoly(mask_overlay, [pts], color)
+                cv2.polylines(img, [pts], isClosed=True, color=color, thickness=2)
+        if mask_overlay is not None:
+            cv2.addWeighted(mask_overlay, 0.45, img, 0.55, 0, img)
+
+        # 3. Draw Bounding Boxes & HUD Labels (only for allowed classes)
+        # In segmentation mode: NO bounding boxes are drawn (pixel masks only)
+        active_tracks: Dict[int, Any] = {}
+        try:
+            from app.services.counting_service import counting_service
+            active_tracks = dict(counting_service.tracker.objects)
+        except Exception:
+            active_tracks = {}
+
+        if active_tracks:
+            # Draw persistent tracks with velocity projection across missed frames (ZERO flicker)
+            for tid, obj in active_tracks.items():
+                cname = getattr(obj, "class_name", "")
+                cname_lower = cname.lower()
+                if _allowed and cname_lower not in _allowed:
+                    continue
+                # Show active tracks that missed at most 5 frames
+                if getattr(obj, "missed_frames", 0) > 5:
+                    continue
+
+                cid = getattr(obj, "class_id", 0)
+                color = colors[cid % len(colors)]
+                conf = getattr(obj, "confidence", 1.0)
+                is_confirmed = getattr(obj, "confirmed", True)
+
+                x1, y1, x2, y2 = obj.last_bbox
+                bx1 = max(0, min(w - 1, int(x1 * scale_x)))
+                by1 = max(0, min(h - 1, int(y1 * scale_y)))
+                bx2 = max(0, min(w, int(x2 * scale_x)))
+                by2 = max(0, min(h, int(y2 * scale_y)))
+
+                # Check if object center reached the exit line zone
+                obj_center_x = (bx1 + bx2) / 2.0
+                obj_center_y = (by1 + by2) / 2.0
+                smooth_cx_scaled = getattr(obj, "smooth_center_x", obj_center_x) * scale_x
+                smooth_cy_scaled = getattr(obj, "smooth_center_y", obj_center_y) * scale_y
+                if (
+                    is_in_exit_zone(obj_center_x, obj_center_y, exit_edge, exit_rect)
+                    or is_in_exit_zone(smooth_cx_scaled, smooth_cy_scaled, exit_edge, exit_rect)
+                ):
+                    continue
+
+                if not is_segment_mode and bx2 > bx1 and by2 > by1:
+                    cv2.rectangle(img, (bx1, by1), (bx2, by2), color, 2)
+
+                anchor_x = bx1
+                anchor_y = by1
+
+                if is_confirmed:
+                    badge = f"#{tid}"
+                    (bw, bh), _ = cv2.getTextSize(badge, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                    badge_y0 = max(34, anchor_y - 36)
+                    badge_y1 = badge_y0 + bh + 6
+                    cv2.rectangle(img, (anchor_x, badge_y0), (anchor_x + bw + 6, badge_y1), (20, 24, 33), -1)
+                    cv2.putText(img, badge, (anchor_x + 3, badge_y1 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 220, 255), 1)
+
+                    label = f"{cname} {int(conf * 100)}%"
+                    label_top = badge_y1
+                    (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+                    cv2.rectangle(img, (anchor_x, label_top), (anchor_x + lw + 6, label_top + lh + 6), color, -1)
+                    cv2.putText(img, label, (anchor_x + 3, label_top + lh + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
+                else:
+                    label = f"{cname} {int(conf * 100)}%"
+                    label_top = max(34, anchor_y - 18)
+                    (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+                    cv2.rectangle(img, (anchor_x, label_top), (anchor_x + lw + 6, label_top + lh + 6), color, -1)
+                    cv2.putText(img, label, (anchor_x + 3, label_top + lh + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
+        else:
+            # Fallback if tracker has no objects: draw raw detections directly
+            for item in detections:
+                cname_lower = item.class_name.lower()
+                if _allowed and cname_lower not in _allowed:
+                    continue
+                box = item.bbox
+                bx1 = max(0, min(w - 1, int(box.x1 * scale_x)))
+                by1 = max(0, min(h - 1, int(box.y1 * scale_y)))
+                bx2 = max(0, min(w, int(box.x2 * scale_x)))
+                by2 = max(0, min(h, int(box.y2 * scale_y)))
+
+                # Check if detection center reached the exit line zone
+                det_cx_scaled = (bx1 + bx2) / 2.0
+                det_cy_scaled = (by1 + by2) / 2.0
+                if is_in_exit_zone(det_cx_scaled, det_cy_scaled, exit_edge, exit_rect):
+                    continue
+
+                color = colors[item.class_id % len(colors)]
+                if not is_segment_mode and bx2 > bx1 and by2 > by1:
+                    cv2.rectangle(img, (bx1, by1), (bx2, by2), color, 2)
+                anchor_x = bx1
+                anchor_y = by1
+                label_top = max(34, anchor_y - 18)
+                label = f"{item.class_name} {int(item.confidence * 100)}%"
+                (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+                cv2.rectangle(img, (anchor_x, label_top), (anchor_x + lw + 6, label_top + lh + 6), color, -1)
+                cv2.putText(img, label, (anchor_x + 3, label_top + lh + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
+
+        # 4. Exit Line (20px wide transparent gray band at the exit edge of the video, rotating with camera settings)
+        # Purpose: deletes box and ID, stops detecting objects when their center reaches this line,
+        # and prevents IDs from jumping around when objects are cropped out of the video.
+        # Clean line with no text on it.
+        ex1, ey1, ex2, ey2 = exit_rect
+        if ex2 > ex1 and ey2 > ey1:
+            exit_overlay = img.copy()
+            cv2.rectangle(
+                exit_overlay,
+                (ex1, ey1),
+                (ex2, ey2),
+                (128, 128, 128),
+                -1,
+            )
+            cv2.addWeighted(exit_overlay, 0.40, img, 0.60, 0, img)
+
+        return img
+
+
+
+
+    def draw_annotations(
+        self,
+        image_input: Any,
+        detections: List[DetectionItem],
+        latency_ms: float = 0.0,
+        draw_wirelines: bool = True,
+        scale_x: float = 1.0,
+        scale_y: float = 1.0,
+        fps: float = 0.0,
+        camera_rotation: Optional[int] = None,
+        camera_flip_h: Optional[bool] = None,
+        camera_flip_v: Optional[bool] = None,
+    ) -> bytes:
+        if isinstance(image_input, bytes):
+            nparr = np.frombuffer(image_input, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        else:
+            img = image_input.copy()
+
+        annotated = self.draw_annotations_mat(
+            img,
+            detections,
+            latency_ms=latency_ms,
+            draw_wirelines=draw_wirelines,
+            scale_x=scale_x,
+            scale_y=scale_y,
+            fps=fps,
+            camera_rotation=camera_rotation,
+            camera_flip_h=camera_flip_h,
+            camera_flip_v=camera_flip_v,
+        )
+        _, jpeg = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+        return jpeg.tobytes()
+

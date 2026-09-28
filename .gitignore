@@ -1,0 +1,95 @@
+# ─── Environment & Secrets ─────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ─── Python & Virtual Environments ────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+
+# ─── Runtime Data – Users, Settings Profiles, Databases ───────────────────────
+# These are generated at runtime and contain user accounts / saved settings.
+# They must NOT be committed. Each deployment generates its own.
+data/*
+!data/.gitkeep
+data/*.db
+data/*.json
+*.db
+*.sqlite
+*.sqlite3
+
+# ─── Logs ──────────────────────────────────────────────────────────────────────
+logs/*
+!logs/.gitkeep
+*.log
+
+# ─── Runtime Uploads & Temp Files ─────────────────────────────────────────────
+uploads/*
+!uploads/.gitkeep
+
+# ─── Model Weights (large binary files – distribute separately) ────────────────
+model_store/
+model_store/**/*.pt
+model_store/**/*.onnx
+model_store/**/weights/
+model_store/exp/
+model_store/yolo26/
+model_store/yolo26s/
+*.onnx
+*.pt
+*.pt2
+*.engine
+*.tflite
+*.safetensors
+*.ckpt
+*.weights
+
+# ─── Video Files (keep .py scripts, exclude large binary video files) ──────────
+video stream/*.mp4
+video stream/*.avi
+video stream/*.mkv
+video stream/*.mov
+*.mp4
+*.avi
+*.mkv
+*.mov
+
+# ─── Flutter / Mobile Client & Old Backups ────────────────────────────────────
+api_dashboard/
+backup/
+flutter dashboard windows/
+*.exe
+*.dll
+
+# ─── Scratch / Draft Dashboard Copies ─────────────────────────────────────────
+dashboard - Copy.html
+
+# ─── Private Certificates & Keys ──────────────────────────────────────────────
+certificates/
+certs/
+certificates/**/*.key
+certificates/**/*.pem
+certs/**/*.key
+certs/**/*.pem
+
+# ─── IDE & Editor ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── OS Specific ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
