@@ -277,3 +277,12 @@ def test_counting_stats_and_reset(client, admin_headers):
 def test_plc_action_cards_list(client, admin_headers):
     res = client.get(f"{API}/plc/actions", headers=admin_headers)
     assert res.status_code == 200
+
+
+# ── Dashboards ────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("path", ["/dashboard", "/dashboard/pro"])
+def test_dashboards_are_served_to_local_clients(client, path):
+    res = client.get(path)
+    assert res.status_code == 200
+    assert 'id="loginScreen"' in res.text

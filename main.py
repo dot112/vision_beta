@@ -361,8 +361,7 @@ def create_app() -> FastAPI:
 </body>
 </html>"""
 
-    @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
-    async def get_dashboard(request: Request) -> HTMLResponse:
+    def _serve_dashboard_file(request: Request, filename: str) -> HTMLResponse:
         # Verify if request is from local host, private network (Wi-Fi / LAN), or verified app
         import ipaddress
         client_host = request.client.host if request.client else ""
@@ -385,7 +384,7 @@ def create_app() -> FastAPI:
         if not is_app:
             return HTMLResponse(content=RESTRICTED_ACCESS_HTML, status_code=403)
 
-        with open("dashboard.html", "r", encoding="utf-8") as f:
+        with open(filename, "r", encoding="utf-8") as f:
             return HTMLResponse(
                 content=f.read(),
                 headers={
@@ -394,6 +393,15 @@ def create_app() -> FastAPI:
                     "Expires": "0",
                 },
             )
+
+    @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+    async def get_dashboard(request: Request) -> HTMLResponse:
+        return _serve_dashboard_file(request, "dashboard.html")
+
+    # Second dashboard design, served next to the original for side-by-side comparison
+    @app.get("/dashboard/pro", response_class=HTMLResponse, include_in_schema=False)
+    async def get_dashboard_pro(request: Request) -> HTMLResponse:
+        return _serve_dashboard_file(request, "dashboard_pro.html")
 
     @app.get("/terms-of-use", include_in_schema=False)
     async def get_terms_of_use() -> Response:
@@ -416,6 +424,7 @@ def create_app() -> FastAPI:
             "message": f"Welcome to {settings.APP_NAME}",
             "docs": "/docs" if settings.DEBUG else None,
             "dashboard": "/dashboard",
+            "dashboard_pro": "/dashboard/pro",
         })
 
     return app
