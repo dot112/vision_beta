@@ -35,8 +35,10 @@ class TestModbusAddressParser:
 # ── ModbusTCPDriver ───────────────────────────────────────────────────────────
 
 def _make_driver():
-    ep = {"id": "ep1", "host": "127.0.0.1", "port": 502, "timeout": 1,
-          "plc_sub_protocol": "modbus_tcp"}
+    # Port 1 on loopback is never a Modbus server, so connect() falls back to
+    # the in-memory simulator that stands in for a PLC in these tests.
+    ep = {"id": "ep1", "host": "127.0.0.1", "port": 1, "timeout": 1,
+          "plc_sub_protocol": "modbus_tcp", "simulation_mode": True}
     return ModbusTCPDriver(ep)
 
 
@@ -78,12 +80,13 @@ class TestModbusTCPDriver:
             assert "255" in msg
         asyncio.run(_run())
 
-    def test_write_value_masked_to_16bit(self):
+    def test_write_value_outside_16bit_is_rejected(self):
         async def _run():
             drv = _make_driver()
             await drv.connect()
-            ok, _ = await drv.write("R0", 70000)
-            assert ok is True
+            ok, msg = await drv.write("R0", 70000)
+            assert ok is False
+            assert "0 to 65535" in msg
         asyncio.run(_run())
 
     def test_execute_operation_dispatch(self):
@@ -148,11 +151,10 @@ class TestPLCDriverFactory:
         PLCDriverFactory.invalidate("ep-inv")
         assert "ep-inv" not in _driver_pool
 
-    def test_generic_tcp_for_fins(self):
-        from app.hardware.plc.generic_tcp_driver import GenericTCPDriver
+    def test_fins_has_no_unsafe_generic_fallback(self):
         ep = {"id": "ep-fins", "plc_sub_protocol": "fins", "host": "127.0.0.1", "port": 9600, "timeout": 1}
-        drv = PLCDriverFactory.get_driver(ep, fresh=True)
-        assert isinstance(drv, GenericTCPDriver)
+        with pytest.raises(ValueError, match="no native driver"):
+            PLCDriverFactory.get_driver(ep, fresh=True)
 
     def test_pool_ids(self):
         ep = {"id": "ep-ids", "plc_sub_protocol": "modbus_tcp", "host": "127.0.0.1", "port": 502, "timeout": 1}

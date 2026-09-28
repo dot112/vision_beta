@@ -41,4 +41,25 @@ uvicorn main:app
 #    http://localhost:8000/dashboard
 ```
 
+### Docker (Linux)
+
+```bash
+docker build -t fastapi-vision-server .
+docker run -d --name vision -p 8000:8000 --env-file .env \
+  -v vision-data:/app/data -v vision-models:/app/model_store -v vision-logs:/app/logs \
+  fastapi-vision-server
+```
+
+The image serves ONNX models on CPU and leaves out PyTorch/Ultralytics. USB cameras need `--device /dev/video0`; PLCs and IP cameras on the plant network usually need `--network host`.
+
+### Tests and lint
+
+```bash
+pip install -r requirements-runtime.txt -r requirements-dev.txt
+pytest
+ruff check .
+```
+
+Tests use a temporary database and fake cameras, ONNX inference and PLCs, so no hardware is needed. GitHub Actions runs both, plus a Docker build and start-up check, on every push and pull request.
+
 Database migrations run during startup. For access outside a trusted isolated network, terminate TLS at a trusted reverse proxy and expose only HTTPS/WSS; the built-in development server does not configure TLS certificates. In production, query-string WebSocket tokens are disabled. Browser clients should send the token using the `Sec-WebSocket-Protocol` values `industrial-vision-v1` and `bearer.<access-token>`; native clients may use an Authorization bearer header.

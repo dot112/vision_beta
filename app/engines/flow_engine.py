@@ -513,7 +513,7 @@ class FlowEngine:
         if not triggers: return
         for t in triggers:
             await _emit_debug(fid, t["id"], "passed", f"Triggered by {event_type}")
-            await self._walk(fid, t["id"], nodes, adj, ctx, set(), [0])
+            await self._walk(fid, t["id"], "out:0", nodes, adj, ctx, set(), [0])
         if not ctx.get("_test"):
             await _inc_exec(fid)
 
@@ -521,39 +521,40 @@ class FlowEngine:
         self,
         fid: str,
         node_id: str,
+        out_port: str,
         nodes: Dict,
         adj: Dict,
         ctx: Dict,
         visited_path: set[str],
         budget: List[int],
     ) -> None:
-        if node_id in visited_path:
-            logger.warning("FlowEngine stopped cyclic path in flow %s at node %s", fid, node_id)
-            return
         if len(visited_path) >= 256:
             logger.warning("FlowEngine stopped over-deep path in flow %s at node %s", fid, node_id)
             return
-        if budget[0] >= self._max_nodes_per_run:
-            logger.warning("FlowEngine stopped oversized run in flow %s after %s nodes", fid, budget[0])
-            return
-        budget[0] += 1
         visited_path = visited_path | {node_id}
+        # Follow only the wires leaving the port this node chose (e.g. an If
+        # node's false branch), then run each downstream node exactly once.
         for edge in adj.get(node_id, []):
+            if not _port_matches(edge["from_port"], out_port):
+                continue
             nxt_id = edge["to_node"]
-            from_port = edge["from_port"]
             nxt = nodes.get(nxt_id)
             if not nxt: continue
-            passed, out_port, uctx = await _execute_node(fid, nxt, ctx)
+            if nxt_id in visited_path:
+                logger.warning("FlowEngine stopped cyclic path in flow %s at node %s", fid, nxt_id)
+                continue
+            if budget[0] >= self._max_nodes_per_run:
+                logger.warning("FlowEngine stopped oversized run in flow %s after %s nodes", fid, budget[0])
+                return
+            budget[0] += 1
+            passed, nxt_port, uctx = await _execute_node(fid, nxt, ctx)
             if passed:
-                # Normalize ports for matching (e.g. 'out:0' vs 'out' vs 'true')
-                port_match = (
-                    from_port == out_port
-                    or from_port in ("out", "out:0") and out_port in ("out", "out:0")
-                    or from_port in ("true", "out:0") and out_port in ("true", "out:0")
-                    or from_port in ("false", "out:1") and out_port in ("false", "out:1")
-                )
-                if port_match:
-                    await self._walk(fid, nxt_id, nodes, adj, uctx, visited_path, budget)
+                await self._walk(fid, nxt_id, nxt_port, nodes, adj, uctx, visited_path, budget)
+
+def _port_matches(wire_port: str, out_port: str) -> bool:
+    """Wires may name ports 'out'/'true'/'false' as well as 'out:N'."""
+    aliases = {"out": "out:0", "true": "out:0", "false": "out:1"}
+    return aliases.get(wire_port, wire_port) == aliases.get(out_port, out_port)
 
 # ── Bootstrap ──────────────────────────────────────────────────────────
 async def bootstrap_flow_engine() -> None:

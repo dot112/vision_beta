@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "ruff>=0.14.0"
+      - run: ruff check --output-format=github .
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements-runtime.txt
+            requirements-dev.txt
+      - name: Install dependencies
+        run: pip install -r requirements-runtime.txt -r requirements-dev.txt
+      - name: Run tests
+        run: pytest
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t fastapi-vision-server:ci .
+      - name: Start container on a fresh database
+        run: |
+          docker run -d --name vision -p 8000:8000 \
+            -e SECRET_KEY="ci-only-secret-key-$(openssl rand -hex 16)" \
+            -e ADMIN_INITIAL_PASSWORD="ci-only-admin-$(openssl rand -hex 12)" \
+            fastapi-vision-server:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/api/v1/discovery; then exit 0; fi
+            sleep 2
+          done
+          docker logs vision
+          exit 1
+      - name: API rejects unauthenticated requests
+        run: test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/v1/rules)" = 401

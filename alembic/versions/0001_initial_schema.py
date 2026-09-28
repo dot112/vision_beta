@@ -19,9 +19,19 @@ branch_labels = None
 depends_on = None
 
 
+# Tables owned by later revisions. Base.metadata holds every imported model,
+# including ones added after this revision, so they must be left to their own
+# migration or a fresh database fails with "table already exists".
+_LATER_TABLES = {"api_keys"}
+
+
+def _initial_tables():
+    return [table for name, table in Base.metadata.tables.items() if name not in _LATER_TABLES]
+
+
 def upgrade() -> None:
-    Base.metadata.create_all(bind=op.get_bind())
+    Base.metadata.create_all(bind=op.get_bind(), tables=_initial_tables())
 
 
 def downgrade() -> None:
-    Base.metadata.drop_all(bind=op.get_bind())
+    Base.metadata.drop_all(bind=op.get_bind(), tables=_initial_tables())

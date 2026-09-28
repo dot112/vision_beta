@@ -183,7 +183,7 @@ class TestPLCDispatcherService:
         first, second = asyncio.run(_run())
         assert second == first
 
-    def test_dispatch_simulation_no_endpoint(self):
+    def test_dispatch_without_endpoint_fails_safe(self):
         PLCDispatcherService.set_cards([{
             "id": "sim1", "name": "Sim", "enabled": True,
             "trigger_type": "line_cross", "trigger_condition": "any",
@@ -200,6 +200,7 @@ class TestPLCDispatcherService:
 
         asyncio.run(_run())
         state = PLCDispatcherService._states["sim1"]
-        assert state.status == "sent"
-        assert state.last_result.get("success") is True
-        assert "SIMULATION" in state.last_result.get("message", "")
+        # A card with no endpoint must never report a send it did not make.
+        assert state.status == "failed"
+        assert state.last_result.get("success") is False
+        assert "not sent" in state.last_result.get("message", "")
