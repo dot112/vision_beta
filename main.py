@@ -200,6 +200,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception:
         logger.exception("Failed to finish queued PLC operations cleanly")
     try:
+        from app.services.plc_failsafe_service import PLCFailsafeService
+        await PLCFailsafeService.shutdown()
+    except Exception:
+        logger.exception("Failed to drive PLC outputs to their safe state")
+    try:
         from app.hardware.plc.factory import PLCDriverFactory
         await PLCDriverFactory.close_all()
     except Exception:

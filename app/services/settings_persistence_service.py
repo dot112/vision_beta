@@ -311,6 +311,10 @@ class SettingsPersistenceService:
         if not isinstance(cards, list) or any(not isinstance(card, dict) for card in cards):
             raise ValueError("PLC action cards must be a list of objects")
 
+        from app.services.plc_failsafe_service import validate_safe_state
+        for card in cards:
+            validate_safe_state(card)
+
         saved_cards = copy.deepcopy(cards)
         cls._state["plc_actions"] = saved_cards
 
@@ -973,6 +977,8 @@ class SettingsPersistenceService:
                 "plc_rack": _bounded_int(endpoint_data.get("plc_rack", endpoint_data.get("s7_rack")), "PLC rack", 0, 0, 7),
                 "timeout": _bounded_int(endpoint_data.get("timeout"), "PLC timeout", 3, 1, 30),
                 "heartbeat": _bounded_int(endpoint_data.get("heartbeat"), "PLC heartbeat", 10, 1, 3600),
+                # Optional watchdog output the PLC monitors; "" = no heartbeat
+                "heartbeat_address": _endpoint_text(endpoint_data.get("heartbeat_address", (existing or {}).get("heartbeat_address", "")), "PLC heartbeat address", maximum=128),
                 "reconnect_interval": _bounded_int(endpoint_data.get("reconnect_interval"), "PLC reconnect interval", 5, 1, 300),
                 # Modbus TCP
                 "modbus_unit_id": _bounded_int(endpoint_data.get("modbus_unit_id"), "Modbus unit ID", 1, 1, 247),
@@ -1399,6 +1405,8 @@ class SettingsPersistenceService:
             from app.services.plc_dispatcher_service import PLCDispatcherService
             PLCDispatcherService.load_cards()
             asyncio.create_task(PLCDispatcherService.autoconnect_drivers())
+            from app.services.plc_failsafe_service import PLCFailsafeService
+            PLCFailsafeService.start()
             logger.info("PLCDispatcherService initialised with %d card(s)", len(PLCDispatcherService._cards))
         except Exception as plc_err:
             logger.warning("PLC dispatcher startup error: %s", plc_err)

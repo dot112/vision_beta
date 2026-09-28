@@ -46,6 +46,11 @@ class PLCActionCard(BaseModel):
     retry_attempts: int = 2
     retry_delay_ms: int = 100
 
+    # ── Fail-safe (opt-in) ────────────────────────────────────────────────────
+    # Written on server start, after a lost PLC link and on shutdown.
+    safe_state: str = "none"           # none | reset | set | write
+    safe_value: float = 0.0            # used with safe_state="write"
+
     # ── Runtime status (not persisted) ────────────────────────────────────────
     status: Optional[str] = None
     last_result: Optional[Dict[str, Any]] = None

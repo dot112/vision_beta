@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
+from app.services.plc_failsafe_service import PLCFailsafeService
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -478,6 +479,12 @@ class PLCDispatcherService:
                                 f"Cannot connect to PLC at {endpoint.get('host')}:{endpoint.get('port')}"
                                 + (f": {detail}" if detail else "")
                             )
+                    if PLCFailsafeService.needs_safe_state(ep_id):
+                        # Outputs are in an unknown state after a lost link; restore
+                        # the configured safe state before firing anything new.
+                        safe_ok, safe_msg = await PLCFailsafeService.apply_locked(endpoint, driver, reason="before dispatch")
+                        if not safe_ok:
+                            raise ConnectionError(safe_msg)
                     try:
                         ok, msg = await asyncio.wait_for(
                             driver.execute_operation(
@@ -498,6 +505,7 @@ class PLCDispatcherService:
             except asyncio.TimeoutError:
                 msg = f"Attempt {attempt}: PLC operation timed out; actuation state is unknown and was not retried"
                 ok = False
+                PLCFailsafeService.mark_link_lost(ep_id)
                 break
             except ValueError as exc:
                 # Bad address or value in the card: retrying cannot help and the link is fine.
@@ -508,6 +516,7 @@ class PLCDispatcherService:
                 msg = f"Attempt {attempt}: {exc}"
                 ok = False
                 driver.is_connected = False  # force reconnect on next attempt
+                PLCFailsafeService.mark_link_lost(ep_id)
 
             if not ok and attempt < attempts:
                 await asyncio.sleep(retry_delay_ms / 1000.0)

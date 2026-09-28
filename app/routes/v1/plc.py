@@ -81,7 +81,10 @@ async def save_plc_action(
         cards.append(card_data)
         saved = card_data
 
-    saved_cards = svc.replace_plc_actions(cards)
+    try:
+        saved_cards = svc.replace_plc_actions(cards)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     saved = next(card for card in saved_cards if card.get("id") == card_data["id"])
 
     svc.record_audit(
@@ -108,7 +111,10 @@ async def save_plc_actions_batch(
     Replace all PLC action cards at once (used when the dashboard saves all cards together).
     """
     svc = _get_svc()
-    saved_cards = svc.replace_plc_actions(cards)
+    try:
+        saved_cards = svc.replace_plc_actions(cards)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     svc.record_audit(
         username=user.username,
@@ -272,3 +278,14 @@ async def list_plc_drivers(
         "pooled_endpoint_ids": PLCDriverFactory.pool_ids(),
         "count": len(PLCDriverFactory.pool_ids()),
     }
+
+
+# ── Fail-Safe ─────────────────────────────────────────────────────────────────
+
+@router.get("/failsafe", summary="Fail-safe watchdog status per PLC endpoint")
+async def get_plc_failsafe_status(
+    user: User = Depends(require_operator),
+) -> List[Dict[str, Any]]:
+    """Safe-state outputs, pending safe-state writes and heartbeat health for opted-in endpoints."""
+    from app.services.plc_failsafe_service import PLCFailsafeService
+    return PLCFailsafeService.get_status()
