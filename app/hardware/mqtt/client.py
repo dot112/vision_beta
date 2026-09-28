@@ -85,6 +85,10 @@ class MQTTClient:
         self.subscriptions: List[str] = []
         self._handlers: Dict[str, List[Callable]] = {}
         self._client: Optional[mqtt.Client] = None
+        # A thread lock, not asyncio.Lock: connect() is awaited from the API's event
+        # loop and from the telemetry dispatcher's own loop in another thread.
+        self._connect_guard = threading.Lock()
+        self._last_connect_attempt = 0.0
 
     def _build_client(self) -> mqtt.Client:
         proto_str = str(self.protocol_version).strip().lower()
@@ -210,34 +214,45 @@ class MQTTClient:
                     except Exception as exc:
                         logger.error("MQTT handler error: %s", exc)
 
+    def _open_blocking(self) -> None:
+        """Replace the paho client and open its socket. Blocks on DNS, TCP and TLS."""
+        if self._client:
+            try:
+                self._client.loop_stop()
+                self._client.disconnect()
+            except Exception:
+                pass
+
+        self._client = self._build_client()
+        self._client.connect(self.host, self.port, keepalive=self.keepalive)
+        self._client.loop_start()
+
     async def connect(self) -> bool:
         if self.is_connected and self._client:
             return True
 
-        if getattr(self, "_connect_lock", None) is None:
-            self._connect_lock = asyncio.Lock()
+        if not self._connect_guard.acquire(blocking=False):
+            # Another caller is connecting; wait for its outcome without blocking the loop.
+            for _ in range(100):
+                await asyncio.sleep(0.1)
+                if not self._connect_guard.locked():
+                    break
+            return bool(self.is_connected and self._client)
 
-        async with self._connect_lock:
+        try:
             if self.is_connected and self._client:
                 return True
 
             now = time.time()
-            last_att = getattr(self, "_last_connect_attempt", 0.0)
-            if now - last_att < 3.0:
+            if now - self._last_connect_attempt < 3.0:
                 return False
             self._last_connect_attempt = now
 
             try:
-                if self._client:
-                    try:
-                        self._client.loop_stop()
-                        self._client.disconnect()
-                    except Exception:
-                        pass
-
-                self._client = self._build_client()
-                self._client.connect(self.host, self.port, keepalive=self.keepalive)
-                self._client.loop_start()
+                # paho's connect() is synchronous (up to its 5 s timeout, longer with DNS
+                # or TLS); in a worker thread it no longer stalls every API request and
+                # video stream while a broker is unreachable.
+                await asyncio.to_thread(self._open_blocking)
 
                 for _ in range(25):
                     await asyncio.sleep(0.1)
@@ -251,6 +266,8 @@ class MQTTClient:
                 logger.error("MQTT connect() exception: %s", exc)
                 self.is_connected = False
                 return False
+        finally:
+            self._connect_guard.release()
 
     async def disconnect(self) -> None:
         if self._client:
@@ -267,8 +284,10 @@ class MQTTClient:
                 except Exception as c_err:
                     logger.debug("MQTT Close message error: %s", c_err)
 
-            self._client.loop_stop()
-            self._client.disconnect()
+            # loop_stop() joins paho's network thread; keep that off the event loop.
+            client = self._client
+            await asyncio.to_thread(client.loop_stop)
+            client.disconnect()
         self.is_connected = False
 
     async def publish(self, topic: str, payload: Dict[str, Any], qos: int = 0, retain: bool = False) -> bool:

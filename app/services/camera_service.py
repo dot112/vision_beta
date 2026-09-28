@@ -161,12 +161,14 @@ class CameraService:
     @staticmethod
     async def delete_camera(db: AsyncSession, camera_id: str) -> bool:
         from app.services.vision_service import CameraStreamPipeline
-        CameraStreamPipeline.remove_camera(camera_id)
-        # 1. Remove from active hardware/driver memory
-        if camera_id in app_state.cameras:
+        # 1. Remove from active hardware/driver memory first so the vision runner stops
+        # using it, then stop its workers and release the device. Both join threads,
+        # so they run off the event loop.
+        driver: Optional[BaseCamera] = app_state.cameras.pop(camera_id, None)
+        await asyncio.to_thread(CameraStreamPipeline.remove_camera, camera_id)
+        if driver is not None:
             try:
-                driver: BaseCamera = app_state.cameras.pop(camera_id)
-                driver.disconnect()
+                await asyncio.to_thread(driver.disconnect)
             except Exception as exc:
                 logger.warning("Error disconnecting camera %s on delete: %s", camera_id, exc)
 
@@ -251,10 +253,13 @@ class CameraService:
             return False, "Camera not found in database"
 
         # Auto-disconnect all other active cameras (exclusive single camera streaming)
+        from app.services.vision_service import CameraStreamPipeline
         for other_id, other_driver in list(app_state.cameras.items()):
             if other_id != camera_id:
                 try:
-                    other_driver.disconnect()
+                    await asyncio.to_thread(other_driver.disconnect)
+                    # Also stop its stream workers so a later reconnect never serves a stale cached frame.
+                    await asyncio.to_thread(CameraStreamPipeline.remove_camera, other_id)
                     logger.info("Auto-disconnected previous camera %s", other_id)
                 except Exception as exc:
                     logger.warning("Failed to auto-disconnect camera %s: %s", other_id, exc)
@@ -298,12 +303,13 @@ class CameraService:
     @staticmethod
     async def disconnect_camera(db: AsyncSession, camera_id: str) -> bool:
         from app.services.vision_service import CameraStreamPipeline
-        CameraStreamPipeline.remove_camera(camera_id)
-        # 1. Immediately remove from live memory and release hardware handle
-        if camera_id in app_state.cameras:
+        # 1. Immediately remove from live memory, stop stream workers and release the
+        # hardware handle (off the event loop: both join threads)
+        driver: Optional[BaseCamera] = app_state.cameras.pop(camera_id, None)
+        await asyncio.to_thread(CameraStreamPipeline.remove_camera, camera_id)
+        if driver is not None:
             try:
-                driver: BaseCamera = app_state.cameras.pop(camera_id)
-                driver.disconnect()
+                await asyncio.to_thread(driver.disconnect)
                 logger.info("Hardware released for camera %s", camera_id)
             except Exception as exc:
                 logger.warning("Error releasing camera %s: %s", camera_id, exc)
@@ -344,7 +350,8 @@ class CameraService:
         # Fast path: in-memory driver check (zero database latency)
         driver: Optional[BaseCamera] = app_state.cameras.get(camera_id)
         if driver and driver.is_connected:
-            success, jpeg = driver.grab_frame()
+            # Full-resolution JPEG encoding takes milliseconds; run it off the event loop.
+            success, jpeg = await asyncio.to_thread(driver.grab_frame)
             if success:
                 return True, jpeg, None
             return False, None, driver.last_error or "Failed to grab frame"
@@ -366,7 +373,7 @@ class CameraService:
         if not driver:
             return False, None, "Driver failed to initialize"
 
-        success, jpeg = driver.grab_frame()
+        success, jpeg = await asyncio.to_thread(driver.grab_frame)
         if not success:
             return False, None, driver.last_error or "Failed to grab frame"
 

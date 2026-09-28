@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     MAX_MODEL_UPLOAD_BYTES: int = 536870912
     MAX_IMAGE_UPLOAD_BYTES: int = 10485760
     INFERENCE_DEVICE: str = "auto"   # "auto" = GPU if available (DirectML/CUDA), else CPU
+    INFERENCE_THREADS: int = 0       # ONNX Runtime CPU threads; 0 = auto (2 with a GPU, ~1 per core on CPU)
     INFERENCE_CONFIDENCE: float = 0.5
     INFERENCE_NMS_THRESHOLD: float = 0.45
 

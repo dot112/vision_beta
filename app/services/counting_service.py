@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import collections
 import json
-import queue
 import threading
 import time
 from datetime import datetime, timezone
@@ -23,42 +22,90 @@ class _TelemetryDispatcher:
     """
     Dedicated background worker for dispatching MQTT, TCP, and Webhook events.
     Completely isolates the FastAPI web server & video streaming loop from network latency or timeouts.
+    Each destination gets its own lane: its events are sent in order, while a slow
+    or unreachable destination (a webhook timing out, a TCP host that is down) no
+    longer holds up delivery to the others.
     """
+    _MAX_PENDING = 300
+
     def __init__(self):
-        self._queue: queue.Queue = queue.Queue(maxsize=300)
         self._dropped = 0
-        self._stop_event = threading.Event()
+        self._pending = 0
+        self._pending_lock = threading.Lock()
+        self._drained = threading.Event()
+        self._drained.set()
+        self._lanes: Dict[Any, collections.deque] = {}
+        self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._worker, name="TelemetryDispatcher", daemon=True)
         self._thread.start()
 
-    def submit(self, task_callable) -> None:
+    def submit(self, task_callable, key: Any = None) -> None:
+        """Queue a coroutine function; tasks with the same key run one at a time, in order."""
+        with self._pending_lock:
+            full = self._pending >= self._MAX_PENDING
+            if full:
+                self._dropped += 1
+                dropped = self._dropped
+            else:
+                self._pending += 1
+                self._drained.clear()
+        if full:
+            if dropped == 1 or dropped % 100 == 0:
+                logger.error("Telemetry queue full; dropped %d event(s)", dropped)
+            return
         try:
-            self._queue.put_nowait(task_callable)
-        except queue.Full:
-            self._dropped += 1
-            if self._dropped == 1 or self._dropped % 100 == 0:
-                logger.error("Telemetry queue full; dropped %d event(s)", self._dropped)
+            self._loop.call_soon_threadsafe(self._enqueue, key, task_callable)
+        except RuntimeError:  # dispatcher already stopped
+            self._task_done()
 
-    def _worker(self) -> None:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        while not self._stop_event.is_set() or not self._queue.empty():
+    def _task_done(self) -> None:
+        with self._pending_lock:
+            self._pending = max(0, self._pending - 1)
+            if self._pending == 0:
+                self._drained.set()
+
+    def _enqueue(self, key: Any, task_callable) -> None:
+        # Runs on the dispatcher loop, so lanes need no lock.
+        lane = self._lanes.get(key)
+        if lane is not None:
+            lane.append(task_callable)
+            return
+        lane = collections.deque([task_callable])
+        self._lanes[key] = lane
+        self._loop.create_task(self._drain_lane(key, lane))
+
+    async def _drain_lane(self, key: Any, lane: collections.deque) -> None:
+        while lane:
+            task_callable = lane.popleft()
             try:
-                task = self._queue.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            try:
-                loop.run_until_complete(task())
+                await task_callable()
             except Exception as e:
                 logger.debug("Telemetry dispatch error: %s", e)
             finally:
-                self._queue.task_done()
-        loop.close()
+                self._task_done()
+        del self._lanes[key]
+
+    def _worker(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        try:
+            self._loop.run_forever()
+        finally:
+            leftover = asyncio.all_tasks(self._loop)
+            for task in leftover:
+                task.cancel()
+            if leftover:
+                self._loop.run_until_complete(asyncio.gather(*leftover, return_exceptions=True))
+            self._loop.close()
 
     def stop(self) -> None:
-        self._stop_event.set()
+        # Give queued events up to 5 s to go out, then stop the loop.
+        self._drained.wait(timeout=5.0)
+        try:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        except RuntimeError:  # already stopped
+            return
         if self._thread.is_alive() and threading.current_thread() is not self._thread:
-            self._thread.join(timeout=5.0)
+            self._thread.join(timeout=2.0)
 
 
 _telemetry_dispatcher = _TelemetryDispatcher()
@@ -104,6 +151,14 @@ class CountingService:
         self.good_count: int = 0
         self.rejected_count: int = 0
         self._inspection_timestamps: collections.deque[float] = collections.deque()
+
+    def get_tracker(self, camera_id: Optional[str] = None) -> WirelineTracker:
+        """The tracker process_frame() feeds for camera_id, else the default tracker."""
+        if camera_id:
+            tracker = self._trackers.get(camera_id)
+            if tracker is not None:
+                return tracker
+        return self.tracker
 
     async def shutdown(self) -> None:
         _telemetry_dispatcher.stop()
@@ -356,7 +411,8 @@ class CountingService:
                             try:
                                 from app.services.mqtt_service import MQTTService
                                 _telemetry_dispatcher.submit(
-                                    lambda t=topic, p=mqtt_payload: MQTTService.publish(t, p, qos=0)
+                                    lambda t=topic, p=mqtt_payload: MQTTService.publish(t, p, qos=0),
+                                    key=("mqtt", topic),
                                 )
                             except Exception as exc:
                                 logger.debug("MQTT queue dispatch error (%s): %s", topic, exc)
@@ -392,7 +448,8 @@ class CountingService:
                         for h, p in tcp_targets:
                             try:
                                 _telemetry_dispatcher.submit(
-                                    lambda host=h, port=p, pay=tcp_payload: self._dispatch_tcp(host, port, pay)
+                                    lambda host=h, port=p, pay=tcp_payload: self._dispatch_tcp(host, port, pay),
+                                    key=("tcp", h, p),
                                 )
                             except Exception as exc:
                                 logger.debug("TCP queue dispatch error (%s:%d): %s", h, p, exc)
@@ -435,7 +492,8 @@ class CountingService:
                         for u, hdrs in wh_targets:
                             try:
                                 _telemetry_dispatcher.submit(
-                                    lambda url=u, pay=wh_payload, h=hdrs: self._dispatch_webhook(url, pay, h)
+                                    lambda url=u, pay=wh_payload, h=hdrs: self._dispatch_webhook(url, pay, h),
+                                    key=("webhook", u),
                                 )
                             except Exception as exc:
                                 logger.debug("Webhook queue dispatch error (%s): %s", u, exc)

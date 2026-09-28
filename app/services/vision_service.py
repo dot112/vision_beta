@@ -89,18 +89,38 @@ class _CameraInferenceWorker:
         with self._lock:
             return list(self._latest_detections), self._latest_inference_ms
 
-    def submit_frame_if_idle(self, frame_mat: Any, frame_id: int, conf_thresh: Optional[float] = None) -> None:
+    @property
+    def is_busy(self) -> bool:
+        """True while a submitted frame is queued or being inferred."""
+        return self._busy
+
+    def submit_frame_if_idle(
+        self,
+        frame_mat: Any,
+        frame_id: int,
+        conf_thresh: Optional[float] = None,
+        copy: bool = True,
+    ) -> bool:
+        """
+        Queue a frame for inference unless one is already in flight.
+        copy=False hands over frame_mat as is; only pass it for an array nobody
+        will draw on, such as a camera driver's latest frame, which drivers
+        replace rather than modify.
+        Returns True if the frame was accepted.
+        """
         if frame_mat is None or frame_id == self._processed_frame_id:
-            return
-        if self._busy:
-            return
+            return False
 
         with self._input_lock:
-            # Crucial: clone array so drawing lines/boxes never corrupts the AI input
-            self._pending_frame = frame_mat.copy()
+            if self._busy:
+                return False
+            self._busy = True
+            # Clone by default so drawing lines/boxes never corrupts the AI input
+            self._pending_frame = frame_mat.copy() if copy else frame_mat
             self._pending_fid = frame_id
             self._pending_conf = conf_thresh
         self._trigger_event.set()
+        return True
 
     def _worker_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -118,7 +138,6 @@ class _CameraInferenceWorker:
             if mat is None:
                 continue
 
-            self._busy = True
             try:
                 engine, _, _ = _get_active_engine()
                 det_response = engine.predict_mat(mat, conf_threshold=conf)
@@ -153,7 +172,8 @@ class _CameraInferenceWorker:
             except Exception as exc:
                 logger.debug("Async inference error on cam %s: %s", self.camera_id, exc)
             finally:
-                self._busy = False
+                with self._input_lock:
+                    self._busy = False
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -281,16 +301,19 @@ class _CameraStreamPublisher:
             fps = (len(self._fps_tracker) - 1) / (now - self._fps_tracker[0]) if len(self._fps_tracker) > 1 and (now - self._fps_tracker[0]) > 0.05 else 0.0
             self._current_fps = fps
 
-            # 1. Bandwidth optimization: resize display copy (default 640px max width)
+            # 1. Bandwidth optimization: resize display copy (default 640px max width).
+            # mat is the camera's own buffer, so draw only on a private array: the
+            # resize output, or a copy when no resize is needed.
             max_width = 640
             scale_x = 1.0
             scale_y = 1.0
-            display_mat = mat.copy()
             if orig_w > max_width:
                 scale_x = max_width / float(orig_w)
                 new_h = max(1, int(orig_h * scale_x))
                 scale_y = new_h / float(orig_h)
-                display_mat = cv2.resize(display_mat, (max_width, new_h), interpolation=cv2.INTER_LINEAR)
+                display_mat = cv2.resize(mat, (max_width, new_h), interpolation=cv2.INTER_LINEAR)
+            else:
+                display_mat = mat.copy()
 
             with self._lock:
                 want_raw = (self._raw_subscribers > 0)
@@ -326,6 +349,7 @@ class _CameraStreamPublisher:
                     camera_rotation=c_rot,
                     camera_flip_h=c_fliph,
                     camera_flip_v=c_flipv,
+                    camera_id=self.camera_id,
                 )
 
                 # 5. Render Annotated JPEG (single encode per frame)
@@ -490,7 +514,8 @@ class CameraStreamPipeline:
 
         orig_h, orig_w = mat.shape[:2]
         worker = cls.get_worker(camera_id)
-        worker.submit_frame_if_idle(mat, fid, conf_thresh)
+        # grab_raw_frame() returned a private copy and nothing below draws on mat.
+        worker.submit_frame_if_idle(mat, fid, conf_thresh, copy=False)
         detections, latency_ms = worker.get_latest_inference()
 
         now = time.time()
@@ -503,14 +528,16 @@ class CameraStreamPipeline:
                 dq.popleft()
             fps = (len(dq) - 1) / (now - dq[0]) if len(dq) > 1 and (now - dq[0]) > 0.05 else 0.0
 
-        display_mat = mat.copy()
+        # mat is handed to the inference worker, so draw on a separate array.
         scale_x = 1.0
         scale_y = 1.0
         if max_width and max_width > 0 and orig_w > max_width:
             scale_x = max_width / float(orig_w)
             new_h = max(1, int(orig_h * scale_x))
             scale_y = new_h / float(orig_h)
-            display_mat = cv2.resize(display_mat, (max_width, new_h), interpolation=cv2.INTER_LINEAR)
+            display_mat = cv2.resize(mat, (max_width, new_h), interpolation=cv2.INTER_LINEAR)
+        else:
+            display_mat = mat.copy()
 
         s = getattr(driver, "settings", {}) if driver else {}
         c_rot = int(s.get("rotation") or 90) if "rotation" in s else 90
@@ -529,6 +556,7 @@ class CameraStreamPipeline:
             camera_rotation=c_rot,
             camera_flip_h=c_fliph,
             camera_flip_v=c_flipv,
+            camera_id=camera_id,
         )
 
         ret, buf = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
@@ -626,12 +654,22 @@ class ContinuousVisionRunner:
                     if cur_fid == last_submitted_fids.get(camera_id, 0) or cur_fid == 0:
                         continue
 
-                    success, mat, fid = driver.grab_raw_frame()
+                    # Leave the frame for the next pass while inference is running,
+                    # so the newest frame goes in as soon as the worker is free.
+                    worker = CameraStreamPipeline.get_worker(camera_id)
+                    if worker.is_busy:
+                        continue
+
+                    # Inference only reads the frame, so take the driver's latest
+                    # frame without copying it; drivers replace it, never modify it.
+                    if hasattr(driver, "get_latest_raw_mat"):
+                        success, mat, fid = driver.get_latest_raw_mat(copy=False)
+                    else:
+                        success, mat, fid = driver.grab_raw_frame()
                     if success and mat is not None and fid != last_submitted_fids.get(camera_id, 0):
-                        worker = CameraStreamPipeline.get_worker(camera_id)
-                        # Submits to worker if worker is idle; runs AI inference + counting tracker
-                        worker.submit_frame_if_idle(mat, fid)
-                        last_submitted_fids[camera_id] = fid
+                        # Runs AI inference + counting tracker on the worker thread
+                        if worker.submit_frame_if_idle(mat, fid, copy=False):
+                            last_submitted_fids[camera_id] = fid
                 except Exception as ex:
                     logger.debug("Continuous runner error for cam %s: %s", camera_id, ex)
 
@@ -732,11 +770,18 @@ class VisionService:
             raise ValueError(error or "Frame grab failed")
 
         engine, _, _ = _get_active_engine()
-        det_response = await asyncio.to_thread(engine.predict_mat, mat, conf_threshold)
-        annotated_mat = engine.draw_annotations_mat(mat, det_response.detections, det_response.inference_time_ms)
-        import cv2
-        _, jpeg = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-        return jpeg.tobytes()
+
+        def _infer_and_render() -> bytes:
+            # Inference, drawing and JPEG encoding all run off the event loop.
+            import cv2
+            det_response = engine.predict_mat(mat, conf_threshold)
+            annotated_mat = engine.draw_annotations_mat(
+                mat, det_response.detections, det_response.inference_time_ms, camera_id=camera_id
+            )
+            _, jpeg = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            return jpeg.tobytes()
+
+        return await asyncio.to_thread(_infer_and_render)
 
     @staticmethod
     async def get_detection_history(db: AsyncSession, limit: int = 50) -> List[DetectionLog]:

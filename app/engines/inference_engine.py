@@ -107,6 +107,54 @@ def _detect_best_dml_adapter() -> Tuple[int, str]:
     return 0, "DirectML Default GPU"
 
 
+def _intra_op_threads(cpu_only: bool) -> int:
+    """
+    ONNX Runtime intra-op thread count.
+    A GPU does the heavy work, so 2 CPU threads are enough there. On CPU-only
+    machines 2 threads leaves most cores idle, so use about one per physical core
+    while leaving the rest for camera decoding and JPEG encoding.
+    INFERENCE_THREADS > 0 overrides both.
+    """
+    cpus = os.cpu_count() or 1
+    try:
+        from app.config import settings
+        configured = int(getattr(settings, "INFERENCE_THREADS", 0) or 0)
+    except Exception:
+        configured = 0
+    if configured > 0:
+        return min(configured, cpus)
+    if cpu_only:
+        return max(min(2, cpus), min(8, cpus // 2))
+    return min(2, cpus)
+
+
+def _blend_filled_rect(
+    img: np.ndarray,
+    pt1: Tuple[int, int],
+    pt2: Tuple[int, int],
+    color: Tuple[int, int, int],
+    alpha: float,
+    beta: float,
+) -> None:
+    """
+    In-place equivalent of drawing a filled rectangle on a full-frame copy and
+    cv2.addWeighted(copy, alpha, img, beta, 0, img), but touches only the
+    rectangle: outside it the full-frame blend leaves pixels unchanged anyway.
+    """
+    h, w = img.shape[:2]
+    # cv2.rectangle includes both corner pixels and clips to the image.
+    x1 = max(0, min(pt1[0], pt2[0]))
+    y1 = max(0, min(pt1[1], pt2[1]))
+    x2 = min(w - 1, max(pt1[0], pt2[0]))
+    y2 = min(h - 1, max(pt1[1], pt2[1]))
+    if x2 < x1 or y2 < y1:
+        return
+    roi = img[y1:y2 + 1, x1:x2 + 1]
+    overlay = np.empty_like(roi)
+    overlay[:] = color
+    roi[:] = cv2.addWeighted(overlay, alpha, roi, beta, 0)
+
+
 class InferenceEngine:
     """
     High-Performance YOLO & ONNX Inference Engine for Machine Vision.
@@ -152,9 +200,6 @@ class InferenceEngine:
                 try:
                     opts = ort.SessionOptions()
                     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-                    # GPU handles the heavy work so fewer CPU threads needed
-                    num_threads = min(2, os.cpu_count() or 1)
-                    opts.intra_op_num_threads = num_threads
                     opts.inter_op_num_threads = 1
                     opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
 
@@ -204,6 +249,9 @@ class InferenceEngine:
                             logger.warning("No GPU provider found in %s — falling back to CPU.", avail)
                     else:
                         logger.info("Inference device: CPU (forced via config)")
+
+                    num_threads = _intra_op_threads(cpu_only=providers == ["CPUExecutionProvider"])
+                    opts.intra_op_num_threads = num_threads
 
                     self.ort_session = ort.InferenceSession(model_path, opts, providers=providers)
 
@@ -282,10 +330,10 @@ class InferenceEngine:
         if not self.is_loaded or (self.ort_session is None and self.net is None):
             raise RuntimeError("No valid vision model is loaded; inference is disabled")
         try:
-                # Fast resize & transpose
+                # Resize, then BGR->RGB, HWC->NCHW and 1/255 scaling in one
+                # native pass that yields the contiguous float32 tensor ORT needs.
                 resized = cv2.resize(img, self.input_size)
-                blob = resized[:, :, ::-1].transpose(2, 0, 1).astype(np.float32) * (1.0 / 255.0)
-                blob = np.expand_dims(blob, axis=0)
+                blob = cv2.dnn.blobFromImage(resized, scalefactor=1.0 / 255.0, swapRB=True)
 
                 with self._inference_lock:
                     if self.ort_session is not None:
@@ -536,10 +584,12 @@ class InferenceEngine:
         camera_rotation: Optional[int] = None,
         camera_flip_h: Optional[bool] = None,
         camera_flip_v: Optional[bool] = None,
+        camera_id: Optional[str] = None,
     ) -> np.ndarray:
         """
         Directly overlays wirelines, tracking trails, HUD, and bounding boxes onto BGR array.
         Zero JPEG encode/decode overhead!
+        camera_id selects that camera's tracker; without it the default tracker is used.
         """
         h, w = img.shape[:2]
 
@@ -597,15 +647,11 @@ class InferenceEngine:
                     l2_x = int(cfg.line2_position * w)
 
                     # --- Line 1: yellow translucent 20px band ---
-                    overlay = img.copy()
-                    cv2.rectangle(overlay, (max(0, l1_x - BAND), 0), (min(w, l1_x + BAND), h), (255, 230, 0), -1)
-                    cv2.addWeighted(overlay, 0.30, img, 0.70, 0, img)
+                    _blend_filled_rect(img, (max(0, l1_x - BAND), 0), (min(w, l1_x + BAND), h), (255, 230, 0), 0.30, 0.70)
                     cv2.putText(img, "LINE 1: ENTRY", (l1_x + BAND + 4, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 230, 0), 2)
 
                     # --- Line 2: cyan translucent 20px band ---
-                    overlay2 = img.copy()
-                    cv2.rectangle(overlay2, (max(0, l2_x - BAND), 0), (min(w, l2_x + BAND), h), (0, 215, 255), -1)
-                    cv2.addWeighted(overlay2, 0.30, img, 0.70, 0, img)
+                    _blend_filled_rect(img, (max(0, l2_x - BAND), 0), (min(w, l2_x + BAND), h), (0, 215, 255), 0.30, 0.70)
                     cv2.putText(img, "LINE 2: EXIT (COUNT)", (l2_x + BAND + 4, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 215, 255), 2)
                 else:
                     # Vertical Mode (counts vertical moving items): wirelines are horizontal lines across Y
@@ -613,19 +659,15 @@ class InferenceEngine:
                     l2_y = int(cfg.line2_position * h)
 
                     # --- Line 1: yellow translucent 20px band ---
-                    overlay = img.copy()
-                    cv2.rectangle(overlay, (0, max(0, l1_y - BAND)), (w, min(h, l1_y + BAND)), (255, 230, 0), -1)
-                    cv2.addWeighted(overlay, 0.30, img, 0.70, 0, img)
+                    _blend_filled_rect(img, (0, max(0, l1_y - BAND)), (w, min(h, l1_y + BAND)), (255, 230, 0), 0.30, 0.70)
                     cv2.putText(img, "LINE 1: ENTRY", (12, max(20, l1_y - BAND - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 230, 0), 2)
 
                     # --- Line 2: cyan translucent 20px band ---
-                    overlay2 = img.copy()
-                    cv2.rectangle(overlay2, (0, max(0, l2_y - BAND)), (w, min(h, l2_y + BAND)), (0, 215, 255), -1)
-                    cv2.addWeighted(overlay2, 0.30, img, 0.70, 0, img)
+                    _blend_filled_rect(img, (0, max(0, l2_y - BAND)), (w, min(h, l2_y + BAND)), (0, 215, 255), 0.30, 0.70)
                     cv2.putText(img, "LINE 2: EXIT (COUNT)", (12, max(20, l2_y - BAND - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 215, 255), 2)
 
                 # Target markers — only for CONFIRMED tracks (no trail, no ghost dots)
-                for obj in list(counting_service.tracker.objects.values()):
+                for obj in list(counting_service.get_tracker(camera_id).objects.values()):
                     if _allowed and obj.class_name.lower() not in _allowed:
                         continue
                     # Skip unconfirmed tracks to avoid ghost dots from newly-spawned tracks
@@ -674,61 +716,47 @@ class InferenceEngine:
 
         is_segment_mode = getattr(self, "task", "detect") == "segment"
 
-        # In segmentation mode: ensure each detection has pixel mask contour points
-        # If the model didn't provide dual-output protos (e.g. custom defect model or detection weights in segment mode),
-        # extract pixel mask from defect, crack, or object features inside the bbox
-        if is_segment_mode:
-            for item in detections:
-                if (not item.polygon or len(item.polygon) < 3) and item.bbox:
-                    b_x1 = max(0, min(w - 1, int(item.bbox.x1)))
-                    b_y1 = max(0, min(h - 1, int(item.bbox.y1)))
-                    b_x2 = max(0, min(w, int(item.bbox.x2)))
-                    b_y2 = max(0, min(h, int(item.bbox.y2)))
-                    if b_x2 > b_x1 + 4 and b_y2 > b_y1 + 4:
-                        try:
-                            roi = img[b_y1:b_y2, b_x1:b_x2]
-                            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-                            _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-                            edges = cv2.Canny(blurred, 50, 150)
-                            combined = cv2.bitwise_or(thresh, edges)
-                            contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                            if contours:
-                                largest = max(contours, key=cv2.contourArea)
-                                if cv2.contourArea(largest) > 20 and len(largest) >= 3:
-                                    approx = cv2.approxPolyDP(largest, 1.5, True)
-                                    item.polygon = [[int(pt[0][0] + b_x1), int(pt[0][1] + b_y1)] for pt in approx]
-                                    item.mask_area = int(cv2.contourArea(largest))
-                            if not item.polygon:
-                                # Fallback: polygon spanning detection region
-                                item.polygon = [
-                                    [b_x1, b_y1], [b_x2, b_y1], [b_x2, b_y2], [b_x1, b_y2]
-                                ]
-                        except Exception as poly_err:
-                            logger.debug("Segmentation contour generation error: %s", poly_err)
-
-        # Draw semi-transparent filled masks (only for allowed classes)
-        mask_overlay = None
+        # Polygons to fill, in img (display) coordinates. Detections are shared with
+        # the inference worker and with other viewers, so they are never modified here.
+        mask_polys: List[Tuple[int, np.ndarray]] = []
         for item in detections:
-            cname_lower = item.class_name.lower()
-            if _allowed and cname_lower not in _allowed:
+            if _allowed and item.class_name.lower() not in _allowed:
                 continue
             if item.polygon and len(item.polygon) >= 3:
-                if mask_overlay is None:
-                    mask_overlay = img.copy()
-                color = colors[item.class_id % len(colors)]
                 pts = np.array([[int(p[0] * scale_x), int(p[1] * scale_y)] for p in item.polygon], dtype=np.int32)
-                cv2.fillPoly(mask_overlay, [pts], color)
-                cv2.polylines(img, [pts], isClosed=True, color=color, thickness=2)
-        if mask_overlay is not None:
-            cv2.addWeighted(mask_overlay, 0.45, img, 0.55, 0, img)
+            elif is_segment_mode and item.bbox:
+                # The model gave no mask (e.g. detection weights in segment mode):
+                # trace the object's outline inside its box instead.
+                pts = self._trace_box_outline(img, item.bbox, scale_x, scale_y)
+                if pts is None:
+                    continue
+            else:
+                continue
+            mask_polys.append((item.class_id, pts))
+
+        # Draw semi-transparent filled masks, blending only the area they cover
+        if mask_polys:
+            all_pts = np.concatenate([pts for _, pts in mask_polys])
+            m = 4  # outline thickness margin
+            rx1 = max(0, int(all_pts[:, 0].min()) - m)
+            ry1 = max(0, int(all_pts[:, 1].min()) - m)
+            rx2 = min(w, int(all_pts[:, 0].max()) + m + 1)
+            ry2 = min(h, int(all_pts[:, 1].max()) + m + 1)
+            if rx2 > rx1 and ry2 > ry1:
+                roi = img[ry1:ry2, rx1:rx2]
+                mask_overlay = roi.copy()
+                for class_id, pts in mask_polys:
+                    color = colors[class_id % len(colors)]
+                    cv2.fillPoly(mask_overlay, [pts], color, offset=(-rx1, -ry1))
+                    cv2.polylines(img, [pts], isClosed=True, color=color, thickness=2)
+                roi[:] = cv2.addWeighted(mask_overlay, 0.45, roi, 0.55, 0)
 
         # 3. Draw Bounding Boxes & HUD Labels (only for allowed classes)
         # In segmentation mode: NO bounding boxes are drawn (pixel masks only)
         active_tracks: Dict[int, Any] = {}
         try:
             from app.services.counting_service import counting_service
-            active_tracks = dict(counting_service.tracker.objects)
+            active_tracks = dict(counting_service.get_tracker(camera_id).objects)
         except Exception:
             active_tracks = {}
 
@@ -825,20 +853,46 @@ class InferenceEngine:
         # Clean line with no text on it.
         ex1, ey1, ex2, ey2 = exit_rect
         if ex2 > ex1 and ey2 > ey1:
-            exit_overlay = img.copy()
-            cv2.rectangle(
-                exit_overlay,
-                (ex1, ey1),
-                (ex2, ey2),
-                (128, 128, 128),
-                -1,
-            )
-            cv2.addWeighted(exit_overlay, 0.40, img, 0.60, 0, img)
+            _blend_filled_rect(img, (ex1, ey1), (ex2, ey2), (128, 128, 128), 0.40, 0.60)
 
         return img
 
 
 
+
+    @staticmethod
+    def _trace_box_outline(
+        img: np.ndarray,
+        bbox: BoundingBox,
+        scale_x: float,
+        scale_y: float,
+    ) -> Optional[np.ndarray]:
+        """Outline of the object inside a source-frame bbox, as img-coordinate points."""
+        h, w = img.shape[:2]
+        b_x1 = max(0, min(w - 1, int(bbox.x1 * scale_x)))
+        b_y1 = max(0, min(h - 1, int(bbox.y1 * scale_y)))
+        b_x2 = max(0, min(w, int(bbox.x2 * scale_x)))
+        b_y2 = max(0, min(h, int(bbox.y2 * scale_y)))
+        if not (b_x2 > b_x1 + 4 and b_y2 > b_y1 + 4):
+            return None
+        try:
+            roi = img[b_y1:b_y2, b_x1:b_x2]
+            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+            _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            edges = cv2.Canny(blurred, 50, 150)
+            combined = cv2.bitwise_or(thresh, edges)
+            contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if contours:
+                largest = max(contours, key=cv2.contourArea)
+                if cv2.contourArea(largest) > 20 and len(largest) >= 3:
+                    approx = cv2.approxPolyDP(largest, 1.5, True)
+                    return np.array([[int(pt[0][0] + b_x1), int(pt[0][1] + b_y1)] for pt in approx], dtype=np.int32)
+            # Fallback: polygon spanning detection region
+            return np.array([[b_x1, b_y1], [b_x2, b_y1], [b_x2, b_y2], [b_x1, b_y2]], dtype=np.int32)
+        except Exception as poly_err:
+            logger.debug("Segmentation contour generation error: %s", poly_err)
+            return None
 
     def draw_annotations(
         self,
