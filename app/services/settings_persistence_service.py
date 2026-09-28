@@ -890,7 +890,7 @@ class SettingsPersistenceService:
             if not isinstance(raw_sub_proto, str):
                 raise ValueError("PLC protocol must be text")
             sub_proto = raw_sub_proto.strip().lower()
-            if sub_proto not in {"modbus_tcp", "modbus", "s7", "siemens_s7", "siemens", "ethernet_ip", "ethernetip", "eip", "ab", "opcua", "opc_ua", "generic_tcp", "generic", "tcp"}:
+            if sub_proto not in {"modbus_tcp", "modbus", "s7", "siemens_s7", "siemens", "ethernet_ip", "ethernetip", "eip", "ab", "opcua", "opc_ua", "generic_tcp", "generic", "tcp", "melsec", "slmp", "mc_protocol", "mitsubishi", "fins", "omron_fins", "omron", "modbus_rtu", "rtu"}:
                 raise ValueError(f"Unsupported PLC protocol: {sub_proto}")
             opcua_path = _endpoint_text(
                 endpoint_data.get("opcua_path", (existing or {}).get("opcua_path", "")),
@@ -906,11 +906,66 @@ class SettingsPersistenceService:
                 "OPC UA security policy",
                 maximum=32,
             ) or "None"
-            if opcua_security not in {"None", "Basic256Sha256_Sign", "Basic256Sha256_SignAndEncrypt"}:
+            if opcua_security not in {
+                "None",
+                "Basic256Sha256_Sign", "Basic256Sha256_SignAndEncrypt",
+                "Aes128Sha256RsaOaep_Sign", "Aes128Sha256RsaOaep_SignAndEncrypt",
+                "Aes256Sha256RsaPss_Sign", "Aes256Sha256RsaPss_SignAndEncrypt",
+            }:
                 raise ValueError("Unsupported OPC UA security policy")
-            default_plc_port = 4840 if sub_proto in {"opcua", "opc_ua"} else 502
+            is_rtu = sub_proto in {"modbus_rtu", "rtu"}
+            rtu_transport = _endpoint_text(
+                endpoint_data.get("rtu_transport", (existing or {}).get("rtu_transport", "serial")), "Modbus RTU transport", maximum=8
+            ) or "serial"
+            if rtu_transport not in {"serial", "tcp"}:
+                raise ValueError("Modbus RTU transport must be serial or tcp")
+            serial_port = _endpoint_text(
+                endpoint_data.get("serial_port", (existing or {}).get("serial_port", "")), "Serial port", maximum=256
+            )
+            if is_rtu and rtu_transport == "serial" and record["enabled"] and not serial_port:
+                raise ValueError("Serial port is required for a Modbus RTU channel (for example COM3 or /dev/ttyUSB0)")
+            serial_parity = (_endpoint_text(
+                endpoint_data.get("serial_parity", (existing or {}).get("serial_parity", "E")), "Serial parity", maximum=4
+            ) or "E").upper()[:1]
+            if serial_parity not in {"E", "N", "O"}:
+                raise ValueError("Serial parity must be E (even), N (none) or O (odd)")
+            serial_baudrate = _bounded_int(
+                endpoint_data.get("serial_baudrate", (existing or {}).get("serial_baudrate")), "Serial baud rate", 19200, 1200, 115200
+            )
+            from app.hardware.modbus.rtu_client import SERIAL_BAUDRATES
+            if serial_baudrate not in SERIAL_BAUDRATES:
+                raise ValueError(f"Serial baud rate must be one of {', '.join(map(str, SERIAL_BAUDRATES))}")
+            default_plc_port = {
+                "opcua": 4840, "opc_ua": 4840,
+                "s7": 102, "siemens_s7": 102, "siemens": 102,
+                "ethernet_ip": 44818, "ethernetip": 44818, "eip": 44818, "ab": 44818,
+                "melsec": 5007, "slmp": 5007, "mc_protocol": 5007, "mitsubishi": 5007,
+                "fins": 9600, "omron_fins": 9600, "omron": 9600,
+            }.get(sub_proto, 502)
+            modbus_word_order = _endpoint_text(
+                endpoint_data.get("modbus_word_order", (existing or {}).get("modbus_word_order", "high_first")),
+                "Modbus word order",
+                maximum=16,
+            ) or "high_first"
+            if modbus_word_order not in {"high_first", "low_first"}:
+                raise ValueError("Modbus word order must be high_first or low_first")
+            frame_format = _endpoint_text(
+                endpoint_data.get("frame_format", (existing or {}).get("frame_format", "auto")), "Frame format", maximum=8
+            ) or "auto"
+            response_mode = _endpoint_text(
+                endpoint_data.get("response_mode", (existing or {}).get("response_mode", "none")), "Response mode", maximum=8
+            ) or "none"
+            ascii_terminator = _endpoint_text(
+                endpoint_data.get("ascii_terminator", (existing or {}).get("ascii_terminator", "lf")), "ASCII terminator", maximum=8
+            ) or "lf"
+            if frame_format not in {"auto", "hex", "ascii"}:
+                raise ValueError("Frame format must be auto, hex or ascii")
+            if response_mode not in {"none", "any", "match"}:
+                raise ValueError("Response mode must be none, any or match")
+            if ascii_terminator not in {"lf", "crlf", "cr", "none"}:
+                raise ValueError("ASCII terminator must be lf, crlf, cr or none")
             record.update({
-                "host": _endpoint_host(endpoint_data.get("host", (existing or {}).get("host", "")), "PLC host", required=record["enabled"]),
+                "host": _endpoint_host(endpoint_data.get("host", (existing or {}).get("host", "")), "PLC host", required=record["enabled"] and not (is_rtu and rtu_transport == "serial")),
                 "port": _endpoint_port(endpoint_data.get("port", (existing or {}).get("port")), "PLC port", default_plc_port),
                 "plc_sub_protocol": sub_proto,
                 "plc_protocol": sub_proto,  # keep UI alias in sync
@@ -945,6 +1000,25 @@ class SettingsPersistenceService:
                 "reset_template": _endpoint_text(endpoint_data.get("reset_template", (existing or {}).get("reset_template", "")), "PLC reset template", maximum=2048),
                 "toggle_template": _endpoint_text(endpoint_data.get("toggle_template", (existing or {}).get("toggle_template", "")), "PLC toggle template", maximum=2048),
                 "write_template": _endpoint_text(endpoint_data.get("write_template", (existing or {}).get("write_template", "")), "PLC write template", maximum=2048),
+                "frame_format": frame_format,
+                "response_mode": response_mode,
+                "response_match": _endpoint_text(endpoint_data.get("response_match", (existing or {}).get("response_match", "")), "Expected reply", maximum=256),
+                "ascii_terminator": ascii_terminator,
+                # Modbus 32-bit word order and MELSEC iQ-F octal X/Y numbering
+                "modbus_word_order": modbus_word_order,
+                # Modbus RTU (serial port, or RTU frames over TCP through a gateway)
+                "rtu_transport": rtu_transport,
+                "serial_port": serial_port,
+                "serial_baudrate": serial_baudrate,
+                "serial_parity": serial_parity,
+                "serial_stopbits": _bounded_int(endpoint_data.get("serial_stopbits", (existing or {}).get("serial_stopbits")), "Serial stop bits", 1, 1, 2),
+                "melsec_xy_octal": _endpoint_bool(endpoint_data.get("melsec_xy_octal", (existing or {}).get("melsec_xy_octal", False)), "MELSEC octal X/Y", False),
+                # OPC UA secured connections and user login
+                "opcua_cert_path": _endpoint_text(endpoint_data.get("opcua_cert_path", (existing or {}).get("opcua_cert_path", "")), "OPC UA client certificate path", maximum=512),
+                "opcua_key_path": _endpoint_text(endpoint_data.get("opcua_key_path", (existing or {}).get("opcua_key_path", "")), "OPC UA private key path", maximum=512),
+                "opcua_server_cert_path": _endpoint_text(endpoint_data.get("opcua_server_cert_path", (existing or {}).get("opcua_server_cert_path", "")), "OPC UA server certificate path", maximum=512),
+                "username": _endpoint_text(endpoint_data.get("username", (existing or {}).get("username", "")), "PLC username", maximum=256),
+                "password": _endpoint_text(endpoint_data.get("password") or (existing or {}).get("password", ""), "PLC password", maximum=512),
             })
 
         if existing:
@@ -1184,13 +1258,23 @@ class SettingsPersistenceService:
             port = int(ep.get("port", 502))
             if str(ep.get("plc_sub_protocol") or ep.get("plc_protocol") or "").lower() in {"s7", "siemens", "siemens_s7"} and port == 502:
                 port = 102
-            if not host:
+            sub_protocol = str(ep.get("plc_sub_protocol") or ep.get("plc_protocol") or "").lower()
+            rtu_serial = sub_protocol in {"modbus_rtu", "rtu"} and str(ep.get("rtu_transport", "serial")) == "serial"
+            if rtu_serial:
+                host, port = str(ep.get("serial_port", "")), ep.get("serial_baudrate", 19200)
+                if not host:
+                    return {"success": False, "message": "Serial port is empty."}
+            elif not host:
                 return {"success": False, "message": "PLC host is empty."}
             driver = None
             try:
                 from app.hardware.plc.factory import PLCDriverFactory
                 driver = PLCDriverFactory.get_driver(ep, fresh=True)
                 ok = await asyncio.wait_for(driver.connect(), timeout=float(ep.get("timeout", 3)))
+                if ok and hasattr(driver, "probe"):
+                    # Opening a serial port proves nothing about the device on the bus.
+                    probe_ok, probe_msg = await driver.probe()
+                    return {"success": probe_ok, "message": probe_msg}
                 if ok:
                     sub = (ep.get("plc_protocol") or ep.get("plc_sub_protocol") or "modbus_tcp").upper()
                     return {"success": True, "message": f"PLC ({sub}) connected OK at {host}:{port}"}

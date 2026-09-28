@@ -20,6 +20,10 @@ def _make_driver(endpoint: dict) -> PLCDriver:
         from app.hardware.plc.modbus_driver import ModbusTCPDriver
         return ModbusTCPDriver(endpoint)
 
+    elif sub in ("modbus_rtu", "rtu"):
+        from app.hardware.plc.modbus_driver import ModbusRTUDriver
+        return ModbusRTUDriver(endpoint)
+
     elif sub in ("s7", "siemens_s7", "siemens"):
         from app.hardware.plc.s7_driver import S7Driver
         return S7Driver(endpoint)
@@ -36,8 +40,13 @@ def _make_driver(endpoint: dict) -> PLCDriver:
         from app.hardware.plc.generic_tcp_driver import GenericTCPDriver
         return GenericTCPDriver(endpoint)
 
-    elif sub in ("melsec", "fins"):
-        raise ValueError(f"PLC protocol '{sub}' has no native driver; refusing unsafe generic TCP fallback")
+    elif sub in ("melsec", "slmp", "mc_protocol", "mitsubishi"):
+        from app.hardware.plc.melsec_driver import MelsecSLMPDriver
+        return MelsecSLMPDriver(endpoint)
+
+    elif sub in ("fins", "omron_fins", "omron"):
+        from app.hardware.plc.fins_driver import OmronFINSDriver
+        return OmronFINSDriver(endpoint)
 
     else:
         raise ValueError(f"Unsupported PLC sub-protocol '{sub}' for endpoint '{endpoint.get('id')}'")

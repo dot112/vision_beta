@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import struct
 from typing import Optional, Tuple
 
@@ -24,18 +25,33 @@ def _parse_s7_address(address: str) -> dict:
       DB5.DBX2.0  → Data Block 5, bit at offset 2.0
       DB5.DBW4    → Data Block 5, word at offset 4
       DB5.DBD8    → Data Block 5, double-word at offset 8
+      DB5.DBB1    → Data Block 5, byte at offset 1
+      MB10 / MW10 / MD10 (also QB/QW/QD, IB/IW/ID, German A/E) → area byte/word/dword
+      DB5.DBD8:REAL / MD10:REAL → 32-bit floating point value
     """
     addr = address.strip().upper()
+    real = False
+    if addr.endswith(":REAL"):
+        addr, real = addr[:-5].strip(), True
 
+    parsed = _parse_s7_location(addr, address)
+    if real:
+        if parsed["type"] not in ("db_dword", "dword"):
+            raise ValueError("S7 :REAL needs a double-word address such as DB1.DBD4 or MD10")
+        parsed["real"] = True
+    return parsed
+
+
+def _parse_s7_location(addr: str, address: str) -> dict:
     # Data Block addressing: DB<n>.DB<type><offset>
     if addr.startswith("DB"):
-        parts = addr.split(".")
+        parts = addr.split(".", 1)
         if len(parts) != 2 or not parts[0][2:].isdigit():
             raise ValueError(f"Invalid S7 data block address: '{address}'")
         db_num = int(parts[0][2:])
         if not 1 <= db_num <= 0xFFFF:
             raise ValueError("S7 data block number must be between 1 and 65535")
-        rest = parts[1] if len(parts) > 1 else ""
+        rest = parts[1]
         if rest.startswith("DBX"):                     # bit
             match = rest[3:].split(".")
             if len(match) != 2 or not all(value.isdigit() for value in match):
@@ -44,37 +60,37 @@ def _parse_s7_address(address: str) -> dict:
             if not 0 <= bit_offset <= 7:
                 raise ValueError("S7 bit offset must be between 0 and 7")
             return {"type": "db_bit", "area": "db", "db": db_num, "byte": byte_offset, "bit": bit_offset}
-        elif rest.startswith("DBW"):                   # word (2 bytes)
-            offset = rest[3:]
-            if not offset.isdigit():
-                raise ValueError(f"Invalid S7 DB word address: '{address}'")
-            return {"type": "db_word", "area": "db", "db": db_num, "byte": int(offset)}
-        elif rest.startswith("DBD"):                   # dword (4 bytes)
-            offset = rest[3:]
-            if not offset.isdigit():
-                raise ValueError(f"Invalid S7 DB dword address: '{address}'")
-            return {"type": "db_dword", "area": "db", "db": db_num, "byte": int(offset)}
-        elif rest.startswith("DBB"):                   # byte
-            offset = rest[3:]
-            if not offset.isdigit():
-                raise ValueError(f"Invalid S7 DB byte address: '{address}'")
-            return {"type": "db_byte", "area": "db", "db": db_num, "byte": int(offset)}
+        for prefix, kind in (("DBW", "db_word"), ("DBD", "db_dword"), ("DBB", "db_byte")):
+            if rest.startswith(prefix):
+                offset = rest[3:]
+                if not offset.isdigit():
+                    raise ValueError(f"Invalid S7 DB address: '{address}'")
+                return {"type": kind, "area": "db", "db": db_num, "byte": int(offset)}
+        raise ValueError(f"Invalid S7 data block address: '{address}' (use DBX, DBB, DBW or DBD)")
 
-    # Standard area addressing
+    # Standard area addressing (English Q/I/M and German A/E mnemonics)
     area_map = {"Q": "output", "I": "input", "M": "memory", "A": "output", "E": "input"}
-    for prefix, area in area_map.items():
-        if addr.startswith(prefix):
-            rest = addr[len(prefix):]
-            if "." in rest:
-                byte_str, bit_str = rest.split(".", 1)
-                if not byte_str.isdigit() or not bit_str.isdigit() or not 0 <= int(bit_str) <= 7:
-                    raise ValueError(f"Invalid S7 bit address: '{address}'")
-                return {"type": "bit", "area": area, "byte": int(byte_str), "bit": int(bit_str)}
-            if not rest.isdigit():
-                raise ValueError(f"Invalid S7 byte address: '{address}'")
-            return {"type": "byte", "area": area, "byte": int(rest)}
-
-    raise ValueError(f"Cannot parse S7 address: '{address}'")
+    size_map = {"B": "byte", "W": "word", "D": "dword"}
+    prefix = addr[:1]
+    area = area_map.get(prefix)
+    if area is None:
+        raise ValueError(f"Cannot parse S7 address: '{address}'")
+    rest = addr[1:]
+    if rest[:1] in size_map:                          # MB10 / MW10 / MD10
+        offset = rest[1:]
+        if not offset.isdigit():
+            raise ValueError(f"Invalid S7 address: '{address}'")
+        return {"type": size_map[rest[0]], "area": area, "byte": int(offset)}
+    if rest.startswith("X"):                         # MX10.0 (TIA-style bit)
+        rest = rest[1:]
+    if "." in rest:
+        byte_str, bit_str = rest.split(".", 1)
+        if not byte_str.isdigit() or not bit_str.isdigit() or not 0 <= int(bit_str) <= 7:
+            raise ValueError(f"Invalid S7 bit address: '{address}'")
+        return {"type": "bit", "area": area, "byte": int(byte_str), "bit": int(bit_str)}
+    if not rest.isdigit():
+        raise ValueError(f"Invalid S7 byte address: '{address}'")
+    return {"type": "byte", "area": area, "byte": int(rest)}
 
 
 # ── ISO-on-TCP PDU Builders ───────────────────────────────────────────────────
@@ -130,6 +146,21 @@ def _build_s7_write_word_pdu(parsed: dict, value: int, size: int = 2, pdu_ref: i
     params = b"\x05\x01" + _address_spec(parsed, word_len=word_len)
     data_bytes = int(value).to_bytes(size, "big", signed=False)
     data = struct.pack(">BBH", 0x00, 0x04, size * 8) + data_bytes
+    return _wrap_s7_request(params, data, pdu_ref)
+
+
+def _build_s7_write_bit_pdu(parsed: dict, value: bool, pdu_ref: int = 1) -> bytes:
+    """Build a Write Var request that writes exactly one bit (transport size BIT)."""
+    params = b"\x05\x01" + _address_spec(parsed, word_len=0x01)
+    data = struct.pack(">BBH", 0x00, 0x03, 1) + bytes((1 if value else 0,))
+    return _wrap_s7_request(params, data, pdu_ref)
+
+
+def _build_s7_write_bytes_pdu(parsed: dict, payload: bytes, pdu_ref: int = 1) -> bytes:
+    """Build a Write Var request for 1, 2 or 4 raw bytes (BYTE, WORD, DWORD/REAL)."""
+    word_len = {1: 0x02, 2: 0x04, 4: 0x06}[len(payload)]
+    params = b"\x05\x01" + _address_spec(parsed, word_len=word_len)
+    data = struct.pack(">BBH", 0x00, 0x04, len(payload) * 8) + payload
     return _wrap_s7_request(params, data, pdu_ref)
 
 
@@ -367,19 +398,17 @@ class S7Driver(PLCDriver):
         return True, bool(byte_value & (1 << parsed["bit"])), message
 
     async def _write_bit(self, address: str, value: bool) -> Tuple[bool, str]:
-        """Write a BOOL by preserving and updating its containing S7 byte."""
+        """Write one BOOL with a native S7 bit write.
+
+        A bit write only touches the addressed bit. Reading the whole byte and
+        writing it back would overwrite any other bit in that byte that the PLC
+        program changed between the read and the write.
+        """
         parsed = _parse_s7_address(address)
         if parsed["type"] not in ("bit", "db_bit"):
             return False, f"S7 BOOL operation requires a bit address, got '{address}'"
         async with self._bit_lock:
-            ok, current_byte, message = await self._read_byte(parsed)
-            if not ok or current_byte is None:
-                return False, f"Could not read containing byte for {address}: {message}"
-            mask = 1 << parsed["bit"]
-            updated_byte = current_byte | mask if value else current_byte & ~mask
-            if updated_byte == current_byte:
-                return True, f"{address} already {'ON' if value else 'OFF'}"
-            pdu = _build_s7_write_word_pdu(parsed, updated_byte, size=1, pdu_ref=self._next_pdu_ref())
+            pdu = _build_s7_write_bit_pdu(parsed, value, pdu_ref=self._next_pdu_ref())
             return await self._send_pdu(pdu)
 
     async def set(self, address: str) -> Tuple[bool, str]:
@@ -410,11 +439,9 @@ class S7Driver(PLCDriver):
             ok, current_byte, message = await self._read_byte(parsed)
             if not ok or current_byte is None:
                 return False, f"Could not read {address} before toggle: {message}"
-            mask = 1 << parsed["bit"]
-            was_on = bool(current_byte & mask)
-            updated_byte = current_byte ^ mask
+            was_on = bool(current_byte & (1 << parsed["bit"]))
             ok, message = await self._send_pdu(
-                _build_s7_write_word_pdu(parsed, updated_byte, size=1, pdu_ref=self._next_pdu_ref())
+                _build_s7_write_bit_pdu(parsed, not was_on, pdu_ref=self._next_pdu_ref())
             )
             if not ok:
                 return False, f"S7 TOGGLE write failed for {address}: {message}"
@@ -443,21 +470,49 @@ class S7Driver(PLCDriver):
 
     async def write(self, address: str, value: float) -> Tuple[bool, str]:
         parsed = _parse_s7_address(address)
+        kind = parsed["type"]
+        if kind in ("bit", "db_bit"):
+            return await self.set(address) if value else await self.reset(address)
+        try:
+            payload, shown = _encode_s7_value(parsed, value)
+        except ValueError as exc:
+            return False, f"S7 WRITE {address}: {exc}"
         if not self.is_connected and not await self.connect():
             return False, f"S7 WRITE could not connect: {self.last_error or 'connection failed'}"
-        int_val = int(value)
-        if parsed["type"] in ("db_byte", "byte"):
-            pdu = _build_s7_write_word_pdu(parsed, int_val & 0xFF, size=1, pdu_ref=self._next_pdu_ref())
-            ok, msg = await self._send_pdu(pdu)
-            return ok, f"S7 WRITE {address} = {int_val} (BYTE) — {msg}"
-        if parsed["type"] in ("db_word",):
-            pdu = _build_s7_write_word_pdu(parsed, int_val & 0xFFFF, size=2, pdu_ref=self._next_pdu_ref())
-            ok, msg = await self._send_pdu(pdu)
-            return ok, f"S7 WRITE {address} = {int_val} — {msg}"
-        if parsed["type"] == "db_dword":
-            pdu = _build_s7_write_word_pdu(parsed, int_val & 0xFFFFFFFF, size=4, pdu_ref=self._next_pdu_ref())
-            ok, msg = await self._send_pdu(pdu)
-            return ok, f"S7 WRITE {address} = {int_val} (DWORD) — {msg}"
-        if parsed["type"] in ("bit", "db_bit"):
-            return await self.set(address) if value else await self.reset(address)
-        return False, f"S7 WRITE: unsupported address type '{parsed['type']}'"
+        pdu = _build_s7_write_bytes_pdu(parsed, payload, pdu_ref=self._next_pdu_ref())
+        ok, msg = await self._send_pdu(pdu)
+        return ok, f"S7 WRITE {address} = {shown} — {msg}"
+
+
+_S7_INTEGER_RANGES = {
+    1: (-128, 255, "BYTE (-128..255)"),
+    2: (-32768, 65535, "WORD/INT (-32768..65535)"),
+    4: (-2147483648, 4294967295, "DWORD/DINT (-2147483648..4294967295)"),
+}
+
+
+def _encode_s7_value(parsed: dict, value: float) -> Tuple[bytes, str]:
+    """Encode a WRITE value for a byte/word/dword address, rejecting values that do not fit."""
+    size = {"byte": 1, "db_byte": 1, "word": 2, "db_word": 2, "dword": 4, "db_dword": 4}.get(parsed["type"])
+    if size is None:
+        raise ValueError(f"unsupported address type '{parsed['type']}'")
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("value must be a number") from exc
+    if not math.isfinite(numeric):
+        raise ValueError("value must be finite")
+    if parsed.get("real"):
+        payload = struct.pack(">f", numeric)
+        if not math.isfinite(struct.unpack(">f", payload)[0]):
+            raise ValueError("value is outside the REAL range")
+        return payload, f"{numeric:g} (REAL)"
+    if not numeric.is_integer():
+        raise ValueError("value must be a whole number; add :REAL to a DBD/MD address for decimals")
+    minimum, maximum, label = _S7_INTEGER_RANGES[size]
+    int_val = int(numeric)
+    if not minimum <= int_val <= maximum:
+        raise ValueError(f"value {int_val} does not fit {label}")
+    # Negative numbers are sent as two's complement (INT / DINT / SINT).
+    payload = (int_val & ((1 << (size * 8)) - 1)).to_bytes(size, "big")
+    return payload, f"{int_val} ({ {1: 'BYTE', 2: 'WORD', 4: 'DWORD'}[size] })"

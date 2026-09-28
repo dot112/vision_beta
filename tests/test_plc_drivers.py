@@ -151,10 +151,11 @@ class TestPLCDriverFactory:
         PLCDriverFactory.invalidate("ep-inv")
         assert "ep-inv" not in _driver_pool
 
-    def test_fins_has_no_unsafe_generic_fallback(self):
+    def test_fins_uses_native_driver(self):
+        from app.hardware.plc.fins_driver import OmronFINSDriver
+
         ep = {"id": "ep-fins", "plc_sub_protocol": "fins", "host": "127.0.0.1", "port": 9600, "timeout": 1}
-        with pytest.raises(ValueError, match="no native driver"):
-            PLCDriverFactory.get_driver(ep, fresh=True)
+        assert isinstance(PLCDriverFactory.get_driver(ep, fresh=True), OmronFINSDriver)
 
     def test_pool_ids(self):
         ep = {"id": "ep-ids", "plc_sub_protocol": "modbus_tcp", "host": "127.0.0.1", "port": 502, "timeout": 1}

@@ -27,7 +27,9 @@ class _CardState:
     card_id: str
     status: str = "idle"                # idle|queued|executing|sent|acked|failed|timeout
     last_fired_at: float = 0.0          # epoch seconds
-    fired_event_ids: Set[str] = field(default_factory=set)
+    # Insertion-ordered so the oldest IDs are evicted first (a set would drop an arbitrary one,
+    # possibly the event just fired, and let once_per_event fire it twice).
+    fired_event_ids: Dict[str, None] = field(default_factory=dict)
     last_result: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -331,10 +333,10 @@ class PLCDispatcherService:
             # ── Dispatch ──────────────────────────────────────────────────────
             state.last_fired_at = now
             if event_id:
-                state.fired_event_ids.add(event_id)
-                # Keep set bounded (last 500 event IDs)
-                if len(state.fired_event_ids) > 500:
-                    state.fired_event_ids.pop()
+                state.fired_event_ids[event_id] = None
+                # Keep bounded (last 500 event IDs), evicting the oldest
+                while len(state.fired_event_ids) > 500:
+                    state.fired_event_ids.pop(next(iter(state.fired_event_ids)))
 
             if len(cls._dispatch_tasks) >= cls._max_dispatch_tasks:
                 state.status = "failed"
@@ -358,7 +360,7 @@ class PLCDispatcherService:
         cid = card.get("id", "")
         state = cls._states.setdefault(cid, _CardState(card_id=cid))
         await cls._dispatch(card, state, event={"event_id": f"manual_{int(time.time())}"})
-        return state.last_result
+        return {**state.last_result, "status": state.status}
 
     @classmethod
     async def shutdown(cls) -> None:
@@ -386,7 +388,7 @@ class PLCDispatcherService:
         write_val = float(card.get("write_value", 0.0) or 0.0)
         on_failure = str(card.get("on_failure", "skip")).lower()
         retry_attempts = int(card.get("retry_attempts", 2) or 0)
-        retry_delay_ms = int(card.get("retry_delay_ms", 100) or 100)
+        retry_delay_ms = max(0, int(card.get("retry_delay_ms", 100) if card.get("retry_delay_ms") is not None else 100))
 
         state.status = "queued"
         logger.info(
@@ -459,27 +461,47 @@ class PLCDispatcherService:
         ok = False
         msg = ""
 
+        timeout_s = float(endpoint.get("timeout", 3))
         for attempt in range(1, attempts + 1):
             try:
                 endpoint_lock = cls._endpoint_locks.setdefault(ep_id, asyncio.Lock())
                 async with endpoint_lock:
                     if not driver.is_connected:
-                        conn_ok = await asyncio.wait_for(driver.connect(), timeout=float(endpoint.get("timeout", 3)))
+                        try:
+                            conn_ok = await asyncio.wait_for(driver.connect(), timeout=timeout_s)
+                        except asyncio.TimeoutError:
+                            conn_ok = False
                         if not conn_ok:
-                            raise ConnectionError(f"Cannot connect to PLC at {endpoint.get('host')}:{endpoint.get('port')}")
-                    ok, msg = await asyncio.wait_for(
-                        driver.execute_operation(
-                            operation=operation,
-                            address=address,
-                            write_value=write_val,
-                            pulse_duration_ms=pulse_ms,
-                        ),
-                        timeout=float(endpoint.get("timeout", 3)) + (pulse_ms / 1000.0) + 1,
-                    )
+                            # Nothing was sent, so a retry is safe.
+                            detail = getattr(driver, "last_error", "")
+                            raise ConnectionError(
+                                f"Cannot connect to PLC at {endpoint.get('host')}:{endpoint.get('port')}"
+                                + (f": {detail}" if detail else "")
+                            )
+                    try:
+                        ok, msg = await asyncio.wait_for(
+                            driver.execute_operation(
+                                operation=operation,
+                                address=address,
+                                write_value=write_val,
+                                pulse_duration_ms=pulse_ms,
+                            ),
+                            timeout=timeout_s + (pulse_ms / 1000.0) + 1,
+                        )
+                    except asyncio.TimeoutError:
+                        # A late reply could be read as the answer to the next
+                        # request, so drop the connection and start clean.
+                        await driver.disconnect()
+                        raise
                 if ok:
                     break
             except asyncio.TimeoutError:
                 msg = f"Attempt {attempt}: PLC operation timed out; actuation state is unknown and was not retried"
+                ok = False
+                break
+            except ValueError as exc:
+                # Bad address or value in the card: retrying cannot help and the link is fine.
+                msg = f"Attempt {attempt}: invalid PLC target or value: {exc}"
                 ok = False
                 break
             except Exception as exc:

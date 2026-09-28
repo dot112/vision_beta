@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import os
 from typing import Tuple
 
 from app.hardware.plc.base import PLCDriver
@@ -11,8 +12,36 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _certificate_application_uri(cert_path: str) -> str:
+    """Return the URI from a certificate's SubjectAltName, or "" if it has none."""
+    try:
+        from cryptography import x509
+
+        with open(cert_path, "rb") as handle:
+            data = handle.read()
+        try:
+            cert = x509.load_pem_x509_certificate(data)
+        except ValueError:
+            cert = x509.load_der_x509_certificate(data)
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+        uris = san.get_values_for_type(x509.UniformResourceIdentifier)
+        return uris[0] if uris else ""
+    except Exception:
+        return ""
+
+
 class OPCUADriver(PLCDriver):
-    """Write OPC UA variable nodes addressed by standard NodeId strings."""
+    """
+    Write OPC UA variable nodes addressed by standard NodeId strings.
+
+    Endpoint options:
+      opcua_security          None | Basic256Sha256_Sign | Basic256Sha256_SignAndEncrypt |
+                              Aes128Sha256RsaOaep_Sign(AndEncrypt) | Aes256Sha256RsaPss_Sign(AndEncrypt)
+      opcua_cert_path         client certificate (DER or PEM) — required for secured modes
+      opcua_key_path          client private key (PEM) — required for secured modes
+      opcua_server_cert_path  optional server certificate to pin
+      username / password     optional user-name identity token
+    """
 
     _INTEGER_RANGES = {
         "SByte": (-128, 127),
@@ -45,19 +74,19 @@ class OPCUADriver(PLCDriver):
     async def connect(self) -> bool:
         if self.is_connected and self._client is not None:
             return True
+        if self._client is not None:
+            await self.disconnect()
 
-        security = str(self._ep.get("opcua_security", "None")).strip()
-        if security != "None":
-            self.last_error = (
-                f"OPC UA security mode '{security}' needs client certificate and private-key "
-                "settings, which are not configured for this channel"
-            )
-            return False
-
+        client = None
         try:
             from asyncua import Client
 
             client = Client(self._server_url(), timeout=self.timeout)
+            await self._configure_security(client)
+            username = str(self._ep.get("username") or "").strip()
+            if username:
+                client.set_user(username)
+                client.set_password(str(self._ep.get("password") or ""))
             await client.connect()
             self._client = client
             self.is_connected = True
@@ -70,7 +99,6 @@ class OPCUADriver(PLCDriver):
             self.last_error = f"{type(exc).__name__}: {exc}"
 
         self.is_connected = False
-        client = locals().get("client")
         if client is not None:
             try:
                 await client.disconnect()
@@ -79,11 +107,73 @@ class OPCUADriver(PLCDriver):
         logger.warning("OPC UA connect failed for %s: %s", self._ep.get("id", ""), self.last_error)
         return False
 
+    async def _configure_security(self, client) -> None:
+        """Apply the endpoint's message security policy and client certificate."""
+        security = str(self._ep.get("opcua_security", "None") or "None").strip()
+        if security == "None":
+            return
+        policy_name, _, mode_name = security.rpartition("_")
+        from asyncua import ua
+        from asyncua.crypto import security_policies
+
+        policies = {
+            "Basic256Sha256": security_policies.SecurityPolicyBasic256Sha256,
+            "Aes128Sha256RsaOaep": security_policies.SecurityPolicyAes128Sha256RsaOaep,
+            "Aes256Sha256RsaPss": getattr(security_policies, "SecurityPolicyAes256Sha256RsaPss", None),
+        }
+        modes = {"Sign": ua.MessageSecurityMode.Sign, "SignAndEncrypt": ua.MessageSecurityMode.SignAndEncrypt}
+        policy = policies.get(policy_name)
+        if policy is None or mode_name not in modes:
+            raise ValueError(f"Unsupported OPC UA security policy '{security}'")
+        cert_path = str(self._ep.get("opcua_cert_path") or "").strip()
+        key_path = str(self._ep.get("opcua_key_path") or "").strip()
+        if not cert_path or not key_path:
+            raise ValueError(
+                f"OPC UA security mode '{security}' needs the client certificate and private key "
+                "(opcua_cert_path and opcua_key_path) to be set on this channel"
+            )
+        for label, path in (("client certificate", cert_path), ("private key", key_path)):
+            if not os.path.isfile(path):
+                raise ValueError(f"OPC UA {label} file not found: {path}")
+        server_cert = str(self._ep.get("opcua_server_cert_path") or "").strip() or None
+        if server_cert and not os.path.isfile(server_cert):
+            raise ValueError(f"OPC UA server certificate file not found: {server_cert}")
+        application_uri = _certificate_application_uri(cert_path)
+        if application_uri:
+            # Servers reject sessions whose ApplicationUri differs from the certificate's.
+            client.application_uri = application_uri
+        await client.set_security(
+            policy,
+            certificate=cert_path,
+            private_key=key_path,
+            server_certificate=server_cert,
+            mode=modes[mode_name],
+        )
+
     async def disconnect(self) -> None:
         client, self._client = self._client, None
         self.is_connected = False
         if client is not None:
-            await client.disconnect()
+            try:
+                await client.disconnect()
+            except Exception as exc:
+                logger.debug("OPC UA disconnect for %s: %s", self._ep.get("id", ""), exc)
+
+    async def _handle_failure(self, exc: Exception) -> None:
+        """Drop the session when a failed request means the link is gone.
+
+        asyncua reports a dead server with its own exception types, not only
+        OSError, so ask the client instead of guessing from the exception.
+        """
+        if isinstance(exc, ValueError) or self._client is None:
+            return
+        if isinstance(exc, (ConnectionError, OSError, asyncio.TimeoutError)):
+            await self.disconnect()
+            return
+        try:
+            await asyncio.wait_for(self._client.check_connection(), timeout=self.timeout)
+        except Exception:
+            await self.disconnect()
 
     def _node(self, address: str):
         if not self.is_connected or self._client is None:
@@ -110,8 +200,7 @@ class OPCUADriver(PLCDriver):
             await node.write_value(data_value)
             return True, f"OPC UA wrote {value!s} to {address}"
         except Exception as exc:
-            if isinstance(exc, (ConnectionError, OSError, asyncio.TimeoutError)):
-                self.is_connected = False
+            await self._handle_failure(exc)
             return False, f"OPC UA write failed for {address}: {type(exc).__name__}: {exc}"
 
     async def set(self, address: str) -> Tuple[bool, str]:
@@ -128,13 +217,17 @@ class OPCUADriver(PLCDriver):
                 return False, f"OPC UA toggle requires a Boolean node: {address}"
             return await self._write_value(address, not value)
         except Exception as exc:
-            if isinstance(exc, (ConnectionError, OSError, asyncio.TimeoutError)):
-                self.is_connected = False
+            await self._handle_failure(exc)
             return False, f"OPC UA toggle failed for {address}: {type(exc).__name__}: {exc}"
 
     async def pulse(self, address: str, duration_ms: int) -> Tuple[bool, str]:
         ok, message = await self.set(address)
         if not ok:
+            # The ON write may have reached the server even though its reply was
+            # lost; try OFF so the output is not left latched.
+            if self.is_connected:
+                off_ok, _ = await self.reset(address)
+                message += "; OFF cleanup acknowledged" if off_ok else "; OFF cleanup failed"
             return False, f"OPC UA pulse ON failed: {message}"
         try:
             await asyncio.sleep(max(0, duration_ms) / 1000.0)
@@ -173,6 +266,5 @@ class OPCUADriver(PLCDriver):
             await node.write_value(data_value)
             return True, f"OPC UA wrote {typed_value} to {address}"
         except Exception as exc:
-            if isinstance(exc, (ConnectionError, OSError, asyncio.TimeoutError)):
-                self.is_connected = False
+            await self._handle_failure(exc)
             return False, f"OPC UA write failed for {address}: {type(exc).__name__}: {exc}"

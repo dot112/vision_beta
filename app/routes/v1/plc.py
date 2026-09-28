@@ -204,10 +204,17 @@ async def test_plc_action(
     if not card:
         raise HTTPException(status_code=404, detail=f"PLC action card '{card_id}' not found. Please save cards first.")
 
-    # If card has no plc_endpoint_id or empty, auto-link to the first active PLC endpoint if available
-    endpoints = svc.get_endpoints(protocol="plc")
-    if not card.get("plc_endpoint_id") and endpoints:
-        card["plc_endpoint_id"] = endpoints[0]["id"]
+    # A card without a channel may only borrow one when exactly one enabled PLC
+    # channel exists. Picking "the first" of several could fire an output on
+    # the wrong machine.
+    if not card.get("plc_endpoint_id"):
+        enabled = [ep for ep in svc.get_endpoints(protocol="plc") if ep.get("enabled", True) is True]
+        if len(enabled) != 1:
+            raise HTTPException(
+                status_code=400,
+                detail="This card has no PLC channel. Select the PLC channel on the card before testing it.",
+            )
+        card["plc_endpoint_id"] = enabled[0]["id"]
 
     svc.record_audit(
         username=user.username,
@@ -236,9 +243,7 @@ async def test_plc_action(
         card_id=card_id,
         success=result.get("success", False),
         message=result.get("message", ""),
-        status=result.get("status", "unknown") if "status" in result else (
-            "sent" if result.get("success") else "failed"
-        ),
+        status=result.get("status") or ("sent" if result.get("success") else "failed"),
         endpoint_name=ep_name,
         protocol=ep_proto,
     )

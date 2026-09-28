@@ -1528,6 +1528,7 @@
                         <label class="form-label">PLC Protocol *</label>
                         <select id="plcProtocolTypeInput" class="form-input" onchange="onPlcProtocolTypeChange(this.value)">
                             <option value="modbus_tcp">Modbus TCP (Universal / Port 502)</option>
+                            <option value="modbus_rtu">Modbus RTU (RS-485 Serial / RTU over TCP)</option>
                             <option value="s7">Siemens S7comm (1200 / 1500 / 300 / 400)</option>
                             <option value="eip">EtherNet/IP (Allen-Bradley CIP / Port 44818)</option>
                             <option value="opcua">OPC UA (Industrial Server / Port 4840)</option>
@@ -1571,6 +1572,73 @@
                             <select id="plcModbusZeroBase" class="form-input">
                                 <option value="0">0-based (PLC Native Addressing)</option>
                                 <option value="1">1-based (Standard Modbus 40001)</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin:0">
+                            <label class="form-label">32-bit Word Order (DINT / REAL)</label>
+                            <select id="plcModbusWordOrder" class="form-input">
+                                <option value="high_first">High word first (ABCD)</option>
+                                <option value="low_first">Low word first (CDAB)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Sub-fields: Modbus RTU -->
+                <div id="plcFieldsModbusRtu" class="plc-proto-subfields" style="display:none;margin-top:10px">
+                    <div class="cam-settings-row">
+                        <div class="form-group" style="margin:0">
+                            <label class="form-label">Link Type</label>
+                            <select id="plcRtuTransport" class="form-input" onchange="onPlcRtuTransportChange(this.value)">
+                                <option value="serial">Serial Port (RS-485 / RS-232)</option>
+                                <option value="tcp">RTU over TCP (Serial Gateway)</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin:0">
+                            <label class="form-label">Serial Port</label>
+                            <input type="text" id="plcRtuSerialPort" class="form-input" placeholder="COM3 or /dev/ttyUSB0" value="" />
+                        </div>
+                    </div>
+                    <div class="cam-settings-row triple" style="margin-top:10px">
+                        <div class="form-group" style="margin:0">
+                            <label class="form-label">Baud Rate</label>
+                            <select id="plcRtuBaudrate" class="form-input">
+                                <option value="1200">1200</option>
+                                <option value="2400">2400</option>
+                                <option value="4800">4800</option>
+                                <option value="9600">9600</option>
+                                <option value="19200">19200</option>
+                                <option value="38400">38400</option>
+                                <option value="57600">57600</option>
+                                <option value="115200">115200</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin:0">
+                            <label class="form-label">Parity (8 data bits)</label>
+                            <select id="plcRtuParity" class="form-input">
+                                <option value="E">Even (8E1 — Modbus default)</option>
+                                <option value="N">None (8N1 / 8N2)</option>
+                                <option value="O">Odd (8O1)</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin:0">
+                            <label class="form-label">Stop Bits</label>
+                            <select id="plcRtuStopbits" class="form-input">
+                                <option value="1">1</option>
+                                <option value="2">2</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="cam-settings-row" style="margin-top:10px">
+                        <div class="form-group" style="margin:0">
+                            <label class="form-label">Slave / Unit ID (1-247)</label>
+                            <input type="number" id="plcRtuUnitId" class="form-input" value="1" min="1" max="247" />
+                        </div>
+                        <div class="form-group" style="margin:0">
+                            <label class="form-label">32-bit Word Order (DINT / REAL)</label>
+                            <select id="plcRtuWordOrder" class="form-input">
+                                <option value="high_first">High word first (ABCD)</option>
+                                <option value="low_first">Low word first (CDAB)</option>
                             </select>
                         </div>
                     </div>
@@ -3813,6 +3881,7 @@ function renderCommsGrid() {
         } else if (proto === "plc") {
             const plcNames = {
                 modbus_tcp: "Modbus TCP",
+                modbus_rtu: "Modbus RTU",
                 s7: "Siemens S7",
                 eip: "EtherNet/IP",
                 opcua: "OPC UA",
@@ -3824,6 +3893,11 @@ function renderCommsGrid() {
             detailText = `${ep.host || "192.168.1.10"}:${ep.port || 502}`;
             if (ep.plc_protocol === "s7") detailText += ` [Rack:${ep.s7_rack ?? 0} Slot:${ep.s7_slot ?? 1}]`;
             else if (ep.plc_protocol === "modbus_tcp") detailText += ` [Unit:${ep.modbus_unit_id ?? 1}]`;
+            else if (ep.plc_protocol === "modbus_rtu") {
+                detailText = (ep.rtu_transport === "tcp")
+                    ? `${ep.host || "?"}:${ep.port || 502} RTU/TCP [Unit:${ep.modbus_unit_id ?? 1}]`
+                    : `${ep.serial_port || "?"} ${ep.serial_baudrate || 19200} 8${ep.serial_parity || "E"}${ep.serial_stopbits || 1} [Unit:${ep.modbus_unit_id ?? 1}]`;
+            }
             else if (ep.plc_protocol === "eip") detailText += ` [Slot:${ep.eip_slot ?? 0}]`;
             else if (ep.plc_protocol === "fins") detailText += ` [Node:${ep.fins_node ?? 1}]`;
             iconSvg = "";
@@ -3891,6 +3965,7 @@ function filterCommsGrid(proto, btn) {
 function onPlcProtocolTypeChange(proto, updatePort = true) {
     const portMap = {
         modbus_tcp: 502,
+        modbus_rtu: 502,
         s7: 102,
         eip: 44818,
         opcua: 4840,
@@ -3903,6 +3978,7 @@ function onPlcProtocolTypeChange(proto, updatePort = true) {
     }
     const subMap = {
         modbus_tcp: "plcFieldsModbus",
+        modbus_rtu: "plcFieldsModbusRtu",
         s7: "plcFieldsS7",
         eip: "plcFieldsEip",
         opcua: "plcFieldsOpcua",
@@ -3915,6 +3991,25 @@ function onPlcProtocolTypeChange(proto, updatePort = true) {
     });
     const scanButton = document.getElementById("plcOpcuaScanBtn");
     if (scanButton) scanButton.style.display = proto === "opcua" ? "inline-flex" : "none";
+    const rtuTransport = document.getElementById("plcRtuTransport");
+    onPlcRtuTransportChange(proto === "modbus_rtu" && rtuTransport ? rtuTransport.value : "tcp");
+}
+
+// A Modbus RTU serial channel has no IP address or TCP port; grey them out.
+function onPlcRtuTransportChange(transport) {
+    const serial = transport === "serial";
+    ["plcHostInput", "plcPortInput"].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.disabled = serial;
+            el.style.opacity = serial ? "0.5" : "";
+        }
+    });
+    const portEl = document.getElementById("plcRtuSerialPort");
+    if (portEl) {
+        portEl.disabled = !serial;
+        portEl.style.opacity = serial ? "" : "0.5";
+    }
 }
 
 let _opcuaScanCandidates = [];
@@ -4152,6 +4247,15 @@ function openAddCommModal(protocol = "tcp") {
         document.getElementById("plcHeartbeatInput").value = "10";
         document.getElementById("plcModbusUnitId").value = "1";
         document.getElementById("plcModbusZeroBase").value = "0";
+        document.getElementById("plcModbusWordOrder").value = "high_first";
+        document.getElementById("plcRtuTransport").value = "serial";
+        document.getElementById("plcRtuSerialPort").value = "";
+        document.getElementById("plcRtuBaudrate").value = "19200";
+        document.getElementById("plcRtuParity").value = "E";
+        document.getElementById("plcRtuStopbits").value = "1";
+        document.getElementById("plcRtuUnitId").value = "1";
+        document.getElementById("plcRtuWordOrder").value = "high_first";
+        onPlcRtuTransportChange("tcp");
         document.getElementById("plcS7Model").value = "s7-1200";
         document.getElementById("plcS7Rack").value = "0";
         document.getElementById("plcS7Slot").value = "1";
@@ -4254,6 +4358,15 @@ function openEditCommModal(endpointId) {
             
             document.getElementById("plcModbusUnitId").value = ep.modbus_unit_id ?? 1;
             document.getElementById("plcModbusZeroBase").value = ep.modbus_zero_base ? "0" : "1";
+            document.getElementById("plcModbusWordOrder").value = ep.modbus_word_order || "high_first";
+            document.getElementById("plcRtuTransport").value = ep.rtu_transport || "serial";
+            document.getElementById("plcRtuSerialPort").value = ep.serial_port || "";
+            document.getElementById("plcRtuBaudrate").value = String(ep.serial_baudrate || 19200);
+            document.getElementById("plcRtuParity").value = ep.serial_parity || "E";
+            document.getElementById("plcRtuStopbits").value = String(ep.serial_stopbits || 1);
+            document.getElementById("plcRtuUnitId").value = ep.modbus_unit_id ?? 1;
+            document.getElementById("plcRtuWordOrder").value = ep.modbus_word_order || "high_first";
+            onPlcRtuTransportChange(plcProto === "modbus_rtu" ? (ep.rtu_transport || "serial") : "tcp");
             document.getElementById("plcS7Model").value = ep.s7_model || "s7-1200";
             document.getElementById("plcS7Rack").value = ep.s7_rack ?? 0;
             document.getElementById("plcS7Slot").value = ep.s7_slot ?? 1;
@@ -4405,16 +4518,31 @@ async function saveCommEndpoint() {
     } else if (proto === "plc") {
         const host = document.getElementById("plcHostInput").value.trim();
         const port = parseInt(document.getElementById("plcPortInput").value) || 502;
-        if (!host) return showModal("PLC Host Required", "Please enter a valid IP address or hostname for the PLC.");
-        payload.host = host;
+        const plcProtocol = document.getElementById("plcProtocolTypeInput").value;
+        const rtuSerial = plcProtocol === "modbus_rtu" && document.getElementById("plcRtuTransport").value === "serial";
+        if (rtuSerial && !document.getElementById("plcRtuSerialPort").value.trim()) {
+            return showModal("Serial Port Required", "Please enter the serial port the RS-485 adapter is on, for example COM3 or /dev/ttyUSB0.");
+        }
+        if (!host && !rtuSerial) return showModal("PLC Host Required", "Please enter a valid IP address or hostname for the PLC.");
+        payload.host = rtuSerial ? "" : host;
         payload.port = port;
-        payload.plc_protocol = document.getElementById("plcProtocolTypeInput").value;
+        payload.plc_protocol = plcProtocol;
         payload.timeout = parseInt(document.getElementById("plcTimeoutInput").value) || 3;
         payload.heartbeat = parseInt(document.getElementById("plcHeartbeatInput").value) || 10;
         
         // Protocol specific attributes
         payload.modbus_unit_id = parseInt(document.getElementById("plcModbusUnitId").value) || 1;
         payload.modbus_zero_base = document.getElementById("plcModbusZeroBase").value === "0";
+        payload.modbus_word_order = document.getElementById("plcModbusWordOrder").value;
+        if (plcProtocol === "modbus_rtu") {
+            payload.modbus_unit_id = parseInt(document.getElementById("plcRtuUnitId").value) || 1;
+            payload.modbus_word_order = document.getElementById("plcRtuWordOrder").value;
+            payload.rtu_transport = document.getElementById("plcRtuTransport").value;
+            payload.serial_port = document.getElementById("plcRtuSerialPort").value.trim();
+            payload.serial_baudrate = parseInt(document.getElementById("plcRtuBaudrate").value) || 19200;
+            payload.serial_parity = document.getElementById("plcRtuParity").value;
+            payload.serial_stopbits = parseInt(document.getElementById("plcRtuStopbits").value) || 1;
+        }
         payload.s7_model = document.getElementById("plcS7Model").value;
         payload.s7_rack = parseInt(document.getElementById("plcS7Rack").value) || 0;
         payload.s7_slot = parseInt(document.getElementById("plcS7Slot").value) || 1;
@@ -4764,9 +4892,9 @@ const PLC_PROTOCOL_TARGETS = {
         label: "Modbus TCP",
         types: [
             { id: "modbus_coil", name: "Coil (0xxxx / Discrete Output)", defaultAddr: "1", placeholder: "e.g. 1, 00001, 10" },
-            { id: "modbus_di", name: "Discrete Input (1xxxx / DI)", defaultAddr: "10001", placeholder: "e.g. 10001, 10010" },
+            { id: "modbus_di", name: "Discrete Input (1xxxx / DI) — read-only, cannot be written", defaultAddr: "10001", placeholder: "e.g. 10001, 10010" },
             { id: "modbus_holding", name: "Holding Register (4xxxx / Word)", defaultAddr: "40001", placeholder: "e.g. 40001, MW100" },
-            { id: "modbus_input_reg", name: "Input Register (3xxxx / Word)", defaultAddr: "30001", placeholder: "e.g. 30001" }
+            { id: "modbus_input_reg", name: "Input Register (3xxxx / Word) — read-only, cannot be written", defaultAddr: "30001", placeholder: "e.g. 30001" }
         ]
     },
     eip: {
@@ -4810,6 +4938,8 @@ const PLC_PROTOCOL_TARGETS = {
         ]
     }
 };
+// Modbus RTU uses the same coils and registers as Modbus TCP.
+PLC_PROTOCOL_TARGETS.modbus_rtu = { label: "Modbus RTU", types: PLC_PROTOCOL_TARGETS.modbus_tcp.types };
 
 function getProtocolDefForEndpoint(endpointId) {
     if (!endpointId) return PLC_PROTOCOL_TARGETS.generic;
