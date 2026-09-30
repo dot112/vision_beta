@@ -1,26 +1,66 @@
+# Keep the build context small and free of secrets and local state.
+
+# Version control and CI
 .git
+.gitignore
+.gitattributes
 .github
+
+# Secrets: never copy environment files or keys into the image.
+**/.env
+**/.env.*
+!.env.example
+**/*.pem
+**/*.key
+**/*.crt
+**/*.p12
+**/*.pfx
+certificates
+certs
+
+# Python and tool caches
+**/__pycache__
+**/*.py[cod]
 .venv
 venv
 env
-__pycache__
-*.py[cod]
 .pytest_cache
 .ruff_cache
-.env
-.env.*
-!.env.example
-data/*
-logs/*
-uploads/*
+.mypy_cache
+.coverage
+htmlcov
+
+# Editors and OS files
+.vscode
+.idea
+.claude
+*.swp
+.DS_Store
+Thumbs.db
+
+# Runtime state: lives in volumes, not the image
+data
+logs
+uploads
 model_store
-certificates
-certs
+backup
+*.db
+*.db-journal
+*.sqlite
+*.log
+
+# Not needed to run the server
 tests
 test codes
-backup
 api_dashboard
 flutter dashboard windows
+docker-compose*.yml
+compose*.yml
+start_server.bat
+requirements-training.txt
+requirements-dev.txt
+
+# Large media and model weights
 *.onnx
 *.pt
 *.mp4

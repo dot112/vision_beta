@@ -1,37 +1,64 @@
+# syntax=docker/dockerfile:1
 # Linux image for the vision server. Serves ONNX models on CPU; PyTorch and
-# Ultralytics (model training/export) are left out to keep the image small.
+# Ultralytics (model training/export, requirements-training.txt) are left out
+# to keep the image small.
+
+# ── Build stage: install the Python packages into a virtualenv ────────────────
+FROM python:3.12-slim AS build
+
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN python -m venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
+
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install -r /tmp/requirements.txt
+
+# ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PATH=/opt/venv/bin:$PATH \
     APP_ENV=production \
     DEBUG=false \
+    HOST=0.0.0.0 \
+    PORT=8000 \
+    WORKERS=1 \
     INFERENCE_DEVICE=cpu
 
+# Unprivileged user; it owns only the directories the server writes to.
+RUN groupadd --system --gid 10001 vision \
+    && useradd --system --uid 10001 --gid vision --home-dir /app --shell /usr/sbin/nologin vision
+
+COPY --from=build /opt/venv /opt/venv
+
 WORKDIR /app
-
-COPY requirements-runtime.txt ./
-RUN pip install -r requirements-runtime.txt
-
-RUN useradd --system --create-home --uid 10001 vision
-COPY --chown=vision:vision . .
-RUN mkdir -p data logs model_store uploads \
-    && chown -R vision:vision data logs model_store uploads
+# Application code stays owned by root, so the server cannot modify it.
+COPY . .
+RUN python -m compileall -q /app/app /app/main.py /app/alembic /app/docker \
+    && mkdir -p data logs model_store uploads certs/mqtt \
+    && chown -R vision:vision data logs model_store uploads certs
 
 USER vision
 
-# Database, saved settings, models and logs live here; mount them as volumes
-# so they survive container upgrades.
-VOLUME ["/app/data", "/app/logs", "/app/model_store", "/app/uploads"]
+# Database, settings, models, uploads, MQTT certificates and logs live here.
+# Mount them as volumes (docker-compose.yml does) so they survive upgrades.
+VOLUME ["/app/data", "/app/logs", "/app/model_store", "/app/uploads", "/app/certs"]
 
-EXPOSE 8000
+# 8000: HTTP API and dashboards. 8888/udp: server discovery beacon.
+EXPOSE 8000 8888/udp
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/discovery', timeout=4)"
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('PORT', '8000'), timeout=4)"]
+
+# SIGTERM lets the server finish open requests and put PLC outputs in their
+# safe state; allow it time (docker-compose.yml sets stop_grace_period).
+STOPSIGNAL SIGTERM
 
 # SECRET_KEY (and ADMIN_INITIAL_PASSWORD on first start) must be supplied at
-# run time, e.g. `docker run --env-file .env ...`. One worker only: runtime
-# state such as camera connections is held in process memory.
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# run time, e.g. `docker compose` with a .env file or `docker run --env-file .env`.
+# The supervisor runs uvicorn on 0.0.0.0 with one worker and exits when the
+# server stops answering, so the restart policy starts a fresh container.
+ENTRYPOINT ["python", "/app/docker/supervise.py"]

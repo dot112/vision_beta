@@ -42,16 +42,22 @@ uvicorn main:app
 #    http://localhost:8000/dashboard
 ```
 
-### Docker (Linux)
+### Docker Compose (Linux, production)
 
 ```bash
-docker build -t fastapi-vision-server .
-docker run -d --name vision -p 8000:8000 --env-file .env \
-  -v vision-data:/app/data -v vision-models:/app/model_store -v vision-logs:/app/logs \
-  fastapi-vision-server
+cp .env.example .env          # set SECRET_KEY and ADMIN_INITIAL_PASSWORD; never commit it
+docker compose up -d --build  # build, start, and keep running
+docker compose ps             # STATUS shows (healthy) once the server answers
+docker compose logs -f        # follow the server log
 ```
 
-The image serves ONNX models on CPU and leaves out PyTorch/Ultralytics. USB cameras need `--device /dev/video0`; PLCs and IP cameras on the plant network usually need `--network host`.
+- **Recovers by itself.** `restart: unless-stopped` restarts the container after a crash. The entrypoint (`docker/supervise.py`) polls `/health` and, when the server stops answering for about a minute (`WATCHDOG_*` settings), stops it so the container restarts too; Docker alone would leave a hung container running as "unhealthy".
+- **Survives reboots.** Enable the Docker service once (`sudo systemctl enable docker`); running containers start again with the host. A container stopped with `docker compose stop` stays stopped.
+- **Keeps its data.** The database, saved settings, models, uploads, MQTT certificates and logs are named volumes (`vision-data`, `vision-models`, `vision-uploads`, `vision-certs`, `vision-logs`). They survive restarts, rebuilds and `docker compose down`; only `docker compose down -v` deletes them. Back up with e.g. `docker run --rm -v vision-server_vision-data:/data -v "$PWD":/backup alpine tar czf /backup/vision-data.tgz -C /data .` while the server is stopped.
+- **Stops safely.** `docker compose stop` sends SIGTERM and allows 60 s: open requests and video streams close, queued PLC operations finish and PLC outputs go to their safe state before the process exits.
+- **Upgrading.** `git pull && docker compose up -d --build`; the volumes carry over and database migrations run on start.
+
+The image (`python:3.12-slim`) installs `requirements.txt`, runs as an unprivileged user with all Linux capabilities dropped, and contains no `.env` or keys. It serves ONNX models on CPU; PyTorch and Ultralytics for training are in `requirements-training.txt`. USB cameras and serial (Modbus RTU) adapters must be passed in with `devices:`, and PLCs, IP cameras and the discovery broadcast on the plant network usually need `network_mode: host`; both are commented in `docker-compose.yml`. Logs are capped at 5 × 10 MB.
 
 ### Production lines (version 2)
 
@@ -80,11 +86,11 @@ Nothing has run against real PLCs yet: start the first plant trial with one line
 ### Tests and lint
 
 ```bash
-pip install -r requirements-runtime.txt -r requirements-dev.txt
+pip install -r requirements.txt -r requirements-dev.txt
 pytest
 ruff check .
 ```
 
-Tests use a temporary database and fake cameras, ONNX inference and PLCs, so no hardware is needed. GitHub Actions runs both, plus a Docker build and start-up check, on every push and pull request.
+Tests use a temporary database and fake cameras, ONNX inference and PLCs, so no hardware is needed. GitHub Actions runs both, plus a Docker Compose build, start-up, health and clean-stop check, on every push and pull request.
 
 Database migrations run during startup. For access outside a trusted isolated network, terminate TLS at a trusted reverse proxy and expose only HTTPS/WSS; the built-in development server does not configure TLS certificates. The API rate limit (`RATE_LIMIT_PER_SECOND`, per client address) needs the proxy to send `X-Forwarded-For` and uvicorn to trust it: set `FORWARDED_ALLOW_IPS` to the proxy's address in the server's environment (or pass `--forwarded-allow-ips`), otherwise every user behind the proxy shares one limit. In production, query-string WebSocket tokens are disabled. Browser clients should send the token using the `Sec-WebSocket-Protocol` values `industrial-vision-v1` and `bearer.<access-token>`; native clients may use an Authorization bearer header.

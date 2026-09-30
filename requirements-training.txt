@@ -1,0 +1,8 @@
+# Model tooling for training and exporting YOLO models. Not needed to serve
+# ONNX models, so the Docker image leaves it out.
+#   pip install -r requirements-training.txt
+-r requirements.txt
+
+ultralytics>=8.4.168            # YOLOv8/v11 detection models
+torch>=2.14.0                   # PyTorch (CPU build; GPU via CUDA or DirectML)
+torchvision>=0.29.0

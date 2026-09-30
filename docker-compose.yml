@@ -1,0 +1,98 @@
+# Production deployment of the vision server.
+#
+#   cp .env.example .env      # then set SECRET_KEY and ADMIN_INITIAL_PASSWORD
+#   docker compose up -d --build
+#
+# Recovery:
+#   - restart: unless-stopped brings the container back after a crash, after
+#     the health watchdog stops a hung server (docker/supervise.py), and after
+#     a host reboot, as long as the Docker service starts on boot
+#     (`sudo systemctl enable docker`). A container stopped with
+#     `docker compose stop` stays stopped until started again.
+# Data:
+#   - the database, saved settings, models, uploads, MQTT certificates and logs
+#     are named volumes, kept across restarts, rebuilds and `docker compose down`
+#     (only `docker compose down -v` deletes them).
+# Shutdown:
+#   - SIGTERM, then up to stop_grace_period for open requests to finish,
+#     queued PLC operations to complete and PLC outputs to reach their safe state.
+
+name: vision-server
+
+services:
+  vision:
+    build:
+      context: .
+    image: fastapi-vision-server:2.0.0
+    restart: unless-stopped
+    # tini as PID 1: reaps zombie processes and passes signals to the supervisor.
+    init: true
+
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      # Fixed for the container: these paths are on the volumes below.
+      APP_ENV: production
+      DEBUG: "false"
+      HOST: 0.0.0.0
+      PORT: "8000"
+      WORKERS: "1"
+      DATABASE_URL: sqlite+aiosqlite:///./data/factory_data.db
+      MODEL_STORE_PATH: ./model_store
+      LOG_DIR: ./logs
+      TZ: ${TZ:-UTC}
+      GRACEFUL_SHUTDOWN_SECONDS: "20"
+
+    ports:
+      - "${VISION_HTTP_PORT:-8000}:8000"
+      - "${VISION_DISCOVERY_PORT:-8888}:8888/udp"
+    # PLCs, IP cameras and the discovery broadcast on the plant network usually
+    # work best on the host network. To use it, remove `ports:` and uncomment:
+    # network_mode: host
+
+    volumes:
+      - vision-data:/app/data
+      - vision-models:/app/model_store
+      - vision-uploads:/app/uploads
+      - vision-certs:/app/certs
+      - vision-logs:/app/logs
+
+    # USB cameras and Modbus RTU serial adapters must be passed in explicitly:
+    # devices:
+    #   - /dev/video0:/dev/video0
+    #   - /dev/ttyUSB0:/dev/ttyUSB0
+    # group_add:
+    #   - video      # or the numeric gid of /dev/video0 on the host
+    #   - dialout    # or the numeric gid of /dev/ttyUSB0
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 5s
+
+    stop_signal: SIGTERM
+    # uvicorn's 20 s grace for open requests plus the PLC safe-state shutdown.
+    stop_grace_period: 60s
+
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # Bounded logs so a noisy camera or PLC cannot fill the disk.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  vision-data:
+  vision-models:
+  vision-uploads:
+  vision-certs:
+  vision-logs:

@@ -38,7 +38,7 @@ The runtime state is partly process-local. `app/config.py` requires `WORKERS=1`,
 - `app/hardware/` — Camera and communications/PLC driver implementations.
 - `app/db/models/`, `app/schemas/`, `alembic/` — Persistence models, API schemas and migrations.
 - `tests/` — Automated test suite.
-- `requirements.txt` — Python runtime and test dependencies.
+- `requirements.txt` — Python packages the server needs at runtime; `requirements-dev.txt` adds the test tools and `requirements-training.txt` the model training tools.
 - `.env.example` — Configuration template. Copy it to `.env` for a local installation; keep the real `.env` private.
 - `handoff.md` — Ongoing project handoff notes and known operational context.
 

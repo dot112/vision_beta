@@ -1,10 +1,51 @@
-# Full install: runtime server packages plus YOLO training/export tooling.
--r requirements-runtime.txt
+# Packages the server needs at runtime (ONNX inference, API, PLC/MQTT comms).
+# Installed by the Docker image, CI and start_server.bat. Minimum versions;
+# the server does not import PyTorch or Ultralytics, which live in
+# requirements-training.txt for training and exporting models.
 
-# ─── Model tooling (training / export; not needed to serve ONNX models) ───────
-ultralytics>=8.4.0              # YOLOv8/v11 detection models
-torch>=2.14.0                   # PyTorch (CPU build; GPU via CUDA or DirectML)
-torchvision>=0.29.0
+# ─── Core & Server ─────────────────────────────────────────────────────────────
+fastapi>=0.142.2
+uvicorn[standard]>=0.54.0
+starlette>=1.7.0
+python-dotenv>=1.2.3
+pydantic>=2.13.5
+pydantic-settings>=2.15.0
+anyio>=4.15.1
+h11>=0.16.0
 
-# ─── Testing ───────────────────────────────────────────────────────────────────
--r requirements-dev.txt
+# ─── Database ──────────────────────────────────────────────────────────────────
+sqlalchemy>=2.1.1
+alembic>=1.20.0
+aiosqlite>=0.22.1
+greenlet>=3.5.6
+
+# ─── Auth & Security ───────────────────────────────────────────────────────────
+python-jose[cryptography]>=3.5.0
+passlib[bcrypt]>=1.7.4
+bcrypt>=5.0.0
+python-multipart>=0.0.32
+cryptography>=50.0.1
+
+# ─── HTTP / WebSocket / Comms ──────────────────────────────────────────────────
+httpx>=0.28.1
+httpcore>=1.0.9
+websockets>=17.1
+requests>=2.34.2
+paho-mqtt>=2.1.0
+asyncua>=2.0.1,<3.0
+pyserial>=3.5                  # Modbus RTU over RS-485 / RS-232
+
+# ─── Computer Vision & AI Inference ───────────────────────────────────────────
+opencv-python-headless>=5.0.0.93   # headless (server); swap for opencv-python on desktop
+numpy>=2.5.3
+pillow>=12.3.0
+
+# Use one ONNX Runtime distribution per platform to avoid provider-package conflicts.
+onnxruntime-directml>=1.24.4; platform_system == "Windows"
+onnxruntime>=1.30.0; platform_system != "Windows"
+
+# ─── Monitoring & Utilities ────────────────────────────────────────────────────
+psutil>=7.2.2                   # System resource monitoring
+nvidia-ml-py>=13.615.71         # NVIDIA GPU stats (optional, Windows/Linux)
+PyYAML>=6.0.3
+packaging>=26.3
