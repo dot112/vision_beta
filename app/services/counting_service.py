@@ -266,19 +266,12 @@ class CountingService:
         """
         if camera_rotation is None:
             try:
-                from app.state.application_state import app_state
-                from app.services.settings_persistence_service import SettingsPersistenceService
-                cam_id = SettingsPersistenceService.get_active_camera_id()
-                driver = app_state.cameras.get(cam_id) if cam_id else None
-                if not driver and app_state.cameras:
-                    driver = next(iter(app_state.cameras.values()), None)
-                if driver:
-                    s = getattr(driver, "settings", {})
-                    camera_rotation = int(s.get("rotation") or 90) if "rotation" in s else 90
-                    camera_flip_h = bool(s.get("flip_h", False))
-                    camera_flip_v = bool(s.get("flip_v", False))
-            except Exception:
-                pass
+                from app.services.camera_service import camera_orientation
+                camera_rotation, camera_flip_h, camera_flip_v = camera_orientation(
+                    camera_id, camera_flip_h, camera_flip_v
+                )
+            except Exception as exc:
+                logger.debug("Camera orientation lookup failed: %s", exc)
 
         tracker_key = camera_id or "default"
         with self._tracker_lock:

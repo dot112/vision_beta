@@ -60,6 +60,37 @@ def _instantiate_driver(camera: Camera) -> BaseCamera:
         )
 
 
+def camera_orientation(
+    camera_id: Optional[str],
+    flip_h: Optional[bool] = None,
+    flip_v: Optional[bool] = None,
+) -> Tuple[Optional[int], Optional[bool], Optional[bool]]:
+    """(rotation, flip_h, flip_v) from a camera's settings, for callers that were not given a rotation.
+
+    The camera is camera_id's driver, else the active camera's, else the first
+    registered one. A flip the caller already has is kept. Rotation is None when
+    no camera is registered. Values are derived as the live stream derives them
+    in vision_service.
+    """
+    driver = app_state.cameras.get(camera_id) if camera_id else None
+    if driver is None and app_state.cameras:
+        from app.services.settings_persistence_service import SettingsPersistenceService
+        active_id = SettingsPersistenceService.get_active_camera_id()
+        driver = app_state.cameras.get(active_id) if active_id else None
+        if driver is None:
+            driver = next(iter(app_state.cameras.values()), None)
+    if driver is None:
+        return None, flip_h, flip_v
+
+    s = getattr(driver, "settings", None) or {}
+    rotation = int(s.get("rotation") or 90)
+    if flip_h is None:
+        flip_h = bool(s.get("flip_h", False))
+    if flip_v is None:
+        flip_v = bool(s.get("flip_v", False))
+    return rotation, flip_h, flip_v
+
+
 class CameraService:
     @staticmethod
     async def list_cameras(db: AsyncSession) -> List[Camera]:

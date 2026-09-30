@@ -377,6 +377,10 @@ class SettingsPersistenceService:
         return state_copy
 
     @classmethod
+    def get_active_camera_id(cls) -> Optional[str]:
+        return cls.get_state().get("active_camera_id")
+
+    @classmethod
     def get_plc_actions(cls) -> List[Dict[str, Any]]:
         """Return a detached copy of the saved PLC action-card configuration.
 
