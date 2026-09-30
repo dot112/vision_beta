@@ -62,6 +62,15 @@ class Settings(BaseSettings):
     INFERENCE_THREADS: int = 0       # ONNX Runtime CPU threads; 0 = auto (2 with a GPU, ~1 per core on CPU)
     INFERENCE_CONFIDENCE: float = 0.5
     INFERENCE_NMS_THRESHOLD: float = 0.45
+    # Detect API calls use the model one at a time. While cameras are connected
+    # they get at most this share of the model's time, so live counting keeps
+    # the rest; 1 = no limit. Requests past the queue limit get HTTP 429.
+    API_INFERENCE_MAX_SHARE: float = 0.25
+    API_INFERENCE_QUEUE_LIMIT: int = 8  # 0 = no limit
+    # Requests per second each client address may send to /api/ on average,
+    # with bursts up to RATE_LIMIT_BURST; past that it gets HTTP 429. 0 = off.
+    RATE_LIMIT_PER_SECOND: float = 50.0
+    RATE_LIMIT_BURST: int = 200
 
     # ─── Health monitoring ───────────────────────────────────────────────────
     HEALTH_CHECK_INTERVAL_SECONDS: float = 2.0
@@ -97,6 +106,34 @@ class Settings(BaseSettings):
     def validate_worker_count(cls, value: int) -> int:
         if value != 1:
             raise ValueError("WORKERS must remain 1 while runtime state is process-local")
+        return value
+
+    @field_validator("API_INFERENCE_MAX_SHARE")
+    @classmethod
+    def validate_api_inference_share(cls, value: float) -> float:
+        if not 0.0 < value <= 1.0:
+            raise ValueError("API_INFERENCE_MAX_SHARE must be greater than 0 and at most 1")
+        return value
+
+    @field_validator("API_INFERENCE_QUEUE_LIMIT")
+    @classmethod
+    def validate_api_inference_queue_limit(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("API_INFERENCE_QUEUE_LIMIT must be 0 (no limit) or more")
+        return value
+
+    @field_validator("RATE_LIMIT_PER_SECOND")
+    @classmethod
+    def validate_rate_limit(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("RATE_LIMIT_PER_SECOND must be 0 (off) or more")
+        return value
+
+    @field_validator("RATE_LIMIT_BURST")
+    @classmethod
+    def validate_rate_limit_burst(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("RATE_LIMIT_BURST must be at least 1")
         return value
 
     @field_validator("MAX_MODEL_UPLOAD_BYTES", "MAX_IMAGE_UPLOAD_BYTES")

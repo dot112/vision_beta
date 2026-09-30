@@ -155,6 +155,28 @@ def _blend_filled_rect(
     roi[:] = cv2.addWeighted(overlay, alpha, roi, beta, 0)
 
 
+# Seconds the current thread spent holding a model's lock since
+# begin_model_timing(); the API inference queue uses it to charge requests
+# only for model time, not for decoding, drawing or waiting.
+_model_timing = threading.local()
+
+
+def begin_model_timing() -> None:
+    _model_timing.seconds = None
+    _model_timing.active = True
+
+
+def end_model_timing() -> Optional[float]:
+    """Model seconds since begin_model_timing(), or None if no model ran."""
+    _model_timing.active = False
+    return getattr(_model_timing, "seconds", None)
+
+
+def _record_model_time(seconds: float) -> None:
+    if getattr(_model_timing, "active", False):
+        _model_timing.seconds = (_model_timing.seconds or 0.0) + seconds
+
+
 class InferenceEngine:
     """
     High-Performance YOLO & ONNX Inference Engine for Machine Vision.
@@ -336,11 +358,13 @@ class InferenceEngine:
                 blob = cv2.dnn.blobFromImage(resized, scalefactor=1.0 / 255.0, swapRB=True)
 
                 with self._inference_lock:
+                    held_from = time.perf_counter()
                     if self.ort_session is not None:
                         outputs = self.ort_session.run(None, {self.input_name: blob})
                     else:
                         self.net.setInput(blob)
                         outputs = [self.net.forward()]
+                    _record_model_time(time.perf_counter() - held_from)
 
                 protos = outputs[1] if len(outputs) > 1 else None
                 detections = self._postprocess_fast(outputs[0], orig_w, orig_h, conf_thresh, nms_thresh, protos=protos)

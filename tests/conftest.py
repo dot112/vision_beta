@@ -26,6 +26,9 @@ os.environ["LOG_DIR"] = str(_TMP / "logs")
 os.environ["MODEL_STORE_PATH"] = str(_TMP / "model_store")
 os.environ["INFERENCE_DEVICE"] = "cpu"
 os.environ["APP_ENV"] = "test"
+# One test client sends every request from the same address; the limiter has
+# its own tests.
+os.environ["RATE_LIMIT_PER_SECOND"] = "0"
 
 import app.services.settings_persistence_service as _persistence  # noqa: E402
 

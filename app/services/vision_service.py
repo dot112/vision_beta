@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextlib
 import os
 import threading
 import time
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, AsyncIterator, Callable, Dict, List, Optional, Tuple
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
 from app.config import settings
 from app.db.models.detection import DetectionLog
-from app.engines.inference_engine import InferenceEngine
+from app.engines.inference_engine import InferenceEngine, begin_model_timing, end_model_timing
 from app.schemas.vision import DetectionResponse, LiveInspectionResponse
 from app.services.camera_service import CameraService
 from app.state.application_state import app_state
@@ -677,6 +678,133 @@ class ContinuousVisionRunner:
             time.sleep(0.010)
 
 
+class ApiInferenceBusy(RuntimeError):
+    """Too many on-demand detection requests are already waiting for the model."""
+
+
+class _ApiInferenceGate:
+    """Queue for inference asked for through the API.
+
+    The detect endpoints and the annotated-frame fallback share the model's lock
+    with the 24/7 counting pipeline. Without a queue, eight clients calling
+    detect in a loop took most of the model's time and live counting fell from
+    about 23 to 3 frames per second. While a camera is connected, API requests
+    here take turns one at a time, in arrival order, and get at most
+    API_INFERENCE_MAX_SHARE of the model's time. With no camera connected there
+    is no counting to protect, so up to _PARALLEL_WITHOUT_CAMERAS run at once.
+    Requests past API_INFERENCE_QUEUE_LIMIT waiting get ApiInferenceBusy
+    instead of piling up. Callers grab their frame and finish any database
+    work before queueing, so waiting requests hold no pooled connection.
+    """
+
+    _PARALLEL_WITHOUT_CAMERAS = 4
+    # A one-off slow call (a model's first run on a GPU can take seconds) is
+    # charged at most this much, so it cannot hold up the queue for long.
+    _MAX_CHARGE_SECONDS = 0.5
+
+    def __init__(self) -> None:
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._active = 0
+        self._waiters: collections.deque = collections.deque()
+        self._next_start = 0.0
+
+    def _bind_loop(self) -> asyncio.AbstractEventLoop:
+        loop = asyncio.get_running_loop()
+        if self._loop is not loop:
+            self._loop, self._active = loop, 0
+            self._waiters.clear()
+        return loop
+
+    @staticmethod
+    def _pipeline_running() -> bool:
+        return any(getattr(driver, "is_connected", False) for driver in list(app_state.cameras.values()))
+
+    def _capacity(self) -> int:
+        return 1 if self._pipeline_running() else self._PARALLEL_WITHOUT_CAMERAS
+
+    def check_capacity(self) -> None:
+        """Raise ApiInferenceBusy now if a new request would have to be turned away."""
+        limit = settings.API_INFERENCE_QUEUE_LIMIT
+        if limit > 0 and self._active >= self._capacity() and len(self._waiters) >= limit:
+            raise ApiInferenceBusy("Too many detection requests are waiting for the model; retry shortly")
+
+    async def _acquire(self) -> None:
+        loop = self._bind_loop()
+        if self._active < self._capacity() and not self._waiters:
+            self._active += 1
+            return
+        self.check_capacity()
+        turn = loop.create_future()
+        self._waiters.append(turn)
+        try:
+            await turn
+        except BaseException:
+            if turn.done() and not turn.cancelled():
+                self._release()  # given a turn just as the request went away
+            else:
+                with contextlib.suppress(ValueError):
+                    self._waiters.remove(turn)
+            raise
+
+    def _release(self) -> None:
+        self._active = max(0, self._active - 1)
+        while self._waiters and self._active < self._capacity():
+            turn = self._waiters.popleft()
+            if not turn.done():
+                self._active += 1
+                turn.set_result(None)
+
+    @contextlib.asynccontextmanager
+    async def slot(self) -> AsyncIterator[Callable[..., Any]]:
+        """Wait for a turn; yields run(fn, *args), which runs fn in a worker thread."""
+        await self._acquire()
+
+        async def run(fn: Callable[..., Any], *args: Any) -> Any:
+            model_seconds: Optional[float] = None
+
+            def timed() -> Any:
+                nonlocal model_seconds
+                begin_model_timing()
+                try:
+                    return fn(*args)
+                finally:
+                    model_seconds = end_model_timing()
+
+            start = time.perf_counter()
+            try:
+                return await asyncio.to_thread(timed)
+            finally:
+                share = settings.API_INFERENCE_MAX_SHARE
+                if share < 1.0 and self._pipeline_running():
+                    # Only the time this request held the model counts; engines
+                    # that do not report it are charged their wall time.
+                    used = model_seconds if model_seconds is not None else time.perf_counter() - start
+                    used = min(used, self._MAX_CHARGE_SECONDS)
+                    # Leave the model to the cameras for (1 - share) / share of
+                    # that time before the next API request starts.
+                    self._next_start = max(self._next_start, time.monotonic() + used * (1.0 - share) / share)
+
+        try:
+            if self._pipeline_running():
+                delay = self._next_start - time.monotonic()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+            yield run
+        finally:
+            self._release()
+
+
+api_inference_gate = _ApiInferenceGate()
+
+
+@contextlib.asynccontextmanager
+async def _unqueued() -> AsyncIterator[Callable[..., Any]]:
+    async def run(fn: Callable[..., Any], *args: Any) -> Any:
+        return await asyncio.to_thread(fn, *args)
+
+    yield run
+
+
 class VisionService:
     @staticmethod
     async def detect_image(
@@ -686,7 +814,8 @@ class VisionService:
         nms_threshold: Optional[float] = None,
     ) -> DetectionResponse:
         engine, model_name, model_id = _get_active_engine()
-        response = await asyncio.to_thread(engine.predict, image_bytes, conf_threshold, nms_threshold)
+        async with api_inference_gate.slot() as run:
+            response = await run(engine.predict, image_bytes, conf_threshold, nms_threshold)
 
         log = DetectionLog(
             model_id=model_id,
@@ -708,7 +837,15 @@ class VisionService:
         camera_id: str,
         conf_threshold: Optional[float] = None,
         nms_threshold: Optional[float] = None,
+        queued: bool = True,
     ) -> LiveInspectionResponse:
+        """queued=False is for production triggers (photo-eye or PLC): they skip
+        the API queue so they never wait behind ad-hoc detect calls."""
+        if queued:
+            api_inference_gate.check_capacity()
+        # Grab the frame at request time, before any wait for the model. A
+        # connected camera is read from memory; reconnecting an offline one
+        # commits its own database work, so waiting holds no connection.
         cam_start = time.perf_counter()
         success, mat, fid, error = await CameraService.grab_raw_frame(db, camera_id)
         if not success or mat is None:
@@ -716,7 +853,8 @@ class VisionService:
         acq_ms = round((time.perf_counter() - cam_start) * 1000, 2)
 
         engine, model_name, model_id = _get_active_engine()
-        det_response = await asyncio.to_thread(engine.predict_mat, mat, conf_threshold, nms_threshold)
+        async with (api_inference_gate.slot() if queued else _unqueued()) as run:
+            det_response = await run(engine.predict_mat, mat, conf_threshold, nms_threshold)
 
         camera = await CameraService.get_camera_by_id(db, camera_id)
         camera_name = camera.name if camera else "Camera"
@@ -765,6 +903,7 @@ class VisionService:
         if cached:
             return cached
 
+        api_inference_gate.check_capacity()
         success, mat, fid, error = await CameraService.grab_raw_frame(db, camera_id)
         if not success or mat is None:
             raise ValueError(error or "Frame grab failed")
@@ -781,7 +920,8 @@ class VisionService:
             _, jpeg = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
             return jpeg.tobytes()
 
-        return await asyncio.to_thread(_infer_and_render)
+        async with api_inference_gate.slot() as run:
+            return await run(_infer_and_render)
 
     @staticmethod
     async def get_detection_history(db: AsyncSession, limit: int = 50) -> List[DetectionLog]:

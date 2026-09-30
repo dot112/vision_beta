@@ -9,12 +9,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.dependencies import get_db
 from app.schemas.detection import DetectionLogResponse
 from app.schemas.vision import DetectionResponse, LiveInspectionResponse
-from app.services.vision_service import VisionService
+from app.services.vision_service import ApiInferenceBusy, VisionService
 from app.config import settings
 from app.utils.upload_limits import read_upload_limited
 from app.state.application_state import app_state
 
 router = APIRouter(prefix="/vision", tags=["Vision Inference"])
+
+
+def _inference_busy(exc: ApiInferenceBusy) -> HTTPException:
+    return HTTPException(status_code=429, detail=str(exc), headers={"Retry-After": "1"})
 
 
 @router.post("/detect", response_model=DetectionResponse, summary="Run detection on uploaded image file")
@@ -31,6 +35,8 @@ async def detect_image(
         return await VisionService.detect_image(db, content, confidence_threshold, nms_threshold)
     except HTTPException:
         raise
+    except ApiInferenceBusy as exc:
+        raise _inference_busy(exc)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -44,6 +50,8 @@ async def detect_live_camera(
 ) -> LiveInspectionResponse:
     try:
         return await VisionService.detect_live_camera(db, camera_id, confidence_threshold, nms_threshold)
+    except ApiInferenceBusy as exc:
+        raise _inference_busy(exc)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -57,6 +65,8 @@ async def get_annotated_frame(
     try:
         jpeg_bytes = await VisionService.get_annotated_frame(db, camera_id, confidence_threshold)
         return Response(content=jpeg_bytes, media_type="image/jpeg")
+    except ApiInferenceBusy as exc:
+        raise _inference_busy(exc)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

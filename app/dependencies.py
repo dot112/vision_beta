@@ -45,6 +45,19 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             raise
 
 
+async def _release_auth_connection(db: AsyncSession) -> None:
+    """End the auth lookup's transaction so its pooled connection goes back at once.
+
+    FastAPI keeps request dependencies open until the response has been sent,
+    so an MJPEG stream (or a slow request) would otherwise hold a connection
+    for its whole life; 15 open streams used up the pool and hung every other
+    request for 30 s. The auth lookup only reads, so this commit writes
+    nothing. expire_on_commit=False keeps the user loaded, and the route's own
+    queries check out a connection again.
+    """
+    await db.commit()
+
+
 async def get_current_user(
     request: Request,
     auth: Optional[HTTPAuthorizationCredentials] = Security(security_bearer),
@@ -132,6 +145,10 @@ async def get_current_user(
         if user.clearance_level < max(API_KEY_SCOPES[scope]["min_clearance"] for scope in required_scopes):
             raise HTTPException(status_code=403, detail="API key owner's clearance does not permit this operation")
 
+        await _release_auth_connection(db)
+        # Set after the release so the update stays pending until get_db commits
+        # after the route, as before: a busy database then cannot fail the
+        # request before the route runs.
         last_used_at = api_key.last_used_at
         if last_used_at is None or (now - (last_used_at.replace(tzinfo=timezone.utc) if last_used_at.tzinfo is None else last_used_at)).total_seconds() >= 60:
             api_key.last_used_at = now
@@ -177,6 +194,7 @@ async def get_current_user(
     # Touch live online heartbeat
     AuthService.touch_user(user.username)
 
+    await _release_auth_connection(db)
     return user
 
 

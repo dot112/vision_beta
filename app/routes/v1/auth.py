@@ -63,14 +63,21 @@ async def login(
             if len(_login_attempts) >= 10_000:
                 oldest_key = min(_login_attempts, key=lambda key: _login_attempts[key][1])
                 _login_attempts.pop(oldest_key, None)
+        # Count the attempt as a failure before checking the password, so
+        # parallel attempts cannot all pass the check above while the slow
+        # password hashes run; a successful login clears the count again.
+        _login_attempts[attempt_key] = (failures + 1, started)
 
-    user = await AuthService.authenticate_user(db, req.username, req.password)
-    if not user:
+    try:
+        user = await AuthService.authenticate_user(db, req.username, req.password)
+    except Exception:
+        # Not a wrong password: give the reserved attempt back.
         with _login_attempt_lock:
-            failures, started = _login_attempts.get(attempt_key, (0, now))
-            if now - started >= _LOGIN_WINDOW_SECONDS:
-                failures, started = 0, now
-            _login_attempts[attempt_key] = (failures + 1, started)
+            failures, window_start = _login_attempts.get(attempt_key, (0, started))
+            if window_start == started and failures > 0:
+                _login_attempts[attempt_key] = (failures - 1, window_start)
+        raise
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",

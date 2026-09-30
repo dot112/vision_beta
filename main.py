@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.middleware.error_handler import unhandled_exception_handler
+from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_body_limit import RequestBodyLimitMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.timing import TimingMiddleware
@@ -249,6 +250,12 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Innermost, so CORS, security and timing headers still wrap its 429s.
+    app.add_middleware(
+        RateLimitMiddleware,
+        rate=settings.RATE_LIMIT_PER_SECOND,
+        burst=settings.RATE_LIMIT_BURST,
+    )
     request_overhead_bytes = 1024 * 1024
     app.add_middleware(
         RequestBodyLimitMiddleware,
