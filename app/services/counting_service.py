@@ -111,6 +111,40 @@ class _TelemetryDispatcher:
 _telemetry_dispatcher = _TelemetryDispatcher()
 
 
+def send_to_channels(payload: Dict[str, Any], protocol: str = "all", endpoint_id: str = "all") -> int:
+    """Queue a payload for saved MQTT, TCP and webhook channels on the shared dispatcher.
+
+    protocol and endpoint_id narrow the targets ("all" = every enabled channel).
+    Returns the number of channels the payload was queued for.
+    """
+    from app.services.settings_persistence_service import SettingsPersistenceService
+
+    protocol = (protocol or "all").lower()
+    queued = 0
+    for ep in SettingsPersistenceService.get_endpoints():
+        proto = str(ep.get("protocol", "")).lower()
+        if proto not in ("mqtt", "tcp", "webhook") or ep.get("enabled", True) is not True:
+            continue
+        if protocol != "all" and proto != protocol:
+            continue
+        if endpoint_id not in (None, "", "all") and ep.get("id") != endpoint_id:
+            continue
+        if proto == "mqtt" and ep.get("topic"):
+            from app.services.mqtt_service import MQTTService
+            topic = ep["topic"]
+            _telemetry_dispatcher.submit(lambda t=topic: MQTTService.publish(t, payload, qos=0), key=("mqtt", topic))
+        elif proto == "tcp" and ep.get("host") and ep.get("port"):
+            host, port = str(ep["host"]), int(ep["port"])
+            _telemetry_dispatcher.submit(lambda h=host, p=port: CountingService._dispatch_tcp(h, p, payload), key=("tcp", host, port))
+        elif proto == "webhook" and ep.get("url"):
+            url = str(ep["url"])
+            _telemetry_dispatcher.submit(lambda u=url: CountingService._dispatch_webhook(u, payload), key=("webhook", url))
+        else:
+            continue
+        queued += 1
+    return queued
+
+
 class CountingService:
     """
     Industrial Counting & Defect PPM Telemetry Service.
@@ -132,7 +166,24 @@ class CountingService:
         except RuntimeError:
             return None
 
-    def __init__(self):
+    def __init__(
+        self,
+        line_id: str = "line-1",
+        line_name: str = "Line 1",
+        camera_id: Optional[str] = None,
+        dispatch_telemetry: bool = True,
+    ):
+        # The production line this counter belongs to. camera_id is set for a
+        # line's second vision camera, whose counter runs apart from the line
+        # totals; the line's counting camera leaves it None.
+        self.line_id = line_id
+        self.line_name = line_name
+        self.camera_id = camera_id
+        self.dispatch_telemetry = dispatch_telemetry
+        # When set, finished crossing events go here instead of straight out:
+        # a line with Sync on pairs them with a QR read first, then calls
+        # dispatch_event() itself.
+        self.event_sink: Optional[Any] = None
         self.config = CountingConfig()
         self.tracker = WirelineTracker(
             track_high_thresh=self.config.track_high_thresh,
@@ -345,159 +396,159 @@ class CountingService:
                 "products_per_minute": self.products_per_minute,
                 "defect_ppm": self.defect_ppm,
                 "yield_percentage": self.yield_percentage,
+                "line_id": self.line_id,
+                "line_name": self.line_name,
+                "camera_id": camera_id or self.camera_id,
+            }
+            plc_event = {
+                "event_id": f"{track_id}_{self.total_inspected}",
+                "event_type": "crossing",
+                "line_id": self.line_id,
+                "camera_id": camera_id or self.camera_id,
+                # A second vision camera only fires cards that name it.
+                "counting_camera": self.camera_id is None,
+                "result": "reject" if is_defect else "good",
+                "good_count": self.good_count,
+                "reject_count": self.rejected_count,
+                "detected_classes": [class_name] if class_name else [],
+                "timestamp": now,
             }
 
-            loop = self.get_event_loop()
-            if loop and loop.is_running():
-                # 1. Internal Event Bus & Visual Action Engine
+            sink = self.event_sink
+            if sink is not None:
                 try:
-                    from app.events.event_bus import event_bus
-                    asyncio.run_coroutine_threadsafe(event_bus.publish("wireline_cross", payload), loop)
-                    asyncio.run_coroutine_threadsafe(event_bus.publish("reading", payload), loop)
-                except Exception as eb_err:
-                    logger.debug("EventBus dispatch error: %s", eb_err)
-
-                # 1b. PLC Action Dispatcher — evaluate all enabled PLC action cards
-                try:
-                    from app.services.plc_dispatcher_service import PLCDispatcherService
-                    plc_event = {
-                        "event_id": f"{track_id}_{self.total_inspected}",
-                        "result": "reject" if is_defect else "good",
-                        "good_count": self.good_count,
-                        "reject_count": self.rejected_count,
-                        "detected_classes": [class_name] if class_name else [],
-                        "timestamp": time.time() if hasattr(self, "_last_ts") else 0.0,
-                    }
-                    asyncio.run_coroutine_threadsafe(
-                        PLCDispatcherService.evaluate(plc_event), loop
-                    )
-                except Exception as plc_err:
-                    logger.debug("PLC dispatcher evaluate error: %s", plc_err)
-
-                comm_endpoints = []
-                try:
-                    from app.services.settings_persistence_service import SettingsPersistenceService
-                    state = SettingsPersistenceService.get_state()
-                    comm_endpoints = state.get("communication_endpoints", [])
-                except Exception as ep_err:
-                    logger.debug("Failed reading communication_endpoints: %s", ep_err)
-
-                # 2. MQTT Broker (toggled ON in Action Trigger)
-                if self.config.send_mqtt:
-                    mqtt_payload = self._filter_payload_for_protocol(payload, "mqtt", is_defect)
-                    if mqtt_payload is not None:
-                        mqtt_topics = set()
-                        sel_mqtt_id = getattr(self.config, "mqtt_endpoint_id", None)
-                        if sel_mqtt_id and sel_mqtt_id != "all":
-                            for ep in comm_endpoints:
-                                if (
-                                    ep.get("id") == sel_mqtt_id
-                                    and ep.get("enabled", True) is True
-                                    and str(ep.get("protocol", "")).lower() == "mqtt"
-                                    and ep.get("topic")
-                                ):
-                                    mqtt_topics.add(ep.get("topic"))
-                                    break
-                        else:
-                            for ep in comm_endpoints:
-                                if ep.get("enabled", True) is True and str(ep.get("protocol", "")).lower() == "mqtt":
-                                    t = ep.get("topic")
-                                    if t:
-                                        mqtt_topics.add(t)
-                            if not mqtt_topics and not sel_mqtt_id and self.config.mqtt_topic:
-                                mqtt_topics.add(self.config.mqtt_topic)
-
-                        for topic in mqtt_topics:
-                            try:
-                                from app.services.mqtt_service import MQTTService
-                                _telemetry_dispatcher.submit(
-                                    lambda t=topic, p=mqtt_payload: MQTTService.publish(t, p, qos=0),
-                                    key=("mqtt", topic),
-                                )
-                            except Exception as exc:
-                                logger.debug("MQTT queue dispatch error (%s): %s", topic, exc)
-
-                # 3. TCP Socket (toggled ON in Action Trigger)
-                if self.config.send_tcp:
-                    tcp_payload = self._filter_payload_for_protocol(payload, "tcp", is_defect)
-                    if tcp_payload is not None:
-                        tcp_targets = set()
-                        sel_tcp_id = getattr(self.config, "tcp_endpoint_id", None)
-                        if sel_tcp_id and sel_tcp_id != "all":
-                            for ep in comm_endpoints:
-                                if (
-                                    ep.get("id") == sel_tcp_id
-                                    and ep.get("enabled", True) is True
-                                    and str(ep.get("protocol", "")).lower() == "tcp"
-                                ):
-                                    h = ep.get("host")
-                                    p = ep.get("port")
-                                    if h and p:
-                                        tcp_targets.add((str(h), int(p)))
-                                    break
-                        else:
-                            for ep in comm_endpoints:
-                                if ep.get("enabled", True) is True and str(ep.get("protocol", "")).lower() == "tcp":
-                                    h = ep.get("host")
-                                    p = ep.get("port")
-                                    if h and p:
-                                        tcp_targets.add((str(h), int(p)))
-                            if not tcp_targets and not sel_tcp_id and self.config.tcp_host and self.config.tcp_port:
-                                tcp_targets.add((str(self.config.tcp_host), int(self.config.tcp_port)))
-
-                        for h, p in tcp_targets:
-                            try:
-                                _telemetry_dispatcher.submit(
-                                    lambda host=h, port=p, pay=tcp_payload: self._dispatch_tcp(host, port, pay),
-                                    key=("tcp", h, p),
-                                )
-                            except Exception as exc:
-                                logger.debug("TCP queue dispatch error (%s:%d): %s", h, p, exc)
-
-                # 4. HTTP Webhook API (toggled ON in Action Trigger)
-                if self.config.send_webhook:
-                    wh_payload = self._filter_payload_for_protocol(payload, "webhook", is_defect)
-                    if wh_payload is not None:
-                        wh_targets = []
-                        sel_wh_id = getattr(self.config, "webhook_endpoint_id", None)
-                        if sel_wh_id and sel_wh_id != "all":
-                            for ep in comm_endpoints:
-                                if (
-                                    ep.get("id") == sel_wh_id
-                                    and ep.get("enabled", True) is True
-                                    and str(ep.get("protocol", "")).lower() == "webhook"
-                                    and ep.get("url")
-                                ):
-                                    raw_hdrs = ep.get("headers")
-                                    hdrs_dict = None
-                                    if isinstance(raw_hdrs, dict):
-                                        hdrs_dict = raw_hdrs
-                                    elif isinstance(raw_hdrs, str) and raw_hdrs.strip():
-                                        hdrs_dict = {}
-                                        for line in raw_hdrs.splitlines():
-                                            if ":" in line:
-                                                k, _, v = line.partition(":")
-                                                hdrs_dict[k.strip()] = v.strip()
-                                    wh_targets.append((str(ep.get("url")), hdrs_dict))
-                                    break
-                        else:
-                            for ep in comm_endpoints:
-                                if ep.get("enabled", True) is True and str(ep.get("protocol", "")).lower() == "webhook":
-                                    u = ep.get("url")
-                                    if u:
-                                        wh_targets.append((str(u), None))
-                            if not wh_targets and not sel_wh_id and self.config.webhook_url:
-                                wh_targets.append((str(self.config.webhook_url), self.config.webhook_headers))
-
-                        for u, hdrs in wh_targets:
-                            try:
-                                _telemetry_dispatcher.submit(
-                                    lambda url=u, pay=wh_payload, h=hdrs: self._dispatch_webhook(url, pay, h),
-                                    key=("webhook", u),
-                                )
-                            except Exception as exc:
-                                logger.debug("Webhook queue dispatch error (%s): %s", u, exc)
+                    sink(payload, plc_event, is_defect)
+                    continue
+                except Exception as sink_err:
+                    logger.warning("Line %s sync hand-off failed, sending event unpaired: %s", self.line_id, sink_err)
+            self.dispatch_event(payload, plc_event, is_defect)
         return events
+
+    def dispatch_event(self, payload: Dict[str, Any], plc_event: Dict[str, Any], is_defect: bool) -> None:
+        """Send one crossing event to the event bus, the PLC cards and the line's telemetry targets."""
+        loop = self.get_event_loop()
+        if not (loop and loop.is_running()):
+            return
+        # 1. Internal Event Bus & Visual Action Engine
+        try:
+            from app.events.event_bus import event_bus
+            asyncio.run_coroutine_threadsafe(event_bus.publish("wireline_cross", payload), loop)
+            asyncio.run_coroutine_threadsafe(event_bus.publish("reading", payload), loop)
+        except Exception as eb_err:
+            logger.debug("EventBus dispatch error: %s", eb_err)
+
+        # 1b. PLC Action Dispatcher: the line's enabled PLC action cards
+        try:
+            from app.services.plc_dispatcher_service import PLCDispatcherService
+            asyncio.run_coroutine_threadsafe(PLCDispatcherService.evaluate(plc_event), loop)
+        except Exception as plc_err:
+            logger.debug("PLC dispatcher evaluate error: %s", plc_err)
+
+        if not self.dispatch_telemetry:
+            return
+        for protocol, enabled in (
+            ("mqtt", self.config.send_mqtt),
+            ("tcp", self.config.send_tcp),
+            ("webhook", self.config.send_webhook),
+        ):
+            if not enabled:
+                continue
+            filtered = self._filter_payload_for_protocol(payload, protocol, is_defect)
+            if filtered is not None:
+                self._send(protocol, filtered)
+
+    def dispatch_qr(self, payload: Dict[str, Any], known: bool) -> None:
+        """Send a QR read to the line's telemetry targets that are set to send QR reads."""
+        if not self.dispatch_telemetry:
+            return
+        for protocol in ("mqtt", "tcp", "webhook"):
+            mode = str(getattr(self.config, f"{protocol}_qr_dispatch", "off") or "off").lower()
+            if mode == "all" or (mode == "known" and known) or (mode == "unknown" and not known):
+                self._send(protocol, payload)
+
+    def _comm_endpoints(self) -> List[Dict[str, Any]]:
+        try:
+            from app.services.settings_persistence_service import SettingsPersistenceService
+            return list(SettingsPersistenceService.get_state().get("communication_endpoints", []))
+        except Exception as ep_err:
+            logger.debug("Failed reading communication_endpoints: %s", ep_err)
+            return []
+
+    def _targets(self, protocol: str) -> List[Any]:
+        """Destinations for one protocol: the selected channel, every enabled channel, or the legacy setting."""
+        comm_endpoints = self._comm_endpoints()
+        selected = getattr(self.config, f"{protocol}_endpoint_id", None)
+
+        def usable(ep: Dict[str, Any]) -> bool:
+            return ep.get("enabled", True) is True and str(ep.get("protocol", "")).lower() == protocol
+
+        if selected and selected != "all":
+            chosen = [ep for ep in comm_endpoints if ep.get("id") == selected and usable(ep)][:1]
+        else:
+            chosen = [ep for ep in comm_endpoints if usable(ep)]
+
+        if protocol == "mqtt":
+            topics: List[str] = []
+            for ep in chosen:
+                if ep.get("topic") and ep["topic"] not in topics:
+                    topics.append(ep["topic"])
+            if not topics and not selected and self.config.mqtt_topic:
+                topics.append(self.config.mqtt_topic)
+            return topics
+        if protocol == "tcp":
+            hosts: List[Tuple[str, int]] = []
+            for ep in chosen:
+                if ep.get("host") and ep.get("port"):
+                    target = (str(ep["host"]), int(ep["port"]))
+                    if target not in hosts:
+                        hosts.append(target)
+            if not hosts and not selected and self.config.tcp_host and self.config.tcp_port:
+                hosts.append((str(self.config.tcp_host), int(self.config.tcp_port)))
+            return hosts
+        hooks: List[Tuple[str, Optional[Dict[str, str]]]] = []
+        for ep in chosen:
+            if not ep.get("url"):
+                continue
+            hdrs_dict = None
+            if selected and selected != "all":
+                # Only an explicitly selected channel sends its saved headers.
+                raw_hdrs = ep.get("headers")
+                if isinstance(raw_hdrs, dict):
+                    hdrs_dict = raw_hdrs
+                elif isinstance(raw_hdrs, str) and raw_hdrs.strip():
+                    hdrs_dict = {}
+                    for line in raw_hdrs.splitlines():
+                        if ":" in line:
+                            k, _, v = line.partition(":")
+                            hdrs_dict[k.strip()] = v.strip()
+            hooks.append((str(ep["url"]), hdrs_dict))
+        if not hooks and not selected and self.config.webhook_url:
+            hooks.append((str(self.config.webhook_url), self.config.webhook_headers))
+        return hooks
+
+    def _send(self, protocol: str, payload: Dict[str, Any]) -> None:
+        for target in self._targets(protocol):
+            try:
+                if protocol == "mqtt":
+                    from app.services.mqtt_service import MQTTService
+                    _telemetry_dispatcher.submit(
+                        lambda t=target, p=payload: MQTTService.publish(t, p, qos=0),
+                        key=("mqtt", target),
+                    )
+                elif protocol == "tcp":
+                    host, port = target
+                    _telemetry_dispatcher.submit(
+                        lambda h=host, pt=port, pay=payload: self._dispatch_tcp(h, pt, pay),
+                        key=("tcp", host, port),
+                    )
+                else:
+                    url, hdrs = target
+                    _telemetry_dispatcher.submit(
+                        lambda u=url, pay=payload, h=hdrs: self._dispatch_webhook(u, pay, h),
+                        key=("webhook", url),
+                    )
+            except Exception as exc:
+                logger.debug("%s queue dispatch error (%s): %s", protocol, target, exc)
 
     def _filter_payload_for_protocol(self, payload: Dict[str, Any], protocol: str, is_defect: bool) -> Optional[Dict[str, Any]]:
         """Evaluates protocol-specific trigger condition and filters payload fields."""

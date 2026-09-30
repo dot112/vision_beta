@@ -41,6 +41,8 @@ from app.routes.v1 import auth as auth_router
 from app.routes.v1 import comms as comms_router
 from app.routes.v1 import plc as plc_router
 from app.routes.v1 import health as health_router
+from app.routes.v1 import lines as lines_router
+from app.routes.v1 import products as products_router
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -75,6 +77,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         from alembic import command
         from alembic.config import Config
         from pathlib import Path
+
+        # First start of version 2: keep the version 1 settings file and
+        # database aside before anything is migrated.
+        # A failed backup is logged but does not stop the server: the upgrade
+        # only adds a table and Line 1 keeps version 1's settings keys.
+        from app.services.settings_persistence_service import backup_v1_files
+        try:
+            backup_v1_files(settings.DATABASE_URL)
+        except Exception:
+            logger.exception("Could not write the version 1 backup; continuing with the upgrade")
 
         alembic_config = Config(str(Path(__file__).resolve().parent / "alembic.ini"))
         async with engine.begin() as conn:
@@ -141,6 +153,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await SettingsPersistenceService.apply_on_startup()
         except Exception as st_err:
             logger.warning("Settings persistence restore error: %s", st_err)
+
+        # 4b. Product codes for QR checks, then each production line's model and cameras
+        try:
+            from app.services.product_service import ProductService
+            async with AsyncSessionLocal() as db:
+                count = await ProductService.refresh_catalog(db)
+            logger.info("Loaded %d product code(s) for QR checks", count)
+        except Exception:
+            logger.exception("Could not load product codes; QR reads will all be unknown")
+        try:
+            from app.services.line_service import line_manager
+            await line_manager.startup()
+        except Exception:
+            logger.exception("Production line startup error")
 
         # 5. Start UDP Auto-Discovery Beacon
         try:
@@ -264,6 +290,7 @@ def create_app() -> FastAPI:
             "/api/v1/vision/detect": settings.MAX_IMAGE_UPLOAD_BYTES + request_overhead_bytes,
             "/api/v1/qr/decode": settings.MAX_IMAGE_UPLOAD_BYTES + request_overhead_bytes,
             "/api/v1/mqtt/certs/upload": 4 * 1024 * 1024 + request_overhead_bytes,
+            "/api/v1/products/import": 8 * 1024 * 1024 + request_overhead_bytes,
         },
     )
     app.add_middleware(
@@ -301,6 +328,8 @@ def create_app() -> FastAPI:
         comms_router,
         plc_router,
         health_router,
+        lines_router,
+        products_router,
     ):
         protected_api.include_router(router_mod.router)
     app.include_router(protected_api)

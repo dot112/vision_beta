@@ -643,8 +643,9 @@ class InferenceEngine:
         )
 
         # Build allowed class filter from counting config (expected + defect classes)
+        from app.services.line_service import line_manager
+        counting_service = line_manager.counter_for_camera(camera_id)
         try:
-            from app.services.counting_service import counting_service
             _cfg = counting_service.config
             _exp = set(c.lower() for c in (_cfg.expected_classes or []))
             _def = set(c.lower() for c in (_cfg.defect_classes or []))
@@ -655,8 +656,6 @@ class InferenceEngine:
         # 1. Wirelines & Object Counting HUD
         if draw_wirelines:
             try:
-                from app.services.counting_service import counting_service
-
                 cfg = counting_service.config
                 total_insp = counting_service.total_inspected
                 good_c = counting_service.good_count
@@ -672,11 +671,11 @@ class InferenceEngine:
 
                     # --- Line 1: yellow translucent 20px band ---
                     _blend_filled_rect(img, (max(0, l1_x - BAND), 0), (min(w, l1_x + BAND), h), (255, 230, 0), 0.30, 0.70)
-                    cv2.putText(img, "LINE 1: ENTRY", (l1_x + BAND + 4, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 230, 0), 2)
+                    cv2.putText(img, "WIRELINE 1: ENTRY", (l1_x + BAND + 4, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 230, 0), 2)
 
                     # --- Line 2: cyan translucent 20px band ---
                     _blend_filled_rect(img, (max(0, l2_x - BAND), 0), (min(w, l2_x + BAND), h), (0, 215, 255), 0.30, 0.70)
-                    cv2.putText(img, "LINE 2: EXIT (COUNT)", (l2_x + BAND + 4, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 215, 255), 2)
+                    cv2.putText(img, "WIRELINE 2: EXIT (COUNT)", (l2_x + BAND + 4, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 215, 255), 2)
                 else:
                     # Vertical Mode (counts vertical moving items): wirelines are horizontal lines across Y
                     l1_y = int(cfg.line1_position * h)
@@ -684,11 +683,11 @@ class InferenceEngine:
 
                     # --- Line 1: yellow translucent 20px band ---
                     _blend_filled_rect(img, (0, max(0, l1_y - BAND)), (w, min(h, l1_y + BAND)), (255, 230, 0), 0.30, 0.70)
-                    cv2.putText(img, "LINE 1: ENTRY", (12, max(20, l1_y - BAND - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 230, 0), 2)
+                    cv2.putText(img, "WIRELINE 1: ENTRY", (12, max(20, l1_y - BAND - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 230, 0), 2)
 
                     # --- Line 2: cyan translucent 20px band ---
                     _blend_filled_rect(img, (0, max(0, l2_y - BAND)), (w, min(h, l2_y + BAND)), (0, 215, 255), 0.30, 0.70)
-                    cv2.putText(img, "LINE 2: EXIT (COUNT)", (12, max(20, l2_y - BAND - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 215, 255), 2)
+                    cv2.putText(img, "WIRELINE 2: EXIT (COUNT)", (12, max(20, l2_y - BAND - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 215, 255), 2)
 
                 # Target markers — only for CONFIRMED tracks (no trail, no ghost dots)
                 for obj in list(counting_service.get_tracker(camera_id).objects.values()):
@@ -779,7 +778,6 @@ class InferenceEngine:
         # In segmentation mode: NO bounding boxes are drawn (pixel masks only)
         active_tracks: Dict[int, Any] = {}
         try:
-            from app.services.counting_service import counting_service
             active_tracks = dict(counting_service.get_tracker(camera_id).objects)
         except Exception:
             active_tracks = {}

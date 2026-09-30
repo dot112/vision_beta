@@ -112,6 +112,15 @@ def required_api_key_scopes(method: str, path: str) -> set[str] | None:
         if path.endswith("/test"):
             return {"plc:operate", "integrations:operate"}
         return {"configuration:write", "plc:configure", "plc:operate", "integrations:operate"}
+    if path == "/api/v1/lines" or path.startswith("/api/v1/lines/"):
+        if method in {"GET", "HEAD"}:
+            return {"monitor:read"}
+        if path.endswith("/clone"):
+            # A clone copies the line's PLC action cards.
+            return {"configuration:write", "plc:configure"}
+        return {"configuration:write"}
+    if path == "/api/v1/products" or path.startswith("/api/v1/products/"):
+        return {"configuration:read"} if method in {"GET", "HEAD"} else {"configuration:write"}
     if path.startswith("/api/v1/rules/") or path == "/api/v1/rules":
         return {"configuration:read"} if method in {"GET", "HEAD"} else {"configuration:write"}
 

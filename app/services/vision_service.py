@@ -140,10 +140,11 @@ class _CameraInferenceWorker:
                 continue
 
             try:
-                engine, _, _ = _get_active_engine()
+                from app.services.line_service import line_manager
+                engine, _, _ = line_manager.engine_for_camera(self.camera_id)
                 det_response = engine.predict_mat(mat, conf_threshold=conf)
 
-                # Update real-time object tracking & wireline counters
+                # Update real-time object tracking & wireline counters of the camera's line
                 try:
                     driver = app_state.cameras.get(self.camera_id)
                     s = getattr(driver, "settings", {}) if driver else {}
@@ -151,8 +152,10 @@ class _CameraInferenceWorker:
                     c_fliph = bool(s.get("flip_h", False))
                     c_flipv = bool(s.get("flip_v", False))
 
-                    from app.services.counting_service import counting_service
-                    counting_service.process_frame(
+                    routed = line_manager.route(self.camera_id)
+                    if routed:
+                        routed[0].record_frame(self.camera_id)
+                    line_manager.counter_for_camera(self.camera_id).process_frame(
                         det_response.detections,
                         det_response.image_width,
                         det_response.image_height,
@@ -328,12 +331,19 @@ class _CameraStreamPublisher:
 
             # 3. Retrieve latest AI detections & tracking info
             annotated_jpeg = None
-            if want_ann:
+            from app.services.line_service import line_manager
+            routed = line_manager.route(self.camera_id)
+            if want_ann and routed and routed[1] == "qr":
+                from app.services.qr_service import QRReaderPipeline
+                annotated_mat = QRReaderPipeline.draw_reads(self.camera_id, display_mat, scale_x, scale_y, fps)
+                ret_ann, ann_buf = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                annotated_jpeg = ann_buf.tobytes() if ret_ann else None
+            elif want_ann:
                 worker = CameraStreamPipeline.get_worker(self.camera_id)
                 detections, latency_ms = worker.get_latest_inference()
 
                 # 4. Draw annotations directly onto BGR display_mat
-                engine, _, _ = _get_active_engine()
+                engine, _, _ = line_manager.engine_for_camera(self.camera_id)
                 s = getattr(driver, "settings", {}) if driver else {}
                 c_rot = int(s.get("rotation") or 90) if "rotation" in s else 90
                 c_fliph = bool(s.get("flip_h", False))
@@ -409,6 +419,8 @@ class CameraStreamPipeline:
             worker.stop()
         if publisher:
             publisher.stop()
+        from app.services.qr_service import QRReaderPipeline
+        QRReaderPipeline.remove_camera(camera_id)
 
     @classmethod
     def stop_all(cls) -> None:
@@ -422,6 +434,8 @@ class CameraStreamPipeline:
             worker.stop()
         for publisher in publishers:
             publisher.stop()
+        from app.services.qr_service import QRReaderPipeline
+        QRReaderPipeline.stop_all()
 
     @classmethod
     async def stream_annotated_mjpeg(cls, camera_id: str) -> AsyncGenerator[bytes, None]:
@@ -545,7 +559,8 @@ class CameraStreamPipeline:
         c_fliph = bool(s.get("flip_h", False))
         c_flipv = bool(s.get("flip_v", False))
 
-        engine, _, _ = _get_active_engine()
+        from app.services.line_service import line_manager
+        engine, _, _ = line_manager.engine_for_camera(camera_id)
         annotated_mat = engine.draw_annotations_mat(
             display_mat,
             detections,
@@ -647,12 +662,31 @@ class ContinuousVisionRunner:
                 time.sleep(0.04)
                 continue
 
+            from app.services.line_service import line_manager
             for camera_id, driver in cams:
                 if not getattr(driver, "is_connected", False):
                     continue
                 try:
+                    # Each camera feeds the production line that owns it. A camera no
+                    # line claims, or one on a stopped line, is streamed but not processed.
+                    routed = line_manager.route(camera_id)
+                    if routed is None or not routed[0].enabled:
+                        continue
                     cur_fid = driver.get_latest_frame_id() if hasattr(driver, "get_latest_frame_id") else getattr(driver, "_latest_frame_id", 0)
                     if cur_fid == last_submitted_fids.get(camera_id, 0) or cur_fid == 0:
+                        continue
+
+                    if routed[1] == "qr":
+                        from app.services.qr_service import QRReaderPipeline
+                        reader = QRReaderPipeline.get_worker(camera_id)
+                        if reader.is_busy:
+                            continue
+                        if hasattr(driver, "get_latest_raw_mat"):
+                            success, mat, fid = driver.get_latest_raw_mat(copy=False)
+                        else:
+                            success, mat, fid = driver.grab_raw_frame()
+                        if success and mat is not None and reader.submit_frame_if_idle(mat, fid):
+                            last_submitted_fids[camera_id] = fid
                         continue
 
                     # Leave the frame for the next pass while inference is running,
@@ -852,7 +886,8 @@ class VisionService:
             raise ValueError(error or f"Failed to acquire frame from camera {camera_id}")
         acq_ms = round((time.perf_counter() - cam_start) * 1000, 2)
 
-        engine, model_name, model_id = _get_active_engine()
+        from app.services.line_service import line_manager
+        engine, model_name, model_id = line_manager.engine_for_camera(camera_id)
         async with (api_inference_gate.slot() if queued else _unqueued()) as run:
             det_response = await run(engine.predict_mat, mat, conf_threshold, nms_threshold)
 
@@ -908,7 +943,8 @@ class VisionService:
         if not success or mat is None:
             raise ValueError(error or "Frame grab failed")
 
-        engine, _, _ = _get_active_engine()
+        from app.services.line_service import line_manager
+        engine, _, _ = line_manager.engine_for_camera(camera_id)
 
         def _infer_and_render() -> bytes:
             # Inference, drawing and JPEG encoding all run off the event loop.

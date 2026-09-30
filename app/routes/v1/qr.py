@@ -7,9 +7,11 @@ from app.dependencies import get_db
 from app.schemas.qr import BarcodeDecodeResponse, LiveCameraBarcodeResponse
 from app.services.qr_service import QRService
 from app.config import settings
+from app.utils.logger import get_logger
 from app.utils.upload_limits import read_upload_limited
 
 router = APIRouter(prefix="/qr", tags=["QR & Barcodes"])
+logger = get_logger(__name__)
 
 
 @router.post("/decode", response_model=BarcodeDecodeResponse, summary="Decode QR/Barcodes in uploaded image")
@@ -88,54 +90,25 @@ async def receive_mobile_scan(
     except Exception:
         pass
 
-    # 2. Protocol dispatching based on user selection
+    # 2. Check the code against the product list, then send it to the saved
+    # channels through the shared telemetry dispatcher.
+    from app.services.product_service import product_catalog
+    product = product_catalog.lookup(code)
+    scan_event_payload = {
+        "event": "MOBILE_BARCODE_SCANNED",
+        "code": code,
+        "format": fmt,
+        "type": code_type,
+        "device": device,
+        "timestamp": ts,
+        "known": product is not None,
+        "product_name": product.get("name") if product else None,
+    }
     try:
-        import asyncio
-        loop = asyncio.get_running_loop()
-        from app.services.settings_persistence_service import SettingsPersistenceService
-        state = SettingsPersistenceService.get_state()
-        comms = state.get("comms", {})
-
-        scan_event_payload = {
-            "event": "MOBILE_BARCODE_SCANNED",
-            "code": code,
-            "format": fmt,
-            "type": code_type,
-            "device": device,
-            "timestamp": ts,
-        }
-
-        # MQTT
-        if target_protocol in ("all", "mqtt"):
-            for m in comms.get("mqtt_channels", []):
-                if target_endpoint in ("all", m.get("id")):
-                    try:
-                        from app.services.mqtt_service import MQTTService
-                        loop.create_task(MQTTService.publish(m.get("topic", "factory/scans"), scan_event_payload, qos=0))
-                    except Exception:
-                        pass
-
-        # TCP
-        if target_protocol in ("all", "tcp"):
-            for t in comms.get("tcp_servers", []):
-                if target_endpoint in ("all", t.get("id")):
-                    try:
-                        from app.services.counting_service import counting_service
-                        loop.create_task(counting_service._dispatch_tcp(t.get("host"), t.get("port"), scan_event_payload))
-                    except Exception:
-                        pass
-
-        # Webhook
-        if target_protocol in ("all", "webhook"):
-            for w in comms.get("webhooks", []):
-                if target_endpoint in ("all", w.get("id")):
-                    try:
-                        from app.services.counting_service import counting_service
-                        loop.create_task(counting_service._dispatch_webhook(w.get("url"), scan_event_payload))
-                    except Exception:
-                        pass
+        from app.services.counting_service import send_to_channels
+        send_to_channels(scan_event_payload, protocol=str(target_protocol), endpoint_id=str(target_endpoint))
     except Exception:
-        pass
+        logger.exception("Could not queue the mobile scan for dispatch")
 
     return {
         "status": "success",
@@ -144,5 +117,7 @@ async def receive_mobile_scan(
         "format": fmt,
         "type": code_type,
         "timestamp": ts,
+        "known": product is not None,
+        "product_name": product.get("name") if product else None,
     }
 

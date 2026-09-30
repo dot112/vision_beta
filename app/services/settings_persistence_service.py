@@ -10,6 +10,13 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from app.services.line_config import (
+    PRIMARY_LINE_ID,
+    check_camera_ownership,
+    endpoints_used_by_line,
+    normalize_line,
+    upgrade_state_to_v2,
+)
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -128,6 +135,95 @@ def _restore_redacted_url(value: str, original: str) -> str:
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data")
 STATE_FILE = os.path.join(DATA_DIR, "system_state.json")
 
+def _sqlite_path(database_url: str) -> Optional[str]:
+    """File path of a SQLite database URL, or None for other databases and in-memory ones."""
+    match = re.match(r"^sqlite(?:\+\w+)?:///(.+)$", database_url or "")
+    if not match or match.group(1).startswith(":memory:"):
+        return None
+    return match.group(1).split("?", 1)[0]
+
+
+def backup_v1_files(database_url: str) -> List[str]:
+    """Copy the settings file and database aside before the first version 2 start.
+
+    Runs before the database migration. Does nothing on a fresh install, on a
+    file that is already version 2, or when a backup already exists. Returns
+    the backup paths written.
+    """
+    if not os.path.exists(STATE_FILE):
+        return []
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            current = json.load(f)
+    except Exception as exc:
+        logger.warning("Could not read %s to decide on a version 1 backup: %s", STATE_FILE, exc)
+        return []
+    if isinstance(current, dict) and isinstance(current.get("lines"), list):
+        return []
+
+    written: List[str] = []
+    state_backup = os.path.join(DATA_DIR, "system_state.v1-backup.json")
+    if not os.path.exists(state_backup):
+        import shutil
+        shutil.copy2(STATE_FILE, state_backup)
+        written.append(state_backup)
+
+    db_path = _sqlite_path(database_url)
+    if db_path and os.path.exists(db_path):
+        root, _ = os.path.splitext(db_path)
+        db_backup = f"{root}.v1-backup.db"
+        if not os.path.exists(db_backup):
+            import sqlite3
+            # The backup API gives a consistent copy even with a journal pending.
+            src = sqlite3.connect(db_path)
+            try:
+                dst = sqlite3.connect(db_backup)
+                try:
+                    src.backup(dst)
+                finally:
+                    dst.close()
+            finally:
+                src.close()
+            written.append(db_backup)
+    for path in written:
+        logger.info("Version 1 backup written: %s", path)
+    return written
+
+
+def counting_config_from_dict(cfg_data: Dict[str, Any]) -> "Any":
+    """Build a CountingConfig from a saved action_trigger dict, filling version 1 fallbacks."""
+    from app.schemas.counting import CountingConfig
+
+    return CountingConfig(
+        line1_position=cfg_data.get("line1_position", 0.35),
+        line2_position=cfg_data.get("line2_position", 0.65),
+        orientation=cfg_data.get("orientation", "horizontal"),
+        expected_classes=cfg_data.get("expected_classes", ["bottle", "can", "cup"]),
+        defect_classes=cfg_data.get("defect_classes", ["defect", "scratch", "broken"]),
+        send_mqtt=cfg_data.get("send_mqtt", False),
+        mqtt_topic=cfg_data.get("mqtt_topic", "factory/inspection/wireline"),
+        send_tcp=cfg_data.get("send_tcp", False),
+        tcp_host=cfg_data.get("tcp_host", "127.0.0.1"),
+        tcp_port=cfg_data.get("tcp_port", 9000),
+        send_webhook=cfg_data.get("send_webhook", False),
+        webhook_url=cfg_data.get("webhook_url", ""),
+        mqtt_endpoint_id=cfg_data.get("mqtt_endpoint_id"),
+        tcp_endpoint_id=cfg_data.get("tcp_endpoint_id"),
+        webhook_endpoint_id=cfg_data.get("webhook_endpoint_id"),
+        dispatch_trigger=cfg_data.get("dispatch_trigger", "both"),
+        dispatched_fields=cfg_data.get("dispatched_fields"),
+        mqtt_dispatch_trigger=cfg_data.get("mqtt_dispatch_trigger", cfg_data.get("dispatch_trigger", "both")),
+        mqtt_dispatched_fields=cfg_data.get("mqtt_dispatched_fields", cfg_data.get("dispatched_fields")),
+        tcp_dispatch_trigger=cfg_data.get("tcp_dispatch_trigger", cfg_data.get("dispatch_trigger", "both")),
+        tcp_dispatched_fields=cfg_data.get("tcp_dispatched_fields", cfg_data.get("dispatched_fields")),
+        webhook_dispatch_trigger=cfg_data.get("webhook_dispatch_trigger", cfg_data.get("dispatch_trigger", "both")),
+        webhook_dispatched_fields=cfg_data.get("webhook_dispatched_fields", cfg_data.get("dispatched_fields")),
+        mqtt_qr_dispatch=cfg_data.get("mqtt_qr_dispatch", "off"),
+        tcp_qr_dispatch=cfg_data.get("tcp_qr_dispatch", "off"),
+        webhook_qr_dispatch=cfg_data.get("webhook_qr_dispatch", "off"),
+    )
+
+
 DEFAULT_STATE: Dict[str, Any] = {
     "version": 1,
     "last_updated": datetime.now(timezone.utc).isoformat(),
@@ -217,16 +313,21 @@ class SettingsPersistenceService:
                 with open(STATE_FILE, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
                     # Merge with default state structure
-                    merged = DEFAULT_STATE.copy()
+                    # Deep copy: nested defaults must not be shared with the live state.
+                    merged = copy.deepcopy(DEFAULT_STATE)
                     merged.update(loaded)
                     cls._state = merged
                     cls._prune_expired_audit_logs()
+                    if upgrade_state_to_v2(cls._state):
+                        logger.info("Settings upgraded to version 2: the current setup is now Line 1")
+                        cls.save()
                     cls._apply_to_runtime_services()
                     return cls._state
             except Exception as exc:
                 logger.error("Error loading system_state.json: %s. Using default state.", exc)
 
-        cls._state = DEFAULT_STATE.copy()
+        cls._state = copy.deepcopy(DEFAULT_STATE)
+        upgrade_state_to_v2(cls._state)
         cls._state["audit_logs"] = [
             {
                 "id": str(uuid.uuid4())[:8],
@@ -325,6 +426,157 @@ class SettingsPersistenceService:
             action_trigger.pop("plc_actions", None)
 
         return copy.deepcopy(saved_cards)
+
+    # ── Production lines ──────────────────────────────────────────────────────
+
+    @classmethod
+    def _raw_lines(cls) -> List[Dict[str, Any]]:
+        if not cls._state:
+            cls.load()
+        if upgrade_state_to_v2(cls._state):
+            cls.save()
+        return cls._state["lines"]
+
+    @classmethod
+    def _find_line(cls, line_id: str) -> Optional[Dict[str, Any]]:
+        return next((ln for ln in cls._raw_lines() if ln.get("id") == line_id), None)
+
+    @classmethod
+    def get_lines(cls, with_logic: bool = False) -> List[Dict[str, Any]]:
+        """Detached copies of every line, Line 1 first."""
+        return [cls._line_view(ln, with_logic) for ln in cls._raw_lines()]
+
+    @classmethod
+    def get_line(cls, line_id: str, with_logic: bool = True) -> Optional[Dict[str, Any]]:
+        line = cls._find_line(line_id)
+        return cls._line_view(line, with_logic) if line else None
+
+    @classmethod
+    def _line_view(cls, line: Dict[str, Any], with_logic: bool) -> Dict[str, Any]:
+        view = copy.deepcopy({k: v for k, v in line.items() if k not in ("action_trigger", "plc_actions")})
+        if with_logic:
+            view["action_trigger"] = cls.get_line_action_trigger(line["id"])
+            view["plc_actions"] = cls.get_line_plc_actions(line["id"])
+        return view
+
+    @classmethod
+    def get_line_action_trigger(cls, line_id: str) -> Dict[str, Any]:
+        if line_id == PRIMARY_LINE_ID:
+            return copy.deepcopy({k: v for k, v in cls._state.get("action_trigger", {}).items() if k != "plc_actions"})
+        line = cls._find_line(line_id)
+        if line is None:
+            raise KeyError(line_id)
+        trigger = line.get("action_trigger")
+        if not isinstance(trigger, dict):
+            trigger = copy.deepcopy(DEFAULT_STATE["action_trigger"])
+        return copy.deepcopy(trigger)
+
+    @classmethod
+    def get_line_plc_actions(cls, line_id: str) -> List[Dict[str, Any]]:
+        if line_id == PRIMARY_LINE_ID:
+            return cls.get_plc_actions()
+        line = cls._find_line(line_id)
+        if line is None:
+            raise KeyError(line_id)
+        cards = line.get("plc_actions")
+        return copy.deepcopy(cards) if isinstance(cards, list) else []
+
+    @classmethod
+    def replace_line_plc_actions(cls, line_id: str, cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Replace one line's PLC cards; returns a detached copy of what was saved."""
+        if line_id == PRIMARY_LINE_ID:
+            return cls.replace_plc_actions(cards)
+        line = cls._find_line(line_id)
+        if line is None:
+            raise KeyError(line_id)
+        if not isinstance(cards, list) or any(not isinstance(card, dict) for card in cards):
+            raise ValueError("PLC action cards must be a list of objects")
+        from app.services.plc_failsafe_service import validate_safe_state
+        for card in cards:
+            validate_safe_state(card)
+        line["plc_actions"] = [{k: v for k, v in c.items() if k != "line_id"} for c in copy.deepcopy(cards)]
+        return copy.deepcopy(line["plc_actions"])
+
+    @classmethod
+    def get_all_plc_actions(cls) -> List[Dict[str, Any]]:
+        """Every line's PLC cards, each stamped with its line_id, for the dispatcher."""
+        cards: List[Dict[str, Any]] = []
+        for line in cls._raw_lines():
+            for card in cls.get_line_plc_actions(line["id"]):
+                card["line_id"] = line["id"]
+                cards.append(card)
+        return cards
+
+    @classmethod
+    def save_line(cls, raw: Dict[str, Any]) -> Dict[str, Any]:
+        """Create or replace a line. Raises ValueError on invalid input."""
+        lines = cls._raw_lines()
+        line_id = str(raw.get("id") or "").strip().lower()
+        existing = next((ln for ln in lines if ln.get("id") == line_id), None) if line_id else None
+        if existing is not None and line_id == PRIMARY_LINE_ID:
+            existing = {**existing, "action_trigger": cls.get_line_action_trigger(line_id)}
+        line = normalize_line(raw, existing)
+        if existing is None and any(ln.get("id") == line["id"] for ln in lines):
+            raise ValueError(f"Line id '{line['id']}' is already in use")
+        if any(ln.get("name", "").lower() == line["name"].lower() and ln.get("id") != line["id"] for ln in lines):
+            raise ValueError(f"A line named '{line['name']}' already exists")
+        check_camera_ownership([ln for ln in lines if ln.get("id") != line["id"]] + [line])
+
+        trigger = line.pop("action_trigger", None)
+        cards = line.pop("plc_actions", None)
+        if cards is not None:
+            from app.services.plc_failsafe_service import validate_safe_state
+            for card in cards:
+                if not isinstance(card, dict):
+                    raise ValueError("PLC action cards must be a list of objects")
+                validate_safe_state(card)
+
+        if line["id"] == PRIMARY_LINE_ID:
+            if isinstance(trigger, dict):
+                cls._state.setdefault("action_trigger", {}).update(
+                    {k: v for k, v in trigger.items() if k != "plc_actions"}
+                )
+        else:
+            old = existing or {}
+            line["action_trigger"] = trigger if isinstance(trigger, dict) else old.get(
+                "action_trigger", copy.deepcopy(DEFAULT_STATE["action_trigger"])
+            )
+            line["plc_actions"] = old.get("plc_actions", [])
+
+        if existing is None:
+            lines.append(line)
+        else:
+            lines[lines.index(next(ln for ln in lines if ln.get("id") == line["id"]))] = line
+        if cards is not None:
+            cls.replace_line_plc_actions(line["id"], cards)
+        return cls.get_line(line["id"])
+
+    @classmethod
+    def delete_line(cls, line_id: str) -> bool:
+        if line_id == PRIMARY_LINE_ID:
+            raise ValueError("Line 1 cannot be deleted")
+        lines = cls._raw_lines()
+        remaining = [ln for ln in lines if ln.get("id") != line_id]
+        if len(remaining) == len(lines):
+            return False
+        cls._state["lines"] = remaining
+        return True
+
+    @classmethod
+    def lines_using_endpoint(cls, endpoint_id: str) -> List[str]:
+        """Names of the lines whose dispatch settings, PLC cards or cameras use this channel."""
+        names = []
+        for line in cls.get_lines(with_logic=True):
+            if endpoint_id in endpoints_used_by_line(line):
+                names.append(line["name"])
+        return names
+
+    @classmethod
+    def line_for_camera(cls, camera_id: str) -> Optional[str]:
+        for line in cls._raw_lines():
+            if any(c.get("camera_id") == camera_id for c in line.get("cameras", [])):
+                return line["id"]
+        return None
 
     @classmethod
     def redact_secrets(cls, value: Any) -> Any:
@@ -474,6 +726,7 @@ class SettingsPersistenceService:
         action: str,
         category: str,
         details: str,
+        line_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not cls._state:
             cls.load()
@@ -490,6 +743,8 @@ class SettingsPersistenceService:
             "category": category,
             "details": details,
         }
+        if line_id:
+            event["line_id"] = line_id
 
         logs = cls._state.setdefault("audit_logs", [])
         logs.insert(0, event)
@@ -504,10 +759,13 @@ class SettingsPersistenceService:
         return event
 
     @classmethod
-    def get_audit_logs(cls, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_audit_logs(cls, limit: int = 100, line_id: Optional[str] = None) -> List[Dict[str, Any]]:
         state = cls.get_state()
         cls._prune_expired_audit_logs()
-        return state.get("audit_logs", [])[:limit]
+        logs = state.get("audit_logs", [])
+        if line_id:
+            logs = [entry for entry in logs if entry.get("line_id") == line_id]
+        return logs[:limit]
 
     @classmethod
     def get_changes_since(cls, since_version: int, client_boot_id: Optional[str] = None) -> Dict[str, Any]:
@@ -1303,40 +1561,19 @@ class SettingsPersistenceService:
 
     @classmethod
     def _apply_to_runtime_services(cls) -> None:
-        """Applies loaded state to runtime singletons."""
+        """Applies loaded state to runtime singletons: Line 1's counter and every other line."""
         try:
             from app.services.counting_service import counting_service
-            from app.schemas.counting import CountingConfig
             cfg_data = cls._state.get("action_trigger", {})
             if cfg_data:
-                config = CountingConfig(
-                    line1_position=cfg_data.get("line1_position", 0.35),
-                    line2_position=cfg_data.get("line2_position", 0.65),
-                    orientation=cfg_data.get("orientation", "horizontal"),
-                    expected_classes=cfg_data.get("expected_classes", ["bottle", "can", "cup"]),
-                    defect_classes=cfg_data.get("defect_classes", ["defect", "scratch", "broken"]),
-                    send_mqtt=cfg_data.get("send_mqtt", False),
-                    mqtt_topic=cfg_data.get("mqtt_topic", "factory/inspection/wireline"),
-                    send_tcp=cfg_data.get("send_tcp", False),
-                    tcp_host=cfg_data.get("tcp_host", "127.0.0.1"),
-                    tcp_port=cfg_data.get("tcp_port", 9000),
-                    send_webhook=cfg_data.get("send_webhook", False),
-                    webhook_url=cfg_data.get("webhook_url", ""),
-                    mqtt_endpoint_id=cfg_data.get("mqtt_endpoint_id"),
-                    tcp_endpoint_id=cfg_data.get("tcp_endpoint_id"),
-                    webhook_endpoint_id=cfg_data.get("webhook_endpoint_id"),
-                    dispatch_trigger=cfg_data.get("dispatch_trigger", "both"),
-                    dispatched_fields=cfg_data.get("dispatched_fields"),
-                    mqtt_dispatch_trigger=cfg_data.get("mqtt_dispatch_trigger", cfg_data.get("dispatch_trigger", "both")),
-                    mqtt_dispatched_fields=cfg_data.get("mqtt_dispatched_fields", cfg_data.get("dispatched_fields")),
-                    tcp_dispatch_trigger=cfg_data.get("tcp_dispatch_trigger", cfg_data.get("dispatch_trigger", "both")),
-                    tcp_dispatched_fields=cfg_data.get("tcp_dispatched_fields", cfg_data.get("dispatched_fields")),
-                    webhook_dispatch_trigger=cfg_data.get("webhook_dispatch_trigger", cfg_data.get("dispatch_trigger", "both")),
-                    webhook_dispatched_fields=cfg_data.get("webhook_dispatched_fields", cfg_data.get("dispatched_fields")),
-                )
-                counting_service.update_config(config)
+                counting_service.update_config(counting_config_from_dict(cfg_data))
         except Exception as exc:
             logger.debug("Runtime counting_service sync: %s", exc)
+        try:
+            from app.services.line_service import line_manager
+            line_manager.apply_state()
+        except Exception:
+            logger.exception("Could not apply production line settings")
 
     @classmethod
     async def apply_on_startup(cls) -> None:

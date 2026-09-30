@@ -75,3 +75,184 @@ class QRService:
             decode_response.codes,
             decode_response.decode_time_ms,
         )
+
+
+class _QRReaderWorker:
+    """Continuous QR/barcode reading for one camera that has the QR reader role.
+
+    Runs on its own thread with its own decoder, so QR cameras on different
+    lines never wait on each other. A code seen in consecutive frames counts
+    as one read; it counts again only after it has been out of view for the
+    camera's hold time.
+    """
+
+    def __init__(self, camera_id: str):
+        self.camera_id = camera_id
+        self._engine = QREngine()
+        self._input_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._trigger = threading.Event()
+        self._stop = threading.Event()
+        self._busy = False
+        self._pending: Optional[Any] = None
+        self._last_seen: dict = {}
+        self._latest: List[Tuple[Any, bool]] = []
+        self._latest_ms = 0.0
+        self.reads = 0
+        self._thread = threading.Thread(target=self._loop, name=f"QRReader-{camera_id[:8]}", daemon=True)
+        self._thread.start()
+
+    @property
+    def is_busy(self) -> bool:
+        return self._busy
+
+    def submit_frame_if_idle(self, mat: Any, frame_id: int) -> bool:
+        # Decoding only reads the frame, and drivers replace frames rather than
+        # modify them, so no copy is needed.
+        if mat is None:
+            return False
+        with self._input_lock:
+            if self._busy:
+                return False
+            self._busy = True
+            self._pending = mat
+        self._trigger.set()
+        return True
+
+    def _hold_seconds(self) -> float:
+        from app.services.line_config import DEFAULT_QR_HOLD_MS
+        from app.services.line_service import line_manager
+
+        routed = line_manager.route(self.camera_id)
+        entry = routed[0].camera_entry(self.camera_id) if routed else None
+        return int((entry or {}).get("qr_hold_ms") or DEFAULT_QR_HOLD_MS) / 1000.0
+
+    def process(self, mat: Any, now: Optional[float] = None) -> List[str]:
+        """Decode one frame and report new reads to the camera's line. Returns the new codes."""
+        from app.services.line_service import line_manager
+        from app.services.product_service import product_catalog
+
+        response = self._engine.decode(mat)
+        now = time.monotonic() if now is None else now
+        hold = self._hold_seconds()
+        routed = line_manager.route(self.camera_id)
+        new_codes: List[str] = []
+        latest: List[Tuple[Any, bool]] = []
+        with self._state_lock:
+            for code in response.codes:
+                data = (code.data or "").strip()
+                if not data:
+                    continue
+                latest.append((code, product_catalog.lookup(data) is not None))
+                previous = self._last_seen.get(data)
+                self._last_seen[data] = now
+                if previous is None or now - previous > hold:
+                    new_codes.append(data)
+            for data in [d for d, t in self._last_seen.items() if now - t > hold]:
+                del self._last_seen[data]
+            self._latest = latest
+            self._latest_ms = response.decode_time_ms
+        for data in new_codes:
+            self.reads += 1
+            fmt = next((c.code_type for c, _ in latest if (c.data or "").strip() == data), "UNKNOWN")
+            if routed and routed[1] == "qr":
+                routed[0].on_qr_read(self.camera_id, data, fmt, now)
+        return new_codes
+
+    def _loop(self) -> None:
+        from app.state.application_state import app_state
+
+        while not self._stop.is_set():
+            self._trigger.wait(timeout=0.1)
+            if not self._trigger.is_set():
+                continue
+            self._trigger.clear()
+            with self._input_lock:
+                mat, self._pending = self._pending, None
+            try:
+                if mat is not None:
+                    self.process(mat)
+                    from app.services.line_service import line_manager
+                    routed = line_manager.route(self.camera_id)
+                    if routed:
+                        routed[0].record_frame(self.camera_id)
+                    app_state.processed_frames += 1
+            except Exception as exc:
+                logger.debug("QR reader error on camera %s: %s", self.camera_id, exc)
+            finally:
+                with self._input_lock:
+                    self._busy = False
+
+    def latest(self) -> Tuple[List[Tuple[Any, bool]], float]:
+        with self._state_lock:
+            return list(self._latest), self._latest_ms
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._trigger.set()
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1.0)
+
+
+class QRReaderPipeline:
+    """The continuous QR readers, one per connected camera with the QR reader role."""
+
+    _workers: dict = {}
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_worker(cls, camera_id: str) -> _QRReaderWorker:
+        with cls._lock:
+            worker = cls._workers.get(camera_id)
+            if worker is None:
+                worker = _QRReaderWorker(camera_id)
+                cls._workers[camera_id] = worker
+            return worker
+
+    @classmethod
+    def peek(cls, camera_id: str) -> Optional[_QRReaderWorker]:
+        with cls._lock:
+            return cls._workers.get(camera_id)
+
+    @classmethod
+    def remove_camera(cls, camera_id: str) -> None:
+        with cls._lock:
+            worker = cls._workers.pop(camera_id, None)
+        if worker:
+            worker.stop()
+
+    @classmethod
+    def stop_all(cls) -> None:
+        with cls._lock:
+            workers = list(cls._workers.values())
+            cls._workers.clear()
+        for worker in workers:
+            worker.stop()
+
+    @classmethod
+    def draw_reads(cls, camera_id: str, img: Any, scale_x: float = 1.0, scale_y: float = 1.0, fps: float = 0.0) -> Any:
+        """Outline each code in green when known and red when unknown. Draws on img and returns it."""
+        import cv2
+        import numpy as np
+
+        worker = cls.peek(camera_id)
+        reads, decode_ms = worker.latest() if worker else ([], 0.0)
+        h, w = img.shape[:2]
+        banner = f"QR READER | CODES: {len(reads)} | {decode_ms:.0f}ms"
+        if fps > 0:
+            banner += f" | FPS: {fps:.1f}"
+        cv2.rectangle(img, (0, 0), (w, 32), (20, 24, 33), -1)
+        cv2.putText(img, banner, (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1)
+        for code, known in reads:
+            color = (0, 200, 0) if known else (0, 0, 230)
+            if code.polygon and len(code.polygon) >= 3:
+                pts = np.array([[int(p[0] * scale_x), int(p[1] * scale_y)] for p in code.polygon], np.int32).reshape((-1, 1, 2))
+                cv2.polylines(img, [pts], isClosed=True, color=color, thickness=3)
+            if code.bbox:
+                label = f"{'KNOWN' if known else 'UNKNOWN'}: {code.data[:40]}"
+                x = int(code.bbox.x1 * scale_x)
+                y = max(48, int(code.bbox.y1 * scale_y))
+                (lw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                cv2.rectangle(img, (x, y - 20), (x + lw + 8, y), color, -1)
+                cv2.putText(img, label, (x + 4, y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        return img

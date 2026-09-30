@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     )
 
     APP_NAME: str = "Industrial Vision API"
-    APP_VERSION: str = "1.0.0"
+    APP_VERSION: str = "2.0.0"
     APP_ENV: str = "development"
     DEBUG: bool = True
     SECRET_KEY: str = ""
@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     # with bursts up to RATE_LIMIT_BURST; past that it gets HTTP 429. 0 = off.
     RATE_LIMIT_PER_SECOND: float = 50.0
     RATE_LIMIT_BURST: int = 200
+
+    # Cameras connected at the same time, across all production lines.
+    MAX_CONNECTED_CAMERAS: int = 8
 
     # ─── Health monitoring ───────────────────────────────────────────────────
     HEALTH_CHECK_INTERVAL_SECONDS: float = 2.0

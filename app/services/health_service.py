@@ -34,6 +34,7 @@ class HealthAlarmCode:
     INFERENCE_MODEL_NOT_LOADED = "inference.model_not_loaded"
     INFERENCE_RUNNER_STOPPED = "inference.runner_stopped"
     INFERENCE_STALLED = "inference.stalled"
+    LINE_FPS_LOW = "line.fps_low"
 
 
 def _rollup(statuses: List[str]) -> str:
@@ -73,6 +74,11 @@ class HealthService:
             source = f"camera:{camera_id}"
             name = getattr(driver, "name", camera_id)
             entry: Dict[str, Any] = {"id": camera_id, "name": name, "connected": bool(getattr(driver, "is_connected", False))}
+            line_id, line_name = _camera_line(camera_id)
+            entry["line_id"] = line_id
+            # Alarms name the camera's line so a fault on one line is not mistaken for another's.
+            where = f" on line '{line_name}'" if line_name else ""
+            line_details = {"line_id": line_id} if line_id else {}
 
             if not entry["connected"]:
                 entry["status"] = DOWN
@@ -80,7 +86,8 @@ class HealthService:
                 self._camera_progress.pop(camera_id, None)
                 alarm_manager.raise_alarm(
                     HealthAlarmCode.CAMERA_DISCONNECTED, source,
-                    f"Camera '{name}' is not connected: {entry['error']}", AlarmSeverity.CRITICAL,
+                    f"Camera '{name}'{where} is not connected: {entry['error']}", AlarmSeverity.CRITICAL,
+                    line_details or None,
                 )
                 alarm_manager.clear_alarm(HealthAlarmCode.CAMERA_STALLED, source, "camera disconnected")
                 cameras.append(entry)
@@ -101,8 +108,8 @@ class HealthService:
                 entry["error"] = f"no new frame for {age:.1f}s"
                 alarm_manager.raise_alarm(
                     HealthAlarmCode.CAMERA_STALLED, source,
-                    f"Camera '{name}' has not delivered a new frame for {age:.1f}s", AlarmSeverity.CRITICAL,
-                    {"frame_id": frame_id},
+                    f"Camera '{name}'{where} has not delivered a new frame for {age:.1f}s", AlarmSeverity.CRITICAL,
+                    {"frame_id": frame_id, **line_details},
                 )
             else:
                 entry["status"] = OK
@@ -198,6 +205,48 @@ class HealthService:
             endpoints.append(entry)
         return {"status": _rollup([e["status"] for e in endpoints]), "endpoints": endpoints}
 
+    # ── Production lines ──────────────────────────────────────────────────────
+
+    def check_lines(self) -> Dict[str, Any]:
+        """Per-line rollup; raises an alarm when a running line drops below its minimum frame rate."""
+        from app.services.line_service import line_manager
+
+        rows = []
+        live_sources = set()
+        for runtime in line_manager.all():
+            summary = line_manager.summary(runtime)
+            source = f"line:{runtime.id}"
+            live_sources.add(source)
+            state = summary["state"]
+            status = {"running": OK, "stopped": IDLE, "no_camera": IDLE, "idle": IDLE}.get(state, DOWN)
+            min_fps = float(runtime.min_fps or 0.0)
+            fps = summary["processed_fps"]
+            # Checked only once the line has run past the frame-rate window.
+            if state == "running" and min_fps > 0 and self.uptime_seconds > 10 and fps < min_fps:
+                status = DEGRADED
+                alarm_manager.raise_alarm(
+                    HealthAlarmCode.LINE_FPS_LOW, source,
+                    f"Line '{runtime.name}' is processing {fps:.1f} frames/s, below its minimum of {min_fps:g}; counts may be missed",
+                    AlarmSeverity.WARNING, {"line_id": runtime.id, "processed_fps": fps, "min_fps": min_fps},
+                )
+            else:
+                alarm_manager.clear_alarm(HealthAlarmCode.LINE_FPS_LOW, source, "frame rate recovered or line not running")
+            rows.append({
+                "id": runtime.id,
+                "name": runtime.name,
+                "state": state,
+                "status": status,
+                "processed_fps": fps,
+                "min_fps": min_fps,
+                "cameras": summary["cameras"],
+                "active_alarms": summary["active_alarms"],
+            })
+        for alarm in alarm_manager.active("line:"):
+            if alarm.source not in live_sources:
+                alarm_manager.clear_source(alarm.source, "line removed")
+        # A stopped line is not a fault; only running lines count toward the rollup.
+        return {"status": _rollup([r["status"] for r in rows if r["status"] != IDLE]), "lines": rows}
+
     # ── Database / MQTT ───────────────────────────────────────────────────────
 
     def check_database(self) -> Dict[str, Any]:
@@ -219,6 +268,7 @@ class HealthService:
             "inference": self.check_inference(frames_flowing),
             "plc": self.check_plc(),
             "mqtt": self.check_mqtt(),
+            "lines": self.check_lines(),
         }
         alarm_counts = alarm_manager.counts()
 
@@ -275,6 +325,31 @@ class HealthService:
         except Exception as exc:
             logger.warning("Could not read engine metrics: %s", exc)
         try:
+            from app.services.line_service import line_manager
+            from app.services.plc_dispatcher_service import PLCDispatcherService
+            per_line = []
+            for runtime in line_manager.all():
+                summary = line_manager.summary(runtime)
+                per_line.append({
+                    "line": runtime.id,
+                    "name": runtime.name,
+                    "state": summary["state"],
+                    "inspected_total": summary["total_inspected"],
+                    "good_total": summary["good_count"],
+                    "rejected_total": summary["rejected_count"],
+                    "products_per_minute": summary["products_per_minute"],
+                    "yield_percentage": summary["yield_percentage"],
+                    "processed_fps": summary["processed_fps"],
+                    "qr_reads_total": summary["qr"]["codes_read"],
+                    "qr_unknown_total": summary["qr"]["unknown"],
+                    "qr_no_reads_total": summary["qr"]["no_reads"],
+                    "alarms_active": summary["active_alarms"],
+                    "plc_dispatches_in_flight": len(PLCDispatcherService._line_tasks.get(runtime.id, ())),
+                })
+            metrics["lines"] = per_line
+        except Exception as exc:
+            logger.warning("Could not read per-line metrics: %s", exc)
+        try:
             import psutil
             proc = psutil.Process()
             metrics["process_cpu_percent"] = proc.cpu_percent(interval=None)
@@ -283,6 +358,15 @@ class HealthService:
         except Exception as exc:
             logger.debug("psutil metrics unavailable: %s", exc)
         return metrics
+
+
+def _camera_line(camera_id: str) -> Tuple[Optional[str], Optional[str]]:
+    try:
+        from app.services.line_service import line_manager
+        routed = line_manager.route(camera_id)
+    except Exception:
+        return None, None
+    return (routed[0].id, routed[0].name) if routed else (None, None)
 
 
 def _latest_frame_id(driver: Any) -> int:
@@ -294,8 +378,16 @@ def _latest_frame_id(driver: Any) -> int:
         return 0
 
 
+def _label_value(value: Any) -> str:
+    return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
 def to_prometheus(metrics: Dict[str, Any], prefix: str = "vision_server") -> str:
-    """Render flat numeric metrics in the Prometheus text exposition format."""
+    """Render numeric metrics in the Prometheus text exposition format.
+
+    Per-line metrics (the ``lines`` list) become ``{prefix}_line_*`` series
+    with a ``line`` label.
+    """
     lines = []
     for name, value in metrics.items():
         if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -304,6 +396,21 @@ def to_prometheus(metrics: Dict[str, Any], prefix: str = "vision_server") -> str
         kind = "counter" if name.endswith("_total") else "gauge"
         lines.append(f"# TYPE {metric} {kind}")
         lines.append(f"{metric} {value}")
+    per_line = metrics.get("lines") or []
+    names = []
+    for row in per_line:
+        for key, value in row.items():
+            if key not in names and not isinstance(value, bool) and isinstance(value, (int, float)):
+                names.append(key)
+    for key in names:
+        metric = f"{prefix}_line_{key}"
+        kind = "counter" if key.endswith("_total") else "gauge"
+        lines.append(f"# TYPE {metric} {kind}")
+        for row in per_line:
+            value = row.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            lines.append(f'{metric}{{line="{_label_value(row["line"])}",line_name="{_label_value(row.get("name", ""))}"}} {value}')
     return "\n".join(lines) + "\n"
 
 

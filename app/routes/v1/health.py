@@ -30,14 +30,24 @@ async def health() -> JSONResponse:
 
 
 @router.get("/telemetry/health", summary="Detailed component health (per camera and PLC endpoint)")
-async def health_detail() -> JSONResponse:
+async def health_detail(
+    line_id: Optional[str] = Query(None, description="Only this production line in the lines section"),
+) -> JSONResponse:
     report = health_service.snapshot()
+    if line_id:
+        lines = report["components"]["lines"]
+        lines["lines"] = [ln for ln in lines["lines"] if ln["id"] == line_id]
     return JSONResponse(report, status_code=_status_code(report), headers={"Cache-Control": "no-store"})
 
 
 @router.get("/telemetry/metrics", summary="Runtime metrics as JSON, or Prometheus text with ?format=prometheus")
-async def metrics(format: str = Query("json", pattern="^(json|prometheus)$")) -> Response:
+async def metrics(
+    format: str = Query("json", pattern="^(json|prometheus)$"),
+    line_id: Optional[str] = Query(None, description="Only this production line's per-line metrics"),
+) -> Response:
     data = health_service.metrics()
+    if line_id and isinstance(data.get("lines"), list):
+        data["lines"] = [row for row in data["lines"] if row.get("line") == line_id]
     if format == "prometheus":
         return PlainTextResponse(to_prometheus(data), media_type="text/plain; version=0.0.4")
     return JSONResponse(data)
@@ -47,16 +57,25 @@ async def metrics(format: str = Query("json", pattern="^(json|prometheus)$")) ->
 async def list_alarms(
     severity: Optional[AlarmSeverity] = None,
     source: Optional[str] = Query(None, description="Only alarms whose source starts with this prefix"),
+    line_id: Optional[str] = Query(None, description="Only alarms raised for this production line"),
 ) -> Dict[str, Any]:
     alarms = alarm_manager.active(source_prefix=source)
     if severity:
         alarms = [a for a in alarms if a.severity == severity]
+    if line_id:
+        alarms = [a for a in alarms if (a.details or {}).get("line_id") == line_id]
     return {"alarms": [a.to_dict() for a in alarms], "counts": alarm_manager.counts()}
 
 
 @router.get("/alarms/history", summary="Recently cleared alarms, newest first")
-async def alarm_history(limit: int = Query(100, ge=1, le=500)) -> List[Dict[str, Any]]:
-    return [a.to_dict() for a in alarm_manager.history(limit)]
+async def alarm_history(
+    limit: int = Query(100, ge=1, le=500),
+    line_id: Optional[str] = Query(None, description="Only alarms raised for this production line"),
+) -> List[Dict[str, Any]]:
+    alarms = alarm_manager.history(limit if not line_id else 500)
+    if line_id:
+        alarms = [a for a in alarms if (a.details or {}).get("line_id") == line_id][:limit]
+    return [a.to_dict() for a in alarms]
 
 
 @router.post("/alarms/{alarm_id}/acknowledge", summary="Acknowledge an active alarm")

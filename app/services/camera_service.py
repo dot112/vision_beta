@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any, Dict, List, Optional, Tuple
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.camera import Camera
@@ -252,24 +252,23 @@ class CameraService:
         if not camera:
             return False, "Camera not found in database"
 
-        # Auto-disconnect all other active cameras (exclusive single camera streaming)
-        from app.services.vision_service import CameraStreamPipeline
-        for other_id, other_driver in list(app_state.cameras.items()):
-            if other_id != camera_id:
-                try:
-                    await asyncio.to_thread(other_driver.disconnect)
-                    # Also stop its stream workers so a later reconnect never serves a stale cached frame.
-                    await asyncio.to_thread(CameraStreamPipeline.remove_camera, other_id)
-                    logger.info("Auto-disconnected previous camera %s", other_id)
-                except Exception as exc:
-                    logger.warning("Failed to auto-disconnect camera %s: %s", other_id, exc)
-        app_state.cameras.clear()
-
-        # Update other DB records to is_active=False and clear last_error so they return to Standby
-        try:
-            await db.execute(update(Camera).where(Camera.id != camera_id).values(is_active=False, last_error=None))
-        except Exception as db_e:
-            logger.debug("Failed to reset other cameras active state: %s", db_e)
+        # Several cameras run at once (one or two per production line). A camera
+        # that is already connected is reconnected in place.
+        from app.config import settings as app_settings
+        others = [cid for cid, drv in app_state.cameras.items() if cid != camera_id and getattr(drv, "is_connected", False)]
+        if len(others) >= app_settings.MAX_CONNECTED_CAMERAS:
+            return False, (
+                f"{len(others)} cameras are already connected, the most this server allows "
+                f"(MAX_CONNECTED_CAMERAS={app_settings.MAX_CONNECTED_CAMERAS}). Disconnect one first."
+            )
+        previous = app_state.cameras.pop(camera_id, None)
+        if previous is not None:
+            from app.services.vision_service import CameraStreamPipeline
+            try:
+                await asyncio.to_thread(previous.disconnect)
+                await asyncio.to_thread(CameraStreamPipeline.remove_camera, camera_id)
+            except Exception as exc:
+                logger.warning("Failed to release camera %s before reconnecting: %s", camera_id, exc)
 
         try:
             driver = _instantiate_driver(camera)
@@ -288,8 +287,13 @@ class CameraService:
             camera.is_active = True
             camera.last_error = None
             try:
+                # active_camera_id is Line 1's camera for version 1 and older
+                # clients; a camera that belongs to another line leaves it alone.
+                from app.services.line_config import PRIMARY_LINE_ID
                 from app.services.settings_persistence_service import SettingsPersistenceService
-                SettingsPersistenceService.update_settings({"active_camera_id": camera_id})
+                owner = SettingsPersistenceService.line_for_camera(camera_id)
+                if owner in (None, PRIMARY_LINE_ID):
+                    SettingsPersistenceService.update_settings({"active_camera_id": camera_id})
             except Exception as pe:
                 logger.debug("Could not persist active_camera_id: %s", pe)
         else:

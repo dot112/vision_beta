@@ -216,6 +216,11 @@ def _node_matches(node: Dict, event_type: str, ctx: Dict) -> bool:
     cfg   = node.get("config", {})
     if event_type not in EVENT_MAP.get(ntype, [ntype]):
         return False
+    # Optional production line filter: a flow limited to one line ignores
+    # another line's events. Events that belong to no line always pass.
+    wanted_line = str(cfg.get("production_line") or "").strip()
+    if wanted_line and wanted_line != "any" and "line_id" in ctx and str(ctx.get("line_id")) != wanted_line:
+        return False
     if ntype in ("event_wireline", "counter_in"):
         req = cfg.get("line", cfg.get("source"))
         if req not in (None, "any", "", "live_count", "total_count", "stats_snapshot") and str(req) != str(ctx.get("line_index")):

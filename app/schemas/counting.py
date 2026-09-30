@@ -72,6 +72,11 @@ class CountingConfig(BaseModel):
         description="Custom list of payload field keys for Webhook dispatch"
     )
 
+    # ── QR reads sent through the same channels: 'off', 'all', 'known' or 'unknown' ──
+    mqtt_qr_dispatch: str = Field(default="off", description="Which QR reads go to MQTT: 'off', 'all', 'known' or 'unknown'")
+    tcp_qr_dispatch: str = Field(default="off", description="Which QR reads go to TCP: 'off', 'all', 'known' or 'unknown'")
+    webhook_qr_dispatch: str = Field(default="off", description="Which QR reads go to the webhook: 'off', 'all', 'known' or 'unknown'")
+
     # ── Conveyor Tracking & ByteTrack Parameters ──
     track_high_thresh: float = Field(
         default=0.50, ge=0.05, le=1.0, description="ByteTrack high-confidence threshold for stage 1 association"

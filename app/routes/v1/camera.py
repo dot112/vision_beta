@@ -80,6 +80,13 @@ async def patch_camera(camera_id: str, camera_in: CameraUpdate, db: AsyncSession
 
 @router.delete("/{camera_id}", summary="Delete camera")
 async def delete_camera(camera_id: str, db: AsyncSession = Depends(get_db), _user=Depends(require_supervisor)) -> dict:
+    from app.services.settings_persistence_service import SettingsPersistenceService
+    using = SettingsPersistenceService.lines_using_endpoint(camera_id)
+    if using:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Camera is used by production line(s): {', '.join(using)}. Remove it from the line first.",
+        )
     success = await CameraService.delete_camera(db, camera_id)
     if not success:
         raise HTTPException(status_code=404, detail="Camera not found")

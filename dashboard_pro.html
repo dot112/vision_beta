@@ -2248,7 +2248,7 @@
                     <span class="slider"></span>
                 </label>
             </div>
-            <div style="text-align: left; color: var(--text-muted); font-size: 11px; margin-top: 12px; font-weight: 500;">Dashboard Pro &middot; Server v1.0.0</div>
+            <div style="text-align: left; color: var(--text-muted); font-size: 11px; margin-top: 12px; font-weight: 500;">Dashboard Pro &middot; Server v2.0.0</div>
         </div>
     </aside>
 
@@ -2364,11 +2364,11 @@
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-bottom:20px;align-items:flex-end">
             <div class="form-group">
-                <label class="form-label" id="lblLine1">Line 1 Relative Y Position (0.0 to 1.0):</label>
+                <label class="form-label" id="lblLine1">Wireline 1 Relative Y Position (0.0 to 1.0):</label>
                 <input type="number" id="cfgLine1" class="form-input" min="0" max="1" step="0.05" value="0.35" />
             </div>
             <div class="form-group">
-                <label class="form-label" id="lblLine2">Line 2 Relative Y Position (0.0 to 1.0):</label>
+                <label class="form-label" id="lblLine2">Wireline 2 Relative Y Position (0.0 to 1.0):</label>
                 <input type="number" id="cfgLine2" class="form-input" min="0" max="1" step="0.05" value="0.65" />
             </div>
             <div class="form-group">
@@ -5135,13 +5135,13 @@ function updateWirelineModeUI(mode) {
     const l2 = document.getElementById("lblLine2");
     if (l1) {
         l1.innerText = isVert 
-            ? "Line 1 Relative X Position (0.0 to 1.0):" 
-            : "Line 1 Relative Y Position (0.0 to 1.0):";
+            ? "Wireline 1 Relative X Position (0.0 to 1.0):" 
+            : "Wireline 1 Relative Y Position (0.0 to 1.0):";
     }
     if (l2) {
         l2.innerText = isVert 
-            ? "Line 2 Relative X Position (0.0 to 1.0):" 
-            : "Line 2 Relative Y Position (0.0 to 1.0):";
+            ? "Wireline 2 Relative X Position (0.0 to 1.0):" 
+            : "Wireline 2 Relative Y Position (0.0 to 1.0):";
     }
 }
 
@@ -5517,6 +5517,10 @@ function renderPlcActionCards() {
         if (c.trigger === "good_counter") triggerSummary = "Good Counter";
         else if (c.trigger === "reject_counter") triggerSummary = "Reject Counter";
         else if (c.trigger === "class") triggerSummary = "Class Detected";
+        else if (c.trigger === "qr_read") triggerSummary = "QR Code Read";
+        else if (c.trigger === "qr_known") triggerSummary = "Known Code";
+        else if (c.trigger === "qr_unknown") triggerSummary = "Unknown Code";
+        else if (c.trigger === "qr_no_read") triggerSummary = "No Code Read";
 
         // Condition summary
         let condSummary = "Defect / Reject";
@@ -5531,6 +5535,8 @@ function renderPlcActionCards() {
             else condSummary = `>= ${c.set_value || '100'}`;
         } else if (c.trigger === "class") {
             condSummary = (c.condition === "class_absent") ? `Missing (${c.set_value || 'any'})` : `Present (${c.set_value || 'any'})`;
+        } else if (String(c.trigger || "").startsWith("qr_")) {
+            condSummary = c.camera_id ? "Selected camera" : "Any QR reader";
         }
 
         // Action summary
@@ -5669,6 +5675,7 @@ function refreshPlcModalBody(cardId) {
     const isCrossLineClass = isCrossLine && card.condition === "class";
     const isCounter = card.trigger === "good_counter" || card.trigger === "reject_counter";
     const isClass = card.trigger === "class";
+    const isQr = String(card.trigger || "").startsWith("qr_");
 
     // Condition Options
     let conditionHtml = "";
@@ -5685,6 +5692,8 @@ function refreshPlcModalBody(cardId) {
             <option value="counter_exact" ${card.condition === 'counter_exact' ? 'selected' : ''}>Counter exactly equals value (==)</option>
             <option value="counter_modulo" ${card.condition === 'counter_modulo' ? 'selected' : ''}>Every N items / Modulo (% N == 0)</option>
         `;
+    } else if (isQr) {
+        conditionHtml = `<option value="any" selected>Any (the trigger decides)</option>`;
     } else if (isClass) {
         conditionHtml = `
             <option value="class_present" ${card.condition === 'class_present' ? 'selected' : ''}>Class Present / Detected</option>
@@ -5764,6 +5773,10 @@ function refreshPlcModalBody(cardId) {
                     <option value="good_counter" ${card.trigger === 'good_counter' ? 'selected' : ''}>Good Counter</option>
                     <option value="reject_counter" ${card.trigger === 'reject_counter' ? 'selected' : ''}>Reject Counter</option>
                     <option value="class" ${card.trigger === 'class' ? 'selected' : ''}>Class Detected</option>
+                    <option value="qr_read" ${card.trigger === 'qr_read' ? 'selected' : ''}>QR Code Read</option>
+                    <option value="qr_known" ${card.trigger === 'qr_known' ? 'selected' : ''}>Known Code (in Products)</option>
+                    <option value="qr_unknown" ${card.trigger === 'qr_unknown' ? 'selected' : ''}>Unknown Code</option>
+                    <option value="qr_no_read" ${card.trigger === 'qr_no_read' ? 'selected' : ''}>No Code Read (Sync)</option>
                 </select>
             </div>
             <div class="form-group" style="margin:0">
@@ -5777,7 +5790,17 @@ function refreshPlcModalBody(cardId) {
         <!-- 4. Set Value / Class -->
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600">Set Value / Class:</label>
-            <input type="${isCounter ? 'number' : 'text'}" class="form-input" value="${escapeHtml(card.set_value || '')}" ${isCrossLine && !isCrossLineClass ? 'disabled style="opacity:0.4;cursor:not-allowed"' : ''} placeholder="${escapeHtml(setValuePlaceholder)}" oninput="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'set_value', this.value); renderPlcActionCards()" />
+            <input type="${isCounter ? 'number' : 'text'}" class="form-input" value="${escapeHtml(card.set_value || '')}" ${(isCrossLine && !isCrossLineClass) || isQr ? 'disabled style="opacity:0.4;cursor:not-allowed"' : ''} placeholder="${escapeHtml(setValuePlaceholder)}" oninput="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'set_value', this.value); renderPlcActionCards()" />
+        </div>
+
+        <!-- 4b. Camera of the production line that fires this card -->
+        <div class="form-group" style="margin:0">
+            <label class="form-label" style="font-size:11.5px;font-weight:600">Camera:</label>
+            <select class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'camera_id', this.value); renderPlcActionCards()">
+                <option value="" ${!card.camera_id ? 'selected' : ''}>Counting camera / any QR reader of this line</option>
+                ${((window.ProductionLines && window.ProductionLines.lineCameras()) || []).map(cam => `<option value="${escapeHtml(cam.camera_id)}" ${card.camera_id === cam.camera_id ? 'selected' : ''}>${escapeHtml(cam.name)} (${cam.role === 'qr' ? 'QR reader' : 'Vision'})</option>`).join("")}
+            </select>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:3px">Pick a camera to fire only on its events, e.g. a line's second vision camera.</div>
         </div>
 
         <!-- 5. Target Type & Address (Protocol-Aware, 2 cols) -->
@@ -5883,6 +5906,9 @@ function onPlcModalTriggerChange(cardId, triggerVal) {
     } else if (triggerVal === "class") {
         card.condition = "class_present";
         card.set_value = card.set_value || "defect";
+    } else if (triggerVal.startsWith("qr_")) {
+        card.condition = "any";
+        card.set_value = "";
     }
     refreshPlcModalBody(cardId);
     renderPlcActionCards();
@@ -7334,5 +7360,6 @@ window.__zagel_scroll = function(dy, dx) {
     setInterval(tick, 1000);
 })();
 </script>
+<script src="/assets/production_lines.js?v=2.0.0"></script>
 </body>
 </html>

@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
+from app.services.line_config import PRIMARY_LINE_ID
 from app.services.plc_failsafe_service import PLCFailsafeService
 from app.utils.logger import get_logger
 
@@ -60,6 +61,10 @@ def _normalize_card(card: dict) -> dict:
             "reject_counter": "reject_counter",
             "class": "class_detected",
             "class_detected": "class_detected",
+            "qr_read": "qr_read",
+            "qr_known": "qr_known",
+            "qr_unknown": "qr_unknown",
+            "qr_no_read": "qr_no_read",
         }
         c["trigger_type"] = trigger_alias.get(str(c["trigger"]).lower(), c["trigger"])
 
@@ -138,6 +143,21 @@ def _eval_condition(card: dict, event: dict) -> bool:
     condition = str(card.get("trigger_condition", "any")).lower()
     trigger_value = int(card.get("trigger_value", 1) or 1)
 
+    # ── QR code triggers ──────────────────────────────────────────────────────
+    # A standalone QR read only fires QR cards; a synced crossing carries its
+    # code (or "no_read") and fires both kinds.
+    qr_status = event.get("qr_status")
+    if trigger in _QR_TRIGGERS:
+        if trigger == "qr_read":
+            return bool(event.get("qr_code"))
+        if trigger == "qr_known":
+            return qr_status == "known"
+        if trigger == "qr_unknown":
+            return qr_status == "unknown"
+        return qr_status == "no_read"
+    if event.get("event_type") == "qr_read":
+        return False
+
     # ── Line cross ────────────────────────────────────────────────────────────
     if trigger == "line_cross":
         result = str(event.get("result", "unknown")).lower()
@@ -176,6 +196,25 @@ def _eval_condition(card: dict, event: dict) -> bool:
     return False
 
 
+_QR_TRIGGERS = ("qr_read", "qr_known", "qr_unknown", "qr_no_read")
+
+
+def _card_line(card: dict) -> str:
+    return str(card.get("line_id") or PRIMARY_LINE_ID)
+
+
+def _camera_matches(card: dict, event: dict) -> bool:
+    """A card naming a camera fires only for that camera. A card with no camera
+    fires for the line's counting camera and QR readers, not for a second
+    vision camera, so adding one does not double-fire existing cards."""
+    wanted = str(card.get("camera_id") or "").strip()
+    if wanted:
+        return str(event.get("camera_id") or "") == wanted
+    if event.get("event_type") == "qr_read":
+        return True
+    return event.get("counting_camera", True) is not False
+
+
 def _eval_counter(condition: str, count: int, n: int) -> bool:
     """Evaluate counter condition string against a count value."""
     c = condition.strip().lower().replace(" ", "")
@@ -208,7 +247,9 @@ class PLCDispatcherService:
     _states: Dict[str, _CardState] = {}      # keyed by card["id"]
     _lock: asyncio.Lock = None               # type: ignore[assignment]
     _endpoint_locks: Dict[str, asyncio.Lock] = {}
-    _dispatch_tasks: Set[asyncio.Task] = set()
+    _dispatch_tasks: Set[asyncio.Task] = set()     # every line's in-flight dispatches
+    _line_tasks: Dict[str, Set[asyncio.Task]] = {}  # the same tasks, per line
+    # Per line, so a busy line cannot crowd out the others.
     _max_dispatch_tasks = 256
 
     # ── Initialisation ────────────────────────────────────────────────────────
@@ -224,7 +265,7 @@ class PLCDispatcherService:
         """Load PLC action cards from persistence. Safe to call multiple times."""
         try:
             from app.services.settings_persistence_service import SettingsPersistenceService
-            raw_cards = SettingsPersistenceService.get_plc_actions()
+            raw_cards = SettingsPersistenceService.get_all_plc_actions()
             cls._cards = [_normalize_card(c) for c in raw_cards]
             # Init state for any new card IDs
             for card in cls._cards:
@@ -269,21 +310,29 @@ class PLCDispatcherService:
     # ── Public API ────────────────────────────────────────────────────────────
 
     @classmethod
-    def set_cards(cls, cards: List[dict]) -> None:
-        """Hot-reload cards from a new list (called after API save/delete)."""
-        cls._cards = [_normalize_card(c) for c in cards]
+    def set_cards(cls, cards: List[dict], line_id: Optional[str] = None) -> None:
+        """Hot-reload one line's cards (Line 1 when no line is named); other lines keep theirs."""
+        line_id = line_id or PRIMARY_LINE_ID
+        fresh = []
+        for c in cards:
+            card = _normalize_card(c)
+            card["line_id"] = line_id
+            fresh.append(card)
+        cls._cards = [c for c in cls._cards if _card_line(c) != line_id] + fresh
         for card in cls._cards:
             cid = card.get("id", "")
             if cid and cid not in cls._states:
                 cls._states[cid] = _CardState(card_id=cid)
 
     @classmethod
-    def get_status(cls, card_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Return live status dicts for one or all cards."""
+    def get_status(cls, card_id: Optional[str] = None, line_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return live status dicts for one or all cards, optionally of one line."""
         statuses = []
         for card in cls._cards:
             cid = card.get("id", "")
             if card_id and cid != card_id:
+                continue
+            if line_id and _card_line(card) != line_id:
                 continue
             state = cls._states.get(cid, _CardState(card_id=cid))
             statuses.append({
@@ -293,6 +342,7 @@ class PLCDispatcherService:
                 "status": state.status,
                 "last_result": state.last_result,
                 "last_fired_at": state.last_fired_at or None,
+                "line_id": _card_line(card),
             })
         return statuses
 
@@ -306,12 +356,17 @@ class PLCDispatcherService:
             return
         now = time.monotonic()
         event_id = str(event.get("event_id", ""))
+        line_id = str(event.get("line_id") or PRIMARY_LINE_ID)
+        line_tasks = cls._line_tasks.setdefault(line_id, set())
 
         for card in cls._cards:
             if card.get("enabled", True) is not True:
                 continue
             cid = card.get("id", "")
             if not cid:
+                continue
+            # A line's events only ever run that line's cards.
+            if _card_line(card) != line_id or not _camera_matches(card, event):
                 continue
 
             # ── Condition check ───────────────────────────────────────────────
@@ -340,9 +395,9 @@ class PLCDispatcherService:
                 while len(state.fired_event_ids) > 500:
                     state.fired_event_ids.pop(next(iter(state.fired_event_ids)))
 
-            if len(cls._dispatch_tasks) >= cls._max_dispatch_tasks:
+            if len(line_tasks) >= cls._max_dispatch_tasks:
                 state.status = "failed"
-                state.last_result = {"success": False, "message": "PLC dispatch capacity reached; event was dropped safely."}
+                state.last_result = {"success": False, "message": "PLC dispatch capacity reached for this line; event was dropped safely."}
                 cls._report_alarm(card, {"id": card.get("plc_endpoint_id")}, "failed", state.last_result["message"])
                 cls._notify_status_change()
                 continue
@@ -351,7 +406,9 @@ class PLCDispatcherService:
                 name=f"plc_dispatch_{cid}",
             )
             cls._dispatch_tasks.add(task)
+            line_tasks.add(task)
             task.add_done_callback(cls._dispatch_tasks.discard)
+            task.add_done_callback(line_tasks.discard)
 
     @classmethod
     async def dispatch_manual(cls, card: dict) -> Dict[str, Any]:
@@ -561,6 +618,7 @@ class PLCDispatcherService:
         name = card.get("name") or card.get("id", "")
         details = {
             "card_id": card.get("id"),
+            "line_id": _card_line(card),
             "endpoint_id": endpoint.get("id"),
             "operation": str(card.get("operation", "")).upper(),
             "address": str(card.get("target_address", "")),

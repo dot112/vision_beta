@@ -215,6 +215,10 @@ class ModelService:
         # deactivate a model that is still selected in the database.
         if model.is_active or (app_state.active_model and app_state.active_model.get("id") == model_id):
             raise ValueError("Deactivate the model before deleting it")
+        from app.services.settings_persistence_service import SettingsPersistenceService
+        using = [line["name"] for line in SettingsPersistenceService.get_lines() if line.get("model_id") == model_id]
+        if using:
+            raise ValueError(f"The model is used by production line(s): {', '.join(using)}. Pick another model for them first.")
 
         # Remove only files contained by the configured store, and retain the
         # database record if the file cannot be removed.

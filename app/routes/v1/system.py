@@ -40,10 +40,11 @@ async def update_system_settings(
 @router.get("/audit-logs", summary="Get system audit change logs (Level 2+ Supervisor)")
 async def get_audit_logs(
     limit: int = Query(default=100, ge=1, le=500),
+    line_id: Optional[str] = Query(default=None, description="Only entries for this production line"),
     user: User = Depends(require_supervisor),
 ) -> List[Dict[str, Any]]:
     """Returns chronological audit log of configuration updates, logins, and hardware actions."""
-    return SettingsPersistenceService.get_audit_logs(limit=limit)
+    return SettingsPersistenceService.get_audit_logs(limit=limit, line_id=line_id)
 
 
 @router.get("/poll-changes", summary="Poll for server configuration changes across connected clients")
@@ -65,7 +66,13 @@ async def list_communication_endpoints(
     protocol: Optional[str] = Query(default=None, description="Optional protocol filter: tcp, mqtt, ipcam, webhook"),
     user: User = Depends(require_operator),
 ) -> List[Dict[str, Any]]:
-    return SettingsPersistenceService.redact_secrets(SettingsPersistenceService.get_endpoints(protocol=protocol))
+    endpoints = SettingsPersistenceService.redact_secrets(SettingsPersistenceService.get_endpoints(protocol=protocol))
+    # Which production lines use each channel (dispatch targets, PLC cards, cameras).
+    from app.services.line_config import endpoints_used_by_line
+    usage = [(line["name"], endpoints_used_by_line(line)) for line in SettingsPersistenceService.get_lines(with_logic=True)]
+    for endpoint in endpoints:
+        endpoint["used_by"] = [name for name, used in usage if endpoint.get("id") in used]
+    return endpoints
 
 
 @router.post("/endpoints", summary="Create or update communication endpoint (Level 2+ Supervisor)")
@@ -119,6 +126,13 @@ async def delete_communication_endpoint(
     endpoints = state.get("communication_endpoints", [])
     target = next((ep for ep in endpoints if ep.get("id") == endpoint_id), None)
     target_src = (target.get("source") or "").strip() if target else ""
+
+    using = SettingsPersistenceService.lines_using_endpoint(endpoint_id)
+    if using:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Channel is used by production line(s): {', '.join(using)}. Change those lines first.",
+        )
 
     deleted = SettingsPersistenceService.delete_endpoint(
         endpoint_id=endpoint_id,

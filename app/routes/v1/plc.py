@@ -1,8 +1,8 @@
 """PLC Action REST API routes."""
 from __future__ import annotations
 
-from typing import Any, Dict, List
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Any, Dict, List, Optional, Tuple
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.db.models.user import User
 from app.dependencies import require_operator, require_supervisor
@@ -21,6 +21,44 @@ def _get_svc():
 def _get_dispatcher():
     from app.services.plc_dispatcher_service import PLCDispatcherService
     return PLCDispatcherService
+
+
+LINE_QUERY = Query(default=None, description="Production line id; Line 1 when omitted")
+
+
+def _line_id(line_id: Optional[str]) -> str:
+    """The named line, or Line 1; 404 for a line that does not exist."""
+    from app.services.line_config import PRIMARY_LINE_ID
+    # A route called directly (not through FastAPI) gets the Query default here.
+    resolved = (line_id if isinstance(line_id, str) else None) or PRIMARY_LINE_ID
+    if _get_svc().get_line(resolved, with_logic=False) is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{resolved}' not found")
+    return resolved
+
+
+def _find_card(card_id: str, line_id: Optional[str]) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """(line id, card) for a card id: in the named line, else Line 1 first, then the other lines."""
+    svc = _get_svc()
+    if isinstance(line_id, str) and line_id:
+        lid = _line_id(line_id)
+        return lid, next((c for c in svc.get_line_plc_actions(lid) if c.get("id") == card_id), None)
+    for line in svc.get_lines():
+        card = next((c for c in svc.get_line_plc_actions(line["id"]) if c.get("id") == card_id), None)
+        if card:
+            return line["id"], card
+    return None, None
+
+
+def _check_card_cameras(line_id: str, cards: List[Dict[str, Any]]) -> None:
+    line = _get_svc().get_line(line_id, with_logic=False) or {}
+    own = {c.get("camera_id") for c in line.get("cameras", [])}
+    for card in cards:
+        cam = str(card.get("camera_id") or "").strip()
+        if cam and cam not in own:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Card '{card.get('name') or card.get('id')}' names camera '{cam}', which is not on this line",
+            )
 
 
 @router.post("/opcua/scan", summary="Scan a private IPv4 subnet for OPC UA server endpoints")
@@ -44,14 +82,16 @@ async def scan_opcua_endpoints(
 @router.get("/actions", summary="List all PLC action cards with live execution status")
 async def list_plc_actions(
     user: User = Depends(require_operator),
+    line_id: Optional[str] = LINE_QUERY,
 ) -> List[Dict[str, Any]]:
-    """Returns saved PLC action cards merged with their current live status."""
+    """Returns the line's saved PLC action cards merged with their current live status."""
     svc = _get_svc()
     dispatcher = _get_dispatcher()
-    cards = svc.get_plc_actions()
+    lid = _line_id(line_id)
+    cards = svc.get_line_plc_actions(lid)
 
     # Merge live status from dispatcher
-    statuses = {s["card_id"]: s for s in dispatcher.get_status()}
+    statuses = {s["card_id"]: s for s in dispatcher.get_status(line_id=lid)}
     for card in cards:
         cid = card.get("id", "")
         live = statuses.get(cid, {})
@@ -65,13 +105,17 @@ async def list_plc_actions(
 async def save_plc_action(
     card_data: Dict[str, Any],
     user: User = Depends(require_supervisor),
+    line_id: Optional[str] = LINE_QUERY,
 ) -> Dict[str, Any]:
     """Create or update a PLC action card. The card ID must be provided."""
     if not card_data.get("id"):
         raise HTTPException(status_code=400, detail="Card 'id' is required")
 
     svc = _get_svc()
-    cards = svc.get_plc_actions()
+    lid = _line_id(line_id or card_data.get("line_id"))
+    card_data = {k: v for k, v in card_data.items() if k != "line_id"}
+    _check_card_cameras(lid, [card_data])
+    cards = svc.get_line_plc_actions(lid)
 
     existing = next((c for c in cards if c.get("id") == card_data["id"]), None)
     if existing:
@@ -82,7 +126,7 @@ async def save_plc_action(
         saved = card_data
 
     try:
-        saved_cards = svc.replace_plc_actions(cards)
+        saved_cards = svc.replace_line_plc_actions(lid, cards)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     saved = next(card for card in saved_cards if card.get("id") == card_data["id"])
@@ -93,12 +137,13 @@ async def save_plc_action(
         clearance_level=user.clearance_level,
         action="UPSERT_PLC_ACTION",
         category="PLC",
-        details=f"Saved PLC action card '{card_data.get('name', card_data['id'])}'",
+        details=f"Saved PLC action card '{card_data.get('name', card_data['id'])}' on line '{lid}'",
+        line_id=lid,
     )
     svc.save()
 
     # Hot-reload dispatcher
-    _get_dispatcher().set_cards(saved_cards)
+    _get_dispatcher().set_cards(saved_cards, line_id=lid)
     return saved
 
 
@@ -106,13 +151,17 @@ async def save_plc_action(
 async def save_plc_actions_batch(
     cards: List[Dict[str, Any]],
     user: User = Depends(require_supervisor),
+    line_id: Optional[str] = LINE_QUERY,
 ) -> Dict[str, Any]:
     """
-    Replace all PLC action cards at once (used when the dashboard saves all cards together).
+    Replace all of a line's PLC action cards at once (used when the dashboard saves all cards together).
     """
     svc = _get_svc()
+    lid = _line_id(line_id)
+    cards = [{k: v for k, v in c.items() if k != "line_id"} if isinstance(c, dict) else c for c in cards]
+    _check_card_cameras(lid, [c for c in cards if isinstance(c, dict)])
     try:
-        saved_cards = svc.replace_plc_actions(cards)
+        saved_cards = svc.replace_line_plc_actions(lid, cards)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -122,10 +171,11 @@ async def save_plc_actions_batch(
         clearance_level=user.clearance_level,
         action="SAVE_PLC_ACTIONS_BATCH",
         category="PLC",
-        details=f"Saved {len(saved_cards)} PLC action card(s)",
+        details=f"Saved {len(saved_cards)} PLC action card(s) on line '{lid}'",
+        line_id=lid,
     )
     svc.save()
-    _get_dispatcher().set_cards(saved_cards)
+    _get_dispatcher().set_cards(saved_cards, line_id=lid)
     return {"saved": len(saved_cards)}
 
 
@@ -133,14 +183,15 @@ async def save_plc_actions_batch(
 async def delete_plc_action(
     card_id: str,
     user: User = Depends(require_supervisor),
+    line_id: Optional[str] = LINE_QUERY,
 ) -> Dict[str, Any]:
     svc = _get_svc()
-    cards = svc.get_plc_actions()
-    deleted_card = next((c for c in cards if c.get("id") == card_id), None)
+    lid, deleted_card = _find_card(card_id, line_id)
     if not deleted_card:
         raise HTTPException(status_code=404, detail=f"PLC action card '{card_id}' not found")
 
-    saved_cards = svc.replace_plc_actions([c for c in cards if c.get("id") != card_id])
+    cards = svc.get_line_plc_actions(lid)
+    saved_cards = svc.replace_line_plc_actions(lid, [c for c in cards if c.get("id") != card_id])
 
     svc.record_audit(
         username=user.username,
@@ -149,6 +200,7 @@ async def delete_plc_action(
         action="DELETE_PLC_ACTION",
         category="PLC",
         details=f"Deleted PLC action card '{card_id}'",
+        line_id=lid,
     )
     svc.save()
 
@@ -156,7 +208,7 @@ async def delete_plc_action(
     from app.hardware.plc.factory import PLCDriverFactory
     if deleted_card and deleted_card.get("plc_endpoint_id"):
         PLCDriverFactory.invalidate(str(deleted_card["plc_endpoint_id"]))
-    _get_dispatcher().set_cards(saved_cards)
+    _get_dispatcher().set_cards(saved_cards, line_id=lid)
     return {"status": "deleted", "card_id": card_id}
 
 
@@ -188,6 +240,7 @@ async def test_plc_action(
     card_id: str,
     req: PLCActionTestRequest,
     user: User = Depends(require_supervisor),
+    line_id: Optional[str] = LINE_QUERY,
 ) -> PLCActionTestResult:
     """
     Manually fires the configured PLC operation for a card.
@@ -201,8 +254,7 @@ async def test_plc_action(
         )
 
     svc = _get_svc()
-    cards = svc.get_plc_actions()
-    card = next((c for c in cards if c.get("id") == card_id), None)
+    _, card = _find_card(card_id, line_id)
     if not card and req.card:
         card = dict(req.card)
     if not card:
