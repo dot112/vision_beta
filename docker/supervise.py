@@ -6,6 +6,12 @@ supervisor runs uvicorn as a child, polls the public /health endpoint and,
 after WATCHDOG_FAILURES failed checks in a row, stops the server and exits
 with status 1 so `restart: unless-stopped` starts a fresh container.
 
+Until the server opens its port it is still starting (database migration,
+loading models), and refused connections do not count; only a server that
+has not opened its port after WATCHDOG_STARTUP_TIMEOUT seconds is restarted.
+A server that exits by itself (crash, fatal error) ends the container with a
+non-zero status, which the restart policy also acts on.
+
 It also forwards SIGTERM/SIGINT to uvicorn and waits for it, so `docker stop`
 and host shutdowns run the application's own shutdown: open streams close,
 queued PLC operations finish and PLC outputs go to their safe state.
@@ -14,7 +20,8 @@ Settings (environment):
   PORT                       port uvicorn listens on (default 8000)
   GRACEFUL_SHUTDOWN_SECONDS  time uvicorn gives open requests/streams (default 20)
   WATCHDOG_ENABLED           "0" turns the health watchdog off (default on)
-  WATCHDOG_START_PERIOD      seconds before the first check (default 90)
+  WATCHDOG_START_PERIOD      seconds before the first check (default 10)
+  WATCHDOG_STARTUP_TIMEOUT   seconds the server may take to open its port (default 300)
   WATCHDOG_INTERVAL          seconds between checks (default 15)
   WATCHDOG_TIMEOUT           seconds a check may take (default 5)
   WATCHDOG_FAILURES          failed checks in a row before a restart (default 4)
@@ -22,6 +29,7 @@ Settings (environment):
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -41,13 +49,15 @@ def _env_float(name: str, default: float) -> float:
 PORT = int(_env_float("PORT", 8000))
 GRACE = _env_float("GRACEFUL_SHUTDOWN_SECONDS", 20)
 WATCHDOG = os.environ.get("WATCHDOG_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
-START_PERIOD = _env_float("WATCHDOG_START_PERIOD", 90)
+START_PERIOD = _env_float("WATCHDOG_START_PERIOD", 10)
+STARTUP_TIMEOUT = max(START_PERIOD, _env_float("WATCHDOG_STARTUP_TIMEOUT", 300))
 INTERVAL = max(1.0, _env_float("WATCHDOG_INTERVAL", 15))
 TIMEOUT = max(1.0, _env_float("WATCHDOG_TIMEOUT", 5))
 FAILURES = max(1, int(_env_float("WATCHDOG_FAILURES", 4)))
 # The app's own shutdown (PLC safe states, driver close) runs after uvicorn's
-# grace period; allow it this long before the server is killed.
-SHUTDOWN_EXTRA = 20.0
+# grace period; allow it this long before the server is killed. GRACE plus
+# this must stay under docker-compose.yml's stop_grace_period (60 s).
+SHUTDOWN_EXTRA = 30.0
 
 stopping = threading.Event()
 # Why the server is being stopped: "signal" (docker stop, host shutdown) or "watchdog".
@@ -58,15 +68,29 @@ def log(message: str) -> None:
     print(f"[supervisor] {message}", file=sys.stderr, flush=True)
 
 
-def healthy() -> tuple[bool, str]:
-    """The server answers /health with 200 (a degraded plant is still 200; a dead database is 503)."""
+def probe() -> tuple[bool, bool, str]:
+    """Check /health once: (listening, healthy, detail).
+
+    uvicorn opens its port only when the application's startup has finished,
+    so a refused connection means "still starting", while an accepted
+    connection without a good answer means the server is up but unwell.
+    Healthy is a 200 answer (a degraded plant is still 200; a dead database is 503).
+    """
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/health", timeout=TIMEOUT) as res:
-            return res.status == 200, f"HTTP {res.status}"
+            return True, res.status == 200, f"HTTP {res.status}"
     except urllib.error.HTTPError as exc:
-        return False, f"HTTP {exc.code}"
-    except Exception as exc:  # refused, timed out, reset
-        return False, f"{type(exc).__name__}: {exc}"
+        return True, False, f"HTTP {exc.code}"
+    except urllib.error.URLError as exc:
+        refused = isinstance(exc.reason, ConnectionRefusedError)
+        return not refused, False, f"{type(exc.reason).__name__}: {exc.reason}"
+    except Exception as exc:  # accepted, then timed out or reset
+        return True, False, f"{type(exc).__name__}: {exc}"
+
+
+def healthy() -> tuple[bool, str]:
+    _listening, ok, detail = probe()
+    return ok, detail
 
 
 def stop_child(child: subprocess.Popen, reason: str) -> None:
@@ -92,8 +116,28 @@ def request_stop(child: subprocess.Popen, reason: str) -> bool:
     return True
 
 
-def watchdog(child: subprocess.Popen) -> None:
+def wait_until_started(child: subprocess.Popen) -> bool:
+    """Poll until the server listens. False if it stops, or never listens within STARTUP_TIMEOUT."""
+    started = time.monotonic()
     if stopping.wait(START_PERIOD):
+        return False
+    while not stopping.is_set() and child.poll() is None:
+        listening, ok, detail = probe()
+        if listening:
+            # From here on, failed checks count: a server that hangs right
+            # after starting is restarted as quickly as one that hangs later.
+            log(f"server is up after {time.monotonic() - started:.0f} s ({detail})")
+            return True
+        if time.monotonic() - started >= STARTUP_TIMEOUT:
+            log(f"the server has not answered within {STARTUP_TIMEOUT:.0f} s of starting ({detail}); restarting the container")
+            request_stop(child, "watchdog")
+            return False
+        stopping.wait(min(INTERVAL, 5.0))
+    return False
+
+
+def watchdog(child: subprocess.Popen) -> None:
+    if not wait_until_started(child):
         return
     failed = 0
     while not stopping.is_set() and child.poll() is None:
@@ -113,7 +157,26 @@ def watchdog(child: subprocess.Popen) -> None:
         stopping.wait(INTERVAL)
 
 
+def prepare_tmpdir() -> None:
+    """Create TMPDIR and remove what a previous run left there (half-finished uploads)."""
+    tmpdir = os.environ.get("TMPDIR")
+    if not tmpdir:
+        return
+    try:
+        os.makedirs(tmpdir, exist_ok=True)
+        for name in os.listdir(tmpdir):
+            path = os.path.join(tmpdir, name)
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                os.unlink(path)
+    except OSError as exc:
+        log(f"could not prepare TMPDIR {tmpdir}: {exc}; temporary files go to /tmp")
+        os.environ.pop("TMPDIR", None)
+
+
 def main() -> int:
+    prepare_tmpdir()
     cmd = [
         sys.executable, "-m", "uvicorn", "main:app",
         "--host", "0.0.0.0",
@@ -143,6 +206,11 @@ def main() -> int:
     if reason:
         log(f"server stopped after {reason} (exit status {code})")
         return 0 if code in (0, -signal.SIGTERM, -signal.SIGINT) else code
+    if code < 0:
+        # Killed by a signal (SIGSEGV, SIGKILL from the OOM killer): exit
+        # 128 + signal like a shell would, so the restart policy acts on it.
+        log(f"server was killed by {signal.Signals(-code).name}")
+        return 128 - code
     log(f"server exited unexpectedly (exit status {code})")
     return code if code else 1
 

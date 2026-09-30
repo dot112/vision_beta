@@ -10,6 +10,9 @@ class ApplicationState:
 
     # Connection/service readiness flags
     db_ready: bool = False
+    # Set when SIGTERM/SIGINT arrives, so open video streams end at once and
+    # the shutdown (PLC safe states) is not held up by viewers.
+    shutting_down: bool = False
     mqtt_connected: bool = False
     modbus_connected: bool = False
 

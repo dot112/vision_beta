@@ -353,6 +353,9 @@ class SettingsPersistenceService:
             temp_file = STATE_FILE + ".tmp"
             with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(cls._state, f, indent=2)
+                # On disk before the rename, so a power cut cannot leave an empty settings file.
+                f.flush()
+                os.fsync(f.fileno())
             if os.path.exists(STATE_FILE):
                 os.replace(temp_file, STATE_FILE)
             else:
@@ -1581,15 +1584,37 @@ class SettingsPersistenceService:
 
     @classmethod
     async def apply_on_startup(cls) -> None:
-        """Called during FastAPI lifespan startup to restore all saved state and auto-connect comms."""
+        """Restore all saved state and auto-connect comms (restore_on_startup, then connect_on_startup)."""
+        await cls.restore_on_startup()
+        await cls.connect_on_startup()
+
+    @classmethod
+    async def restore_on_startup(cls) -> None:
+        """Load the saved state and the PLC cards. Fast: talks to no device."""
         state = cls.load()
         cls._apply_to_runtime_services()
         logger.info("Restored persistent system state (version %d).", state.get("version", 1))
 
+        # Load explicitly configured PLC action cards and pre-connect their drivers.
+        try:
+            from app.services.plc_dispatcher_service import PLCDispatcherService
+            PLCDispatcherService.load_cards()
+            asyncio.create_task(PLCDispatcherService.autoconnect_drivers())
+            from app.services.plc_failsafe_service import PLCFailsafeService
+            PLCFailsafeService.start()
+            logger.info("PLCDispatcherService initialised with %d card(s)", len(PLCDispatcherService._cards))
+        except Exception as plc_err:
+            logger.warning("PLC dispatcher startup error: %s", plc_err)
+
+    @classmethod
+    async def connect_on_startup(cls) -> None:
+        """Connect the saved camera and MQTT broker and test every endpoint. Can take a while."""
+        state = cls._state
+
         if state.get("camera_auto_connect", False) is True:
             try:
                 from app.db.session import AsyncSessionLocal
-                from app.services.camera_service import CameraService
+                from app.services.camera_service import CameraReconnector, CameraService
                 from app.db.models.camera import Camera
                 from sqlalchemy import select
 
@@ -1614,7 +1639,8 @@ class SettingsPersistenceService:
                             cls.save()
                             logger.info("Auto-connected last active camera '%s' [%s] on server startup", target_cam.name, target_cam.id)
                         else:
-                            logger.warning("Failed to auto-connect last active camera '%s' on startup: %s", target_cam.name, err)
+                            logger.warning("Failed to auto-connect last active camera '%s' on startup, retrying in the background: %s", target_cam.name, err)
+                            CameraReconnector.want(target_cam.id)
                     else:
                         logger.info("No configured camera found in database to auto-connect on startup")
             except Exception as cam_err:
@@ -1640,17 +1666,6 @@ class SettingsPersistenceService:
                 state["mqtt"]["is_connected"] = True
             except Exception as e:
                 logger.warning("Startup MQTT auto-connect failed: %s", e)
-
-        # Load explicitly configured PLC action cards and pre-connect their drivers.
-        try:
-            from app.services.plc_dispatcher_service import PLCDispatcherService
-            PLCDispatcherService.load_cards()
-            asyncio.create_task(PLCDispatcherService.autoconnect_drivers())
-            from app.services.plc_failsafe_service import PLCFailsafeService
-            PLCFailsafeService.start()
-            logger.info("PLCDispatcherService initialised with %d card(s)", len(PLCDispatcherService._cards))
-        except Exception as plc_err:
-            logger.warning("PLC dispatcher startup error: %s", plc_err)
 
         # Refresh the persisted connection indicators on every server boot.
         endpoints = list(state.get("communication_endpoints", []))

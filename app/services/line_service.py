@@ -599,7 +599,7 @@ class LineManager:
     async def connect_line(self, line_id: str) -> Dict[str, Optional[str]]:
         """Connect every camera of a line that is not connected yet. Returns {camera_id: error or None}."""
         from app.db.session import AsyncSessionLocal
-        from app.services.camera_service import CameraService
+        from app.services.camera_service import CameraReconnector, CameraService
         from app.state.application_state import app_state
 
         runtime = self.get(line_id)
@@ -615,7 +615,9 @@ class LineManager:
                 ok, err = await CameraService.connect_camera(db, cid)
             results[cid] = None if ok else (err or "connection failed")
             if not ok:
-                logger.warning("Line '%s': camera %s did not connect: %s", runtime.name, cid, results[cid])
+                logger.warning("Line '%s': camera %s did not connect, retrying in the background: %s",
+                               runtime.name, cid, results[cid])
+                CameraReconnector.want(cid)
         return results
 
     async def disconnect_line(self, line_id: str) -> None:
@@ -632,6 +634,10 @@ class LineManager:
     async def startup(self) -> None:
         """Load the models lines pick and connect the cameras of running lines set to auto-connect."""
         await self.refresh_models()
+        await self.connect_on_startup()
+
+    async def connect_on_startup(self) -> None:
+        """Connect the cameras of running lines set to auto-connect."""
         for runtime in self.all():
             if runtime.enabled and runtime.auto_connect and runtime.cameras:
                 try:

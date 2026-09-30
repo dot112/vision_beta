@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
 import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.hardware.camera.base import BaseCamera
-from app.utils.logger import get_logger
+from app.config import settings as app_settings
+from app.hardware.camera.base import CONNECT_ABORT, BaseCamera
+from app.utils.logger import LogThrottle, get_logger, redact
+from app.utils.threads import run_supervised
 
 logger = get_logger(__name__)
+# A camera that stays down is reported once a minute while it is retried.
+_reconnect_log = LogThrottle(60.0)
 
 try:
     import cv2
@@ -31,7 +36,6 @@ class IPCamera(BaseCamera):
 
     def __init__(self, camera_id: str, name: str, source: str, settings: Optional[Dict[str, Any]] = None):
         super().__init__(camera_id=camera_id, name=name, source=source, settings=settings)
-        self._cap: Optional[Any] = None
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
@@ -120,13 +124,23 @@ class IPCamera(BaseCamera):
             f"rtsp_transport;{transport}|"
             "fflags;nobuffer|flags;low_delay|max_delay;0|probesize;32768|analyzeduration;100000|timeout;2500000"
         )
+        # Bound opening and each read, so an unreachable camera or a stalled
+        # stream cannot hold a thread for OpenCV's default 30 s.
+        params: List[int] = []
+        if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
+            params += [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, int(app_settings.CAMERA_OPEN_TIMEOUT_SECONDS * 1000)]
+        if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
+            params += [cv2.CAP_PROP_READ_TIMEOUT_MSEC, int(app_settings.CAMERA_READ_TIMEOUT_SECONDS * 1000)]
 
         try:
-            cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+            if params:
+                cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG, params)
+            else:
+                cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, buffer_size)
             return cap
         except Exception as e:
-            logger.debug("Failed opening stream %s: %s", stream_url, e)
+            logger.debug("Failed opening stream %s: %s", redact(stream_url), e)
             return None
 
     def connect(self) -> bool:
@@ -143,17 +157,19 @@ class IPCamera(BaseCamera):
         if self.is_connected:
             self.disconnect()
 
-        self._stop_event.clear()
         tested_errors: List[str] = []
 
         for stream_url in candidates:
+            if CONNECT_ABORT.is_set():
+                tested_errors.append("stopped: the server is shutting down")
+                break
+            safe_url = redact(stream_url)
             try:
-                logger.info("Connecting IP camera '%s' via endpoint: %s", self.name, stream_url)
+                logger.info("Connecting IP camera '%s' via endpoint: %s", self.name, safe_url)
                 cap = self._open_capture(stream_url)
                 if cap and cap.isOpened():
                     ret, frame = cap.read()
                     if ret and frame is not None:
-                        self._cap = cap
                         self._active_url = stream_url
                         self.is_connected = True
                         self.last_error = None
@@ -167,60 +183,91 @@ class IPCamera(BaseCamera):
                             self._latest_timestamp = time.monotonic()
                             self._latest_jpeg = None
 
-                        # Start dedicated continuous background capture thread
+                        # Each reader thread gets its own stop flag and owns its
+                        # capture: only that thread reads or releases it.
+                        stop = threading.Event()
+                        self._stop_event = stop
+                        name = f"IPCamReader-{self.camera_id[:8]}"
                         self._thread = threading.Thread(
-                            target=self._reader_loop,
-                            name=f"IPCamReader-{self.camera_id[:8]}",
+                            target=run_supervised,
+                            args=(name, _ReaderLoop(self, cap, stop), stop),
+                            kwargs={"kind": "camera_reader"},
+                            name=name,
                             daemon=True,
                         )
                         self._thread.start()
 
-                        logger.info("Successfully connected IP camera '%s' (low-latency worker active): %s", self.name, stream_url)
+                        logger.info("Successfully connected IP camera '%s' (low-latency worker active): %s", self.name, safe_url)
                         return True
                     else:
                         cap.release()
-                        tested_errors.append(f"{stream_url} (no frame received)")
+                        tested_errors.append(f"{safe_url} (no frame received)")
                 else:
                     if cap:
                         cap.release()
-                    tested_errors.append(f"{stream_url} (could not open)")
+                    tested_errors.append(f"{safe_url} (could not open)")
             except Exception as candidate_err:
-                tested_errors.append(f"{stream_url} ({candidate_err})")
+                tested_errors.append(f"{safe_url} ({redact(str(candidate_err))})")
 
-        self.last_error = f"Failed to connect to IP camera '{self.name}'. Tested endpoints: {', '.join(candidates[:3])}. Ensure the camera/app is running."
+        tried = ", ".join(redact(c) for c in candidates[:3])
+        self.last_error = f"Failed to connect to IP camera '{self.name}'. Tested endpoints: {tried}. Ensure the camera/app is running."
         self.is_connected = False
         logger.warning("IP camera '%s' failed to connect. Errors: %s", self.name, tested_errors)
         return False
 
-    def _reader_loop(self) -> None:
+    def _read_frames(self, holder: "_ReaderLoop", stop: threading.Event) -> None:
         """
         Ultra-fast background reader thread.
         Continuously drains incoming video stream packets from network socket
         so OpenCV FFmpeg internal queue NEVER accumulates stale buffered frames.
+        A lost stream is reopened, waiting longer after each failed attempt.
         """
         logger.debug("IP camera reader loop started for %s", self.name)
         consecutive_errs = 0
+        retry_delay = 0.5
+        lost_at: Optional[float] = None
+        attempts = 0
 
-        while not self._stop_event.is_set():
-            if self._cap is None or not self._cap.isOpened():
-                if not self._reconnect_in_background():
-                    time.sleep(0.5)
+        while not stop.is_set():
+            cap = holder.cap
+            if cap is None or not cap.isOpened():
+                holder.release()
+                if lost_at is None:
+                    lost_at = time.monotonic()
+                    logger.warning("IP camera '%s' lost its stream; reconnecting", self.name)
+                attempts += 1
+                holder.cap = self._reopen_capture()
+                if holder.cap is None:
+                    _reconnect_log.log(
+                        logger, logging.WARNING, self.camera_id,
+                        "IP camera '%s' is still unreachable after %d attempt(s); retrying at least every %.0f s",
+                        self.name, attempts, app_settings.CAMERA_RECONNECT_MAX_SECONDS,
+                    )
+                    if stop.wait(retry_delay):
+                        break
+                    retry_delay = min(retry_delay * 2, max(1.0, app_settings.CAMERA_RECONNECT_MAX_SECONDS))
+                    continue
+                logger.info("IP camera '%s' reconnected after %.0f s (%d attempt(s))",
+                            self.name, time.monotonic() - lost_at, attempts)
+                _reconnect_log.clear(self.camera_id)
+                self.last_error = None
+                lost_at, attempts, retry_delay, consecutive_errs = None, 0, 0.5, 0
                 continue
 
             try:
                 # Fast grab + retrieve
-                grabbed = self._cap.grab()
+                grabbed = cap.grab()
                 if not grabbed:
                     consecutive_errs += 1
                     if consecutive_errs > 30:
                         logger.warning("IP camera '%s' stream stalled, reconnecting...", self.name)
-                        self._reconnect_in_background()
+                        holder.release()
                         consecutive_errs = 0
                     else:
                         time.sleep(0.01)
                     continue
 
-                ret, frame = self._cap.retrieve()
+                ret, frame = cap.retrieve()
                 if not ret or frame is None:
                     consecutive_errs += 1
                     time.sleep(0.01)
@@ -243,53 +290,49 @@ class IPCamera(BaseCamera):
 
             except Exception as e:
                 consecutive_errs += 1
-                if consecutive_errs > 20:
-                    time.sleep(0.1)
+                _reconnect_log.log(
+                    logger, logging.WARNING, ("read", self.camera_id),
+                    "IP camera '%s' frame read failed: %s: %s", self.name, type(e).__name__, e,
+                )
+                time.sleep(0.1 if consecutive_errs > 20 else 0.01)
 
         logger.debug("IP camera reader loop stopped for %s", self.name)
 
-    def _reconnect_in_background(self) -> bool:
-        if self._stop_event.is_set() or not self._active_url:
-            return False
-
+    def _reopen_capture(self) -> Optional[Any]:
+        """Open the stream that worked before. Returns the capture, or None if it is still down."""
+        if not self._active_url:
+            return None
+        cap = None
         try:
-            if self._cap is not None:
-                try:
-                    self._cap.release()
-                except Exception:
-                    pass
-                self._cap = None
-
-            logger.info("Watchdog reconnecting to %s for camera '%s'...", self._active_url, self.name)
             cap = self._open_capture(self._active_url)
             if cap and cap.isOpened():
                 ret, _ = cap.read()
                 if ret:
-                    self._cap = cap
-                    self.is_connected = True
-                    self.last_error = None
-                    return True
-                else:
-                    cap.release()
+                    return cap
+            self.last_error = f"IP camera '{self.name}' is not answering; reconnecting"
         except Exception as e:
-            logger.debug("Reconnect error: %s", e)
-
-        return False
+            self.last_error = f"IP camera '{self.name}' reconnect failed: {redact(str(e))}"
+            logger.debug("Reconnect error: %s", redact(str(e)))
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
+        return None
 
     def disconnect(self) -> None:
         self.is_connected = False
         self._stop_event.set()
 
-        if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=1.5)
-            self._thread = None
-
-        if self._cap is not None:
-            try:
-                self._cap.release()
-            except Exception as exc:
-                logger.warning("Error releasing IP camera stream: %s", exc)
-            self._cap = None
+        # The reader thread releases its capture as it exits. If it is still
+        # inside a read (at most CAMERA_READ_TIMEOUT_SECONDS), it releases the
+        # capture when the read returns; releasing it from here would race it.
+        thread = self._thread
+        if thread is not None and thread.is_alive() and threading.current_thread() is not thread:
+            thread.join(timeout=1.5)
+            if thread.is_alive():
+                logger.warning("IP camera '%s' reader is still finishing a read; it will release the stream itself", self.name)
+        self._thread = None
 
         with self._lock:
             self._latest_raw_mat = None
@@ -379,3 +422,27 @@ class IPCamera(BaseCamera):
     def set_properties(self, properties: Dict[str, Any]) -> bool:
         self.settings.update(properties)
         return True
+
+
+class _ReaderLoop:
+    """The capture one reader thread owns. It is released when the loop ends or crashes."""
+
+    def __init__(self, camera: IPCamera, cap: Any, stop: threading.Event):
+        self.camera = camera
+        self.cap = cap
+        self.stop = stop
+
+    def release(self) -> None:
+        cap, self.cap = self.cap, None
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception as exc:
+                logger.warning("Error releasing IP camera stream: %s", exc)
+
+    def __call__(self) -> None:
+        try:
+            self.camera._read_frames(self, self.stop)
+        finally:
+            # Stopped or crashed, this capture is finished; a restarted loop reopens the stream.
+            self.release()

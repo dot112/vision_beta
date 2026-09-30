@@ -331,13 +331,18 @@ class PLCFailsafeService:
         except Exception as exc:
             logger.warning("PLC fail-safe shutdown: could not read endpoints: %s", exc)
             return
-        for ep_id, endpoint in endpoints.items():
-            if cls.safe_targets(ep_id):
-                try:
-                    await asyncio.wait_for(cls.apply(endpoint, reason="shutdown"),
-                                           timeout=2 * float(endpoint.get("timeout", 3)) + 2.0)
-                except Exception as exc:
-                    logger.error("PLC fail-safe shutdown: endpoint %s not made safe: %s", ep_id, exc)
+        async def make_safe(ep_id: str, endpoint: dict) -> None:
+            try:
+                await asyncio.wait_for(cls.apply(endpoint, reason="shutdown"),
+                                       timeout=2 * float(endpoint.get("timeout", 3)) + 2.0)
+            except Exception as exc:
+                logger.error("PLC fail-safe shutdown: endpoint %s not made safe: %s", ep_id, exc)
+
+        # All endpoints at once: an unreachable PLC must not use up the time
+        # the others need before the container is killed.
+        await asyncio.gather(*(
+            make_safe(ep_id, endpoint) for ep_id, endpoint in endpoints.items() if cls.safe_targets(ep_id)
+        ))
 
     @classmethod
     def get_status(cls) -> List[Dict[str, Any]]:

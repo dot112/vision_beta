@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import threading
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, Tuple
+
+# Set while the server shuts down: a connect() that is trying several stream
+# URLs stops after the current one instead of holding up the exit.
+CONNECT_ABORT = threading.Event()
 
 
 class BaseCamera(ABC):

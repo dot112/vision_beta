@@ -26,7 +26,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOST=0.0.0.0 \
     PORT=8000 \
     WORKERS=1 \
-    INFERENCE_DEVICE=cpu
+    INFERENCE_DEVICE=cpu \
+    TMPDIR=/app/uploads/.tmp
 
 # Unprivileged user; it owns only the directories the server writes to.
 RUN groupadd --system --gid 10001 vision \
@@ -38,17 +39,20 @@ WORKDIR /app
 # Application code stays owned by root, so the server cannot modify it.
 COPY . .
 RUN python -m compileall -q /app/app /app/main.py /app/alembic /app/docker \
-    && mkdir -p data logs model_store uploads certs/mqtt \
+    && mkdir -p data logs model_store uploads/.tmp certs/mqtt \
     && chown -R vision:vision data logs model_store uploads certs
 
 USER vision
 
 # Database, settings, models, uploads, MQTT certificates and logs live here.
 # Mount them as volumes (docker-compose.yml does) so they survive upgrades.
+# Temporary files (large uploads in progress) go to uploads/.tmp (TMPDIR),
+# which the supervisor empties at every start.
 VOLUME ["/app/data", "/app/logs", "/app/model_store", "/app/uploads", "/app/certs"]
 
-# 8000: HTTP API and dashboards. 8888/udp: server discovery beacon.
-EXPOSE 8000 8888/udp
+# 8000: HTTP API and dashboards. The UDP discovery beacon (8888) is only
+# useful with the host network, where no port needs publishing.
+EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('PORT', '8000'), timeout=4)"]

@@ -48,6 +48,79 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
+def _flag_shutdown_on_signal() -> None:
+    """Set app_state.shutting_down the moment SIGTERM/SIGINT arrives.
+
+    uvicorn first waits (up to --timeout-graceful-shutdown) for open
+    connections and only then runs the shutdown below. Open video streams
+    never end on their own, so they check this flag and close at once, and the
+    PLC safe states are applied without waiting on viewers.
+    """
+    import signal
+    import threading
+
+    if threading.current_thread() is not threading.main_thread():
+        return  # signals only reach the main thread (tests run the app elsewhere)
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        previous = signal.getsignal(sig)
+        if not callable(previous) or getattr(previous, "_flags_shutdown", False):
+            continue
+
+        def handler(signum, frame, previous=previous):
+            app_state.shutting_down = True
+            previous(signum, frame)
+
+        handler._flags_shutdown = True  # type: ignore[attr-defined]
+        signal.signal(sig, handler)
+
+
+async def _connect_saved_hardware() -> None:
+    """The saved camera, MQTT broker, endpoint checks and line cameras. May take minutes if devices are off."""
+    try:
+        from app.services.settings_persistence_service import SettingsPersistenceService
+        await SettingsPersistenceService.connect_on_startup()
+    except Exception:
+        logger.exception("Could not restore the saved camera and communication connections")
+    try:
+        from app.services.line_service import line_manager
+        await line_manager.connect_on_startup()
+    except Exception:
+        logger.exception("Could not connect the production line cameras")
+
+
+async def _start_saved_connections():
+    """Start _connect_saved_hardware; wait for it at most STARTUP_CONNECT_WAIT_SECONDS. Returns its task."""
+    import asyncio
+
+    task = asyncio.create_task(_connect_saved_hardware(), name="startup_connect")
+    done, _ = await asyncio.wait({task}, timeout=max(0.0, settings.STARTUP_CONNECT_WAIT_SECONDS))
+    if not done:
+        logger.warning(
+            "Cameras and communication links are still connecting after %.0f s; "
+            "serving the API while they finish in the background",
+            settings.STARTUP_CONNECT_WAIT_SECONDS,
+        )
+    return task
+
+
+def _release_cameras() -> None:
+    """Close every camera driver (stops reader threads, releases devices and streams)."""
+    import concurrent.futures
+
+    drivers = list(app_state.cameras.items())
+    app_state.cameras.clear()
+    if not drivers:
+        return
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(drivers), thread_name_prefix="camera-release") as pool:
+        futures = {pool.submit(driver.disconnect): camera_id for camera_id, driver in drivers}
+        done, not_done = concurrent.futures.wait(futures, timeout=5.0)
+        for future in done:
+            if future.exception() is not None:
+                logger.warning("Camera %s did not release cleanly: %s", futures[future], future.exception())
+        for future in not_done:
+            logger.warning("Camera %s is still releasing at shutdown", futures[future])
+
+
 def _upgrade_schema(command_module, alembic_config, sync_connection) -> None:
     from pathlib import Path
     alembic_config.set_main_option("script_location", str(Path(__file__).resolve().parent / "alembic"))
@@ -66,6 +139,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     os.makedirs("uploads", exist_ok=True)
 
     import asyncio
+    from app.hardware.camera.base import CONNECT_ABORT
+    app_state.shutting_down = False
+    CONNECT_ABORT.clear()
+    _flag_shutdown_on_signal()
+    startup_connect: asyncio.Task | None = None
     from app.services.counting_service import CountingService
     CountingService.set_event_loop(asyncio.get_running_loop())
     from app.events.system_events import set_event_loop
@@ -147,10 +225,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 }
                 logger.info("Auto-loaded default YOLOv8n ONNX model (%s)", DEFAULT_ONNX_PATH)
 
-        # 4. Restore Persistent Server Settings & Auto-Connections
+        # 4. Restore persistent server settings and PLC cards (no device I/O)
         try:
             from app.services.settings_persistence_service import SettingsPersistenceService
-            await SettingsPersistenceService.apply_on_startup()
+            await SettingsPersistenceService.restore_on_startup()
         except Exception as st_err:
             logger.warning("Settings persistence restore error: %s", st_err)
 
@@ -164,9 +242,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.exception("Could not load product codes; QR reads will all be unknown")
         try:
             from app.services.line_service import line_manager
-            await line_manager.startup()
+            await line_manager.refresh_models()
         except Exception:
             logger.exception("Production line startup error")
+
+        # 4c. Saved connections: cameras, MQTT, endpoint checks. Devices that are
+        # still booting after a power cut must not hold the API down, so wait a
+        # bounded time and let the rest finish in the background.
+        startup_connect = await _start_saved_connections()
 
         # 5. Start UDP Auto-Discovery Beacon
         try:
@@ -188,6 +271,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         from app.services.health_service import HealthMonitor
         HealthMonitor.start()
 
+        from app.services.camera_service import CameraReconnector
+        CameraReconnector.start()
+
     except Exception as exc:
         app_state.db_ready = False
         logger.exception("Startup initialization failed; refusing to serve an unhealthy instance")
@@ -196,6 +282,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield  # ← application runs here
 
     logger.info("Shutting down…")
+    app_state.shutting_down = True
+    CONNECT_ABORT.set()
+    # Order: stop what produces events, finish and make PLC outputs safe
+    # first (the part that matters if the container is killed early), then
+    # telemetry, MQTT, cameras and the database.
+    if startup_connect is not None and not startup_connect.done():
+        startup_connect.cancel()
+        await asyncio.gather(startup_connect, return_exceptions=True)
+    try:
+        from app.services.camera_service import CameraReconnector
+        await CameraReconnector.stop()
+    except Exception:
+        logger.exception("Failed to stop camera reconnects cleanly")
     try:
         from app.services.health_service import HealthMonitor
         await HealthMonitor.stop()
@@ -217,21 +316,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception:
         logger.exception("Failed to stop discovery service cleanly")
     try:
-        from app.services.mqtt_service import MQTTService
-        await MQTTService.disconnect()
-    except Exception:
-        logger.exception("Failed to disconnect MQTT cleanly")
-
-    try:
         from app.services.vision_service import CameraStreamPipeline
-        CameraStreamPipeline.stop_all()
+        await asyncio.to_thread(CameraStreamPipeline.stop_all)
     except Exception:
         logger.exception("Failed to stop camera stream workers cleanly")
-    try:
-        from app.services.counting_service import counting_service
-        await counting_service.shutdown()
-    except Exception:
-        logger.exception("Failed to stop telemetry dispatcher cleanly")
+
     try:
         from app.services.plc_dispatcher_service import PLCDispatcherService
         await PLCDispatcherService.shutdown()
@@ -247,11 +336,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await PLCDriverFactory.close_all()
     except Exception:
         logger.exception("Failed to close PLC drivers cleanly")
+
+    try:
+        from app.services.counting_service import counting_service
+        await counting_service.shutdown()
+    except Exception:
+        logger.exception("Failed to stop telemetry dispatcher cleanly")
+    try:
+        from app.services.mqtt_service import MQTTService
+        await MQTTService.disconnect()
+    except Exception:
+        logger.exception("Failed to disconnect MQTT cleanly")
     try:
         from app.engines.action_engine import ActionEngine
         await ActionEngine.close()
     except Exception:
         logger.exception("Failed to close action engine HTTP client cleanly")
+    try:
+        await asyncio.to_thread(_release_cameras)
+    except Exception:
+        logger.exception("Failed to release cameras cleanly")
 
     from app.db.session import engine
     await engine.dispose()

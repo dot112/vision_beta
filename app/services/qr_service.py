@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from typing import Any, List, Optional, Tuple
@@ -9,9 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.engines.qr_engine import QREngine
 from app.schemas.qr import BarcodeDecodeResponse, LiveCameraBarcodeResponse
 from app.services.camera_service import CameraService
-from app.utils.logger import get_logger
+from app.utils.logger import LogThrottle, get_logger
+from app.utils.threads import run_supervised
 
 logger = get_logger(__name__)
+_error_log = LogThrottle(60.0)
 
 _qr_engine = QREngine()
 _qr_engine_lock = threading.Lock()
@@ -99,7 +102,14 @@ class _QRReaderWorker:
         self._latest: List[Tuple[Any, bool]] = []
         self._latest_ms = 0.0
         self.reads = 0
-        self._thread = threading.Thread(target=self._loop, name=f"QRReader-{camera_id[:8]}", daemon=True)
+        name = f"QRReader-{camera_id[:8]}"
+        self._thread = threading.Thread(
+            target=run_supervised,
+            args=(name, self._loop, self._stop),
+            kwargs={"kind": "qr_reader"},
+            name=name,
+            daemon=True,
+        )
         self._thread.start()
 
     @property
@@ -178,7 +188,10 @@ class _QRReaderWorker:
                         routed[0].record_frame(self.camera_id)
                     app_state.processed_frames += 1
             except Exception as exc:
-                logger.debug("QR reader error on camera %s: %s", self.camera_id, exc)
+                _error_log.log(
+                    logger, logging.WARNING, self.camera_id,
+                    "QR reading failed on camera %s: %s: %s", self.camera_id, type(exc).__name__, exc,
+                )
             finally:
                 with self._input_lock:
                     self._busy = False

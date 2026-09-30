@@ -24,6 +24,14 @@ _mqtt_client = MQTTClient(
 )
 
 
+def _track_connection(connected: bool) -> None:
+    # paho reconnects in the background, so keep the health flag current too.
+    app_state.mqtt_connected = connected
+
+
+_mqtt_client.on_state_change = _track_connection
+
+
 def _resolve_cert(filename: Optional[str]) -> Optional[str]:
     if not filename:
         return None

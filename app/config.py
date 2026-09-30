@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     WORKERS: int = 1
 
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/factory_data.db"
+    # SQLite only. WAL lets the dashboards read while events are written;
+    # NORMAL keeps every committed row through a crash of the server and loses
+    # at most the last commits (never the file) on a power cut. Use FULL for
+    # no loss on power cuts, or DELETE to keep the old rollback journal.
+    SQLITE_JOURNAL_MODE: str = "WAL"
+    SQLITE_SYNCHRONOUS: str = "NORMAL"
+    SQLITE_BUSY_TIMEOUT_MS: int = 5000
 
     JWT_ALGORITHM: str = "HS256"
 
@@ -80,8 +87,41 @@ class Settings(BaseSettings):
     HEALTH_CAMERA_STALE_SECONDS: float = 5.0      # no new frame for this long -> camera stalled
     HEALTH_INFERENCE_STALE_SECONDS: float = 10.0  # frames arriving but none inferred -> inference stalled
 
+    # ─── Startup and reconnects ──────────────────────────────────────────────
+    # Startup waits this long for saved cameras, the MQTT broker and PLC checks,
+    # then starts serving while the rest keep connecting in the background, so
+    # a camera that is still booting cannot hold the API down.
+    STARTUP_CONNECT_WAIT_SECONDS: float = 15.0
+    # A camera that could not be opened at startup (or when its line started)
+    # is retried in the background, waiting longer after each failure up to this.
+    CAMERA_RECONNECT_MAX_SECONDS: float = 60.0
+    # Limits for opening and reading a network or USB camera stream.
+    CAMERA_OPEN_TIMEOUT_SECONDS: float = 10.0
+    CAMERA_READ_TIMEOUT_SECONDS: float = 5.0
+
     LOG_LEVEL: str = "INFO"
     LOG_DIR: str = "./logs"
+    # logs/app.log, rotated at LOG_FILE_MAX_BYTES and keeping LOG_FILE_BACKUP_COUNT
+    # old files. Everything also goes to stdout (docker logs).
+    LOG_TO_FILE: bool = True
+    LOG_FILE_MAX_BYTES: int = 10 * 1024 * 1024
+    LOG_FILE_BACKUP_COUNT: int = 5
+
+    @field_validator("SQLITE_JOURNAL_MODE")
+    @classmethod
+    def validate_sqlite_journal_mode(cls, value: str) -> str:
+        value = value.strip().upper()
+        if value not in {"WAL", "DELETE", "TRUNCATE", "PERSIST"}:
+            raise ValueError("SQLITE_JOURNAL_MODE must be WAL, DELETE, TRUNCATE or PERSIST")
+        return value
+
+    @field_validator("SQLITE_SYNCHRONOUS")
+    @classmethod
+    def validate_sqlite_synchronous(cls, value: str) -> str:
+        value = value.strip().upper()
+        if value not in {"NORMAL", "FULL", "EXTRA"}:
+            raise ValueError("SQLITE_SYNCHRONOUS must be NORMAL, FULL or EXTRA")
+        return value
 
     @field_validator("SECRET_KEY")
     @classmethod

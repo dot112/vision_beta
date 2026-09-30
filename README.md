@@ -44,20 +44,60 @@ uvicorn main:app
 
 ### Docker Compose (Linux, production)
 
+One container, `vision`, runs the server under a small supervisor (`docker/supervise.py`). Set up once:
+
 ```bash
-cp .env.example .env          # set SECRET_KEY and ADMIN_INITIAL_PASSWORD; never commit it
-docker compose up -d --build  # build, start, and keep running
-docker compose ps             # STATUS shows (healthy) once the server answers
-docker compose logs -f        # follow the server log
+cp .env.example .env          # set SECRET_KEY and ADMIN_INITIAL_PASSWORD (and TZ); never commit it
+sudo systemctl enable docker  # start Docker, and with it the server, on every boot
 ```
 
-- **Recovers by itself.** `restart: unless-stopped` restarts the container after a crash. The entrypoint (`docker/supervise.py`) polls `/health` and, when the server stops answering for about a minute (`WATCHDOG_*` settings), stops it so the container restarts too; Docker alone would leave a hung container running as "unhealthy".
-- **Survives reboots.** Enable the Docker service once (`sudo systemctl enable docker`); running containers start again with the host. A container stopped with `docker compose stop` stays stopped.
-- **Keeps its data.** The database, saved settings, models, uploads, MQTT certificates and logs are named volumes (`vision-data`, `vision-models`, `vision-uploads`, `vision-certs`, `vision-logs`). They survive restarts, rebuilds and `docker compose down`; only `docker compose down -v` deletes them. Back up with e.g. `docker run --rm -v vision-server_vision-data:/data -v "$PWD":/backup alpine tar czf /backup/vision-data.tgz -C /data .` while the server is stopped.
-- **Stops safely.** `docker compose stop` sends SIGTERM and allows 60 s: open requests and video streams close, queued PLC operations finish and PLC outputs go to their safe state before the process exits.
-- **Upgrading.** `git pull && docker compose up -d --build`; the volumes carry over and database migrations run on start.
+| Task | Command |
+| --- | --- |
+| Build | `docker compose build` |
+| Start | `docker compose up -d` |
+| Status (shows `healthy` once the server answers) | `docker compose ps` |
+| Follow the logs | `docker compose logs -f` |
+| Restart | `docker compose restart` |
+| Stop and remove the container (data is kept) | `docker compose down` |
+| Rebuild and restart after a code change | `docker compose up -d --build` |
+| Health and restart count | `docker inspect --format '{{.State.Health.Status}} restarts={{.RestartCount}}' $(docker compose ps -q vision)` |
+| Health report | `curl http://localhost:8000/health` |
 
-The image (`python:3.12-slim`) installs `requirements.txt`, runs as an unprivileged user with all Linux capabilities dropped, and contains no `.env` or keys. It serves ONNX models on CPU; PyTorch and Ultralytics for training are in `requirements-training.txt`. USB cameras and serial (Modbus RTU) adapters must be passed in with `devices:`, and PLCs, IP cameras and the discovery broadcast on the plant network usually need `network_mode: host`; both are commented in `docker-compose.yml`. Logs are capped at 5 × 10 MB.
+**Updating safely.** `git pull`, then `docker compose up -d --build`. The volumes are reused and database migrations run on start; the first start of a new major version writes `*.v1-backup.*` copies of the database and settings first. Never add `-v` to `docker compose down` unless you mean to delete all data. Before an update, a backup is one command while the server is stopped (`docker compose stop`):
+
+```bash
+docker run --rm -v vision-server_vision-data:/data -v "$PWD":/backup alpine tar czf /backup/vision-data.tgz -C /data .
+```
+
+**What survives what.** Everything the server writes is on a named volume; the rest of the container is read-only.
+
+| Volume (path in the container) | Holds | Restart | `down` / `up` | Rebuild | Host reboot | `down -v` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `vision-data` (`/app/data`) | SQLite database, saved settings, v1 backups | kept | kept | kept | kept | deleted |
+| `vision-models` (`/app/model_store`) | uploaded and OTA models | kept | kept | kept | kept | deleted |
+| `vision-certs` (`/app/certs`) | MQTT TLS certificates and keys | kept | kept | kept | kept | deleted |
+| `vision-uploads` (`/app/uploads`) | uploads; `.tmp` holds uploads in progress and is emptied on every start | kept | kept | kept | kept | deleted |
+| `vision-logs` (`/app/logs`) | `app.log`, rotated at 10 MB, 5 old files kept | kept | kept | kept | kept | deleted |
+| `/tmp` (memory, 64 MB) | scratch files | emptied | emptied | emptied | emptied | emptied |
+
+The database runs in SQLite's WAL mode, so copy it only while the server is stopped (or copy the `-wal` file with it), and keep it on a local disk or Docker volume, not a network share.
+
+**Recovery.**
+- A crash, a fatal Python error, or the kernel ending the process at the memory limit (`VISION_MEM_LIMIT`) ends the container, and `restart: unless-stopped` starts it again. Docker waits longer between attempts while it keeps failing right after starting.
+- A server that hangs (still running, no longer answering `/health`) is stopped by the supervisor after `WATCHDOG_FAILURES` failed checks, and then restarted. Docker's healthcheck alone only marks a container unhealthy; it never restarts it. While the server is still starting (its port not yet open), failed checks do not count, for up to `WATCHDOG_STARTUP_TIMEOUT`.
+- Background threads (camera readers, inference, video, QR readers) that crash are logged with their traceback and restarted in place; `worker_restarts_total` in `/api/v1/telemetry/metrics` counts them.
+- Cameras, the MQTT broker and PLCs may be off when the server starts. It waits at most `STARTUP_CONNECT_WAIT_SECONDS` for them, then serves the API while they connect in the background. A camera that could not be opened is retried with growing pauses (up to `CAMERA_RECONNECT_MAX_SECONDS`); a stream that drops is reopened the same way. MQTT reconnects on its own (1 s, doubling up to 60 s). PLC connections are retried on the next operation, with the fail-safe watchdog raising alarms meanwhile.
+- `/health` answers from memory and never runs inference or touches a camera. It returns 503 only when the database is down; a camera or PLC fault shows as `degraded` with status 200, so a cable fault does not restart the server.
+
+**Stopping.** `docker compose stop` (or `down`, a host shutdown or a Docker restart) sends SIGTERM and allows 60 s. Open video streams close at once, queued PLC operations finish, every PLC output with a safe state goes to it (all PLCs at once), then telemetry, MQTT, cameras and the database are closed.
+
+**Security.** Unprivileged user (uid 10001), read-only root filesystem, all Linux capabilities dropped, `no-new-privileges`, memory and process-count limits, no `.env` or keys in the image (`.env` is read at start). Only the HTTP port is published; `VISION_BIND_ADDRESS` limits it to one network card. Passwords in camera URLs and tokens are masked in the logs. The API is plain HTTP for the local network; its accounts and API keys are what protect it.
+
+**Hardware.**
+- *Linux, USB cameras and RS-485 adapters.* Uncomment `devices:` and `group_add:` in `docker-compose.yml` and list the devices the machine has (`/dev/video0`, `/dev/ttyUSB0`). A listed device that is missing stops the container from starting. A USB camera that stops delivering frames (unplugged and plugged back in, for example) is reopened; this has been tested with a simulated device only.
+- *Host network.* The discovery beacon (UDP 8888) and some PLC or camera setups need the host's own address; remove `ports:` and uncomment `network_mode: host`.
+- *Windows and macOS (Docker Desktop).* Runs as is with IP cameras and network PLCs; keep the named volumes (a bind mount of a Windows folder can refuse SQLite's WAL mode). USB cameras and serial ports cannot be passed into the container there; run the server natively (`start_server.bat`) for those.
+- *NVIDIA Jetson.* Every package the image installs publishes arm64 wheels, so it should build there and run inference on the CPU; this has not been tried. For the GPU, build on NVIDIA's L4T/JetPack base image with the ONNX Runtime GPU wheel for that JetPack version, add `runtime: nvidia` to the service (with the NVIDIA container runtime installed) and set `INFERENCE_DEVICE=auto`. This is not part of this image and has not been tested.
 
 ### Production lines (version 2)
 

@@ -5,14 +5,17 @@
 #
 # Recovery:
 #   - restart: unless-stopped brings the container back after a crash, after
-#     the health watchdog stops a hung server (docker/supervise.py), and after
-#     a host reboot, as long as the Docker service starts on boot
-#     (`sudo systemctl enable docker`). A container stopped with
-#     `docker compose stop` stays stopped until started again.
+#     the health watchdog stops a hung server (docker/supervise.py), after the
+#     kernel's OOM killer ends it at mem_limit, and after a host reboot, as long
+#     as the Docker service starts on boot (`sudo systemctl enable docker`).
+#     A container stopped with `docker compose stop` stays stopped until started
+#     again. Docker waits longer between restarts while a container keeps
+#     failing within 10 s of starting (100 ms, doubling up to 1 minute).
 # Data:
 #   - the database, saved settings, models, uploads, MQTT certificates and logs
 #     are named volumes, kept across restarts, rebuilds and `docker compose down`
-#     (only `docker compose down -v` deletes them).
+#     (only `docker compose down -v` deletes them). Everything else in the
+#     container is read-only or temporary.
 # Shutdown:
 #   - SIGTERM, then up to stop_grace_period for open requests to finish,
 #     queued PLC operations to complete and PLC outputs to reach their safe state.
@@ -44,11 +47,15 @@ services:
       TZ: ${TZ:-UTC}
       GRACEFUL_SHUTDOWN_SECONDS: "20"
 
+    # Only the HTTP API and dashboards. VISION_BIND_ADDRESS limits it to one
+    # network card of the host (for example the plant network's address).
     ports:
-      - "${VISION_HTTP_PORT:-8000}:8000"
-      - "${VISION_DISCOVERY_PORT:-8888}:8888/udp"
-    # PLCs, IP cameras and the discovery broadcast on the plant network usually
-    # work best on the host network. To use it, remove `ports:` and uncomment:
+      - "${VISION_BIND_ADDRESS:-0.0.0.0}:${VISION_HTTP_PORT:-8000}:8000"
+    # The UDP discovery beacon (port 8888) answers with the address it sees,
+    # which inside a bridge network is the container's own and useless to
+    # clients. For discovery, and for PLCs or cameras that must see the host's
+    # address, use the host network instead: remove `ports:` and uncomment
+    # (the API is then on port PORT of every host interface):
     # network_mode: host
 
     volumes:
@@ -58,7 +65,15 @@ services:
       - vision-certs:/app/certs
       - vision-logs:/app/logs
 
-    # USB cameras and Modbus RTU serial adapters must be passed in explicitly:
+    # The code and libraries are read-only; only the volumes above and /tmp
+    # can be written. Large uploads spill to uploads/.tmp (TMPDIR), not RAM.
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+
+    # USB cameras and Modbus RTU serial adapters must be passed in explicitly.
+    # Uncomment what the machine has; a device listed here that does not exist
+    # stops the container from starting.
     # devices:
     #   - /dev/video0:/dev/video0
     #   - /dev/ttyUSB0:/dev/ttyUSB0
@@ -75,13 +90,21 @@ services:
       start_interval: 5s
 
     stop_signal: SIGTERM
-    # uvicorn's 20 s grace for open requests plus the PLC safe-state shutdown.
+    # uvicorn's 20 s grace for open requests plus up to 30 s for the PLC
+    # safe-state shutdown (docker/supervise.py), with room to spare.
     stop_grace_period: 60s
 
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+    # Upper bounds that stop a leak or runaway from taking the whole machine
+    # down; inference is not throttled. Past mem_limit the server is killed
+    # and restarted. Set VISION_MEM_LIMIT to about 3/4 of the machine's RAM.
+    # To cap CPU as well, add for example: cpus: "3.5"
+    mem_limit: ${VISION_MEM_LIMIT:-4g}
+    pids_limit: 1024
 
     # Bounded logs so a noisy camera or PLC cannot fill the disk.
     logging:

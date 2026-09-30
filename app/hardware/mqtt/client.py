@@ -89,6 +89,12 @@ class MQTTClient:
         # loop and from the telemetry dispatcher's own loop in another thread.
         self._connect_guard = threading.Lock()
         self._last_connect_attempt = 0.0
+        # True while paho's network thread runs; it reconnects on its own, with backoff.
+        self._loop_running = False
+        # Set by reconfigure(): the next connect() builds a new paho client.
+        self._rebuild = True
+        # Called with True/False whenever the broker connection comes up or drops.
+        self.on_state_change: Optional[Callable[[bool], None]] = None
 
     def _build_client(self) -> mqtt.Client:
         proto_str = str(self.protocol_version).strip().lower()
@@ -171,6 +177,7 @@ class MQTTClient:
         }
         if rc == 0:
             self.is_connected = True
+            self._notify_state(True)
             logger.info("MQTT connected to %s:%d — %s", self.host, self.port, codes.get(rc, "Connected successfully"))
             # Send Node-RED Birth message if configured
             if self.birth_topic:
@@ -194,8 +201,9 @@ class MQTTClient:
 
     def _on_disconnect(self, client, userdata, rc):
         self.is_connected = False
+        self._notify_state(False)
         if rc != 0:
-            logger.warning("MQTT unexpectedly disconnected (rc=%d)", rc)
+            logger.warning("MQTT unexpectedly disconnected (rc=%d); reconnecting in the background", rc)
         else:
             logger.info("MQTT disconnected cleanly from %s:%d", self.host, self.port)
 
@@ -214,18 +222,37 @@ class MQTTClient:
                     except Exception as exc:
                         logger.error("MQTT handler error: %s", exc)
 
+    def _notify_state(self, connected: bool) -> None:
+        if self.on_state_change is not None:
+            try:
+                self.on_state_change(connected)
+            except Exception:
+                logger.exception("MQTT state listener failed")
+
     def _open_blocking(self) -> None:
-        """Replace the paho client and open its socket. Blocks on DNS, TCP and TLS."""
+        """Replace the paho client and open its socket. Blocks on DNS, TCP and TLS.
+
+        paho's network thread is started even when this first attempt fails:
+        it keeps retrying in the background, 1 s after the first failure and
+        doubling up to 60 s, so a broker that is down at startup is picked up
+        when it comes back, and a dropped connection is restored the same way.
+        """
         if self._client:
             try:
-                self._client.loop_stop()
                 self._client.disconnect()
+                self._client.loop_stop()
             except Exception:
                 pass
+            self._loop_running = False
 
         self._client = self._build_client()
-        self._client.connect(self.host, self.port, keepalive=self.keepalive)
-        self._client.loop_start()
+        self._client.reconnect_delay_set(min_delay=1, max_delay=60)
+        self._rebuild = False
+        try:
+            self._client.connect(self.host, self.port, keepalive=self.keepalive)
+        finally:
+            self._client.loop_start()
+            self._loop_running = True
 
     async def connect(self) -> bool:
         if self.is_connected and self._client:
@@ -242,6 +269,10 @@ class MQTTClient:
         try:
             if self.is_connected and self._client:
                 return True
+            if self._client is not None and self._loop_running and not self._rebuild:
+                # paho is already reconnecting in the background; a new client
+                # would only restart its backoff.
+                return False
 
             now = time.time()
             if now - self._last_connect_attempt < 3.0:
@@ -284,11 +315,18 @@ class MQTTClient:
                 except Exception as c_err:
                     logger.debug("MQTT Close message error: %s", c_err)
 
-            # loop_stop() joins paho's network thread; keep that off the event loop.
+            # disconnect() first so the close message and DISCONNECT still go
+            # out; loop_stop() joins paho's network thread, off the event loop.
             client = self._client
+            try:
+                client.disconnect()
+            except Exception as exc:
+                logger.debug("MQTT disconnect error: %s", exc)
             await asyncio.to_thread(client.loop_stop)
-            client.disconnect()
+            self._loop_running = False
+            self._rebuild = True
         self.is_connected = False
+        self._notify_state(False)
 
     async def publish(self, topic: str, payload: Dict[str, Any], qos: int = 0, retain: bool = False) -> bool:
         if not self._client or not self.is_connected:
@@ -320,6 +358,8 @@ class MQTTClient:
             if hasattr(self, k) and v is not None:
                 setattr(self, k, v)
         self.is_connected = False
+        self._rebuild = True
+        self._last_connect_attempt = 0.0
         logger.info("MQTT reconfigured -> %s:%d | TLS=%s | CA=%s | CERT=%s",
                     self.host, self.port, self.tls_enabled,
                     self.ca_cert_path, self.client_cert_path)

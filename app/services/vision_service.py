@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import logging
 import os
 import threading
 import time
@@ -17,9 +18,12 @@ from app.engines.inference_engine import InferenceEngine, begin_model_timing, en
 from app.schemas.vision import DetectionResponse, LiveInspectionResponse
 from app.services.camera_service import CameraService
 from app.state.application_state import app_state
-from app.utils.logger import get_logger
+from app.utils.logger import LogThrottle, get_logger
+from app.utils.threads import run_supervised
 
 logger = get_logger(__name__)
+# A model or tracker that fails on every frame is reported once a minute, not 30 times a second.
+_error_log = LogThrottle(60.0)
 
 COCO_CLASSES = [
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
@@ -79,9 +83,12 @@ class _CameraInferenceWorker:
         self._latest_inference_ms: float = 0.0
         self._processed_frame_id: int = 0
 
+        name = f"InferenceWorker-{camera_id[:8]}"
         self._thread = threading.Thread(
-            target=self._worker_loop,
-            name=f"InferenceWorker-{camera_id[:8]}",
+            target=run_supervised,
+            args=(name, self._worker_loop, self._stop_event),
+            kwargs={"kind": "inference"},
+            name=name,
             daemon=True,
         )
         self._thread.start()
@@ -165,7 +172,10 @@ class _CameraInferenceWorker:
                         camera_id=self.camera_id,
                     )
                 except Exception as trk_err:
-                    logger.debug("Counting tracker process error: %s", trk_err)
+                    _error_log.log(
+                        logger, logging.WARNING, ("tracker", self.camera_id),
+                        "Counting failed on camera %s: %s: %s", self.camera_id, type(trk_err).__name__, trk_err,
+                    )
 
                 with self._lock:
                     self._latest_detections = det_response.detections
@@ -174,7 +184,10 @@ class _CameraInferenceWorker:
                     app_state.detection_count += det_response.total_detections
                     app_state.processed_frames += 1
             except Exception as exc:
-                logger.debug("Async inference error on cam %s: %s", self.camera_id, exc)
+                _error_log.log(
+                    logger, logging.WARNING, ("inference", self.camera_id),
+                    "Inference failed on camera %s: %s: %s", self.camera_id, type(exc).__name__, exc,
+                )
             finally:
                 with self._input_lock:
                     self._busy = False
@@ -213,9 +226,12 @@ class _CameraStreamPublisher:
         self._fps_tracker: collections.deque = collections.deque(maxlen=30)
         self._current_fps: float = 0.0
 
+        name = f"StreamPub-{camera_id[:8]}"
         self._thread = threading.Thread(
-            target=self._publisher_loop,
-            name=f"StreamPub-{camera_id[:8]}",
+            target=run_supervised,
+            args=(name, self._publisher_loop, self._stop_event),
+            kwargs={"kind": "stream_publisher"},
+            name=name,
             daemon=True,
         )
         self._thread.start()
@@ -450,7 +466,7 @@ class CameraStreamPipeline:
         last_fid = -1
 
         try:
-            while True:
+            while not app_state.shutting_down:
                 driver = app_state.cameras.get(camera_id)
                 if not driver or not getattr(driver, "is_connected", False):
                     break
@@ -481,7 +497,7 @@ class CameraStreamPipeline:
         last_fid = -1
 
         try:
-            while True:
+            while not app_state.shutting_down:
                 driver = app_state.cameras.get(camera_id)
                 if not driver or not getattr(driver, "is_connected", False):
                     break
@@ -636,7 +652,9 @@ class ContinuousVisionRunner:
             cls._stop_event.clear()
             cls._running = True
             cls._thread = threading.Thread(
-                target=cls._loop,
+                target=run_supervised,
+                args=("ContinuousVisionRunner", cls._loop, cls._stop_event),
+                kwargs={"kind": "vision_runner"},
                 name="ContinuousVisionRunner",
                 daemon=True,
             )
@@ -706,7 +724,10 @@ class ContinuousVisionRunner:
                         if worker.submit_frame_if_idle(mat, fid, copy=False):
                             last_submitted_fids[camera_id] = fid
                 except Exception as ex:
-                    logger.debug("Continuous runner error for cam %s: %s", camera_id, ex)
+                    _error_log.log(
+                        logger, logging.WARNING, ("runner", camera_id),
+                        "Could not hand the frame of camera %s to its worker: %s: %s", camera_id, type(ex).__name__, ex,
+                    )
 
             # Polling loop (~100 Hz) with zero-copy frame ID check
             time.sleep(0.010)

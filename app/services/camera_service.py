@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,9 +20,10 @@ from app.schemas.camera import (
     DiscoveredUSBCamera,
 )
 from app.state.application_state import app_state
-from app.utils.logger import get_logger
+from app.utils.logger import LogThrottle, get_logger, redact
 
 logger = get_logger(__name__)
+_reconnect_log = LogThrottle(300.0)
 
 
 def _instantiate_driver(camera: Camera) -> BaseCamera:
@@ -192,6 +194,7 @@ class CameraService:
     @staticmethod
     async def delete_camera(db: AsyncSession, camera_id: str) -> bool:
         from app.services.vision_service import CameraStreamPipeline
+        CameraReconnector.forget(camera_id)
         # 1. Remove from active hardware/driver memory first so the vision runner stops
         # using it, then stop its workers and release the device. Both join threads,
         # so they run off the event loop.
@@ -278,7 +281,10 @@ class CameraService:
         return discovered
 
     @staticmethod
-    async def connect_camera(db: AsyncSession, camera_id: str) -> Tuple[bool, Optional[str]]:
+    async def connect_camera(db: AsyncSession, camera_id: str, _background: bool = False) -> Tuple[bool, Optional[str]]:
+        if not _background:
+            # Connecting by hand replaces any background retry of this camera.
+            CameraReconnector.forget(camera_id)
         camera = await CameraService.get_camera_by_id(db, camera_id)
         if not camera:
             return False, "Camera not found in database"
@@ -307,9 +313,9 @@ class CameraService:
             # Run blocking OpenCV connect() in thread pool so async loop isn't blocked
             success = await loop.run_in_executor(None, driver.connect)
         except Exception as exc:
-            logger.error("Exception occurred while instantiating/connecting camera %s: %s", camera_id, exc)
+            logger.error("Exception occurred while instantiating/connecting camera %s: %s", camera_id, redact(str(exc)))
             success = False
-            last_err = str(exc)
+            last_err = redact(str(exc))
         else:
             last_err = driver.last_error
 
@@ -338,6 +344,7 @@ class CameraService:
     @staticmethod
     async def disconnect_camera(db: AsyncSession, camera_id: str) -> bool:
         from app.services.vision_service import CameraStreamPipeline
+        CameraReconnector.forget(camera_id)
         # 1. Immediately remove from live memory, stop stream workers and release the
         # hardware handle (off the event loop: both join threads)
         driver: Optional[BaseCamera] = app_state.cameras.pop(camera_id, None)
@@ -441,3 +448,95 @@ class CameraService:
             return False, None, 0, driver.last_error or "Failed to grab raw frame"
 
         return True, mat, fid, None
+
+
+class CameraReconnector:
+    """Retries cameras that should be running but could not be opened.
+
+    A camera that is switched off or still booting when the server starts, or
+    when its line is started, is tried again in the background, waiting longer
+    after each failure (up to CAMERA_RECONNECT_MAX_SECONDS). Once a camera is
+    open its driver handles later dropouts itself. Connecting or disconnecting
+    the camera by hand, stopping its line or deleting it takes it off the list.
+    """
+
+    FIRST_DELAY_SECONDS = 5.0
+    _pending: Dict[str, Dict[str, float]] = {}
+    _task: Optional[asyncio.Task] = None
+
+    @classmethod
+    def want(cls, camera_id: str) -> None:
+        if camera_id and camera_id not in cls._pending:
+            cls._pending[camera_id] = {
+                "next": time.monotonic() + cls.FIRST_DELAY_SECONDS,
+                "delay": cls.FIRST_DELAY_SECONDS,
+                "attempts": 0,
+            }
+
+    @classmethod
+    def forget(cls, camera_id: str) -> None:
+        cls._pending.pop(camera_id, None)
+
+    @classmethod
+    def pending(cls) -> List[str]:
+        return list(cls._pending)
+
+    @classmethod
+    def start(cls) -> None:
+        if cls._task is None or cls._task.done():
+            cls._task = asyncio.create_task(cls._run(), name="camera_reconnect")
+
+    @classmethod
+    async def stop(cls) -> None:
+        task, cls._task = cls._task, None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @classmethod
+    async def _run(cls) -> None:
+        while True:
+            try:
+                await cls.tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Camera reconnect pass failed")
+            await asyncio.sleep(1.0)
+
+    @classmethod
+    async def tick(cls, now: Optional[float] = None) -> None:
+        from app.config import settings as app_settings
+        from app.db.session import AsyncSessionLocal
+
+        now = time.monotonic() if now is None else now
+        for camera_id, entry in list(cls._pending.items()):
+            if app_state.shutting_down:
+                return
+            if entry["next"] > now:
+                continue
+            driver = app_state.cameras.get(camera_id)
+            if driver is not None and getattr(driver, "is_connected", False):
+                cls.forget(camera_id)
+                continue
+            entry["attempts"] += 1
+            async with AsyncSessionLocal() as db:
+                ok, err = await CameraService.connect_camera(db, camera_id, _background=True)
+                if camera_id not in cls._pending:
+                    # Disconnected by hand or its line stopped while this attempt ran.
+                    if ok:
+                        await CameraService.disconnect_camera(db, camera_id)
+                    continue
+            if ok:
+                logger.info("Camera %s connected after %d background attempt(s)", camera_id, int(entry["attempts"]))
+                cls.forget(camera_id)
+            elif err == "Camera not found in database":
+                cls.forget(camera_id)
+            else:
+                entry["delay"] = min(entry["delay"] * 2, max(cls.FIRST_DELAY_SECONDS, app_settings.CAMERA_RECONNECT_MAX_SECONDS))
+                entry["next"] = time.monotonic() + entry["delay"]
+                _reconnect_log.log(
+                    logger, logging.WARNING, camera_id,
+                    "Camera %s is still not connecting (attempt %d, next in %.0f s): %s",
+                    camera_id, int(entry["attempts"]), entry["delay"], err,
+                )

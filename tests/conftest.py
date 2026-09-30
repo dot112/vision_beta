@@ -127,7 +127,7 @@ def client():
     """App with its real lifespan (migrations, admin seed) but no background hardware."""
     from fastapi.testclient import TestClient
 
-    from app.services import discovery_service, health_service, plc_failsafe_service, vision_service
+    from app.services import camera_service, discovery_service, health_service, plc_failsafe_service, vision_service
     import main
 
     patches = [
@@ -139,6 +139,8 @@ def client():
         (health_service.HealthMonitor, "start", classmethod(lambda cls: None)),
         (discovery_service.ServerDiscoveryService, "start", staticmethod(_async_noop)),
         (vision_service.ContinuousVisionRunner, "start", staticmethod(lambda *a, **k: None)),
+        # Background camera retries would reconnect whatever cameras tests leave behind.
+        (camera_service.CameraReconnector, "start", classmethod(lambda cls: None)),
     ]
     originals = [(obj, name, obj.__dict__[name]) for obj, name, _ in patches]
     for obj, name, value in patches:

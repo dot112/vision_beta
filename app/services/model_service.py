@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import uuid
 from pathlib import Path
 from typing import List, Optional
 from fastapi import UploadFile
@@ -107,16 +108,31 @@ class ModelService:
         if dest_path.exists():
             raise ValueError("A model with this name and version already exists")
         size_bytes = 0
+        # Written under a temporary name and renamed when complete, so a crash
+        # or power cut mid-upload never leaves a truncated model.onnx behind.
+        part_path = dest_path.with_name(f"{dest_path.name}.{uuid.uuid4().hex[:12]}.part")
         try:
-            with open(dest_path, "xb") as buffer:
+            with open(part_path, "xb") as buffer:
                 while chunk := await file.read(1024 * 1024):
                     size_bytes += len(chunk)
                     if size_bytes > settings.MAX_MODEL_UPLOAD_BYTES:
                         raise ValueError("Model file exceeds configured upload limit")
                     buffer.write(chunk)
-        except Exception:
-            dest_path.unlink(missing_ok=True)
-            raise
+                buffer.flush()
+                os.fsync(buffer.fileno())
+            try:
+                # A hard link never replaces an existing file, so two uploads of
+                # the same name and version cannot overwrite each other.
+                os.link(part_path, dest_path)
+            except FileExistsError:
+                raise ValueError("A model with this name and version already exists") from None
+            except OSError:
+                # Filesystems without hard links.
+                if dest_path.exists():
+                    raise ValueError("A model with this name and version already exists") from None
+                os.replace(part_path, dest_path)
+        finally:
+            part_path.unlink(missing_ok=True)
 
         # Try to read ONNX metadata (task type, class names) for better registry info
         meta_extra, model_classes = await asyncio.to_thread(_read_onnx_metadata, dest_path)

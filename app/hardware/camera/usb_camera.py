@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.config import settings as app_settings
 from app.hardware.camera.base import BaseCamera
-from app.utils.logger import get_logger
+from app.utils.logger import LogThrottle, get_logger
+from app.utils.threads import run_supervised
 
 logger = get_logger(__name__)
+# A device that stays unplugged is reported once a minute while it is retried.
+_reconnect_log = LogThrottle(60.0)
 
 try:
     import cv2
@@ -22,6 +27,9 @@ class USBCamera(BaseCamera):
     - Threaded background capture worker for zero-lag real-time streaming.
     - Direct BGR numpy array access (grab_raw_frame).
     """
+
+    # About 2 s of failed reads (10 ms apart) before the device is treated as gone and reopened.
+    REOPEN_AFTER_FAILED_READS = 200
 
     def __init__(self, camera_id: str, name: str, source: str, settings: Optional[Dict[str, Any]] = None):
         super().__init__(camera_id=camera_id, name=name, source=source, settings=settings)
@@ -44,6 +52,39 @@ class USBCamera(BaseCamera):
         self._lock = threading.Lock()
         self._new_frame_event = threading.Event()
 
+    def _open_device(self) -> Optional[Any]:
+        """Open the device and read one frame. Returns the capture, or None (see last_error)."""
+        # On Windows, prefer DirectShow for fast opening and reliable resolution negotiation
+        backend = cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY
+        cap = cv2.VideoCapture(self.device_index, backend)
+
+        if not cap.isOpened():
+            # Fallback to default backend if DSHOW fails
+            cap.release()
+            cap = cv2.VideoCapture(self.device_index)
+
+        if not cap.isOpened():
+            cap.release()
+            self.last_error = f"Failed to open USB camera at index {self.device_index}"
+            return None
+
+        # Apply initial settings
+        self._apply_properties(cap, self.settings)
+
+        # Test grab a single frame to verify feed
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            cap.release()
+            self.last_error = f"Camera opened at index {self.device_index} but could not read frame."
+            return None
+
+        with self._lock:
+            self._latest_raw_mat = frame
+            self._latest_processed_mat = self._process_frame(frame)
+            self._latest_frame_id += 1
+            self._latest_jpeg = None
+        return cap
+
     def connect(self) -> bool:
         if cv2 is None:
             self.last_error = "OpenCV (cv2) is not installed."
@@ -54,46 +95,27 @@ class USBCamera(BaseCamera):
             if self.is_connected:
                 self.disconnect()
 
-            self._stop_event.clear()
-
-            # On Windows, prefer DirectShow for fast opening and reliable resolution negotiation
-            backend = cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY
-            self._cap = cv2.VideoCapture(self.device_index, backend)
-
-            if not self._cap.isOpened():
-                # Fallback to default backend if DSHOW fails
-                self._cap = cv2.VideoCapture(self.device_index)
-
-            if not self._cap.isOpened():
-                self.last_error = f"Failed to open USB camera at index {self.device_index}"
+            cap = self._open_device()
+            if cap is None:
                 self.is_connected = False
                 logger.error(self.last_error)
                 return False
 
-            # Apply initial settings
-            self.set_properties(self.settings)
-
-            # Test grab a single frame to verify feed
-            ret, frame = self._cap.read()
-            if not ret or frame is None:
-                self.last_error = f"Camera opened at index {self.device_index} but could not read frame."
-                self.disconnect()
-                return False
-
-            with self._lock:
-                self._latest_raw_mat = frame
-                self._latest_processed_mat = self._process_frame(frame)
-                self._latest_frame_id = 1
-                self._latest_jpeg = None
-
+            self._cap = cap
             self.is_connected = True
             self.last_error = None
 
-            # Start reader thread to keep USB DirectShow buffer at 0ms latency
+            # Start reader thread to keep USB DirectShow buffer at 0ms latency.
+            # Each reader thread has its own stop flag and owns its capture.
             import threading
+            stop = threading.Event()
+            self._stop_event = stop
+            name = f"USBCamReader-{self.camera_id[:8]}"
             self._thread = threading.Thread(
-                target=self._reader_loop,
-                name=f"USBCamReader-{self.camera_id[:8]}",
+                target=run_supervised,
+                args=(name, lambda: self._reader_loop(cap, stop), stop),
+                kwargs={"kind": "camera_reader"},
+                name=name,
                 daemon=True,
             )
             self._thread.start()
@@ -107,42 +129,111 @@ class USBCamera(BaseCamera):
             self.is_connected = False
             return False
 
-    def _reader_loop(self) -> None:
+    def _reader_loop(self, cap: Optional[Any], stop: Any) -> None:
+        """Read frames until stopped; reopen the device when it stops delivering (unplugged, reset)."""
         import time
-        while not self._stop_event.is_set():
-            if self._cap is None or not self._cap.isOpened():
-                break
+        failures = 0
+        retry_delay = 1.0
+        lost_at: Optional[float] = None
+        attempts = 0
+        reopen_after = self.REOPEN_AFTER_FAILED_READS
+
+        def release(c: Optional[Any]) -> None:
+            if c is None:
+                return
+            if self._cap is c:
+                self._cap = None
             try:
-                ret, frame = self._cap.read()
-                if not ret or frame is None:
-                    time.sleep(0.01)
+                c.release()
+            except Exception as exc:
+                logger.warning("Error releasing USB camera %s: %s", self.device_index, exc)
+
+        try:
+            while not stop.is_set():
+                if cap is None or not cap.isOpened():
+                    release(cap)
+                    cap = None
+                    if lost_at is None:
+                        lost_at = time.monotonic()
+                        logger.warning("USB camera '%s' (device %s) stopped delivering frames; reopening it",
+                                       self.name, self.device_index)
+                    attempts += 1
+                    try:
+                        cap = self._open_device()
+                    except Exception as exc:
+                        self.last_error = f"Exception reopening USB camera {self.device_index}: {exc}"
+                        cap = None
+                    if cap is None:
+                        _reconnect_log.log(
+                            logger, logging.WARNING, self.camera_id,
+                            "USB camera '%s' is still unavailable after %d attempt(s): %s",
+                            self.name, attempts, self.last_error,
+                        )
+                        if stop.wait(retry_delay):
+                            break
+                        retry_delay = min(retry_delay * 2, max(1.0, app_settings.CAMERA_RECONNECT_MAX_SECONDS))
+                        continue
+                    if stop.is_set():
+                        break
+                    self._cap = cap
+                    logger.info("USB camera '%s' reopened after %.0f s (%d attempt(s))",
+                                self.name, time.monotonic() - lost_at, attempts)
+                    _reconnect_log.clear(self.camera_id)
+                    self.last_error = None
+                    lost_at, attempts, retry_delay, failures = None, 0, 1.0, 0
                     continue
 
-                processed = self._process_frame(frame)
-                with self._lock:
-                    self._latest_raw_mat = frame
-                    self._latest_processed_mat = processed
-                    self._latest_frame_id += 1
-                    self._latest_jpeg = None
-                self._new_frame_event.set()
-            except Exception:
-                time.sleep(0.02)
+                try:
+                    ret, frame = cap.read()
+                    if not ret or frame is None:
+                        failures += 1
+                        if failures >= reopen_after:
+                            release(cap)
+                            cap = None
+                            failures = 0
+                        else:
+                            time.sleep(0.01)
+                        continue
+
+                    failures = 0
+                    processed = self._process_frame(frame)
+                    with self._lock:
+                        self._latest_raw_mat = frame
+                        self._latest_processed_mat = processed
+                        self._latest_frame_id += 1
+                        self._latest_jpeg = None
+                    self._new_frame_event.set()
+                except Exception as exc:
+                    failures += 1
+                    _reconnect_log.log(
+                        logger, logging.WARNING, ("read", self.camera_id),
+                        "USB camera '%s' frame read failed: %s: %s", self.name, type(exc).__name__, exc,
+                    )
+                    time.sleep(0.02)
+        finally:
+            release(cap)
 
     def disconnect(self) -> None:
         self.is_connected = False
         if self._stop_event:
             self._stop_event.set()
 
-        if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=1.0)
-            self._thread = None
-
-        if self._cap is not None:
+        # A running reader releases its own capture as it exits; releasing it
+        # from here while a read is in progress could crash the driver.
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            import threading
+            if threading.current_thread() is not thread:
+                thread.join(timeout=1.0)
+            if thread.is_alive():
+                logger.warning("USB camera '%s' reader is still finishing a read; it will release the device itself", self.name)
+        elif self._cap is not None:
             try:
                 self._cap.release()
             except Exception as exc:
                 logger.warning("Error releasing USB camera %s: %s", self.device_index, exc)
             self._cap = None
+        self._thread = None
 
         if self._lock:
             with self._lock:
@@ -237,31 +328,36 @@ class USBCamera(BaseCamera):
             return {"device_index": self.device_index, "connected": True, "error": str(exc)}
 
     def set_properties(self, properties: Dict[str, Any]) -> bool:
-        if self._cap is None or not self._cap.isOpened() or cv2 is None:
+        cap = self._cap
+        if cap is None or not cap.isOpened() or cv2 is None:
             return False
+        if not self._apply_properties(cap, properties):
+            return False
+        # Keep self.settings updated
+        self.settings.update(properties)
+        return True
 
+    @staticmethod
+    def _apply_properties(cap: Any, properties: Dict[str, Any]) -> bool:
         try:
             if "width" in properties and properties["width"]:
-                self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(properties["width"]))
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(properties["width"]))
             if "height" in properties and properties["height"]:
-                self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(properties["height"]))
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(properties["height"]))
             if "fps" in properties and properties["fps"]:
-                self._cap.set(cv2.CAP_PROP_FPS, float(properties["fps"]))
+                cap.set(cv2.CAP_PROP_FPS, float(properties["fps"]))
             if "brightness" in properties and properties["brightness"] is not None:
-                self._cap.set(cv2.CAP_PROP_BRIGHTNESS, float(properties["brightness"]))
+                cap.set(cv2.CAP_PROP_BRIGHTNESS, float(properties["brightness"]))
             if "contrast" in properties and properties["contrast"] is not None:
-                self._cap.set(cv2.CAP_PROP_CONTRAST, float(properties["contrast"]))
+                cap.set(cv2.CAP_PROP_CONTRAST, float(properties["contrast"]))
             if "saturation" in properties and properties["saturation"] is not None:
-                self._cap.set(cv2.CAP_PROP_SATURATION, float(properties["saturation"]))
+                cap.set(cv2.CAP_PROP_SATURATION, float(properties["saturation"]))
             if "exposure" in properties and properties["exposure"] is not None:
-                self._cap.set(cv2.CAP_PROP_EXPOSURE, float(properties["exposure"]))
+                cap.set(cv2.CAP_PROP_EXPOSURE, float(properties["exposure"]))
             if "auto_exposure" in properties and properties["auto_exposure"] is not None:
                 # Value 0.25 vs 0.75 / 1.0 depending on DirectShow driver
                 val = 0.75 if properties["auto_exposure"] else 0.25
-                self._cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, val)
-
-            # Keep self.settings updated
-            self.settings.update(properties)
+                cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, val)
             return True
         except Exception as exc:
             logger.warning("Failed setting USB camera properties: %s", exc)

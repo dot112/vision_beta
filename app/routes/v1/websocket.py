@@ -89,7 +89,7 @@ async def websocket_live_stream(websocket: WebSocket, camera_id: str):
         last_sent_fid: int = -1
 
         try:
-            while True:
+            while not app_state.shutting_down:
                 driver = app_state.cameras.get(camera_id)
                 if not driver or not getattr(driver, "is_connected", False):
                     break

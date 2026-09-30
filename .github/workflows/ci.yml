@@ -38,8 +38,14 @@ jobs:
       - name: Run tests
         run: pytest
 
+  # Runs the Compose deployment on a fresh database and checks the failure
+  # handling it promises: restarts after a crash, a hang and a Docker restart,
+  # data that survives recreation, a locked-down container, a clean stop, and
+  # an API that stays up while the MQTT broker, a PLC and a camera are offline.
   docker:
     runs-on: ubuntu-latest
+    env:
+      BASE: http://127.0.0.1:8000
     steps:
       - uses: actions/checkout@v4
       - name: Write a throwaway .env
@@ -47,20 +53,168 @@ jobs:
           cp .env.example .env
           sed -i "s/^SECRET_KEY=.*/SECRET_KEY=ci-only-secret-key-$(openssl rand -hex 16)/" .env
           sed -i "s/^ADMIN_INITIAL_PASSWORD=.*/ADMIN_INITIAL_PASSWORD=ci-only-admin-$(openssl rand -hex 12)/" .env
+          # A zone other than UTC shows the setting reaches the container.
+          sed -i "s|^TZ=.*|TZ=Europe/Berlin|" .env
+          # A quick watchdog, so the hang test takes seconds rather than minutes.
+          sed -i "s/^WATCHDOG_INTERVAL=.*/WATCHDOG_INTERVAL=2/; s/^WATCHDOG_TIMEOUT=.*/WATCHDOG_TIMEOUT=2/; s/^WATCHDOG_FAILURES=.*/WATCHDOG_FAILURES=2/" .env
+          cat > "$RUNNER_TEMP/ci.sh" <<'EOF'
+          login() {
+            local password
+            password=$(grep '^ADMIN_INITIAL_PASSWORD=' .env | cut -d= -f2-)
+            curl -fsS -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: application/json' \
+              -d "{\"username\":\"admin\",\"password\":\"$password\",\"force\":true}" | jq -r .access_token
+          }
+          container() { docker compose ps -aq vision; }
+          # grep a saved copy: `docker compose logs | grep -q` can fail under pipefail.
+          logs_have() { docker compose logs vision > "$RUNNER_TEMP/vision.log" 2>&1; grep -qF -- "$1" "$RUNNER_TEMP/vision.log"; }
+          restarts() { docker inspect -f '{{.RestartCount}}' "$(container)"; }
+          health() { docker inspect -f '{{.State.Health.Status}}' "$(container)" 2>/dev/null || true; }
+          # Kill or freeze the uvicorn process inside the container (the supervisor stays).
+          signal_server() {
+            docker compose exec -T vision python - "$1" <<'PY' || true
+          import os, signal, sys
+          sig = getattr(signal, sys.argv[1])
+          for pid in os.listdir("/proc"):
+              if not pid.isdigit() or int(pid) == os.getpid():
+                  continue
+              try:
+                  cmd = open(f"/proc/{pid}/cmdline", "rb").read()
+              except OSError:
+                  continue
+              if b"uvicorn" in cmd:
+                  os.kill(int(pid), sig)
+          PY
+          }
+          wait_restarted() {  # wait_restarted <restart count before> <seconds>
+            for _ in $(seq 1 $(( $2 / 2 ))); do
+              if [ "$(restarts)" -gt "$1" ] && [ "$(health)" = healthy ]; then return 0; fi
+              sleep 2
+            done
+            echo "no healthy restart within $2 s (restarts: $(restarts), health: $(health))"
+            return 1
+          }
+          EOF
+
       - name: Build and start with Docker Compose on a fresh database
         run: docker compose up -d --build --wait --wait-timeout 180
-      - name: Server is healthy and rejects unauthenticated requests
+
+      - name: API, health and dashboard answer; the configuration is loaded
         run: |
-          curl -fsS http://127.0.0.1:8000/health
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/api/v1/rules)" = 401
-      - name: Container runs as an unprivileged user and holds no .env
+          source "$RUNNER_TEMP/ci.sh"
+          curl -fsS "$BASE/health"
+          curl -fsS -o /dev/null "$BASE/dashboard"
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/v1/rules")" = 401
+          # APP_ENV=production from docker-compose.yml: no interactive API docs
+          test "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/docs")" = 404
+          # ADMIN_INITIAL_PASSWORD from .env was used to create the admin account
+          token=$(login); test -n "$token" && test "$token" != null
+          # TZ from .env
+          docker compose exec -T vision python -c 'import time; z = time.strftime("%Z"); assert z in ("CET", "CEST"), z'
+
+      - name: The container is locked down
         run: |
+          source "$RUNNER_TEMP/ci.sh"
+          id=$(container)
           test "$(docker compose exec -T vision id -u)" != 0
           docker compose exec -T vision test ! -e /app/.env
-      - name: Stops cleanly
+          test "$(docker inspect -f '{{.HostConfig.Privileged}}' "$id")" = false
+          test "$(docker inspect -f '{{.HostConfig.ReadonlyRootfs}}' "$id")" = true
+          docker inspect -f '{{json .HostConfig.CapDrop}}' "$id" | grep -q ALL
+          docker inspect -f '{{json .HostConfig.SecurityOpt}}' "$id" | grep -q no-new-privileges
+          docker compose exec -T vision grep -Eq '^CapEff:\s+0+$' /proc/1/status
+          test "$(docker inspect -f '{{.HostConfig.Memory}}' "$id")" -gt 0
+          test "$(docker inspect -f '{{.HostConfig.PidsLimit}}' "$id")" = 1024
+          # Only the HTTP port is published
+          docker port "$id"
+          test -z "$(docker port "$id" | grep -v '^8000/tcp ')"
+          # Code is read-only; the volumes and /tmp are writable
+          if docker compose exec -T vision touch /app/main.py /app/new-file; then echo "root filesystem is writable"; exit 1; fi
+          docker compose exec -T vision sh -c 'for d in data logs model_store uploads certs /tmp "$TMPDIR"; do touch "$d/.w" && rm "$d/.w" || exit 1; done'
+          docker inspect -f '{{json .HostConfig.LogConfig}}' "$id" | grep -q '"max-size":"10m"'
+
+      - name: SQLite runs in WAL mode on the data volume
         run: |
+          source "$RUNNER_TEMP/ci.sh"
+          docker compose exec -T vision python -c "import sqlite3; m = sqlite3.connect('data/factory_data.db').execute('PRAGMA journal_mode').fetchone()[0]; assert m == 'wal', m"
+          logs_have "SQLite journal_mode=WAL"
+
+      - name: An offline MQTT broker, PLC and camera do not take the API down
+        run: |
+          source "$RUNNER_TEMP/ci.sh"
+          token=$(login); auth="Authorization: Bearer $token"
+          # 192.0.2.0/24 is reserved for documentation: nothing answers there.
+          code=$(timeout 60 curl -s -o /dev/stderr -w '%{http_code}' -X POST "$BASE/api/v1/mqtt/connect" -H "$auth" \
+            -H 'Content-Type: application/json' -d '{"host":"192.0.2.1","port":1883}')
+          test "$code" = 503
+          curl -fsS "$BASE/health" > /dev/null
+          ep=$(curl -fsS -X POST "$BASE/api/v1/system/endpoints" -H "$auth" -H 'Content-Type: application/json' \
+            -d '{"name":"CI offline PLC","protocol":"plc","plc_protocol":"modbus_tcp","host":"192.0.2.1","port":502,"timeout":2}' | jq -r .id)
+          timeout 60 curl -fsS -X POST "$BASE/api/v1/system/endpoints/$ep/test" -H "$auth" | tee /dev/stderr | jq -e '.success == false'
+          curl -fsS "$BASE/health" > /dev/null
+          cam=$(curl -fsS -X POST "$BASE/api/v1/cameras" -H "$auth" -H 'Content-Type: application/json' \
+            -d '{"name":"CI offline camera","type":"ip","source":"rtsp://ci:cam-secret-pw@192.0.2.1:554/stream1"}' | jq -r .id)
+          code=$(timeout 90 curl -s -o /dev/stderr -w '%{http_code}' -X POST "$BASE/api/v1/cameras/$cam/connect" -H "$auth")
+          test "$code" = 400
+          curl -fsS "$BASE/health"
+          # The camera password never reaches the logs
+          if logs_have cam-secret-pw; then echo "camera password in the logs"; exit 1; fi
+
+      - name: Keep a product and a model file to check persistence later
+        run: |
+          source "$RUNNER_TEMP/ci.sh"
+          token=$(login)
+          curl -fsS -X POST "$BASE/api/v1/products" -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+            -d '{"code":"CI-PERSIST-1","name":"Survives recreation"}'
+          docker compose exec -T vision sh -c 'mkdir -p model_store/ci/v1 && echo onnx-bytes > model_store/ci/v1/model.onnx'
+
+      - name: A crashed server process is restarted
+        run: |
+          source "$RUNNER_TEMP/ci.sh"
+          before=$(restarts)
+          signal_server SIGKILL
+          wait_restarted "$before" 120
+          curl -fsS "$BASE/health"
+          logs_have "server was killed by SIGKILL"
+
+      - name: A hung server is restarted by the health watchdog
+        run: |
+          source "$RUNNER_TEMP/ci.sh"
+          before=$(restarts)
+          # Frozen, not dead: the process stays, /health stops answering.
+          signal_server SIGSTOP
+          wait_restarted "$before" 180
+          curl -fsS "$BASE/health"
+          logs_have "the server stopped answering; restarting the container"
+
+      - name: The server comes back after the Docker service restarts (as after a host reboot)
+        run: |
+          source "$RUNNER_TEMP/ci.sh"
+          sudo systemctl restart docker
+          for _ in $(seq 1 60); do [ "$(health)" = healthy ] && break; sleep 2; done
+          test "$(health)" = healthy
+          curl -fsS "$BASE/health"
+
+      - name: Stops cleanly and in time
+        run: |
+          source "$RUNNER_TEMP/ci.sh"
+          start=$(date +%s)
           docker compose stop
-          test "$(docker inspect -f '{{.State.ExitCode}}' "$(docker compose ps -aq vision)")" = 0
+          elapsed=$(( $(date +%s) - start )); echo "stop took ${elapsed} s"
+          test "$elapsed" -lt 60
+          test "$(docker inspect -f '{{.State.ExitCode}}' "$(container)")" = 0
+          logs_have "Shutdown complete"
+          logs_have "server stopped after SIGTERM"
+
+      - name: Data, models and logs survive docker compose down and up
+        run: |
+          source "$RUNNER_TEMP/ci.sh"
+          docker compose down  # removes the container, keeps the volumes
+          docker compose up -d --wait --wait-timeout 180
+          token=$(login)
+          curl -fsS "$BASE/api/v1/products" -H "Authorization: Bearer $token" | jq -e 'tostring | contains("CI-PERSIST-1")'
+          docker compose exec -T vision test -s model_store/ci/v1/model.onnx
+          docker compose exec -T vision test -s logs/app.log
+
       - name: Logs on failure
         if: failure()
         run: docker compose logs

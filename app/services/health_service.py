@@ -317,6 +317,11 @@ class HealthService:
             "alarms_unacknowledged": alarm_counts["unacknowledged"],
             "alarms_raised_total": alarm_manager.total_raised,
         }
+        from app.services.camera_service import CameraReconnector
+        from app.utils.threads import restart_counts
+        # Background threads restarted after a crash (the traceback is in the log).
+        metrics["worker_restarts_total"] = sum(restart_counts().values())
+        metrics["cameras_reconnecting"] = len(CameraReconnector.pending())
         try:
             from app.engines.flow_engine import FlowEngine
             from app.services.plc_dispatcher_service import PLCDispatcherService
