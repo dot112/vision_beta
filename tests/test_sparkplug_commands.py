@@ -97,7 +97,10 @@ def test_start_stop_and_reset_with_the_switch_on(plant):
     assert plant.line()["enabled"] is False and values(answer) == {"Line/Running": False}
     assert plant.metric_now("Line/Running") is False
     plant.dcmd("Line/Running", DataType.Boolean, True)
-    assert plant.line()["enabled"] is True and plant.metric_now("Line/Running") is True
+    # The stop can be sent twice (the answer, then the interval's changed value), so the
+    # second command's answer may be that repeat: wait for the start to reach the host.
+    assert plant.line()["enabled"] is True
+    wait_until(lambda: plant.metric_now("Line/Running") is True)
 
     assert plant.line()["status"]["total_inspected"] == 3
     answer = plant.dcmd("Commands/Reset Counters", DataType.Boolean, True)
