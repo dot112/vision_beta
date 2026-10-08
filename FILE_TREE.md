@@ -214,7 +214,8 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │       ├── section-2-camera-cards.md
 │       ├── section-3-joined-cameras.md
 │       ├── section-4-product-records.md
-│       └── section-5-plc-inputs.md
+│       ├── section-5-plc-inputs.md
+│       └── session-prompts.md   # the first message for each section's session
 ├── docker/
 │   ├── mosquitto/
 │   │   ├── mosquitto.conf

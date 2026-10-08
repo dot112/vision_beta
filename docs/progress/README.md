@@ -2,6 +2,7 @@
 
 This folder hands the work over to new sessions: **one session per section**.
 Each section file can be read on its own: it has what is done, what is left, the files to change, the tests to write, and the checks to run.
+The first message to paste into each section's session is in [session-prompts.md](session-prompts.md).
 Every session must keep its own section file up to date.
 
 ## The goal (from the owner)
