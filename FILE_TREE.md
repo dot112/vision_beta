@@ -206,6 +206,14 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   └── fonts/
 │       ├── inter-latin.woff2
 │       └── Inter-LICENSE.txt
+├── docs/
+│   └── progress/          # handoff files: the work split into 5 sections (README.md first)
+│       ├── README.md
+│       ├── section-1-logic-fixes.md
+│       ├── section-2-camera-cards.md
+│       ├── section-3-joined-cameras.md
+│       ├── section-4-product-records.md
+│       └── section-5-plc-inputs.md
 ├── docker/
 │   ├── mosquitto/
 │   │   ├── mosquitto.conf
@@ -239,6 +247,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_ip_camera_http.py
     ├── test_lines.py
     ├── test_lines_api.py
+    ├── test_logic_fixes.py
     ├── test_mqtt_channels.py
     ├── test_mqtt_client.py
     ├── test_plc_action_persistence.py
