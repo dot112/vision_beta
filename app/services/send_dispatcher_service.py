@@ -12,15 +12,15 @@ product that is when its final result is decided.
 """
 from __future__ import annotations
 
-import asyncio
+import functools
 import json
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from app.services.card_triggers import alarm_event, card_fires, card_line, normalize_trigger
-from app.services.line_config import PRIMARY_LINE_ID, SEND_PROTOCOLS
+from app.services.line_config import PRIMARY_LINE_ID, SEND_PROTOCOLS, TEMPLATE_FIELDS, parse_template
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -52,8 +52,93 @@ MESSAGE_FIELDS: Dict[str, Tuple[str, ...]] = {
 }
 
 
-def build_message(card: dict, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """The message a card sends for an event: the fields it lists, or everything when it lists none."""
+def _local_moment(timestamp: Any) -> datetime:
+    """The event's moment in the server's local time (now, when the event has no readable time)."""
+    if isinstance(timestamp, str):
+        try:
+            moment = datetime.fromisoformat(timestamp)
+            return moment.astimezone() if moment.tzinfo else moment
+        except ValueError:
+            pass
+    return datetime.now()
+
+
+def _camera_name(camera_id: Any) -> Optional[str]:
+    if not camera_id:
+        return None
+    try:
+        from app.state.application_state import app_state
+        camera = app_state.cameras.get(str(camera_id))
+        return getattr(camera, "name", None) if camera is not None else None
+    except Exception:
+        return None
+
+
+def template_values(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """The value of every placeholder (TEMPLATE_FIELDS) for an event's message; None where it has none."""
+    metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+
+    def pick(*keys: str) -> Any:
+        return next((payload[key] for key in keys if payload.get(key) is not None), None)
+
+    def metric(key: str) -> Any:
+        return payload[key] if payload.get(key) is not None else metrics.get(key)
+
+    moment = _local_moment(payload.get("timestamp"))
+    result = pick("result")
+    camera_id = pick("camera_id")
+    values = {
+        "line_id": pick("line_id"),
+        "line_name": pick("line_name"),
+        "line_state": pick("line_state"),
+        "event": pick("event"),
+        "timestamp": pick("timestamp"),
+        "date": moment.strftime("%Y-%m-%d"),
+        "time": moment.strftime("%H:%M:%S"),
+        "camera_id": camera_id,
+        "camera_name": pick("camera_name") or _camera_name(camera_id),
+        "track_id": pick("track_id"),
+        "class_name": pick("class_name"),
+        "confidence": pick("confidence"),
+        "result": result,
+        "result_code": {"PASSED": 1, "REJECTED": 2}.get(str(result).upper()) if result is not None else None,
+        "reject_reason": pick("reject_reason"),
+        "code": pick("code", "qr_code"),
+        "code_format": pick("format", "qr_format"),
+        "code_status": pick("qr_status"),
+        "product_name": pick("product_name"),
+        "good_count": metric("good_count"),
+        "rejected_count": metric("rejected_count"),
+        "total_inspected": metric("total_inspected"),
+        "yield_percentage": metric("yield_percentage"),
+        "products_per_minute": metric("products_per_minute"),
+        # Section 5 adds the line's batch number.
+        "batch": pick("batch"),
+        "alarm_code": pick("alarm_code"),
+        "alarm_message": pick("alarm_message"),
+    }
+    return {name: values.get(name) for name in TEMPLATE_FIELDS}
+
+
+@functools.lru_cache(maxsize=256)
+def _template_parts(template: str) -> Tuple[Tuple[bool, str], ...]:
+    return parse_template(template)
+
+
+def render_template(template: str, payload: Dict[str, Any]) -> str:
+    """A text message: the template with each {placeholder} replaced by its value ("" when it has none)."""
+    values = template_values(payload)
+    return "".join(
+        ("" if values.get(part) is None else str(values[part])) if is_field else part
+        for is_field, part in _template_parts(template)
+    )
+
+
+def build_message(card: dict, payload: Dict[str, Any]) -> Union[Dict[str, Any], str]:
+    """The message a card sends for an event: its text, for a text card; else the fields it
+    lists, or everything when it lists none."""
+    if card.get("format") == "text":
+        return render_template(str(card.get("template") or ""), payload)
     fields = card.get("fields")
     if not isinstance(fields, list) or not fields:
         return payload
@@ -109,8 +194,11 @@ def card_topic(card: dict, endpoint: dict) -> str:
     return str(card.get("topic") or endpoint.get("topic") or "").strip()
 
 
-async def deliver(endpoint: dict, message: Dict[str, Any], topic: str = "") -> Tuple[bool, str]:
-    """Send one message to one channel (an MQTT channel: to this topic). Returns (sent, what happened)."""
+async def deliver(endpoint: dict, message: Union[Dict[str, Any], str], topic: str = "") -> Tuple[bool, str]:
+    """Send one message to one channel (an MQTT channel: to this topic). Returns (sent, what happened).
+
+    A dict goes out as JSON; text (a text card's message) goes out as it is.
+    """
     protocol = str(endpoint.get("protocol", "")).lower()
     try:
         if protocol == "mqtt":
@@ -119,26 +207,23 @@ async def deliver(endpoint: dict, message: Dict[str, Any], topic: str = "") -> T
                 return False, "This card has no MQTT topic"
             return await MQTTChannels.publish(endpoint, topic, message)
         if protocol == "tcp":
-            host, port = str(endpoint.get("host") or ""), int(endpoint.get("port") or 0)
-            if not host or not port:
-                return False, "The TCP channel has no host or port"
-            _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=2.0)
-            try:
-                writer.write((json.dumps(message) + "\n").encode("utf-8"))
-                await writer.drain()
-            finally:
-                writer.close()
-                await writer.wait_closed()
-            return True, f"Sent to {host}:{port}"
+            from app.services.tcp_channels import TcpChannels, frame
+            text = message if isinstance(message, str) else json.dumps(message)
+            return await TcpChannels.send(endpoint, frame(text, endpoint))
         if protocol == "webhook":
             from app.services.counting_service import CountingService
             url = str(endpoint.get("url") or "")
             if not url:
                 return False, "The webhook channel has no URL"
             method = str(endpoint.get("method") or "POST").upper()
-            response = await CountingService.http_client().request(
-                method if method in ("POST", "PUT") else "POST", url, json=message, headers=_webhook_headers(endpoint),
-            )
+            method = method if method in ("POST", "PUT") else "POST"
+            headers = _webhook_headers(endpoint)
+            if isinstance(message, str):
+                if not any(key.lower() == "content-type" for key in headers):
+                    headers["Content-Type"] = "text/plain; charset=utf-8"
+                response = await CountingService.http_client().request(method, url, content=message.encode("utf-8"), headers=headers)
+            else:
+                response = await CountingService.http_client().request(method, url, json=message, headers=headers)
             ok = response.status_code < 400
             return ok, f"The webhook answered HTTP {response.status_code}"
     except Exception as exc:
@@ -250,7 +335,7 @@ class SendDispatcherService:
         return payload
 
     @classmethod
-    def _queue(cls, card: dict, message: Dict[str, Any]) -> bool:
+    def _queue(cls, card: dict, message: Union[Dict[str, Any], str]) -> bool:
         from app.services.counting_service import _telemetry_dispatcher
 
         card_id = card.get("id")
@@ -271,7 +356,7 @@ class SendDispatcherService:
             cls._record(card_id, last_result={"success": False, "message": problem, "at": time.time()})
             return False
 
-        async def send(endpoint: dict = endpoint, message: Dict[str, Any] = message) -> None:
+        async def send(endpoint: dict = endpoint, message: Union[Dict[str, Any], str] = message) -> None:
             ok, detail = await deliver(endpoint, message, topic)
             cls._record(card_id, last_result={"success": ok, "message": detail, "at": time.time()})
             if not ok:
@@ -295,7 +380,8 @@ class SendDispatcherService:
         if endpoint.get("enabled", True) is not True:
             return {"success": False, "message": f"The channel '{endpoint.get('name')}' is switched off under Connections.", "sent": None}
         message = build_message(card, sample_payload(card, line_name))
-        message = {**message, "test": True}
+        if isinstance(message, dict):
+            message = {**message, "test": True}
         ok, detail = await deliver(endpoint, message, card_topic(card, endpoint))
         cls._record(card.get("id"), last_result={"success": ok, "message": f"Test: {detail}", "at": time.time()})
         return {"success": ok, "message": detail, "sent": message, "endpoint_name": endpoint.get("name")}
@@ -381,12 +467,13 @@ def sample_payload(card: dict, line_name: str = "") -> Dict[str, Any]:
         no_read = trigger == "qr_no_read"
         known = trigger != "qr_unknown" and not no_read
         return {"event": "QR_CODE_NO_READ" if no_read else "QR_CODE_READ", "timestamp": now, **line, "camera_id": "example-camera",
+                "camera_name": "Line camera",
                 "code": None if no_read else "4006381333931", "format": None if no_read else "EAN13",
                 "qr_status": "no_read" if no_read else ("known" if known else "unknown"), "known": known,
                 "product_name": "Example product" if known else None, "paired": None}
     reject = trigger == "reject_counter" or condition == "reject"
     return {
-        "event": "WIRELINE_OBJECT_CROSSED", "timestamp": now, **line, "camera_id": "example-camera",
+        "event": "WIRELINE_OBJECT_CROSSED", "timestamp": now, **line, "camera_id": "example-camera", "camera_name": "Line camera",
         "track_id": 104, "class_name": "defect" if reject else "bottle",
         "result": "REJECTED" if reject else "PASSED", "is_defect": reject,
         "reject_reason": "vision_class" if reject else None, "vision_result": "REJECTED" if reject else "PASSED",

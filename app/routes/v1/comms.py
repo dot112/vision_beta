@@ -28,7 +28,8 @@ class WebhookSendRequest(BaseModel):
     method: str = Field(default="POST", pattern="^(POST|PUT)$", description="HTTP method (POST/PUT)")
 
 
-def _configured_endpoint(protocols: set[str], *, host: Optional[str] = None, port: Optional[int] = None, url: Optional[str] = None) -> bool:
+def _configured_endpoint(protocols: set[str], *, host: Optional[str] = None, port: Optional[int] = None, url: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """The first enabled channel with this address, or None."""
     from app.services.settings_persistence_service import SettingsPersistenceService
     for endpoint in SettingsPersistenceService.get_endpoints():
         protocol = str(endpoint.get("protocol", "")).lower()
@@ -38,8 +39,8 @@ def _configured_endpoint(protocols: set[str], *, host: Optional[str] = None, por
             continue
         if url is not None and str(endpoint.get("url", "")).rstrip("/") != url.rstrip("/"):
             continue
-        return True
-    return False
+        return endpoint
+    return None
 
 
 @router.post("/tcp/check", summary="Check TCP socket reachability")
@@ -59,20 +60,16 @@ async def check_tcp_connection(req: TCPCheckRequest, _user=Depends(require_super
 
 @router.post("/tcp/test", summary="Test dispatching a JSON message to a TCP Socket")
 async def test_tcp_socket(req: TCPSendRequest, _user=Depends(require_supervisor)) -> Dict[str, Any]:
-    if not _configured_endpoint({"tcp"}, host=req.host, port=req.port):
+    endpoint = _configured_endpoint({"tcp"}, host=req.host, port=req.port)
+    if endpoint is None:
         raise HTTPException(status_code=403, detail="TCP tests are limited to configured endpoints")
-    try:
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(req.host, req.port), timeout=2.5
-        )
-        msg = (json.dumps(req.payload) + "\n").encode("utf-8")
-        writer.write(msg)
-        await writer.drain()
-        writer.close()
-        await writer.wait_closed()
-        return {"status": "success", "message": f"Sent {len(msg)} bytes to {req.host}:{req.port}"}
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"TCP connection failed to {req.host}:{req.port}: {exc}")
+    # Sent the way the channel sends: its delimiter, timeout and mode.
+    from app.services.tcp_channels import TcpChannels, frame
+    msg = frame(json.dumps(req.payload), endpoint)
+    ok, detail = await TcpChannels.send(endpoint, msg)
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"TCP message to {req.host}:{req.port} not sent: {detail}")
+    return {"status": "success", "message": f"Sent {len(msg)} bytes: {detail}"}
 
 
 @router.post("/webhook/test", summary="Test dispatching a JSON message to an External Webhook API")

@@ -62,6 +62,35 @@ def validate_safe_state(card: dict) -> None:
             raise ValueError(f"PLC action card '{card.get('id', '')}' safe_value must be a number") from exc
 
 
+def validate_write_value(card: dict) -> None:
+    """Raise ValueError when a card's value to write (value_source) or its strobe is not valid."""
+    from app.services.line_config import PLC_VALUE_SOURCES
+
+    label = f"PLC action card '{card.get('name') or card.get('id', '')}'"
+    source = str(card.get("value_source") or "fixed").strip().lower()
+    if source not in PLC_VALUE_SOURCES:
+        raise ValueError(f"{label} has invalid value_source '{card.get('value_source')}'; use one of {', '.join(PLC_VALUE_SOURCES)}")
+    operation = str(card.get("operation") or "").strip().upper()
+    if source != "fixed" and operation != "WRITE":
+        raise ValueError(f"{label}: only a Write card writes a value, so its value must be the fixed number")
+    if operation == "WRITE" and source == "fixed":
+        try:
+            float(card.get("write_value", 0) or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{label}: the value to write must be a number") from exc
+    strobe = card.get("strobe_address")
+    if strobe not in (None, "") and (not isinstance(strobe, str) or len(strobe.strip()) > 128):
+        raise ValueError(f"{label}: the strobe address must be text of at most 128 characters")
+    pulse = card.get("strobe_pulse_ms")
+    if pulse not in (None, ""):
+        try:
+            whole = not isinstance(pulse, bool) and float(pulse) == int(float(pulse))
+        except (TypeError, ValueError, OverflowError):
+            whole = False
+        if not whole or not 10 <= int(float(pulse)) <= 10000:
+            raise ValueError(f"{label}: the strobe pulse must be a whole number of 10 to 10000 ms")
+
+
 def safe_operation(card: dict) -> Optional[Tuple[str, float]]:
     """Return (operation, value) for a card's safe state, or None when disabled."""
     raw = str(card.get("safe_state", "none") or "none").strip().lower()

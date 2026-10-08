@@ -33,8 +33,13 @@ class PLCActionCard(BaseModel):
 
     # ── Operation ─────────────────────────────────────────────────────────────
     operation: str = "PULSE"           # SET | RESET | PULSE | TOGGLE | WRITE
-    write_value: float = 0.0           # used with WRITE
+    write_value: float = 0.0           # used with WRITE and value_source "fixed"
+    # WRITE only: fixed | result_code | good_count | reject_count | total_count |
+    # class_index | reject_reason_code | batch (line_config.PLC_VALUE_SOURCES)
+    value_source: str = "fixed"
     pulse_duration_ms: int = 150       # used with PULSE
+    strobe_address: str = ""           # pulsed after a successful operation, under the same endpoint lock
+    strobe_pulse_ms: int = 100         # 10 to 10000
 
     # ── Timing ────────────────────────────────────────────────────────────────
     travel_delay_ms: int = 0           # delay between vision event and PLC command
@@ -42,7 +47,7 @@ class PLCActionCard(BaseModel):
 
     # ── Policy ────────────────────────────────────────────────────────────────
     execution_policy: str = "once_per_event"   # once_per_event | every_frame
-    ack_mode: str = "unconfirmed"              # unconfirmed | wait_ack
+    # ack_mode ("wait_ack") is no longer offered: it waited for nothing. A saved one is ignored.
 
     # ── Failure handling ──────────────────────────────────────────────────────
     on_failure: str = "skip"           # skip | retry | error
@@ -64,7 +69,7 @@ class PLCActionStatus(BaseModel):
     """Live execution status for a single PLC Action card."""
     card_id: str
     name: str
-    status: str                         # idle | queued | executing | sent | acked | failed | timeout
+    status: str                         # idle | queued | executing | sent | failed | timeout
     last_result: Dict[str, Any] = Field(default_factory=dict)
     last_fired_at: Optional[float] = None
 

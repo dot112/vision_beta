@@ -55,6 +55,17 @@ REASON_LISTED = "code_in_reject_list"
 REASON_NO_CODE = "no_code"
 REJECT_REASONS = (REASON_VISION, REASON_NOT_LISTED, REASON_LISTED, REASON_NO_CODE)
 
+# What a PLC WRITE card writes ("value_source"): its fixed number (as before),
+# or a value of the product or the line at the moment of the write.
+PLC_VALUE_SOURCES = ("fixed", "result_code", "good_count", "reject_count", "total_count",
+                     "class_index", "reject_reason_code", "batch")
+# A rejected product's reason as a number for the PLC (0: not rejected, 9: any other reason).
+# "station_no_result": a joined vision camera gave no result in time (Section 3).
+REJECT_REASON_CODES = {REASON_VISION: 1, REASON_NOT_LISTED: 2, REASON_LISTED: 3, REASON_NO_CODE: 4, "station_no_result": 5}
+OTHER_REJECT_REASON_CODE = 9
+# PLC card settings an older client does not know of: kept when it leaves them out.
+PLC_CARD_KEPT_KEYS = ("value_source", "strobe_address", "strobe_pulse_ms")
+
 DEFAULT_SYNC_WINDOW_MS = 500
 DEFAULT_QR_HOLD_MS = 1500
 # The list the product codes of a server without lists were moved into
@@ -341,6 +352,79 @@ def publish_topic_problem(topic: Any) -> Optional[str]:
     return None
 
 
+# A send card's message: JSON (the fields it picked) or text made from its template.
+MESSAGE_FORMATS = ("json", "text")
+MAX_TEMPLATE_LENGTH = 1024
+
+# The placeholders a text message's template can use, as {name}, and what each
+# stands for (send_dispatcher_service.template_values fills them in).
+TEMPLATE_FIELDS: Dict[str, str] = {
+    "line_id": "Line id",
+    "line_name": "Line name",
+    "line_state": "Line state (started / stopped)",
+    "event": "Event name",
+    "timestamp": "Time of the event (ISO 8601, UTC)",
+    "date": "Date (server's local time, YYYY-MM-DD)",
+    "time": "Time of day (server's local time, HH:MM:SS)",
+    "camera_id": "Camera id",
+    "camera_name": "Camera name",
+    "track_id": "Product track number",
+    "class_name": "Class",
+    "confidence": "Confidence (0 to 1)",
+    "result": "Result (PASSED / REJECTED)",
+    "result_code": "Result code (1 good, 2 reject)",
+    "reject_reason": "Reject reason",
+    "code": "Code read",
+    "code_format": "Code type",
+    "code_status": "Code status (known / unknown / no_read)",
+    "product_name": "Product of the code",
+    "good_count": "Good count",
+    "rejected_count": "Rejected count",
+    "total_inspected": "Inspected count",
+    "yield_percentage": "Yield %",
+    "products_per_minute": "Products per minute",
+    "batch": "Batch number",
+    "alarm_code": "Alarm code",
+    "alarm_message": "Alarm message",
+}
+
+_TEMPLATE_TOKEN = re.compile(r"\{\{|\}\}|\{([^{}]*)\}|\\[rnt\\]|[{}]")
+_TEMPLATE_ESCAPES = {"\\r": "\r", "\\n": "\n", "\\t": "\t", "\\\\": "\\"}
+
+
+def parse_template(template: str) -> Tuple[Tuple[bool, str], ...]:
+    """A text template as its parts: (False, text) and (True, placeholder name).
+
+    {name} is a placeholder, {{ and }} are a literal brace, and \\r \\n \\t \\\\
+    are escapes. Raises ValueError naming what is wrong.
+    """
+    parts: List[Tuple[bool, str]] = []
+    text: List[str] = []
+    pos = 0
+    for match in _TEMPLATE_TOKEN.finditer(template):
+        text.append(template[pos:match.start()])
+        pos = match.end()
+        token = match.group(0)
+        if token in ("{{", "}}"):
+            text.append(token[0])
+        elif token in _TEMPLATE_ESCAPES:
+            text.append(_TEMPLATE_ESCAPES[token])
+        elif match.group(1) is not None:
+            name = match.group(1).strip().lower()
+            if name not in TEMPLATE_FIELDS:
+                raise ValueError(f"{{{match.group(1)}}} is not a placeholder" if name else "{} names no placeholder")
+            if any(text):
+                parts.append((False, "".join(text)))
+            text = []
+            parts.append((True, name))
+        else:
+            raise ValueError(f"a single '{token}' must be written '{token}{token}'")
+    text.append(template[pos:])
+    if any(text):
+        parts.append((False, "".join(text)))
+    return tuple(parts)
+
+
 def new_send_card_id() -> str:
     return f"send_{uuid.uuid4().hex[:8]}"
 
@@ -376,6 +460,21 @@ def normalize_send_card(raw: Any, index: int = 0) -> Dict[str, Any]:
         raise ValueError(f"{label}: the message contents must be a list of field names")
     else:
         fields = list(dict.fromkeys(f.strip() for f in fields)) or None
+    message_format = str(raw.get("format") or "json").strip().lower()
+    if message_format not in MESSAGE_FORMATS:
+        raise ValueError(f"{label}: the message format must be JSON or text")
+    template = raw.get("template")
+    if template is None:
+        template = ""
+    if not isinstance(template, str) or len(template) > MAX_TEMPLATE_LENGTH:
+        raise ValueError(f"{label}: the text must be at most {MAX_TEMPLATE_LENGTH} characters")
+    if message_format == "text":
+        if not template.strip():
+            raise ValueError(f"{label}: enter the text of the message")
+        try:
+            parse_template(template)
+        except ValueError as exc:
+            raise ValueError(f"{label}: {exc}") from exc
     codes = raw.get("alarm_codes") or []
     if isinstance(codes, str):
         codes = codes.split(",")
@@ -394,6 +493,9 @@ def normalize_send_card(raw: Any, index: int = 0) -> Dict[str, Any]:
         "set_value": str(raw.get("set_value") if raw.get("set_value") is not None else "").strip()[:128],
         # What the message contains (send_dispatcher_service.MESSAGE_FIELDS); None = everything.
         "fields": fields,
+        # "json": the fields above as JSON; "text": the template with its {placeholders} filled in.
+        "format": message_format,
+        "template": template,
     }
     camera_id = str(raw.get("camera_id") or "").strip()
     if camera_id:
@@ -401,6 +503,25 @@ def normalize_send_card(raw: Any, index: int = 0) -> Dict[str, Any]:
     if trigger == "alarm":
         card["alarm_codes"] = [str(code).strip() for code in codes if str(code).strip()]
     return card
+
+
+# Send card settings an older client does not know of: kept when it leaves them out.
+SEND_CARD_KEPT_KEYS = ("format", "template")
+
+
+def keep_card_fields(cards: Any, saved: Any, keys: Iterable[str]) -> Any:
+    """Cards sent by a client, with the settings ``keys`` taken from the saved card
+    of the same id where the client left them out (an older dashboard)."""
+    if not isinstance(cards, list) or not isinstance(saved, list):
+        return cards
+    by_id = {card.get("id"): card for card in saved if isinstance(card, dict) and card.get("id")}
+    filled = []
+    for card in cards:
+        old = by_id.get(card.get("id")) if isinstance(card, dict) else None
+        if old is not None:
+            card = {**{key: copy.deepcopy(old[key]) for key in keys if key in old and key not in card}, **card}
+        filled.append(card)
+    return filled
 
 
 def normalize_send_cards(raw: Any) -> List[Dict[str, Any]]:
@@ -784,16 +905,25 @@ def _upgrade_to_v7(state: Dict[str, Any]) -> None:
 
 
 def _upgrade_to_v8(state: Dict[str, Any]) -> None:
-    """Every vision camera holds its own counting settings.
+    """Every vision camera holds its own counting settings, and TCP channels do what they say.
 
     A class whose name contains "defect", "scratch" or "broken" was always a
     defect; that is now a switch per camera, on for every existing camera so
     it keeps rejecting what it rejected.
+
+    A TCP channel's delimiter and mode were saved but never used: every
+    message went out as a client, ending in a newline. They are used now, so
+    each existing channel is set to what it really did.
     """
     for line in state.get("lines") or []:
         for camera in (line.get("cameras") or []) if isinstance(line, dict) else []:
             if isinstance(camera, dict) and camera.get("role", "vision") == "vision":
                 camera.setdefault("name_based_defects", True)
+    for endpoint in state.get("communication_endpoints") or []:
+        if isinstance(endpoint, dict) and str(endpoint.get("protocol", "")).lower() == "tcp":
+            endpoint["delimiter"] = "\\n"
+            endpoint["mode"] = "client"
+            endpoint["keep_open"] = False
 
 
 # (version reached, step). Append a step for every change to the settings' shape.

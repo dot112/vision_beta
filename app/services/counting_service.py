@@ -97,9 +97,13 @@ class _TelemetryDispatcher:
                 self._loop.run_until_complete(asyncio.gather(*leftover, return_exceptions=True))
             self._loop.close()
 
+    def wait_drained(self, timeout: float) -> bool:
+        """Wait until every queued event went out (or the timeout). True when they all did."""
+        return self._drained.wait(timeout=timeout)
+
     def stop(self) -> None:
         # Give queued events up to 5 s to go out, then stop the loop.
-        self._drained.wait(timeout=5.0)
+        self.wait_drained(timeout=5.0)
         try:
             self._loop.call_soon_threadsafe(self._loop.stop)
         except RuntimeError:  # already stopped
@@ -136,8 +140,9 @@ def send_to_channels(payload: Dict[str, Any], protocol: str = "all", endpoint_id
             topic = ep["topic"]
             _telemetry_dispatcher.submit(lambda e=ep, t=topic: MQTTChannels.publish(e, t, payload), key=("mqtt", ep.get("id"), topic))
         elif proto == "tcp" and ep.get("host") and ep.get("port"):
-            host, port = str(ep["host"]), int(ep["port"])
-            _telemetry_dispatcher.submit(lambda h=host, p=port: CountingService._dispatch_tcp(h, p, payload), key=("tcp", host, port))
+            from app.services.tcp_channels import TcpChannels, frame
+            data = frame(json.dumps(payload), ep)
+            _telemetry_dispatcher.submit(lambda e=ep, d=data: TcpChannels.send(e, d), key=("tcp", ep.get("host"), ep.get("port")))
         elif proto == "webhook" and ep.get("url"):
             url = str(ep["url"])
             _telemetry_dispatcher.submit(lambda u=url: CountingService._dispatch_webhook(u, payload), key=("webhook", url))
@@ -224,6 +229,14 @@ class CountingService:
         return self.tracker
 
     async def shutdown(self) -> None:
+        # Queued messages go out first; then the TCP channels close their kept
+        # connections and listeners, which live on the dispatcher's loop.
+        _telemetry_dispatcher.wait_drained(timeout=5.0)
+        try:
+            from app.services.tcp_channels import TcpChannels
+            await TcpChannels.close_all()
+        except Exception as exc:
+            logger.warning("TCP channels did not close cleanly: %s", exc)
         _telemetry_dispatcher.stop()
         if self._http_client is not None and not self._http_client.is_closed:
             await self._http_client.aclose()
@@ -556,17 +569,6 @@ class CountingService:
             **self._metrics(),
             "active_tracks_count": sum(len(tr.objects) for tr in self._trackers.values()),
         }
-
-    @staticmethod
-    async def _dispatch_tcp(host: str, port: int, payload: Dict[str, Any]) -> None:
-        try:
-            reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=2.0)
-            writer.write((json.dumps(payload) + "\n").encode("utf-8"))
-            await writer.drain()
-            writer.close()
-            await writer.wait_closed()
-        except Exception as exc:
-            logger.debug("TCP dispatch to %s:%d failed: %s", host, port, exc)
 
     @classmethod
     async def _dispatch_webhook(cls, url: str, payload: Dict[str, Any], headers: Optional[Dict[str, str]] = None) -> None:

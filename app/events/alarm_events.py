@@ -61,6 +61,7 @@ class AlarmCode:
     FLOW_OVERLOAD = "flow.overload"
     FLOW_BOOTSTRAP_FAILED = "flow.bootstrap_failed"
     FLOW_ENDPOINT_UNRESOLVED = "flow.endpoint_unresolved"
+    SEND_CHANNEL_DOWN = "send.channel_down"
 
 
 # Every well-known alarm, for pick-lists such as a PLC action's "Alarm" trigger.
@@ -101,6 +102,9 @@ ALARM_CATALOG: List[Dict[str, str]] = [
     {"code": "inference.stalled", "label": "Inference stalled", "group": "Inference",
      "severity": "critical", "scope": "server",
      "description": "Frames are arriving but nothing has been inferred for several seconds."},
+    {"code": "send.channel_down", "label": "Message channel down", "group": "Messages",
+     "severity": "warning", "scope": "server",
+     "description": "A TCP channel that keeps its connection open cannot reach its device, or a TCP channel in server mode cannot open its port."},
     {"code": "flow.action_failed", "label": "Flow output failed", "group": "Flows",
      "severity": "warning", "scope": "server",
      "description": "A flow's output node (MQTT, TCP, webhook or Modbus) failed."},

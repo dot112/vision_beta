@@ -261,6 +261,11 @@ async def test_plc_action(
         card = next((c for c in _get_dispatcher()._cards if c.get("id") == card_id), None)
     if not card:
         raise HTTPException(status_code=404, detail=f"PLC action card '{card_id}' not found. Please save cards first.")
+    from app.services.plc_failsafe_service import validate_write_value
+    try:
+        validate_write_value(card)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # A card without a channel may only borrow one when exactly one enabled PLC
     # channel exists. Picking "the first" of several could fire an output on
