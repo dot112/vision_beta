@@ -50,40 +50,32 @@ def is_vertical_wirelines(orientation: Optional[str]) -> bool:
 is_horizontal_movement = is_vertical_wirelines
 
 
-def get_exit_line_zone(
-    w: int,
-    h: int,
-    rotation: Optional[int] = None,
-    flip_h: bool = False,
-    flip_v: bool = False,
-    thickness: int = 20,
-) -> Tuple[str, Tuple[int, int, int, int]]:
-    """
-    Computes the exit line edge and bounding rectangle (x1, y1, x2, y2)
-    based on camera rotation and flipping settings.
-    By default:
-      - rotation 90 deg -> "bottom" (matches portrait video rotated 90 CW)
-      - rotation 0 deg  -> "right"  (matches unrotated video conveyor flow)
-      - rotation 180 deg -> "left"
-      - rotation 270 deg -> "top"
-    """
-    rot = int(rotation if rotation is not None else 90)
-    diff = (rot - 90) % 360
-    steps = (diff // 90) % 4
-    EDGES = ["bottom", "left", "top", "right"]
-    edge = EDGES[steps]
+def exit_edge(orientation: Optional[str], direction: Optional[str] = "forward",
+              line1_rel: float = 0.35, line2_rel: float = 0.65) -> Optional[str]:
+    """The edge of the picture where products leave it, from the way they flow.
 
-    if flip_h:
-        if edge == "left":
-            edge = "right"
-        elif edge == "right":
-            edge = "left"
-    if flip_v:
-        if edge == "top":
-            edge = "bottom"
-        elif edge == "bottom":
-            edge = "top"
+    Products flow from count line A to count line B ("forward") or from B to A
+    ("backward"). The camera driver has already rotated and flipped the picture,
+    so the flow in the picture is all that matters. Products that may move both
+    ways enter and leave at either edge: there is no exit edge (None).
+    """
+    mode = str(direction or "forward").lower()
+    if mode not in ("forward", "backward"):
+        return None
+    increasing = (float(line1_rel) <= float(line2_rel)) == (mode == "forward")
+    if is_vertical_wirelines(orientation):
+        return "right" if increasing else "left"
+    return "bottom" if increasing else "top"
 
+
+def exit_zone(w: int, h: int, edge: Optional[str], thickness: int = 20) -> Optional[Tuple[int, int, int, int]]:
+    """The band along an exit edge (x1, y1, x2, y2): a product whose center reaches it has left. None without an edge."""
+    if edge is None:
+        return None
+    return _edge_rect(w, h, edge, thickness)
+
+
+def _edge_rect(w: int, h: int, edge: str, thickness: int) -> Tuple[int, int, int, int]:
     if edge == "bottom":
         rect = (0, max(0, h - thickness), w, h)
     elif edge == "top":
@@ -92,12 +84,26 @@ def get_exit_line_zone(
         rect = (0, 0, min(w, thickness), h)
     else:  # right
         rect = (max(0, w - thickness), 0, w, h)
+    return rect
 
-    return edge, rect
+
+# Words that made a class a defect by its name alone, before a camera could switch that off.
+DEFECT_NAME_WORDS = ("defect", "scratch", "broken")
 
 
-def is_in_exit_zone(cx: float, cy: float, edge: str, rect: Tuple[int, int, int, int]) -> bool:
-    """Checks if a point (cx, cy) is inside or beyond the exit line zone."""
+def is_defect_class(class_name: str, defect_classes: Any, name_based: bool = False) -> bool:
+    """Whether a class rejects its product: it is one of the camera's defect classes or,
+    with ``name_based`` on, its name contains one of DEFECT_NAME_WORDS."""
+    name = str(class_name or "").strip().lower()
+    if name in {str(c).strip().lower() for c in (defect_classes or ())}:
+        return True
+    return bool(name_based) and any(word in name for word in DEFECT_NAME_WORDS)
+
+
+def is_in_exit_zone(cx: float, cy: float, edge: Optional[str], rect: Optional[Tuple[int, int, int, int]]) -> bool:
+    """Checks if a point (cx, cy) is inside or beyond the exit line zone (never, without one)."""
+    if edge is None or rect is None:
+        return False
     if edge == "bottom":
         return cy >= rect[1]
     elif edge == "top":
@@ -501,10 +507,18 @@ class WirelineTracker:
         camera_rotation: Optional[int] = None,
         camera_flip_h: Optional[bool] = None,
         camera_flip_v: Optional[bool] = None,
+        name_based_defects: bool = True,
     ) -> List[Tuple[int, str, bool, float, Any, Optional[List[List[int]]], Tuple[float, float], Tuple[float, float]]]:
         """
         Updates tracks with new detections via ByteTrack two-stage association,
         advances Kalman filters, and checks smoothed wireline crossings.
+
+        camera_rotation and the flips are accepted for older callers and not
+        used: the driver has already turned the picture, and products leave it
+        at the edge their flow leads to (exit_edge). name_based_defects: a class
+        whose name contains "defect", "scratch" or "broken" is a defect even
+        when it is not in defect_classes (what every camera did before it could
+        be switched off).
         """
         # Dynamic parameter overrides from counting config
         high_thresh = track_high_thresh if track_high_thresh is not None else self.track_high_thresh
@@ -529,17 +543,11 @@ class WirelineTracker:
             line1_pos = int(line1_rel * frame_h)
             line2_pos = int(line2_rel * frame_h)
 
-        # Exit line threshold: 20px wide zone rotated dynamically according to camera settings
+        # Exit line: a 20 px band along the edge the products flow out of.
         # Stops detecting objects and deletes box & ID when center reaches this line,
         # preventing IDs from jumping around when objects are cropped out of the frame.
-        exit_edge, exit_rect = get_exit_line_zone(
-            w=frame_w,
-            h=frame_h,
-            rotation=camera_rotation,
-            flip_h=bool(camera_flip_h),
-            flip_v=bool(camera_flip_v),
-            thickness=20,
-        )
+        out_edge = exit_edge(orientation, direction, line1_rel, line2_rel)
+        out_rect = exit_zone(frame_w, frame_h, out_edge)
 
         # 0. Prune any existing tracks that reached the exit line
         for tid in list(self.objects.keys()):
@@ -548,10 +556,10 @@ class WirelineTracker:
             r_cx, r_cy = getattr(track, "raw_center", (t_cx, t_cy))
             b_cx = (track.last_bbox[0] + track.last_bbox[2]) / 2.0
             b_cy = (track.last_bbox[1] + track.last_bbox[3]) / 2.0
-            if (is_in_exit_zone(t_cx, t_cy, exit_edge, exit_rect) or
-                is_in_exit_zone(r_cx, r_cy, exit_edge, exit_rect) or
-                is_in_exit_zone(b_cx, b_cy, exit_edge, exit_rect)):
-                logger.debug("Deleting track #%d [%s]: reached exit line (%s)", tid, track.class_name, exit_edge)
+            if (is_in_exit_zone(t_cx, t_cy, out_edge, out_rect) or
+                is_in_exit_zone(r_cx, r_cy, out_edge, out_rect) or
+                is_in_exit_zone(b_cx, b_cy, out_edge, out_rect)):
+                logger.debug("Deleting track #%d [%s]: reached exit line (%s)", tid, track.class_name, out_edge)
                 del self.objects[tid]
 
         # 1. Split detections into High Confidence and Low Confidence groups (ByteTrack)
@@ -637,7 +645,7 @@ class WirelineTracker:
             box, cname, conf, cid, poly = high_dets[d_idx]
             det_cx = (box[0] + box[2]) / 2.0
             det_cy = (box[1] + box[3]) / 2.0
-            if is_in_exit_zone(det_cx, det_cy, exit_edge, exit_rect):
+            if is_in_exit_zone(det_cx, det_cy, out_edge, out_rect):
                 continue  # Stop detecting it / never spawn new tracks in exit zone
             self._register_object(
                 bbox=box,
@@ -655,10 +663,10 @@ class WirelineTracker:
             r_cx, r_cy = getattr(track, "raw_center", (t_cx, t_cy))
             b_cx = (track.last_bbox[0] + track.last_bbox[2]) / 2.0
             b_cy = (track.last_bbox[1] + track.last_bbox[3]) / 2.0
-            if (is_in_exit_zone(t_cx, t_cy, exit_edge, exit_rect) or
-                is_in_exit_zone(r_cx, r_cy, exit_edge, exit_rect) or
-                is_in_exit_zone(b_cx, b_cy, exit_edge, exit_rect)):
-                logger.debug("Deleting track #%d [%s]: reached exit line (%s)", tid, track.class_name, exit_edge)
+            if (is_in_exit_zone(t_cx, t_cy, out_edge, out_rect) or
+                is_in_exit_zone(r_cx, r_cy, out_edge, out_rect) or
+                is_in_exit_zone(b_cx, b_cy, out_edge, out_rect)):
+                logger.debug("Deleting track #%d [%s]: reached exit line (%s)", tid, track.class_name, out_edge)
                 del self.objects[tid]
 
 
@@ -759,10 +767,12 @@ class WirelineTracker:
                         crossing_completed = True
 
                 elif track.crossed_line2 and not track.crossed_line1:
-                    if lines_ascending and (curr_coord <= line1_pos <= prev_coord):
+                    # The same band as the other crossings: the previous point is
+                    # the predicted one, so an exact crossing test can miss the line.
+                    if lines_ascending and (prev_coord >= line1_pos - BAND) and (curr_coord <= line1_pos + BAND) and (curr_coord < prev_coord):
                         track.crossed_line1 = True
                         crossing_completed = True
-                    elif not lines_ascending and (prev_coord <= line1_pos <= curr_coord):
+                    elif not lines_ascending and (prev_coord <= line1_pos + BAND) and (curr_coord >= line1_pos - BAND) and (curr_coord > prev_coord):
                         track.crossed_line1 = True
                         crossing_completed = True
 
@@ -778,12 +788,7 @@ class WirelineTracker:
 
                 track.counted = True
                 cname_clean = track.class_name.strip().lower()
-                is_defect = (
-                    cname_clean in defect_set
-                    or "defect" in cname_clean
-                    or "scratch" in cname_clean
-                    or "broken" in cname_clean
-                )
+                is_defect = is_defect_class(cname_clean, defect_set, name_based_defects)
 
                 is_expected = (len(expected_set) == 0) or (cname_clean in expected_set) or is_defect
 

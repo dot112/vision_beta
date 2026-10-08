@@ -14,6 +14,7 @@ from app.services.line_config import (
     OLD_CLASS_KEYS,
     OLD_SEND_KEYS,
     PRIMARY_LINE_ID,
+    TRACKING_KEYS,
     check_camera_ownership,
     endpoints_used_by_line,
     normalize_line,
@@ -197,19 +198,36 @@ def backup_v1_files(database_url: str) -> List[str]:
 def counting_config_from_dict(cfg_data: Dict[str, Any], camera: Optional[Dict[str, Any]] = None) -> "Any":
     """Build a CountingConfig from a line's saved action_trigger and one of its vision cameras.
 
-    The count lines come from the line; which classes count as products and
-    which as defects come from the camera (none without a vision camera).
+    The count lines, the count direction and the tracking settings are the
+    camera's own where it has them, else the line's. Which classes count as
+    products and which as defects come from the camera (none without a vision
+    camera).
     """
     from app.schemas.counting import CountingConfig
 
     camera = camera or {}
+    defaults = CountingConfig.model_fields
+
+    def pick(key: str) -> Any:
+        for source in (camera, cfg_data):
+            value = source.get(key)
+            if value not in (None, ""):
+                return value
+        return defaults[key].default
+
+    tracking = {**(cfg_data.get("tracking") or {}), **(camera.get("tracking") or {})}
     return CountingConfig(
-        line1_position=cfg_data.get("line1_position", 0.35),
-        line2_position=cfg_data.get("line2_position", 0.65),
-        orientation=cfg_data.get("orientation", "horizontal"),
+        line1_position=pick("line1_position"),
+        line2_position=pick("line2_position"),
+        orientation=pick("orientation"),
+        direction=pick("direction"),
         expected_classes=list(camera.get("expected_classes") or []),
         defect_classes=list(camera.get("defect_classes") or []),
+        # A camera saved before this switch existed keeps the old name rule.
+        name_based_defects=camera.get("name_based_defects", True) is not False,
+        **{key: tracking[key] for key in TRACKING_KEYS if tracking.get(key) not in (None, "")},
     )
+
 
 
 DEFAULT_STATE: Dict[str, Any] = {

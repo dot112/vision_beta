@@ -207,6 +207,9 @@ class CountingService:
         self._tracker_lock = threading.Lock()
         self._count_lock = threading.Lock()
         self.counts_by_class: Dict[str, int] = {}
+        # How many of each class's products were rejected, so resetting one class
+        # takes its good and its rejected products off the totals.
+        self.rejects_by_class: Dict[str, int] = {}
         self.total_inspected: int = 0
         self.good_count: int = 0
         self.rejected_count: int = 0
@@ -229,16 +232,17 @@ class CountingService:
     def products_per_minute(self) -> float:
         """Calculates throughput rate: Products Per Minute (PPM) based on 60-second sliding window."""
         now = time.time()
-        # Evict timestamps older than 60 seconds
-        while self._inspection_timestamps and (now - self._inspection_timestamps[0]) > 60.0:
-            self._inspection_timestamps.popleft()
-
-        window_count = len(self._inspection_timestamps)
+        # The inference thread adds to the window while an API request reads it.
+        with self._count_lock:
+            # Evict timestamps older than 60 seconds
+            while self._inspection_timestamps and (now - self._inspection_timestamps[0]) > 60.0:
+                self._inspection_timestamps.popleft()
+            window_count = len(self._inspection_timestamps)
+            earliest = self._inspection_timestamps[0] if window_count else now
         if window_count == 0:
             return 0.0
 
         # If data covers less than 60s, compute instantaneous rate
-        earliest = self._inspection_timestamps[0]
         elapsed = max(now - earliest, 1.0)
         if elapsed < 60.0:
             rate = (window_count / elapsed) * 60.0
@@ -272,50 +276,43 @@ class CountingService:
     ) -> List[Tuple[int, str, bool]]:
         """
         Feeds detections into tracker and updates counting counters on line crossings.
-        """
-        if camera_rotation is None:
-            try:
-                from app.services.camera_service import camera_orientation
-                camera_rotation, camera_flip_h, camera_flip_v = camera_orientation(
-                    camera_id, camera_flip_h, camera_flip_v
-                )
-            except Exception as exc:
-                logger.debug("Camera orientation lookup failed: %s", exc)
 
+        camera_rotation and the flips are accepted for older callers and not
+        used: products leave the picture where their flow leads (tracker.exit_edge).
+        """
         tracker_key = camera_id or "default"
+        config = self.config
         with self._tracker_lock:
             tracker = self._trackers.get(tracker_key)
             if tracker is None:
                 tracker = WirelineTracker(
-                    track_high_thresh=self.config.track_high_thresh,
-                    track_low_thresh=self.config.track_low_thresh,
-                    match_threshold=self.config.match_threshold,
-                    max_missed_frames=self.config.max_missed_frames,
-                    max_speed_pixels=self.config.max_speed_pixels,
-                    min_hits=self.config.min_hits,
-                    position_tolerance=self.config.position_tolerance,
+                    track_high_thresh=config.track_high_thresh,
+                    track_low_thresh=config.track_low_thresh,
+                    match_threshold=config.match_threshold,
+                    max_missed_frames=config.max_missed_frames,
+                    max_speed_pixels=config.max_speed_pixels,
+                    min_hits=config.min_hits,
+                    position_tolerance=config.position_tolerance,
                 )
                 self._trackers[tracker_key] = tracker
         events = tracker.update(
             detections=detections,
             frame_w=frame_w,
             frame_h=frame_h,
-            line1_rel=self.config.line1_position,
-            line2_rel=self.config.line2_position,
-            orientation=self.config.orientation,
-            direction=self.config.direction,
-            expected_classes=self.config.expected_classes,
-            defect_classes=self.config.defect_classes,
-            track_high_thresh=getattr(self.config, "track_high_thresh", 0.50),
-            track_low_thresh=getattr(self.config, "track_low_thresh", 0.15),
-            match_threshold=getattr(self.config, "match_threshold", 0.70),
-            max_missed_frames=getattr(self.config, "max_missed_frames", 15),
-            max_speed_pixels=getattr(self.config, "max_speed_pixels", 120.0),
-            min_hits=getattr(self.config, "min_hits", 2),
-            position_tolerance=getattr(self.config, "position_tolerance", 180.0),
-            camera_rotation=camera_rotation,
-            camera_flip_h=camera_flip_h,
-            camera_flip_v=camera_flip_v,
+            line1_rel=config.line1_position,
+            line2_rel=config.line2_position,
+            orientation=config.orientation,
+            direction=config.direction,
+            expected_classes=config.expected_classes,
+            defect_classes=config.defect_classes,
+            track_high_thresh=config.track_high_thresh,
+            track_low_thresh=config.track_low_thresh,
+            match_threshold=config.match_threshold,
+            max_missed_frames=config.max_missed_frames,
+            max_speed_pixels=config.max_speed_pixels,
+            min_hits=config.min_hits,
+            position_tolerance=config.position_tolerance,
+            name_based_defects=config.name_based_defects,
         )
 
         crossing_sink = self.line_crossing_sink
@@ -415,6 +412,7 @@ class CountingService:
             self._inspection_timestamps.append(crossing["time"])
             if is_reject:
                 self.rejected_count += 1
+                self.rejects_by_class[cname_clean] = self.rejects_by_class.get(cname_clean, 0) + 1
             else:
                 self.good_count += 1
 
@@ -497,6 +495,7 @@ class CountingService:
             self._inspection_timestamps.append(time.time())
             if reject:
                 self.rejected_count += 1
+                self.rejects_by_class[key] = self.rejects_by_class.get(key, 0) + 1
             else:
                 self.good_count += 1
         return self._metrics()
@@ -635,24 +634,32 @@ class CountingService:
     @property
     def last_count_at(self) -> float:
         """Wall-clock time of the last counted product (0 if none in the last minute or since a reset)."""
-        stamps = self._inspection_timestamps
-        return stamps[-1] if stamps else 0.0
+        with self._count_lock:
+            stamps = self._inspection_timestamps
+            return stamps[-1] if stamps else 0.0
 
     def reset_counts(self, reset_all: bool = True, classes_to_reset: Optional[List[str]] = None) -> CountingStatsResponse:
         if reset_all:
-            self.counts_by_class.clear()
-            self.total_inspected = 0
-            self.good_count = 0
-            self.rejected_count = 0
-            self._inspection_timestamps.clear()
+            with self._count_lock:
+                self.counts_by_class.clear()
+                self.rejects_by_class.clear()
+                self.total_inspected = 0
+                self.good_count = 0
+                self.rejected_count = 0
+                self._inspection_timestamps.clear()
             for tracker in self._trackers.values():
                 tracker.objects.clear()
                 tracker._recently_counted.clear()
         elif classes_to_reset:
-            for c in classes_to_reset:
-                if c in self.counts_by_class:
-                    del self.counts_by_class[c]
-            self.total_inspected = sum(self.counts_by_class.values())
+            with self._count_lock:
+                for c in classes_to_reset:
+                    name = str(c).strip().lower()
+                    count = self.counts_by_class.pop(name, 0)
+                    rejected = min(count, self.rejects_by_class.pop(name, 0))
+                    # The class's products leave the totals, each where it was counted.
+                    self.total_inspected = max(0, self.total_inspected - count)
+                    self.rejected_count = max(0, self.rejected_count - rejected)
+                    self.good_count = max(0, self.good_count - (count - rejected))
 
         logger.info("Counting metrics reset.")
         return self.get_stats()

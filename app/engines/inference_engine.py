@@ -12,7 +12,7 @@ import numpy as np
 
 from app.schemas.vision import BoundingBox, DetectionItem, DetectionResponse
 from app.utils.logger import get_logger
-from app.engines.tracker import is_horizontal_movement, get_exit_line_zone, is_in_exit_zone
+from app.engines.tracker import exit_edge, exit_zone, is_horizontal_movement, is_in_exit_zone
 
 logger = get_logger(__name__)
 
@@ -724,30 +724,20 @@ class InferenceEngine:
         Directly overlays wirelines, tracking trails, HUD, and bounding boxes onto BGR array.
         Zero JPEG encode/decode overhead!
         camera_id selects that camera's tracker; without it the default tracker is used.
+        camera_rotation and the flips are accepted for older callers and not used:
+        the exit band is drawn where the camera's products flow out (exit_edge).
         """
         h, w = img.shape[:2]
-
-        # Resolve camera rotation and flips if not explicitly provided
-        if camera_rotation is None:
-            try:
-                from app.services.camera_service import camera_orientation
-                camera_rotation, camera_flip_h, camera_flip_v = camera_orientation(
-                    camera_id, camera_flip_h, camera_flip_v
-                )
-            except Exception as exc:
-                logger.debug("Camera orientation lookup failed: %s", exc)
-
-        exit_edge, exit_rect = get_exit_line_zone(
-            w, h,
-            rotation=camera_rotation,
-            flip_h=bool(camera_flip_h),
-            flip_v=bool(camera_flip_v),
-            thickness=20,
-        )
 
         # Build allowed class filter from counting config (expected + defect classes)
         from app.services.line_service import line_manager
         counting_service = line_manager.counter_for_camera(camera_id)
+        try:
+            flow = counting_service.config
+            exit_side = exit_edge(flow.orientation, flow.direction, flow.line1_position, flow.line2_position)
+        except Exception:
+            exit_side = exit_edge("horizontal")
+        exit_rect = exit_zone(w, h, exit_side)
         try:
             _cfg = counting_service.config
             _exp = set(c.lower() for c in (_cfg.expected_classes or []))
@@ -794,7 +784,7 @@ class InferenceEngine:
                         sc_y = int(curr_c[1] * scale_y)
 
                     # Skip drawing if center reached the exit line zone
-                    if is_in_exit_zone(sc_x, sc_y, exit_edge, exit_rect):
+                    if is_in_exit_zone(sc_x, sc_y, exit_side, exit_rect):
                         continue
 
                     # Simple solid green dot (6px radius, no tail/trail)
@@ -897,8 +887,8 @@ class InferenceEngine:
                 smooth_cx_scaled = getattr(obj, "smooth_center_x", obj_center_x) * scale_x
                 smooth_cy_scaled = getattr(obj, "smooth_center_y", obj_center_y) * scale_y
                 if (
-                    is_in_exit_zone(obj_center_x, obj_center_y, exit_edge, exit_rect)
-                    or is_in_exit_zone(smooth_cx_scaled, smooth_cy_scaled, exit_edge, exit_rect)
+                    is_in_exit_zone(obj_center_x, obj_center_y, exit_side, exit_rect)
+                    or is_in_exit_zone(smooth_cx_scaled, smooth_cy_scaled, exit_side, exit_rect)
                 ):
                     continue
 
@@ -942,7 +932,7 @@ class InferenceEngine:
                 # Check if detection center reached the exit line zone
                 det_cx_scaled = (bx1 + bx2) / 2.0
                 det_cy_scaled = (by1 + by2) / 2.0
-                if is_in_exit_zone(det_cx_scaled, det_cy_scaled, exit_edge, exit_rect):
+                if is_in_exit_zone(det_cx_scaled, det_cy_scaled, exit_side, exit_rect):
                     continue
 
                 color = colors[item.class_id % len(colors)]
@@ -956,11 +946,12 @@ class InferenceEngine:
                 cv2.rectangle(img, (anchor_x, label_top), (anchor_x + lw + 6, label_top + lh + 6), color, -1)
                 cv2.putText(img, label, (anchor_x + 3, label_top + lh + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
 
-        # 4. Exit Line (20px wide transparent gray band at the exit edge of the video, rotating with camera settings)
+        # 4. Exit Line (20px wide transparent gray band at the edge the products flow out of;
+        # none when they may move both ways).
         # Purpose: deletes box and ID, stops detecting objects when their center reaches this line,
         # and prevents IDs from jumping around when objects are cropped out of the video.
         # Clean line with no text on it.
-        ex1, ey1, ex2, ey2 = exit_rect
+        ex1, ey1, ex2, ey2 = exit_rect or (0, 0, 0, 0)
         if ex2 > ex1 and ey2 > ey1:
             _blend_filled_rect(img, (ex1, ey1), (ex2, ey2), (128, 128, 128), 0.40, 0.60)
 

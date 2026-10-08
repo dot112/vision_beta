@@ -309,7 +309,7 @@ def test_readers_of_an_existing_setup_keep_checking_the_first_list():
     # Nothing else about the cameras changed (later steps add other things to the file).
     for line in state["lines"]:
         for camera in line["cameras"]:
-            for added in ("product_list_id", "model_id", "expected_classes", "defect_classes"):
+            for added in ("product_list_id", "model_id", "expected_classes", "defect_classes", "name_based_defects"):
                 camera.pop(added, None)
     assert [line["cameras"] for line in state["lines"]] == [line["cameras"] for line in before["lines"]]
 

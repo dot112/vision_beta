@@ -25,6 +25,10 @@ class CountingConfig(BaseModel):
         default=["defect", "defect_candidate", "scratch", "dent", "missing_cap", "broken"],
         description="List of class names considered defective (increments rejected count and calculates Defect PPM)",
     )
+    name_based_defects: bool = Field(
+        default=True,
+        description="Also reject a class whose name contains 'defect', 'scratch' or 'broken' when it is not in defect_classes",
+    )
     # ── Conveyor Tracking & ByteTrack Parameters ──
     track_high_thresh: float = Field(
         default=0.50, ge=0.05, le=1.0, description="ByteTrack high-confidence threshold for stage 1 association"

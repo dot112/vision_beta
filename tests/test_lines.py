@@ -129,6 +129,7 @@ def test_v1_settings_upgrade_into_line1_and_stay_readable_by_v1(monkeypatch, tmp
     assert line1["cameras"] == [{
         "camera_id": "cam-usb-0", "role": "vision", "counting": True, "qr_hold_ms": 1500,
         "model_id": "model-A", "expected_classes": ["can"], "defect_classes": ["defect", "scratch", "broken"],
+        "name_based_defects": True,
     }]
     assert "model_id" not in line1 and "active_model_id" not in on_disk
     # Version 1's "connect the camera on startup" is now the one switch for every line.

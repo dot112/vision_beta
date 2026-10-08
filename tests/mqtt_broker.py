@@ -7,6 +7,7 @@ included (`publish`). It keeps no retained messages and sends no will.
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 import time
@@ -59,6 +60,10 @@ class Broker:
         self._clients: Dict[socket.socket, Dict[str, Any]] = {}
         self._lock = threading.Lock()
         self.server = socket.socket()
+        if os.name != "nt":
+            # Linux keeps a just-closed port taken for a minute (TIME_WAIT) unless this
+            # is set; on Windows the option would let two brokers share a port.
+            self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         deadline = time.time() + 5.0
         while True:
             try:

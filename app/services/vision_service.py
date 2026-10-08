@@ -149,12 +149,6 @@ class _CameraInferenceWorker:
 
                 # Update real-time object tracking & wireline counters of the camera's line
                 try:
-                    driver = app_state.cameras.get(self.camera_id)
-                    s = getattr(driver, "settings", {}) if driver else {}
-                    c_rot = int(s.get("rotation") or 90) if "rotation" in s else 90
-                    c_fliph = bool(s.get("flip_h", False))
-                    c_flipv = bool(s.get("flip_v", False))
-
                     routed = line_manager.route(self.camera_id)
                     if routed:
                         routed[0].record_frame(self.camera_id)
@@ -162,9 +156,6 @@ class _CameraInferenceWorker:
                         det_response.detections,
                         det_response.image_width,
                         det_response.image_height,
-                        camera_rotation=c_rot,
-                        camera_flip_h=c_fliph,
-                        camera_flip_v=c_flipv,
                         camera_id=self.camera_id,
                     )
                 except Exception as trk_err:
@@ -409,11 +400,6 @@ class _CameraStreamPublisher:
 
                 # 4. Draw annotations directly onto BGR display_mat
                 engine, _, _ = line_manager.engine_for_camera(self.camera_id)
-                s = getattr(driver, "settings", {}) if driver else {}
-                c_rot = int(s.get("rotation") or 90) if "rotation" in s else 90
-                c_fliph = bool(s.get("flip_h", False))
-                c_flipv = bool(s.get("flip_v", False))
-
                 annotated_mat = engine.draw_annotations_mat(
                     display_mat,
                     detections,
@@ -422,9 +408,6 @@ class _CameraStreamPublisher:
                     scale_x=scale_x,
                     scale_y=scale_y,
                     fps=fps,
-                    camera_rotation=c_rot,
-                    camera_flip_h=c_fliph,
-                    camera_flip_v=c_flipv,
                     camera_id=self.camera_id,
                 )
 
@@ -626,11 +609,6 @@ class CameraStreamPipeline:
         else:
             display_mat = mat.copy()
 
-        s = getattr(driver, "settings", {}) if driver else {}
-        c_rot = int(s.get("rotation") or 90) if "rotation" in s else 90
-        c_fliph = bool(s.get("flip_h", False))
-        c_flipv = bool(s.get("flip_v", False))
-
         from app.services.line_service import line_manager
         engine, _, _ = line_manager.engine_for_camera(camera_id)
         annotated_mat = engine.draw_annotations_mat(
@@ -641,9 +619,6 @@ class CameraStreamPipeline:
             scale_x=scale_x,
             scale_y=scale_y,
             fps=fps,
-            camera_rotation=c_rot,
-            camera_flip_h=c_fliph,
-            camera_flip_v=c_flipv,
             camera_id=camera_id,
         )
 
@@ -989,7 +964,13 @@ class VisionService:
         camera_name = camera.name if camera else "Camera"
 
         total_latency = round(acq_ms + det_response.inference_time_ms, 2)
-        has_defect = any("defect" in d.class_name.lower() or "scratch" in d.class_name.lower() for d in det_response.detections)
+        # A defect is what the camera's own counting settings call one (Line setup).
+        from app.engines.tracker import is_defect_class
+        config = line_manager.counter_for_camera(camera_id).config
+        has_defect = any(
+            is_defect_class(d.class_name, config.defect_classes, config.name_based_defects)
+            for d in det_response.detections
+        )
 
         log = DetectionLog(
             camera_id=camera_id,

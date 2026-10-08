@@ -325,48 +325,44 @@ def test_draw_annotations_bottom_exit_line():
     assert np.mean(bottom_slice) > 0, "Bottom 20px should have transparent gray overlay applied"
 
 
-def test_exit_line_rotations_geometry():
-    """Verify get_exit_line_zone returns correct edge and coordinates for all rotations and flips."""
-    from app.engines.tracker import get_exit_line_zone, is_in_exit_zone
+def test_exit_edge_follows_the_product_flow():
+    """Products leave the picture at the edge their flow leads to, whatever the camera rotation."""
+    from app.engines.tracker import exit_edge, exit_zone, is_in_exit_zone
 
     w, h = 640, 480
 
-    # 90 deg -> bottom
-    edge, rect = get_exit_line_zone(w, h, rotation=90)
+    # Count lines across the picture (products move down): forward A->B with A above B -> bottom
+    edge = exit_edge("horizontal", "forward", 0.35, 0.65)
+    rect = exit_zone(w, h, edge)
     assert edge == "bottom"
     assert rect == (0, 460, 640, 480)
     assert is_in_exit_zone(320, 465, edge, rect) is True
     assert is_in_exit_zone(320, 400, edge, rect) is False
 
-    # 0 deg -> right
-    edge, rect = get_exit_line_zone(w, h, rotation=0)
+    # Count lines down the picture (products move sideways): forward A->B with A left of B -> right
+    edge = exit_edge("vertical", "forward", 0.35, 0.65)
+    rect = exit_zone(w, h, edge)
     assert edge == "right"
     assert rect == (620, 0, 640, 480)
     assert is_in_exit_zone(625, 240, edge, rect) is True
     assert is_in_exit_zone(500, 240, edge, rect) is False
 
-    # 180 deg -> left
-    edge, rect = get_exit_line_zone(w, h, rotation=180)
-    assert edge == "left"
-    assert rect == (0, 0, 20, 480)
-    assert is_in_exit_zone(15, 240, edge, rect) is True
-    assert is_in_exit_zone(50, 240, edge, rect) is False
+    # Backward flow, or line B before line A, turns the exit around
+    assert exit_edge("vertical", "backward", 0.35, 0.65) == "left"
+    assert exit_zone(w, h, "left") == (0, 0, 20, 480)
+    assert exit_edge("vertical", "forward", 0.65, 0.35) == "left"
+    assert exit_edge("horizontal", "backward", 0.35, 0.65) == "top"
+    assert exit_zone(w, h, "top") == (0, 0, 640, 20)
+    assert exit_edge("horizontal", "backward", 0.65, 0.35) == "bottom"
 
-    # 270 deg -> top
-    edge, rect = get_exit_line_zone(w, h, rotation=270)
-    assert edge == "top"
-    assert rect == (0, 0, 640, 20)
-    assert is_in_exit_zone(320, 10, edge, rect) is True
-    assert is_in_exit_zone(320, 50, edge, rect) is False
-
-    # Flip horizontal on 0 deg (right -> left)
-    edge, rect = get_exit_line_zone(w, h, rotation=0, flip_h=True)
-    assert edge == "left"
-    assert rect == (0, 0, 20, 480)
+    # Products that may move both ways have no exit edge: nothing is cut off
+    assert exit_edge("horizontal", "both") is None
+    assert exit_zone(w, h, None) is None
+    assert is_in_exit_zone(320, 479, None, None) is False
 
 
 def test_tracker_exit_line_rotated_right():
-    """Verify WirelineTracker purges tracks at right edge when rotation=0."""
+    """Verify WirelineTracker purges tracks at the right edge when products flow left to right."""
     from app.engines.tracker import WirelineTracker
 
     w, h = 640, 480
@@ -394,7 +390,7 @@ def test_tracker_exit_line_rotated_right():
         w, h, 0.35, 0.65, "vertical", "forward", ["bottle"], [],
         camera_rotation=0
     )
-    assert len(tr.objects) == 0, f"Track should be deleted at right edge when rotation=0, got: {tr.objects}"
+    assert len(tr.objects) == 0, f"Track should be deleted at the right edge, got: {tr.objects}"
 
     # Detections inside right exit zone must not create new tracks
     tr.update(
@@ -405,11 +401,13 @@ def test_tracker_exit_line_rotated_right():
     assert len(tr.objects) == 0
 
 
-def test_draw_annotations_rotated_exit_lines():
-    """Verify draw_annotations_mat draws exit band on rotated edges and suppresses bounding boxes."""
+def test_draw_annotations_exit_band_follows_the_flow(monkeypatch):
+    """Verify draw_annotations_mat draws the exit band where products flow out and suppresses boxes there."""
     import numpy as np
     from app.engines.inference_engine import InferenceEngine
+    from app.schemas.counting import CountingConfig
     from app.schemas.vision import BoundingBox, DetectionItem
+    from app.services.counting_service import counting_service
 
     engine = InferenceEngine(device="cpu")
     img = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -429,29 +427,22 @@ def test_draw_annotations_rotated_exit_lines():
         bbox=BoundingBox(x1=300, y1=220, x2=340, y2=260, width=40, height=40),
     )
 
-    # Test rotation=0 (Right edge exit)
-    out_rot0 = engine.draw_annotations_mat(
-        img.copy(),
-        [det_right, det_center],
-        draw_wirelines=False,
-        camera_rotation=0,
-    )
-    # Right 20px (cols 620 to 640) should have gray overlay
-    assert np.mean(out_rot0[:, 620:640]) > 0
-    # Left 20px should be 0 (no overlay)
-    assert np.mean(out_rot0[:, 0:20]) == 0
+    # Left to right: the band is on the right, whatever rotation a caller passes
+    monkeypatch.setattr(counting_service, "config", CountingConfig(orientation="vertical", direction="forward"))
+    out_right = engine.draw_annotations_mat(img.copy(), [det_right, det_center], draw_wirelines=False, camera_rotation=90)
+    assert np.mean(out_right[:, 620:640]) > 0
+    assert np.mean(out_right[:, 0:20]) == 0
 
-    # Test rotation=180 (Left edge exit)
-    out_rot180 = engine.draw_annotations_mat(
-        img.copy(),
-        [det_center],
-        draw_wirelines=False,
-        camera_rotation=180,
-    )
-    # Left 20px should have gray overlay
-    assert np.mean(out_rot180[:, 0:20]) > 0
-    # Right 20px should be 0
-    assert np.mean(out_rot180[:, 620:640]) == 0
+    # Right to left: the band is on the left
+    monkeypatch.setattr(counting_service, "config", CountingConfig(orientation="vertical", direction="backward"))
+    out_left = engine.draw_annotations_mat(img.copy(), [det_center], draw_wirelines=False)
+    assert np.mean(out_left[:, 0:20]) > 0
+    assert np.mean(out_left[:, 620:640]) == 0
+
+    # Both ways: no band at all
+    monkeypatch.setattr(counting_service, "config", CountingConfig(orientation="vertical", direction="both"))
+    out_none = engine.draw_annotations_mat(img.copy(), [], draw_wirelines=False)
+    assert np.mean(out_none) == 0
 
 
 
