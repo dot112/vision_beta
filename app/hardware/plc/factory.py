@@ -88,7 +88,9 @@ class PLCDriverFactory:
         if driver:
             import asyncio
             from app.events.alarm_events import alarm_manager
-            # The endpoint's config changed or it was removed: its old alarms no longer apply.
+            # The endpoint's config changed or it was removed: its old alarms no longer
+            # apply, and closing this retired driver must not raise new ones.
+            driver.report_alarms = False
             alarm_manager.clear_source(driver.alarm_source, "endpoint reconfigured or removed")
             try:
                 loop = asyncio.get_running_loop()

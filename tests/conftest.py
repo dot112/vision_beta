@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 import pytest
@@ -99,13 +100,44 @@ class FakeCamera:
 
 @pytest.fixture
 def fake_engine(monkeypatch):
-    from app.state.application_state import app_state
+    """One loaded model for every camera and for every detect call, whatever model they name."""
+    from app.services.line_service import line_manager
 
     engine = FakeInferenceEngine()
-    monkeypatch.setattr(app_state, "active_model", {
-        "id": None, "name": "fake-model", "classes": ["bottle"], "engine": engine,
-    })
+
+    async def api_engine(model_id=None, camera_id=None):
+        return engine, "fake-model", None
+
+    monkeypatch.setattr(line_manager, "engine_for_camera", lambda camera_id: (engine, "fake-model", None))
+    monkeypatch.setattr(line_manager, "api_engine", api_engine)
     return engine
+
+
+@pytest.fixture
+def vision_model(client, admin_headers, monkeypatch):
+    """A model on the AI models page that loads as a fake engine. Gives its id.
+
+    A line is not saved with a vision camera that has no model, so API tests
+    that put a vision camera on a line name this one.
+    """
+    from app.services.line_service import LineManager
+
+    folder = Path(os.environ["MODEL_STORE_PATH"]) / "fake-model" / "v1.0"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{uuid.uuid4().hex[:8]}.onnx"
+    path.write_bytes(b"not a real model")
+    res = client.post("/api/v1/models/register", headers=admin_headers,
+                      json={"name": "fake-model", "file_path": str(path), "classes": ["bottle", "defect"]})
+    assert res.status_code == 201, res.text
+    model_id = res.json()["id"]
+
+    async def load(self, wanted):
+        return {"engine": FakeInferenceEngine(), "name": "fake-model"}, None
+
+    monkeypatch.setattr(LineManager, "_load_engine", load)
+    yield model_id
+    # Refused while a line of the test still uses it; the test database is thrown away anyway.
+    client.delete(f"/api/v1/models/{model_id}", headers=admin_headers)
 
 
 @pytest.fixture
@@ -162,11 +194,22 @@ async def _async_noop(*args, **kwargs):
     return None
 
 
-@pytest.fixture(scope="session")
+_admin_session: dict = {}
+
+
+@pytest.fixture
 def admin_headers(client):
-    res = client.post(
-        "/api/v1/auth/login",
-        json={"username": "admin", "password": ADMIN_PASSWORD, "force": True},
-    )
-    assert res.status_code == 200, res.text
-    return {"Authorization": f"Bearer {res.json()['access_token']}"}
+    """Headers of a signed-in admin, shared by the whole run.
+
+    A test that starts the app again or resets the sessions ends every
+    sign-in, so the shared one is checked and renewed when it is gone.
+    """
+    headers = _admin_session.get("headers")
+    if headers is None or client.get("/api/v1/auth/me", headers=headers).status_code != 200:
+        res = client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": ADMIN_PASSWORD, "force": True},
+        )
+        assert res.status_code == 200, res.text
+        headers = _admin_session["headers"] = {"Authorization": f"Bearer {res.json()['access_token']}"}
+    return headers

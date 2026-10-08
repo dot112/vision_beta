@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     )
 
     APP_NAME: str = "Industrial Vision API"
-    APP_VERSION: str = "2.0.0"
+    APP_VERSION: str = "1.0.0-beta"
     APP_ENV: str = "development"
     DEBUG: bool = True
     SECRET_KEY: str = ""

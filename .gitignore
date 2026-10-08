@@ -3,6 +3,9 @@
 .env.local
 .env.*.local
 
+# ─── Machine-specific Docker setup (written by docker/detect_hardware.py) ─────
+docker-compose.override.yml
+
 # ─── Python & Virtual Environments ────────────────────────────────────────────
 __pycache__/
 *.py[cod]

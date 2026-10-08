@@ -103,6 +103,7 @@ class USBCamera(BaseCamera):
 
             self._cap = cap
             self.is_connected = True
+            self.reconnecting = False
             self.last_error = None
 
             # Start reader thread to keep USB DirectShow buffer at 0ms latency.
@@ -157,6 +158,7 @@ class USBCamera(BaseCamera):
                         lost_at = time.monotonic()
                         logger.warning("USB camera '%s' (device %s) stopped delivering frames; reopening it",
                                        self.name, self.device_index)
+                        self.reconnecting = True
                     attempts += 1
                     try:
                         cap = self._open_device()
@@ -180,6 +182,7 @@ class USBCamera(BaseCamera):
                                 self.name, time.monotonic() - lost_at, attempts)
                     _reconnect_log.clear(self.camera_id)
                     self.last_error = None
+                    self.reconnecting = False
                     lost_at, attempts, retry_delay, failures = None, 0, 1.0, 0
                     continue
 
@@ -215,6 +218,7 @@ class USBCamera(BaseCamera):
 
     def disconnect(self) -> None:
         self.is_connected = False
+        self.reconnecting = False
         if self._stop_event:
             self._stop_event.set()
 
@@ -328,14 +332,13 @@ class USBCamera(BaseCamera):
             return {"device_index": self.device_index, "connected": True, "error": str(exc)}
 
     def set_properties(self, properties: Dict[str, Any]) -> bool:
+        # Size, rotation and ROI are applied to every frame from self.settings, so
+        # they take effect even while the device is closed (on its next open).
+        self.settings.update(properties)
         cap = self._cap
         if cap is None or not cap.isOpened() or cv2 is None:
-            return False
-        if not self._apply_properties(cap, properties):
-            return False
-        # Keep self.settings updated
-        self.settings.update(properties)
-        return True
+            return True
+        return self._apply_properties(cap, properties)
 
     @staticmethod
     def _apply_properties(cap: Any, properties: Dict[str, Any]) -> bool:

@@ -7,17 +7,19 @@ import uuid
 from pathlib import Path
 from typing import List, Optional
 from fastapi import UploadFile
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.models.model import VisionModel
-from app.engines.inference_engine import InferenceEngine
 from app.schemas.model import ModelCreate, ModelUpdate
-from app.state.application_state import app_state
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+class ModelInUse(ValueError):
+    """A vision camera runs this model."""
 
 
 def _read_onnx_metadata(path: Path) -> tuple[dict, Optional[List[str]]]:
@@ -48,12 +50,6 @@ class ModelService:
     @staticmethod
     async def get_model_by_id(db: AsyncSession, model_id: str) -> Optional[VisionModel]:
         stmt = select(VisionModel).where(VisionModel.id == model_id)
-        result = await db.execute(stmt)
-        return result.scalar_one_or_none()
-
-    @staticmethod
-    async def get_active_model(db: AsyncSession) -> Optional[VisionModel]:
-        stmt = select(VisionModel).where(VisionModel.is_active == True)
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -158,83 +154,21 @@ class ModelService:
         return model
 
     @staticmethod
-    async def activate_model(db: AsyncSession, model_id: str) -> Optional[VisionModel]:
-        """Swaps the active model in DB and in-memory InferenceEngine."""
-        model = await ModelService.get_model_by_id(db, model_id)
-        if not model:
-            return None
+    async def delete_model(db: AsyncSession, model_id: str, used_by: Optional[List[str]] = None) -> bool:
+        """Delete a model record from DB and remove its file from model_store.
 
-        if not model.file_path or not os.path.exists(model.file_path):
-            logger.error("Cannot activate model '%s': file not found at %s", model.name, model.file_path)
-            return None
-
-        # Update runtime app_state and reload engine
-        engine = await asyncio.to_thread(
-            InferenceEngine,
-            model_path=model.file_path,
-            classes=model.classes,
-            input_size=(model.input_width, model.input_height),
-            confidence_threshold=model.confidence_threshold,
-            nms_threshold=model.nms_threshold,
-            device=settings.INFERENCE_DEVICE,
-        )
-
-        if not engine.is_loaded:
-            logger.error("Failed to load engine for model '%s' from %s", model.name, model.file_path)
-            return None
-
-        # Restore saved task mode (detect or segment)
-        meta = model.metadata_json or {}
-        if meta.get("task"):
-            engine.task = str(meta["task"]).strip().lower()
-
-        # Deactivate all models and mark this one active
-        await db.execute(update(VisionModel).values(is_active=False))
-        model.is_active = True
-        if engine.classes and engine.classes != model.classes:
-            model.classes = engine.classes
-        await db.commit()
-        await db.refresh(model)
-
-        app_state.active_model = {
-            "id": model.id,
-            "name": model.name,
-            "version": model.version,
-            "file_path": model.file_path,
-            "classes": engine.classes or model.classes,
-            "engine": engine,
-        }
-
-        # Persist active model in system state
-        try:
-            from app.services.settings_persistence_service import SettingsPersistenceService
-            SettingsPersistenceService.update_settings(
-                {"active_model_id": model.id},
-                username="system",
-                role="ADMIN",
-                clearance_level=3,
-            )
-        except Exception as exc:
-            logger.debug("Failed to persist active_model_id: %s", exc)
-
-        logger.info("Model '%s' (%s) successfully activated in memory", model.name, model.version)
-        return model
-
-    @staticmethod
-    async def delete_model(db: AsyncSession, model_id: str) -> bool:
-        """Delete a model record from DB and remove its file from model_store."""
+        ``used_by``: the cameras that run it ("Line (camera)"); a model in use is not deleted.
+        """
         model = await ModelService.get_model_by_id(db, model_id)
         if not model:
             return False
 
-        # Do not leave inference pointing at a removed file or silently
-        # deactivate a model that is still selected in the database.
-        if model.is_active or (app_state.active_model and app_state.active_model.get("id") == model_id):
-            raise ValueError("Deactivate the model before deleting it")
-        from app.services.settings_persistence_service import SettingsPersistenceService
-        using = [line["name"] for line in SettingsPersistenceService.get_lines() if line.get("model_id") == model_id]
-        if using:
-            raise ValueError(f"The model is used by production line(s): {', '.join(using)}. Pick another model for them first.")
+        # A camera must not be left pointing at a removed file.
+        if used_by:
+            raise ModelInUse(
+                f"The model runs on: {', '.join(used_by)}. Pick another model for "
+                f"{'that camera' if len(used_by) == 1 else 'those cameras'} on Line setup first."
+            )
 
         # Remove only files contained by the configured store, and retain the
         # database record if the file cannot be removed.

@@ -128,7 +128,14 @@ class HealthService:
 
     # ── Inference ─────────────────────────────────────────────────────────────
 
-    def check_inference(self, frames_flowing: bool) -> Dict[str, Any]:
+    def check_inference(self, frames_flowing: bool, flowing: Optional[List[str]] = None) -> Dict[str, Any]:
+        """``flowing``: the ids of the cameras that are delivering frames.
+
+        A model runs only on the vision cameras of running lines, each with
+        the model picked for it. A camera whose own model is missing has its
+        own alarm (camera.model_unavailable); the alarms here are about
+        inference as a whole.
+        """
         now = self._clock()
         source = "inference"
         result: Dict[str, Any] = {
@@ -137,8 +144,11 @@ class HealthService:
         }
 
         try:
-            from app.services.vision_service import ContinuousVisionRunner, _get_active_engine
-            engine, model_name, model_id = _get_active_engine()
+            from app.services.line_service import line_manager
+            from app.services.vision_service import ContinuousVisionRunner
+            models = line_manager.loaded_models()
+            # Per streaming camera a running line runs a model on: is its model loaded?
+            vision = [state for state in (line_manager.inferring(cid) for cid in flowing or []) if state is not None]
             runner_alive = bool(ContinuousVisionRunner._running and ContinuousVisionRunner._thread
                                 and ContinuousVisionRunner._thread.is_alive())
         except Exception as exc:
@@ -146,28 +156,35 @@ class HealthService:
             result.update(status=DOWN, error=f"{type(exc).__name__}: {exc}")
             return result
 
-        result.update(model=model_name, model_id=model_id, model_loaded=bool(engine.is_loaded),
-                      runner_alive=runner_alive)
+        result.update(model=", ".join(model["name"] for model in models) or None,
+                      model_id=models[0]["id"] if models else None,
+                      models=models, model_loaded=bool(models), runner_alive=runner_alive)
 
+        # Frames that should be going through a model: a streaming vision camera whose model is loaded.
+        inferring = any(vision)
         processed = app_state.processed_frames
         last_count, changed_at = self._inference_progress
-        if processed != last_count or not frames_flowing:
+        if processed != last_count or not inferring:
             changed_at = now
         self._inference_progress = (processed, changed_at)
         stalled_for = now - changed_at
         result["seconds_since_inference"] = round(stalled_for, 2)
 
         problems: List[Tuple[str, str]] = []
-        if not engine.is_loaded:
+        expected = set()
+        if not models and vision:
             problems.append((HealthAlarmCode.INFERENCE_MODEL_NOT_LOADED, "No inference model is loaded"))
+            expected.add(HealthAlarmCode.INFERENCE_MODEL_NOT_LOADED)
         if not runner_alive:
             problems.append((HealthAlarmCode.INFERENCE_RUNNER_STOPPED, "The continuous vision runner is not running"))
-        if engine.is_loaded and runner_alive and stalled_for > settings.HEALTH_INFERENCE_STALE_SECONDS:
+            expected.add(HealthAlarmCode.INFERENCE_RUNNER_STOPPED)
+        if inferring and runner_alive and stalled_for > settings.HEALTH_INFERENCE_STALE_SECONDS:
             problems.append((HealthAlarmCode.INFERENCE_STALLED,
                              f"Frames are arriving but nothing has been inferred for {stalled_for:.1f}s"))
+            expected.add(HealthAlarmCode.INFERENCE_STALLED)
 
         # Without a streaming camera, inference not running is expected, not a fault.
-        raised = {code for code, _ in problems} if frames_flowing else set()
+        raised = expected if frames_flowing else set()
         for code, message in problems:
             if code in raised:
                 alarm_manager.raise_alarm(code, source, message, AlarmSeverity.CRITICAL)
@@ -179,8 +196,8 @@ class HealthService:
         if raised:
             result["status"] = DOWN
             result["error"] = "; ".join(message for code, message in problems if code in raised)
-        elif not frames_flowing:
-            result["status"] = IDLE
+        elif not vision:
+            result["status"] = IDLE  # no streaming camera runs a model
         else:
             result["status"] = OK
         return result
@@ -254,18 +271,29 @@ class HealthService:
 
     def check_mqtt(self) -> Dict[str, Any]:
         # MQTT is optional; a missing broker connection is reported, not treated as a fault.
-        return {"status": OK if app_state.mqtt_connected else IDLE, "connected": bool(app_state.mqtt_connected)}
+        from app.services.mqtt_service import MQTTChannels
+        from app.services.sparkplug_service import SparkplugService
+        channels = {channel_id: {"id": channel_id, **state} for channel_id, state in MQTTChannels.status().items()}
+        # A channel with Sparkplug B on is also an edge node, on a connection of its own.
+        for channel_id, node in SparkplugService.status().items():
+            channels.setdefault(channel_id, {"id": channel_id, "connected": False})["sparkplug"] = node
+        return {
+            "status": OK if app_state.mqtt_connected else IDLE,
+            "connected": bool(app_state.mqtt_connected),
+            # One broker connection per MQTT channel under Connections.
+            "channels": list(channels.values()),
+        }
 
     # ── Aggregate ─────────────────────────────────────────────────────────────
 
     def snapshot(self) -> Dict[str, Any]:
         """Run every check (updating alarms) and return the full health report."""
         cameras = self.check_cameras()
-        frames_flowing = any(c["status"] == OK for c in cameras["cameras"])
+        flowing = [c["id"] for c in cameras["cameras"] if c["status"] == OK]
         components = {
             "database": self.check_database(),
             "cameras": cameras,
-            "inference": self.check_inference(frames_flowing),
+            "inference": self.check_inference(bool(flowing), flowing),
             "plc": self.check_plc(),
             "mqtt": self.check_mqtt(),
             "lines": self.check_lines(),

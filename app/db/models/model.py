@@ -21,6 +21,8 @@ class VisionModel(Base):
     input_height: Mapped[int] = mapped_column(Integer, default=640)
     confidence_threshold: Mapped[float] = mapped_column(Float, default=0.5)
     nms_threshold: Mapped[float] = mapped_column(Float, default=0.45)
+    # No longer read: a model is active while a vision camera runs it (the
+    # cameras name their model in the line settings). Kept for older databases.
     is_active: Mapped[bool] = mapped_column(Boolean, default=False)
     metadata_json: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, default=dict)
 

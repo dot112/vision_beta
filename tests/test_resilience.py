@@ -466,9 +466,18 @@ def test_mqtt_reports_connection_changes():
     client = MQTTClient(host="192.0.2.10")
     seen = []
     client.on_state_change = seen.append
-    client._on_connect(None, None, {}, 0)
-    client._on_disconnect(None, None, 1)
+    from paho.mqtt.packettypes import PacketTypes
+    from paho.mqtt.reasoncodes import ReasonCode
+
+    client._on_connect(None, None, {}, ReasonCode(PacketTypes.CONNACK, "Success"))
+    client._on_disconnect(None, None, {}, ReasonCode(PacketTypes.DISCONNECT, "Unspecified error"))
     assert seen == [True, False]
+    assert "lost" in client.last_error
+
+    # A refusal keeps the broker's reason, for the channel's test and a card's last result.
+    client._on_connect(None, None, {}, ReasonCode(PacketTypes.CONNACK, "Bad user name or password"))
+    client._on_disconnect(None, None, {}, ReasonCode(PacketTypes.DISCONNECT, "Unspecified error"))  # the socket closing
+    assert not client.is_connected and "Bad user name or password" in client.last_error
 
 
 # ── Startup and shutdown ──────────────────────────────────────────────────────

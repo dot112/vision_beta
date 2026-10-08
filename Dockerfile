@@ -1,19 +1,41 @@
 # syntax=docker/dockerfile:1
-# Linux image for the vision server. Serves ONNX models on CPU; PyTorch and
-# Ultralytics (model training/export, requirements-training.txt) are left out
-# to keep the image small.
+# Linux image for the vision server, for x86-64 and arm64 hosts. Serves ONNX
+# models; PyTorch and Ultralytics (model training/export,
+# requirements-training.txt) are left out to keep the image small.
+#
+# ACCEL picks the ONNX Runtime build:
+#   cpu     (default) inference on the CPU; x86-64 and arm64 (Jetson, Raspberry Pi)
+#   nvidia  inference on an NVIDIA GPU through CUDA; x86-64 only, and several
+#           GB larger because CUDA and cuDNN are installed with it
+# docker/detect_hardware.py picks it for the machine and passes the GPU in.
+ARG ACCEL=cpu
 
 # ── Build stage: install the Python packages into a virtualenv ────────────────
 FROM python:3.12-slim AS build
+ARG ACCEL
 
-ENV PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+# Long timeout and retries: the CUDA packages are large downloads.
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=10
 
 RUN python -m venv /opt/venv
 ENV PATH=/opt/venv/bin:$PATH
 
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install -r /tmp/requirements.txt
+# pip's download cache is kept between builds (outside the image), so a build
+# that failed on a timeout does not download everything again.
+# The onnxruntime-gpu version follows requirements.txt.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    case "$ACCEL" in \
+      cpu) \
+        pip install -r /tmp/requirements.txt ;; \
+      nvidia) \
+        grep -v '^onnxruntime' /tmp/requirements.txt > /tmp/requirements-gpu.txt \
+        && pip install -r /tmp/requirements-gpu.txt "onnxruntime-gpu[cuda,cudnn]>=1.30.0" ;; \
+      *) \
+        echo "ACCEL must be cpu or nvidia, not '$ACCEL'" >&2; exit 1 ;; \
+    esac
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM python:3.12-slim
@@ -34,6 +56,11 @@ RUN groupadd --system --gid 10001 vision \
     && useradd --system --uid 10001 --gid vision --home-dir /app --shell /usr/sbin/nologin vision
 
 COPY --from=build /opt/venv /opt/venv
+# In the nvidia build CUDA and cuDNN are Python packages; tell the dynamic
+# loader where their libraries are so ONNX Runtime finds them. (The cpu build
+# has none, and the list stays empty.)
+RUN find /opt/venv/lib -type d -path '*/site-packages/nvidia/*/lib' > /etc/ld.so.conf.d/vision-cuda.conf \
+    && ldconfig
 
 WORKDIR /app
 # Application code stays owned by root, so the server cannot modify it.

@@ -1,12 +1,54 @@
 from __future__ import annotations
 
+import logging
 import threading
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, Tuple
 
+from app.utils.logger import LogThrottle, get_logger
+
+logger = get_logger(__name__)
+# A camera whose settings cannot be applied is reported once a minute, not on every frame.
+_process_log = LogThrottle(60.0)
+
 # Set while the server shuts down: a connect() that is trying several stream
 # URLs stops after the current one instead of holding up the exit.
 CONNECT_ABORT = threading.Event()
+
+
+def roi_box(settings: Dict[str, Any], w: int, h: int) -> Optional[Tuple[int, int, int, int]]:
+    """The ROI as pixel corners (x1, y1, x2, y2) inside a w x h picture, or None for the whole picture.
+
+    roi_x/roi_y/roi_w/roi_h are fractions of the picture (0-1, what the dashboard
+    saves); values above 1 are read as percentages (up to 100) or else pixels.
+    """
+    if not settings.get("roi_enabled", True):
+        return None
+    try:
+        rx = float(settings.get("roi_x") or 0)
+        ry = float(settings.get("roi_y") or 0)
+        rw = settings.get("roi_w")
+        rh = settings.get("roi_h")
+        if rw is None or rh is None:
+            return None
+        rw, rh = float(rw), float(rh)
+    except (TypeError, ValueError):
+        return None
+    if rw <= 0 or rh <= 0:
+        return None
+    if max(rx, ry, rw, rh) <= 1.0:
+        fx, fy = float(w), float(h)
+    elif max(rx + rw, ry + rh) <= 100.0:
+        fx, fy = w / 100.0, h / 100.0
+    else:
+        fx = fy = 1.0
+    x1, y1 = max(0, int(round(rx * fx))), max(0, int(round(ry * fy)))
+    x2, y2 = min(w, int(round((rx + rw) * fx))), min(h, int(round((ry + rh) * fy)))
+    if x2 - x1 < 16 or y2 - y1 < 16:
+        return None  # too small to be meant; keep the whole picture
+    if (x1, y1, x2, y2) == (0, 0, w, h):
+        return None
+    return x1, y1, x2, y2
 
 
 class BaseCamera(ABC):
@@ -20,6 +62,9 @@ class BaseCamera(ABC):
         self.source = source
         self.settings = settings or {}
         self.is_connected = False
+        # True while a connected camera has lost its stream or device and its
+        # reader is trying to get it back (nobody disconnected it).
+        self.reconnecting = False
         self.last_error: Optional[str] = None
 
     @abstractmethod
@@ -70,49 +115,30 @@ class BaseCamera(ABC):
         time.sleep(min(timeout, 0.03))
         return self.is_connected
 
-    def _process_frame(self, frame: Any) -> Any:
+    def _process_frame(self, frame: Any, crop: bool = True) -> Any:
         """
-        Applies ROI cropping, rotation, flip, and resolution scaling according to camera settings.
+        The picture every consumer gets (live stream, YOLO, QR reader): scaled to
+        the camera's width x height, rotated and flipped, then cropped to the ROI.
+
+        The ROI is cropped last, so it is drawn on the picture as the stream shows
+        it, and the crop keeps its own size and aspect ratio (it is not stretched
+        back to width x height). crop=False skips the ROI, for drawing it.
         """
         if frame is None:
             return frame
 
         try:
             import cv2
-            h, w = frame.shape[:2]
 
-            # 1. ROI (Region of Interest / Crop)
-            roi_enabled = self.settings.get("roi_enabled", True)
-            roi_x = self.settings.get("roi_x")
-            roi_y = self.settings.get("roi_y")
-            roi_w = self.settings.get("roi_w")
-            roi_h = self.settings.get("roi_h")
-            if roi_enabled and roi_w is not None and roi_h is not None:
-                rx = float(roi_x or 0)
-                ry = float(roi_y or 0)
-                rw = float(roi_w)
-                rh = float(roi_h)
-                # Percentages 0-100% or normalized 0-1
-                if rw <= 1.0 and rh <= 1.0 and rw > 0 and rh > 0:
-                    x1 = max(0, int(rx * w))
-                    y1 = max(0, int(ry * h))
-                    x2 = min(w, int((rx + rw) * w))
-                    y2 = min(h, int((ry + rh) * h))
-                elif rw <= 100.0 and rh <= 100.0 and (rw > 1.0 or rh > 1.0) and rw > 0 and rh > 0 and (rx + rw <= 100.0):
-                    x1 = max(0, int((rx / 100.0) * w))
-                    y1 = max(0, int((ry / 100.0) * h))
-                    x2 = min(w, int(((rx + rw) / 100.0) * w))
-                    y2 = min(h, int(((ry + rh) / 100.0) * h))
-                else:
-                    x1 = max(0, int(rx))
-                    y1 = max(0, int(ry))
-                    x2 = min(w, int(rx + rw))
-                    y2 = min(h, int(ry + rh))
+            # 1. Picture size
+            target_w = self.settings.get("width")
+            target_h = self.settings.get("height")
+            if target_w and target_h:
+                tw, th = int(target_w), int(target_h)
+                if tw > 0 and th > 0 and (frame.shape[1] != tw or frame.shape[0] != th):
+                    frame = cv2.resize(frame, (tw, th), interpolation=cv2.INTER_AREA)
 
-                if x2 > x1 + 10 and y2 > y1 + 10:
-                    frame = frame[y1:y2, x1:x2]
-
-            # 2. Rotation & Flipping
+            # 2. Rotation & flipping
             rot = self.settings.get("rotation")
             if rot == 90 or rot == "90":
                 frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
@@ -127,17 +153,31 @@ class BaseCamera(ABC):
             if self.settings.get("flip_v"):
                 frame = cv2.flip(frame, 0)
 
-            # 3. Output Resolution (Resizing if target width/height set in settings)
-            target_w = self.settings.get("width")
-            target_h = self.settings.get("height")
-            if target_w and target_h:
-                tw, th = int(target_w), int(target_h)
-                if tw > 0 and th > 0 and (frame.shape[1] != tw or frame.shape[0] != th):
-                    frame = cv2.resize(frame, (tw, th))
+            # 3. ROI (region of interest): only this part goes to YOLO and the QR reader
+            if crop:
+                box = roi_box(self.settings, frame.shape[1], frame.shape[0])
+                if box is not None:
+                    x1, y1, x2, y2 = box
+                    frame = frame[y1:y2, x1:x2]
 
             return frame
-        except Exception:
+        except Exception as exc:
+            _process_log.log(
+                logger, logging.WARNING, self.camera_id,
+                "Camera '%s': could not apply size/rotation/ROI settings, using the picture as it came: %s: %s",
+                self.name, type(exc).__name__, exc,
+            )
             return frame
+
+    def get_full_view_mat(self) -> Optional[Any]:
+        """The latest picture as the stream shows it, but before the ROI crop (for drawing the ROI)."""
+        lock = getattr(self, "_lock", None)
+        if lock is None or not self.is_connected:
+            return None
+        with lock:
+            raw = getattr(self, "_latest_raw_mat", None)
+        # Drivers replace the raw frame rather than modify it, so it can be processed outside the lock.
+        return self._process_frame(raw, crop=False) if raw is not None else None
 
     def get_properties(self) -> Dict[str, Any]:
         """Return runtime camera properties (resolution, fps, exposure, etc)."""

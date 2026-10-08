@@ -68,7 +68,10 @@ class FakePLCDriver:
 
 @pytest.fixture
 def runtime(monkeypatch):
-    """Isolate app_state, the PLC pool and the vision runner for each test."""
+    """Isolate app_state, the PLC pool, the lines and the vision runner for each test.
+
+    Line 1 has one vision camera, "cam1", that runs the model "yolo-test".
+    """
     monkeypatch.setattr(app_state, "cameras", {})
     monkeypatch.setattr(app_state, "processed_frames", 0)
     monkeypatch.setattr(app_state, "detection_count", 0)
@@ -77,9 +80,13 @@ def runtime(monkeypatch):
     saved_pool = dict(_driver_pool)
     _driver_pool.clear()
 
-    from app.services import vision_service
+    from app.services import line_service, vision_service
     engine = FakeEngine(loaded=True)
-    monkeypatch.setattr(vision_service, "_get_active_engine", lambda: (engine, "yolo-test", "m1"))
+    manager = line_service.LineManager()
+    manager.primary().cameras = [{"camera_id": "cam1", "role": "vision", "counting": True, "model_id": "m1"}]
+    manager._camera_map = {"cam1": (line_service.PRIMARY_LINE_ID, "vision")}
+    manager._engines = {"m1": {"engine": engine, "name": "yolo-test"}}
+    monkeypatch.setattr(line_service, "line_manager", manager)
     monkeypatch.setattr(vision_service.ContinuousVisionRunner, "_running", True)
     monkeypatch.setattr(vision_service.ContinuousVisionRunner, "_thread", FakeThread(alive=True))
 
@@ -216,6 +223,35 @@ def test_model_not_loaded_only_alarms_when_cameras_stream(runtime):
     assert alarm_manager.get(HealthAlarmCode.INFERENCE_MODEL_NOT_LOADED, "inference") is None
 
 
+def test_a_server_that_only_reads_codes_needs_no_model(runtime):
+    service, _, _ = runtime
+    from app.services import line_service
+    manager = line_service.line_manager
+    manager.primary().cameras = [{"camera_id": "cam1", "role": "qr"}]
+    manager._camera_map = {"cam1": (line_service.PRIMARY_LINE_ID, "qr")}
+    manager._engines = {}
+    app_state.cameras["cam1"] = FakeCamera()
+    report = service.snapshot()
+    assert report["components"]["inference"]["status"] == "idle"
+    assert report["components"]["inference"]["model_loaded"] is False
+    assert alarm_manager.active() == []
+
+
+def test_a_camera_whose_own_model_is_missing_is_not_reported_as_stalled_inference(runtime):
+    """That camera has its own alarm (camera.model_unavailable); inference as a whole is not stalled."""
+    service, clock, engine = runtime
+    from app.services import line_service
+    line_service.line_manager._engines = {"m-other": {"engine": engine, "name": "another camera's model"}}
+    app_state.cameras["cam1"] = cam = FakeCamera()
+    for _ in range(int(hs.settings.HEALTH_INFERENCE_STALE_SECONDS) + 2):
+        clock.now += 1
+        cam.frame_id += 30
+        report = service.snapshot()
+    assert report["components"]["inference"]["model"] == "another camera's model"
+    assert alarm_manager.get(HealthAlarmCode.INFERENCE_STALLED, "inference") is None
+    assert alarm_manager.get(HealthAlarmCode.INFERENCE_MODEL_NOT_LOADED, "inference") is None
+
+
 def test_stopped_runner_raises_alarm(runtime, monkeypatch):
     service, _, _ = runtime
     from app.services import vision_service
@@ -332,6 +368,35 @@ def test_alarm_list_and_acknowledge_routes(client):
     assert history[0]["code"] == "plc.connect_failed"
 
 
+def test_alarms_for_a_line_can_include_the_ones_every_line_shares(client):
+    alarm_manager.raise_alarm("camera.stalled", "camera:c1", "stalled", AlarmSeverity.CRITICAL, {"line_id": "line-1"})
+    alarm_manager.raise_alarm("camera.stalled", "camera:c2", "stalled", AlarmSeverity.CRITICAL, {"line_id": "line-2"})
+    alarm_manager.raise_alarm("inference.stalled", "inference", "stalled", AlarmSeverity.CRITICAL)
+
+    only_line = client.get("/api/v1/alarms?line_id=line-1").json()["alarms"]
+    assert [a["source"] for a in only_line] == ["camera:c1"]
+    shared = client.get("/api/v1/alarms?line_id=line-1&include_all_lines=true").json()["alarms"]
+    assert sorted(a["source"] for a in shared) == ["camera:c1", "inference"]
+    by_source = {a["source"]: a for a in shared}
+    assert by_source["camera:c1"]["label"] == "Camera stalled"
+    assert by_source["camera:c1"]["line_id"] == "line-1" and by_source["camera:c1"]["all_lines"] is False
+    assert by_source["inference"]["line_id"] is None and by_source["inference"]["all_lines"] is True
+
+    alarm_manager.clear_alarm("inference.stalled", "inference")
+    alarm_manager.clear_alarm("camera.stalled", "camera:c2")
+    history = client.get("/api/v1/alarms/history?line_id=line-1&include_all_lines=true").json()
+    assert [a["source"] for a in history] == ["inference"]
+    assert client.get("/api/v1/alarms/history?line_id=line-1").json() == []
+
+
+def test_alarm_catalog_route(client):
+    catalog = client.get("/api/v1/alarms/catalog").json()["alarms"]
+    by_code = {entry["code"]: entry for entry in catalog}
+    assert by_code["camera.stalled"]["label"] == "Camera stalled"
+    assert by_code["camera.stalled"]["scope"] == "line"
+    assert by_code["plc.connect_failed"]["scope"] == "server"
+
+
 def test_main_app_serves_public_health(monkeypatch):
     import main
     monkeypatch.setattr(app_state, "db_ready", False)
@@ -345,5 +410,6 @@ def test_api_key_scopes_for_new_routes():
     assert required_api_key_scopes("GET", "/api/v1/telemetry/metrics") == {"monitor:read"}
     assert required_api_key_scopes("GET", "/api/v1/alarms") == {"monitor:read"}
     assert required_api_key_scopes("GET", "/api/v1/alarms/history") == {"monitor:read"}
+    assert required_api_key_scopes("GET", "/api/v1/alarms/catalog") == {"monitor:read"}
     assert required_api_key_scopes("POST", "/api/v1/alarms/abc/acknowledge") == {"alarms:acknowledge"}
     assert required_api_key_scopes("DELETE", "/api/v1/alarms/abc") is None

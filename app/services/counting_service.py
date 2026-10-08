@@ -130,9 +130,11 @@ def send_to_channels(payload: Dict[str, Any], protocol: str = "all", endpoint_id
         if endpoint_id not in (None, "", "all") and ep.get("id") != endpoint_id:
             continue
         if proto == "mqtt" and ep.get("topic"):
-            from app.services.mqtt_service import MQTTService
+            # Only a channel that still holds a topic from before send cards named
+            # theirs: there is no card here to name one.
+            from app.services.mqtt_service import MQTTChannels
             topic = ep["topic"]
-            _telemetry_dispatcher.submit(lambda t=topic: MQTTService.publish(t, payload, qos=0), key=("mqtt", topic))
+            _telemetry_dispatcher.submit(lambda e=ep, t=topic: MQTTChannels.publish(e, t, payload), key=("mqtt", ep.get("id"), topic))
         elif proto == "tcp" and ep.get("host") and ep.get("port"):
             host, port = str(ep["host"]), int(ep["port"])
             _telemetry_dispatcher.submit(lambda h=host, p=port: CountingService._dispatch_tcp(h, p, payload), key=("tcp", host, port))
@@ -179,11 +181,18 @@ class CountingService:
         self.line_id = line_id
         self.line_name = line_name
         self.camera_id = camera_id
+        # False: this counter's products are not reported to the line's send
+        # cards (a counter that belongs to no running line, as in tests).
         self.dispatch_telemetry = dispatch_telemetry
-        # When set, finished crossing events go here instead of straight out:
-        # a line with Sync on pairs them with a QR read first, then calls
-        # dispatch_event() itself.
+        # When set, a product that crossed the count line is handed here, not yet
+        # counted, instead of being counted at once: a line with Sync on pairs
+        # it with its code first, decides its one result, then calls
+        # finish_crossing() itself.
         self.event_sink: Optional[Any] = None
+        # When set, called as (camera_id, line_number, track_id, class_name)
+        # each time a product crosses wire line 1 or 2, before it is counted:
+        # a QR reader set to capture on a crossing takes its picture then.
+        self.line_crossing_sink: Optional[Any] = None
         self.config = CountingConfig()
         self.tracker = WirelineTracker(
             track_high_thresh=self.config.track_high_thresh,
@@ -309,116 +318,191 @@ class CountingService:
             camera_flip_v=camera_flip_v,
         )
 
+        crossing_sink = self.line_crossing_sink
+        if crossing_sink is not None:
+            for track_id, class_name, line_number in list(getattr(tracker, "line_crossings", ()) or ()):
+                try:
+                    crossing_sink(camera_id, line_number, track_id, class_name)
+                except Exception as exc:
+                    logger.warning("Line %s: wire line %d crossing hand-off failed: %s", self.line_id, line_number, exc)
+
         now = time.time()
         for event in events:
-            track_id = event[0]
-            class_name = event[1]
-            is_defect = event[2]
-            conf = event[3] if len(event) > 3 else 1.0
-            bbox = event[4] if len(event) > 4 else None
-            poly = event[5] if len(event) > 5 else None
-            smooth_center = event[6] if len(event) > 6 else None
-            velocity = event[7] if len(event) > 7 else None
-
-            cname_clean = str(class_name).strip().lower()
-            with self._count_lock:
-                self.counts_by_class[cname_clean] = self.counts_by_class.get(cname_clean, 0) + 1
-                self.total_inspected += 1
-                current_total = self.total_inspected
-                self._inspection_timestamps.append(now)
-                if is_defect:
-                    self.rejected_count += 1
-                else:
-                    self.good_count += 1
-
-            sc_x = round(float(smooth_center[0]), 2) if smooth_center else 0.0
-            sc_y = round(float(smooth_center[1]), 2) if smooth_center else 0.0
-            vel_x = round(float(velocity[0]), 2) if velocity else 0.0
-            vel_y = round(float(velocity[1]), 2) if velocity else 0.0
-
-            logger.info(
-                "COUNT EVENT -> Track #%d | Class: '%s' | Defect: %s | Total: %d | SmoothCenter: (%.1f, %.1f) | Vel: (%.1f, %.1f)",
-                track_id, class_name, is_defect, current_total, sc_x, sc_y, vel_x, vel_y
-            )
-
-            bbox_dict = None
-            if bbox is not None:
-                if hasattr(bbox, "model_dump"):
-                    bbox_dict = bbox.model_dump()
-                elif hasattr(bbox, "dict"):
-                    bbox_dict = bbox.dict()
-                elif isinstance(bbox, dict):
-                    bbox_dict = bbox
-                elif isinstance(bbox, (tuple, list)) and len(bbox) >= 4:
-                    bbox_dict = {
-                        "x1": int(round(bbox[0])),
-                        "y1": int(round(bbox[1])),
-                        "x2": int(round(bbox[2])),
-                        "y2": int(round(bbox[3])),
-                    }
-
-            # Comprehensive, Standardized Industrial Reading JSON Payload
-            payload = {
-                "event": "WIRELINE_OBJECT_CROSSED",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "track_id": track_id,
-                "class_name": class_name,
-                "result": "REJECTED" if is_defect else "PASSED",
-                "is_defect": is_defect,
-                "confidence": round(float(conf), 4),
-                "bbox": bbox_dict,
-                "polygon": poly,
-                "smooth_center": {"x": sc_x, "y": sc_y},
-                "velocity": {"vx": vel_x, "vy": vel_y},
-                "smooth_center_x": sc_x,
-                "smooth_center_y": sc_y,
-                "velocity_x": vel_x,
-                "velocity_y": vel_y,
-                "counts": dict(self.counts_by_class),
-                "metrics": {
-                    "total_inspected": self.total_inspected,
-                    "good_count": self.good_count,
-                    "rejected_count": self.rejected_count,
-                    "products_per_minute": self.products_per_minute,
-                    "defect_ppm": self.defect_ppm,
-                    "yield_percentage": self.yield_percentage,
-                },
-                "total_inspected": self.total_inspected,
-                "good_count": self.good_count,
-                "rejected_count": self.rejected_count,
-                "products_per_minute": self.products_per_minute,
-                "defect_ppm": self.defect_ppm,
-                "yield_percentage": self.yield_percentage,
-                "line_id": self.line_id,
-                "line_name": self.line_name,
-                "camera_id": camera_id or self.camera_id,
-            }
-            plc_event = {
-                "event_id": f"{track_id}_{self.total_inspected}",
-                "event_type": "crossing",
-                "line_id": self.line_id,
-                "camera_id": camera_id or self.camera_id,
-                # A second vision camera only fires cards that name it.
-                "counting_camera": self.camera_id is None,
-                "result": "reject" if is_defect else "good",
-                "good_count": self.good_count,
-                "reject_count": self.rejected_count,
-                "detected_classes": [class_name] if class_name else [],
-                "timestamp": now,
-            }
-
+            crossing = self._crossing(event, camera_id, now)
             sink = self.event_sink
             if sink is not None:
                 try:
-                    sink(payload, plc_event, is_defect)
+                    sink(crossing)
                     continue
                 except Exception as sink_err:
-                    logger.warning("Line %s sync hand-off failed, sending event unpaired: %s", self.line_id, sink_err)
-            self.dispatch_event(payload, plc_event, is_defect)
+                    logger.warning("Line %s sync hand-off failed, counting the product on its own: %s", self.line_id, sink_err)
+            self.finish_crossing(crossing)
         return events
 
+    def _crossing(self, event: Tuple[Any, ...], camera_id: Optional[str], now: float) -> Dict[str, Any]:
+        """What is known of a product when it crosses the count line. Nothing is counted yet."""
+        bbox = event[4] if len(event) > 4 else None
+        smooth_center = event[6] if len(event) > 6 else None
+        velocity = event[7] if len(event) > 7 else None
+
+        bbox_dict = None
+        if bbox is not None:
+            if hasattr(bbox, "model_dump"):
+                bbox_dict = bbox.model_dump()
+            elif hasattr(bbox, "dict"):
+                bbox_dict = bbox.dict()
+            elif isinstance(bbox, dict):
+                bbox_dict = bbox
+            elif isinstance(bbox, (tuple, list)) and len(bbox) >= 4:
+                bbox_dict = {
+                    "x1": int(round(bbox[0])),
+                    "y1": int(round(bbox[1])),
+                    "x2": int(round(bbox[2])),
+                    "y2": int(round(bbox[3])),
+                }
+        return {
+            "track_id": event[0],
+            "class_name": event[1],
+            # What the vision camera says. The product's result may still become
+            # a reject because of its code (finish_crossing).
+            "is_defect": bool(event[2]),
+            "confidence": event[3] if len(event) > 3 else 1.0,
+            "bbox": bbox_dict,
+            "polygon": event[5] if len(event) > 5 else None,
+            "sc_x": round(float(smooth_center[0]), 2) if smooth_center else 0.0,
+            "sc_y": round(float(smooth_center[1]), 2) if smooth_center else 0.0,
+            "vel_x": round(float(velocity[0]), 2) if velocity else 0.0,
+            "vel_y": round(float(velocity[1]), 2) if velocity else 0.0,
+            "camera_id": camera_id or self.camera_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "time": now,
+            "crossed_at": time.monotonic(),
+        }
+
+    def finish_crossing(
+        self,
+        crossing: Dict[str, Any],
+        reject: Optional[bool] = None,
+        reason: Optional[str] = None,
+        fields: Optional[Dict[str, Any]] = None,
+        plc_fields: Optional[Dict[str, Any]] = None,
+        delay_from_crossing: bool = False,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Count one product with its final result and send its one event.
+
+        ``reject`` and ``reason`` are the product's result when a code check
+        took part in it; left out, the vision camera's result stands.
+        ``fields`` / ``plc_fields`` add the paired code to the message and to
+        the PLC event. ``delay_from_crossing`` makes a PLC card's travel delay
+        run from the moment of the crossing, not from this call.
+        Returns (payload, plc_event).
+        """
+        from app.services.line_config import REASON_VISION
+
+        vision_reject = bool(crossing["is_defect"])
+        is_reject = vision_reject if reject is None else bool(reject)
+        if is_reject and reason is None and vision_reject:
+            reason = REASON_VISION
+        if not is_reject:
+            reason = None
+        track_id = crossing["track_id"]
+        class_name = crossing["class_name"]
+        cname_clean = str(class_name).strip().lower()
+        with self._count_lock:
+            self.counts_by_class[cname_clean] = self.counts_by_class.get(cname_clean, 0) + 1
+            self.total_inspected += 1
+            current_total = self.total_inspected
+            self._inspection_timestamps.append(crossing["time"])
+            if is_reject:
+                self.rejected_count += 1
+            else:
+                self.good_count += 1
+
+        logger.info(
+            "COUNT EVENT -> Track #%s | Class: '%s' | Reject: %s%s | Total: %d | SmoothCenter: (%.1f, %.1f) | Vel: (%.1f, %.1f)",
+            track_id, class_name, is_reject, f" ({reason})" if reason else "", current_total,
+            crossing["sc_x"], crossing["sc_y"], crossing["vel_x"], crossing["vel_y"],
+        )
+
+        # Comprehensive, Standardized Industrial Reading JSON Payload
+        payload = {
+            "event": "WIRELINE_OBJECT_CROSSED",
+            "timestamp": crossing["timestamp"],
+            "track_id": track_id,
+            "class_name": class_name,
+            # The product's one result: the vision camera and, where a camera
+            # checks codes, the code together.
+            "result": "REJECTED" if is_reject else "PASSED",
+            "is_defect": is_reject,
+            "reject_reason": reason,
+            "vision_result": "REJECTED" if vision_reject else "PASSED",
+            "confidence": round(float(crossing["confidence"]), 4),
+            "bbox": crossing["bbox"],
+            "polygon": crossing["polygon"],
+            "smooth_center": {"x": crossing["sc_x"], "y": crossing["sc_y"]},
+            "velocity": {"vx": crossing["vel_x"], "vy": crossing["vel_y"]},
+            "smooth_center_x": crossing["sc_x"],
+            "smooth_center_y": crossing["sc_y"],
+            "velocity_x": crossing["vel_x"],
+            "velocity_y": crossing["vel_y"],
+            "counts": dict(self.counts_by_class),
+            **self._metrics(),
+            "line_id": self.line_id,
+            "line_name": self.line_name,
+            "camera_id": crossing["camera_id"],
+        }
+        plc_event = {
+            "event_id": f"{track_id}_{current_total}",
+            "event_type": "crossing",
+            "line_id": self.line_id,
+            "camera_id": crossing["camera_id"],
+            # A second vision camera only fires cards that name it.
+            "counting_camera": self.camera_id is None,
+            "result": "reject" if is_reject else "good",
+            "reject_reason": reason,
+            "vision_result": "reject" if vision_reject else "good",
+            "good_count": self.good_count,
+            "reject_count": self.rejected_count,
+            "detected_classes": [class_name] if class_name else [],
+            "timestamp": crossing["time"],
+            "crossed_at": crossing["crossed_at"],
+            "delay_from_crossing": bool(delay_from_crossing),
+        }
+        if fields:
+            payload.update(fields)
+        if plc_fields:
+            plc_event.update(plc_fields)
+        self.dispatch_event(payload, plc_event, is_reject)
+        return payload, plc_event
+
+    def _metrics(self) -> Dict[str, Any]:
+        """The line totals, as every message carries them (nested and flat)."""
+        metrics = {
+            "total_inspected": self.total_inspected,
+            "good_count": self.good_count,
+            "rejected_count": self.rejected_count,
+            "products_per_minute": self.products_per_minute,
+            "defect_ppm": self.defect_ppm,
+            "yield_percentage": self.yield_percentage,
+        }
+        return {"metrics": dict(metrics), **metrics}
+
+    def count_product(self, name: str, reject: bool) -> Dict[str, Any]:
+        """Count one product that no vision camera saw cross a line: on a line with
+        only a code reader, each code read is one product. Returns the totals after it."""
+        key = str(name or "").strip().lower() or "product"
+        with self._count_lock:
+            self.counts_by_class[key] = self.counts_by_class.get(key, 0) + 1
+            self.total_inspected += 1
+            self._inspection_timestamps.append(time.time())
+            if reject:
+                self.rejected_count += 1
+            else:
+                self.good_count += 1
+        return self._metrics()
+
     def dispatch_event(self, payload: Dict[str, Any], plc_event: Dict[str, Any], is_defect: bool) -> None:
-        """Send one crossing event to the event bus, the PLC cards and the line's telemetry targets."""
+        """Send one product's event to the event bus, the line's PLC cards and its send cards."""
         loop = self.get_event_loop()
         if not (loop and loop.is_running()):
             return
@@ -437,139 +521,32 @@ class CountingService:
         except Exception as plc_err:
             logger.debug("PLC dispatcher evaluate error: %s", plc_err)
 
-        if not self.dispatch_telemetry:
-            return
-        for protocol, enabled in (
-            ("mqtt", self.config.send_mqtt),
-            ("tcp", self.config.send_tcp),
-            ("webhook", self.config.send_webhook),
-        ):
-            if not enabled:
-                continue
-            filtered = self._filter_payload_for_protocol(payload, protocol, is_defect)
-            if filtered is not None:
-                self._send(protocol, filtered)
+        # 2. The line's send cards: messages to other systems
+        self.send(plc_event, payload)
 
-    def dispatch_qr(self, payload: Dict[str, Any], known: bool) -> None:
-        """Send a QR read to the line's telemetry targets that are set to send QR reads."""
+    def send(self, event: Dict[str, Any], payload: Dict[str, Any]) -> int:
+        """Hand an event of this counter's line to the line's send cards. Returns the messages queued."""
         if not self.dispatch_telemetry:
-            return
-        for protocol in ("mqtt", "tcp", "webhook"):
-            mode = str(getattr(self.config, f"{protocol}_qr_dispatch", "off") or "off").lower()
-            if mode == "all" or (mode == "known" and known) or (mode == "unknown" and not known):
-                self._send(protocol, payload)
-
-    def _comm_endpoints(self) -> List[Dict[str, Any]]:
+            return 0
+        # Sparkplug B publishes the line's latest product and code as tags.
         try:
-            from app.services.settings_persistence_service import SettingsPersistenceService
-            return list(SettingsPersistenceService.get_state().get("communication_endpoints", []))
-        except Exception as ep_err:
-            logger.debug("Failed reading communication_endpoints: %s", ep_err)
-            return []
+            from app.services.sparkplug_service import SparkplugService
+            SparkplugService.note_event(payload)
+        except Exception as spb_err:
+            logger.debug("Sparkplug event note error: %s", spb_err)
+        try:
+            from app.services.send_dispatcher_service import SendDispatcherService
+            return SendDispatcherService.evaluate(event, payload)
+        except Exception as send_err:
+            logger.debug("Send card evaluate error: %s", send_err)
+            return 0
 
-    def _targets(self, protocol: str) -> List[Any]:
-        """Destinations for one protocol: the selected channel, every enabled channel, or the legacy setting."""
-        comm_endpoints = self._comm_endpoints()
-        selected = getattr(self.config, f"{protocol}_endpoint_id", None)
-
-        def usable(ep: Dict[str, Any]) -> bool:
-            return ep.get("enabled", True) is True and str(ep.get("protocol", "")).lower() == protocol
-
-        if selected and selected != "all":
-            chosen = [ep for ep in comm_endpoints if ep.get("id") == selected and usable(ep)][:1]
-        else:
-            chosen = [ep for ep in comm_endpoints if usable(ep)]
-
-        if protocol == "mqtt":
-            topics: List[str] = []
-            for ep in chosen:
-                if ep.get("topic") and ep["topic"] not in topics:
-                    topics.append(ep["topic"])
-            if not topics and not selected and self.config.mqtt_topic:
-                topics.append(self.config.mqtt_topic)
-            return topics
-        if protocol == "tcp":
-            hosts: List[Tuple[str, int]] = []
-            for ep in chosen:
-                if ep.get("host") and ep.get("port"):
-                    target = (str(ep["host"]), int(ep["port"]))
-                    if target not in hosts:
-                        hosts.append(target)
-            if not hosts and not selected and self.config.tcp_host and self.config.tcp_port:
-                hosts.append((str(self.config.tcp_host), int(self.config.tcp_port)))
-            return hosts
-        hooks: List[Tuple[str, Optional[Dict[str, str]]]] = []
-        for ep in chosen:
-            if not ep.get("url"):
-                continue
-            hdrs_dict = None
-            if selected and selected != "all":
-                # Only an explicitly selected channel sends its saved headers.
-                raw_hdrs = ep.get("headers")
-                if isinstance(raw_hdrs, dict):
-                    hdrs_dict = raw_hdrs
-                elif isinstance(raw_hdrs, str) and raw_hdrs.strip():
-                    hdrs_dict = {}
-                    for line in raw_hdrs.splitlines():
-                        if ":" in line:
-                            k, _, v = line.partition(":")
-                            hdrs_dict[k.strip()] = v.strip()
-            hooks.append((str(ep["url"]), hdrs_dict))
-        if not hooks and not selected and self.config.webhook_url:
-            hooks.append((str(self.config.webhook_url), self.config.webhook_headers))
-        return hooks
-
-    def _send(self, protocol: str, payload: Dict[str, Any]) -> None:
-        for target in self._targets(protocol):
-            try:
-                if protocol == "mqtt":
-                    from app.services.mqtt_service import MQTTService
-                    _telemetry_dispatcher.submit(
-                        lambda t=target, p=payload: MQTTService.publish(t, p, qos=0),
-                        key=("mqtt", target),
-                    )
-                elif protocol == "tcp":
-                    host, port = target
-                    _telemetry_dispatcher.submit(
-                        lambda h=host, pt=port, pay=payload: self._dispatch_tcp(h, pt, pay),
-                        key=("tcp", host, port),
-                    )
-                else:
-                    url, hdrs = target
-                    _telemetry_dispatcher.submit(
-                        lambda u=url, pay=payload, h=hdrs: self._dispatch_webhook(u, pay, h),
-                        key=("webhook", url),
-                    )
-            except Exception as exc:
-                logger.debug("%s queue dispatch error (%s): %s", protocol, target, exc)
-
-    def _filter_payload_for_protocol(self, payload: Dict[str, Any], protocol: str, is_defect: bool) -> Optional[Dict[str, Any]]:
-        """Evaluates protocol-specific trigger condition and filters payload fields."""
-        proto = (protocol or "").lower()
-        if proto == "mqtt":
-            trig = getattr(self.config, "mqtt_dispatch_trigger", getattr(self.config, "dispatch_trigger", "both"))
-            fields = getattr(self.config, "mqtt_dispatched_fields", getattr(self.config, "dispatched_fields", None))
-        elif proto == "tcp":
-            trig = getattr(self.config, "tcp_dispatch_trigger", getattr(self.config, "dispatch_trigger", "both"))
-            fields = getattr(self.config, "tcp_dispatched_fields", getattr(self.config, "dispatched_fields", None))
-        elif proto == "webhook":
-            trig = getattr(self.config, "webhook_dispatch_trigger", getattr(self.config, "dispatch_trigger", "both"))
-            fields = getattr(self.config, "webhook_dispatched_fields", getattr(self.config, "dispatched_fields", None))
-        else:
-            trig = getattr(self.config, "dispatch_trigger", "both")
-            fields = getattr(self.config, "dispatched_fields", None)
-
-        trig = str(trig or "both").lower()
-        if trig == "passed" and is_defect:
-            return None
-        if trig == "rejected" and not is_defect:
-            return None
-
-        if fields and isinstance(fields, list) and len(fields) > 0:
-            filtered = {k: payload[k] for k in fields if k in payload}
-            if filtered:
-                return filtered
-        return payload
+    @classmethod
+    def http_client(cls) -> httpx.AsyncClient:
+        """The shared client for webhook messages (made on first use, closed at shutdown)."""
+        if cls._http_client is None or cls._http_client.is_closed:
+            cls._http_client = httpx.AsyncClient(timeout=3.0, follow_redirects=False)
+        return cls._http_client
 
     def get_current_reading_payload(self) -> Dict[str, Any]:
         """Returns current live snapshot of counting & inspection telemetry as JSON."""
@@ -577,20 +554,7 @@ class CountingService:
             "event": "INSPECTION_READING",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "counts": dict(self.counts_by_class),
-            "metrics": {
-                "total_inspected": self.total_inspected,
-                "good_count": self.good_count,
-                "rejected_count": self.rejected_count,
-                "products_per_minute": self.products_per_minute,
-                "defect_ppm": self.defect_ppm,
-                "yield_percentage": self.yield_percentage,
-            },
-            "total_inspected": self.total_inspected,
-            "good_count": self.good_count,
-            "rejected_count": self.rejected_count,
-            "products_per_minute": self.products_per_minute,
-            "defect_ppm": self.defect_ppm,
-            "yield_percentage": self.yield_percentage,
+            **self._metrics(),
             "active_tracks_count": sum(len(tr.objects) for tr in self._trackers.values()),
         }
 
@@ -608,9 +572,7 @@ class CountingService:
     @classmethod
     async def _dispatch_webhook(cls, url: str, payload: Dict[str, Any], headers: Optional[Dict[str, str]] = None) -> None:
         try:
-            if cls._http_client is None or cls._http_client.is_closed:
-                cls._http_client = httpx.AsyncClient(timeout=3.0, follow_redirects=False)
-            await cls._http_client.post(url, json=payload, headers=headers or {})
+            await cls.http_client().post(url, json=payload, headers=headers or {})
         except Exception as exc:
             logger.debug("Webhook dispatch error (%s): %s", url, exc)
 
@@ -669,6 +631,12 @@ class CountingService:
         logger.info("Updated counting config: Expected classes = %s | Lines = (%.2f, %.2f)",
                     self.config.expected_classes, self.config.line1_position, self.config.line2_position)
         return self.config
+
+    @property
+    def last_count_at(self) -> float:
+        """Wall-clock time of the last counted product (0 if none in the last minute or since a reset)."""
+        stamps = self._inspection_timestamps
+        return stamps[-1] if stamps else 0.0
 
     def reset_counts(self, reset_all: bool = True, classes_to_reset: Optional[List[str]] = None) -> CountingStatsResponse:
         if reset_all:

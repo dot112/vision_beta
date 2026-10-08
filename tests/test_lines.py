@@ -5,6 +5,7 @@ import asyncio
 import copy
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -12,7 +13,7 @@ import app.services.line_service as line_module
 import app.services.settings_persistence_service as persistence_module
 from app.hardware.plc import factory as plc_factory
 from app.services.counting_service import counting_service
-from app.services.line_config import PRIMARY_LINE_ID, normalize_line, plc_address_clashes, upgrade_state_to_v2
+from app.services.line_config import PRIMARY_LINE_ID, SCHEMA_VERSION, normalize_line, plc_address_clashes, upgrade_state
 from app.services.line_service import LineManager, SyncPairer
 from app.services.plc_dispatcher_service import PLCDispatcherService, _eval_condition
 from app.services.plc_failsafe_service import PLCFailsafeService
@@ -27,7 +28,7 @@ def lines(monkeypatch, tmp_path):
     monkeypatch.setattr(persistence_module, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(persistence_module, "STATE_FILE", str(tmp_path / "system_state.json"))
     state = copy.deepcopy(DEFAULT_STATE)
-    upgrade_state_to_v2(state)
+    upgrade_state(state)
     monkeypatch.setattr(SettingsPersistenceService, "_state", state)
     monkeypatch.setattr(SettingsPersistenceService, "_recent_changes", [])
     monkeypatch.setattr(PLCDispatcherService, "_cards", [])
@@ -65,8 +66,17 @@ def _feed(counter, camera_id, class_name="bottle", is_defect=False, frames=1):
         counter.process_frame([], 640, 480, camera_rotation=90, camera_id=camera_id)
 
 
+def _products(monkeypatch, codes, list_id="list-1"):
+    """The product list the readers of a test are set to: {code: product name}."""
+    from app.services.product_service import product_catalog
+    monkeypatch.setattr(product_catalog, "_lists", {list_id: {c: {"code": c, "name": n} for c, n in codes.items()}})
+    monkeypatch.setattr(product_catalog, "_names", {list_id: "List 1"})
+
+
 def _add_line(name, cameras=(), **extra):
-    line = SettingsPersistenceService.save_line({"name": name, "cameras": list(cameras), **extra})
+    # A vision camera is not saved without a model; tests that care which one name it.
+    cameras = [cam if cam.get("role", "vision") != "vision" else {"model_id": "model-test", **cam} for cam in cameras]
+    line = SettingsPersistenceService.save_line({"name": name, "cameras": cameras, **extra})
     line_module.line_manager.apply_state()
     return line
 
@@ -76,6 +86,7 @@ def _add_line(name, cameras=(), **extra):
 V1_STATE = {
     "version": 41,
     "active_camera_id": "cam-usb-0",
+    "active_model_id": "model-A",
     "camera_auto_connect": True,
     "action_trigger": {"line1_position": 0.2, "line2_position": 0.8, "expected_classes": ["can"], "send_mqtt": True},
     "plc_actions": [{"id": "reject-gate", "name": "Reject gate", "plc_endpoint_id": "ep1", "target_address": "40001"}],
@@ -103,21 +114,33 @@ def test_v1_settings_upgrade_into_line1_and_stay_readable_by_v1(monkeypatch, tmp
         counting_service.update_config(saved_config)
 
     # Both backups exist and hold the version 1 data.
-    assert sorted(written) == sorted([str(tmp_path / "system_state.v1-backup.json"), str(tmp_path / "factory_data.v1-backup.db")])
+    # Compared as paths: the database path comes from a URL, with forward slashes on Windows too.
+    assert sorted(Path(p) for p in written) == sorted([tmp_path / "system_state.v1-backup.json", tmp_path / "factory_data.v1-backup.db"])
     assert json.loads((tmp_path / "system_state.v1-backup.json").read_text())["plc_actions"] == V1_STATE["plc_actions"]
     with sqlite3.connect(tmp_path / "factory_data.v1-backup.db") as conn:
         assert conn.execute("SELECT x FROM t").fetchone() == (7,)
 
     on_disk = json.loads(state_file.read_text())
-    assert on_disk["schema_version"] == 2
+    assert on_disk["schema_version"] == SCHEMA_VERSION
     line1 = on_disk["lines"][0]
     assert line1["id"] == PRIMARY_LINE_ID and line1["name"] == "Line 1"
-    assert line1["cameras"] == [{"camera_id": "cam-usb-0", "role": "vision", "counting": True, "qr_hold_ms": 1500}]
-    assert line1["auto_connect"] is True and line1["model_id"] is None
+    # Version 1's one camera ran the active model and counted the classes typed for
+    # the server: the camera holds both now, and nothing of them is left elsewhere.
+    assert line1["cameras"] == [{
+        "camera_id": "cam-usb-0", "role": "vision", "counting": True, "qr_hold_ms": 1500,
+        "model_id": "model-A", "expected_classes": ["can"], "defect_classes": ["defect", "scratch", "broken"],
+    }]
+    assert "model_id" not in line1 and "active_model_id" not in on_disk
+    # Version 1's "connect the camera on startup" is now the one switch for every line.
+    assert "auto_connect" not in line1 and on_disk["camera_auto_connect"] is True
     # Version 1 reads these keys: they are unchanged, and Line 1 is what they describe.
-    for key in ("active_camera_id", "action_trigger", "plc_actions"):
+    for key in ("active_camera_id", "plc_actions"):
         assert on_disk[key] == V1_STATE[key]
-    assert "action_trigger" not in line1 and "plc_actions" not in line1
+    # The count lines stay where they were; "send results" became send cards
+    # (none here: version 1 had its MQTT switch on, but no broker to send to).
+    assert on_disk["action_trigger"] == {"line1_position": 0.2, "line2_position": 0.8}
+    assert on_disk["send_actions"] == []
+    assert "action_trigger" not in line1 and "plc_actions" not in line1 and "send_actions" not in line1
     assert SettingsPersistenceService.get_line(PRIMARY_LINE_ID)["plc_actions"] == V1_STATE["plc_actions"]
 
     # A second start takes no new backup and changes nothing.
@@ -140,12 +163,17 @@ def test_line_validation():
     two = normalize_line({"name": "A", "cameras": [{"camera_id": "a"}, {"camera_id": "b"}]})
     # The first vision camera becomes the counting camera when none is marked.
     assert [c["counting"] for c in two["cameras"]] == [True, False]
+    # The yield target is a percentage; 0 (the default) means no target.
+    assert two["yield_target"] == 0.0
+    assert normalize_line({"name": "A", "yield_target": "97.5"})["yield_target"] == 97.5
+    with pytest.raises(ValueError, match="Yield target"):
+        normalize_line({"name": "A", "yield_target": 101})
 
 
 def test_a_camera_belongs_to_one_line(lines):
     _add_line("Packing 1", [{"camera_id": "cam-A"}])
     with pytest.raises(ValueError, match="already belongs"):
-        SettingsPersistenceService.save_line({"name": "Packing 2", "cameras": [{"camera_id": "cam-A"}]})
+        SettingsPersistenceService.save_line({"name": "Packing 2", "cameras": [{"camera_id": "cam-A", "model_id": "model-test"}]})
     with pytest.raises(ValueError, match="Line 1 cannot be deleted"):
         SettingsPersistenceService.delete_line(PRIMARY_LINE_ID)
 
@@ -365,10 +393,9 @@ def test_sync_pairer():
 
 
 def test_sync_on_a_line_sends_one_event_per_product(lines, monkeypatch):
-    from app.services.product_service import product_catalog
-    monkeypatch.setattr(product_catalog, "_by_code", {"SKU-1": {"code": "SKU-1", "name": "Widget"}})
+    _products(monkeypatch, {"SKU-1": "Widget"})
 
-    line = _add_line("Packing 3", [{"camera_id": "vis"}, {"camera_id": "qr", "role": "qr"}],
+    line = _add_line("Packing 3", [{"camera_id": "vis"}, {"camera_id": "qr", "role": "qr", "product_list_id": "list-1"}],
                      sync={"enabled": True, "window_ms": 80}, enabled=True)
     runtime = lines.get(line["id"])
     counter = runtime.counter
@@ -405,12 +432,11 @@ def test_sync_on_a_line_sends_one_event_per_product(lines, monkeypatch):
 
 
 def test_qr_reads_without_sync_go_out_on_their_own(lines, monkeypatch):
-    from app.services.product_service import product_catalog
-    monkeypatch.setattr(product_catalog, "_by_code", {})
-    line = _add_line("QR only", [{"camera_id": "qr", "role": "qr"}])
+    _products(monkeypatch, {})
+    line = _add_line("QR only", [{"camera_id": "qr", "role": "qr", "product_list_id": "list-1"}])
     runtime = lines.get(line["id"])
     sent = []
-    monkeypatch.setattr(runtime.counter, "dispatch_qr", lambda payload, known: sent.append(payload))
+    monkeypatch.setattr(runtime.counter, "send", lambda event, payload: sent.append(payload))
 
     async def run():
         from app.services.counting_service import CountingService
@@ -440,7 +466,7 @@ def test_qr_reader_counts_a_code_once_until_it_leaves_view(lines, monkeypatch):
                                               decode_time_ms=1.0, image_width=10, image_height=10),
                   "off": BarcodeDecodeResponse(total_found=0, codes=[], decode_time_ms=1.0, image_width=10, image_height=10)}
         current = {"frame": "on"}
-        monkeypatch.setattr(worker._engine, "decode", lambda mat: frames[current["frame"]])
+        monkeypatch.setattr(worker._engine, "decode", lambda mat, **_: frames[current["frame"]])
         worker.process(None, now=0.0)
         worker.process(None, now=0.5)   # same code, still in view
         worker.process(None, now=1.2)   # still in view: not a new read
@@ -479,13 +505,12 @@ def test_inference_worker_feeds_the_cameras_line_and_uses_its_model(lines, monke
     from app.services.vision_service import _CameraInferenceWorker
     from tests.conftest import FakeInferenceEngine
 
-    line = _add_line("Packing 2", [{"camera_id": "cam-2"}], model_id="model-B")
+    line = _add_line("Packing 2", [{"camera_id": "cam-2", "model_id": "model-B"}])
     runtime = lines.get(line["id"])
     line_engine = FakeInferenceEngine(class_name="carton")
-    active_engine = FakeInferenceEngine()
+    other_engine = FakeInferenceEngine()
     lines._engines["model-B"] = {"engine": line_engine, "name": "Model B"}
-    from app.state.application_state import app_state
-    monkeypatch.setattr(app_state, "active_model", {"id": None, "name": "active", "engine": active_engine})
+    lines._engines["model-other"] = {"engine": other_engine, "name": "Another camera's model"}
     runtime.counter._trackers["cam-2"] = _CrossingTracker("carton")
 
     worker = _CameraInferenceWorker("cam-2")
@@ -496,9 +521,138 @@ def test_inference_worker_feeds_the_cameras_line_and_uses_its_model(lines, monke
             time.sleep(0.01)
     finally:
         worker.stop()
-    assert line_engine.calls == 1 and active_engine.calls == 0
+    assert line_engine.calls == 1 and other_engine.calls == 0
     assert runtime.counter.counts_by_class == {"carton": 1}
     assert counting_service.total_inspected == 0
-    assert lines.model_name(runtime) == "Model B"
-    # A line without its own model follows the server's active model.
-    assert lines.engine_for_camera("unassigned-cam")[0] is active_engine
+    assert lines.summary(runtime)["model_name"] == "Model B"
+    # A camera no model was picked for runs none: there is no server-wide model to fall back to.
+    engine, name, model_id = lines.engine_for_camera("unassigned-cam")
+    assert engine.is_loaded is False and model_id is None
+
+
+# ── A vision camera that also reads codes ─────────────────────────────────────
+
+def test_a_vision_camera_can_read_codes_too():
+    line = normalize_line({"name": "A", "cameras": [
+        {"camera_id": "a", "read_codes": True, "qr_trigger": "line2", "qr_trigger_delay_ms": 50},
+        {"camera_id": "b", "qr_trigger": "line1"},
+    ], "sync": {"enabled": True}})
+    a, b = line["cameras"]
+    assert a["read_codes"] is True and a["qr_trigger"] == "line2" and a["qr_trigger_delay_ms"] == 50
+    # Without Read codes a vision camera keeps no code settings.
+    assert "read_codes" not in b and "qr_trigger" not in b
+    assert line["sync"]["enabled"] is True  # one camera that counts and reads codes is enough
+    with pytest.raises(ValueError, match="Sync needs"):
+        normalize_line({"name": "A", "cameras": [{"camera_id": "a"}], "sync": {"enabled": True}})
+    with pytest.raises(ValueError, match="capture"):
+        normalize_line({"name": "A", "cameras": [{"camera_id": "a", "read_codes": True, "qr_trigger": "line9"}]})
+
+
+def test_one_camera_counts_and_pairs_the_codes_it_reads(lines, monkeypatch):
+    _products(monkeypatch, {"SKU-1": "Widget"})
+
+    line = _add_line("Single camera", [{"camera_id": "vis", "read_codes": True, "product_list_id": "list-1"}],
+                     sync={"enabled": True, "window_ms": 80}, enabled=True)
+    runtime = lines.get(line["id"])
+    assert runtime.reads_codes("vis") and runtime.has_code_reader and runtime.sync_enabled
+    assert runtime.capture_triggers == {}  # reads continuously
+    row = lines.summary(runtime)
+    assert row["has_qr"] is True and row["cameras"][0]["read_codes"] is True
+    assert row["cameras"][0]["qr_trigger"] == "continuous"
+
+    crossings = []
+    monkeypatch.setattr(runtime.counter, "dispatch_event", lambda payload, plc_event, is_defect: crossings.append(payload))
+
+    async def run():
+        from app.services.counting_service import CountingService
+        CountingService.set_event_loop(asyncio.get_running_loop())
+        try:
+            runtime.on_qr_read("vis", "SKU-1", "QR_CODE")
+            await asyncio.sleep(0.01)
+            _feed(runtime.counter, "vis")
+            await asyncio.sleep(0.2)
+        finally:
+            CountingService.set_event_loop(None)
+
+    asyncio.run(run())
+    assert [(c["qr_code"], c["qr_status"]) for c in crossings] == [("SKU-1", "known")]
+
+
+def test_a_vision_camera_can_take_one_picture_per_product(lines):
+    line = _add_line("Per product", [{"camera_id": "vis", "read_codes": True, "qr_trigger": "line2"}], enabled=True)
+    runtime = lines.get(line["id"])
+    assert runtime.capture_triggers == {"vis": (2, 0.0)} and runtime.qr_triggered("vis")
+    assert runtime.counter.line_crossing_sink is not None
+
+
+def test_codes_from_a_vision_camera_reach_its_line_but_not_its_frame_rate(lines, monkeypatch):
+    import numpy as np
+
+    from app.schemas.qr import BarcodeDecodeResponse, BarcodeItem
+    from app.services.qr_service import _QRReaderWorker
+
+    line = _add_line("Codes", [{"camera_id": "vis", "read_codes": True}], enabled=True)
+    runtime = lines.get(line["id"])
+    reads, frames, captures = [], [], []
+    monkeypatch.setattr(runtime, "on_qr_read", lambda cam, code, fmt, t=None, **kw: reads.append((cam, code)))
+    monkeypatch.setattr(runtime, "record_frame", lambda cam, now=None: frames.append(cam))
+    monkeypatch.setattr(runtime, "on_qr_capture", lambda cam, record, jpeg: captures.append(record["status"]))
+    worker = _QRReaderWorker("vis")
+    try:
+        found = BarcodeDecodeResponse(total_found=1, codes=[BarcodeItem(code_type="QR_CODE", data="SKU-9")],
+                                      decode_time_ms=1.0, image_width=10, image_height=10)
+        monkeypatch.setattr(worker._engine, "decode", lambda mat, **_: found)
+        worker.process(np.zeros((10, 10, 3), np.uint8))
+        monkeypatch.setattr(worker, "capture", lambda request: ({"status": "read"}, None))
+        worker._run_capture({})
+    finally:
+        worker.stop()
+    assert reads == [("vis", "SKU-9")] and captures == ["read"]
+    assert frames == []  # the model's thread counts this camera's frames
+
+
+def test_the_runner_feeds_a_code_reading_vision_camera_to_both_workers(lines, monkeypatch):
+    import threading
+    import time as _time
+
+    import numpy as np
+
+    from app.services import qr_service, vision_service
+    from app.state.application_state import app_state
+
+    class Camera:
+        is_connected = True
+
+        def __init__(self):
+            self.fid = 0
+
+        def get_latest_frame_id(self):
+            self.fid += 1
+            return self.fid
+
+        def get_latest_raw_mat(self, copy=True):
+            return True, np.zeros((8, 8, 3), np.uint8), self.fid
+
+    class Worker:
+        is_busy = False
+
+        def __init__(self):
+            self.frames = 0
+
+        def submit_frame_if_idle(self, mat, fid, copy=True):
+            self.frames += 1
+            return True
+
+    _add_line("Both", [{"camera_id": "vis", "read_codes": True}], enabled=True)
+    yolo, codes = Worker(), Worker()
+    monkeypatch.setattr(app_state, "cameras", {"vis": Camera()})
+    monkeypatch.setattr(vision_service.CameraStreamPipeline, "get_worker", classmethod(lambda cls, cid: yolo))
+    monkeypatch.setattr(qr_service.QRReaderPipeline, "get_worker", classmethod(lambda cls, cid: codes))
+    stop = threading.Event()
+    monkeypatch.setattr(vision_service.ContinuousVisionRunner, "_stop_event", stop)
+    runner = threading.Thread(target=vision_service.ContinuousVisionRunner._loop, daemon=True)
+    runner.start()
+    _time.sleep(0.2)
+    stop.set()
+    runner.join(timeout=2)
+    assert yolo.frames > 3 and codes.frames > 3

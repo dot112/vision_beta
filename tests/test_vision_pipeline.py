@@ -117,6 +117,129 @@ def test_stream_overlay_draws_the_cameras_own_tracks(monkeypatch):
     assert counting_service.get_tracker(None) is counting_service.tracker
 
 
+# ── Several models on one GPU ─────────────────────────────────────────────────
+
+class _GpuSession:
+    """An ONNX Runtime session that records how many sessions run at the same moment."""
+
+    provider = "DmlExecutionProvider"
+    running = 0
+    most_at_once = 0
+    freed_while_running = 0
+    _count = threading.Lock()
+
+    def __init__(self, path, opts=None, providers=None):
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.release.set()
+
+    def get_providers(self):
+        return [self.provider, "CPUExecutionProvider"]
+
+    def get_inputs(self):
+        class _Input:
+            name = "images"
+        return [_Input()]
+
+    def get_modelmeta(self):
+        class _Meta:
+            custom_metadata_map = {}
+        return _Meta()
+
+    def run(self, output_names, feed):
+        cls = _GpuSession
+        with cls._count:
+            cls.running += 1
+            cls.most_at_once = max(cls.most_at_once, cls.running)
+        self.entered.set()
+        time.sleep(0.01)
+        self.release.wait(5)
+        with cls._count:
+            cls.running -= 1
+        return [np.zeros((1, 84, 10), dtype=np.float32)]
+
+    def __del__(self):
+        if _GpuSession.running:
+            _GpuSession.freed_while_running += 1
+
+
+def _gpu_engines(monkeypatch, tmp_path, provider, count=2):
+    from app.engines import inference_engine
+
+    pytest.importorskip("onnxruntime")
+    monkeypatch.setattr(_GpuSession, "provider", provider)
+    monkeypatch.setattr(_GpuSession, "running", 0)
+    monkeypatch.setattr(_GpuSession, "most_at_once", 0)
+    monkeypatch.setattr(_GpuSession, "freed_while_running", 0)
+    monkeypatch.setattr(inference_engine.ort, "InferenceSession", _GpuSession)
+    monkeypatch.setattr(inference_engine.ort, "get_available_providers", lambda: [provider, "CPUExecutionProvider"])
+    engines = []
+    for i in range(count):
+        path = tmp_path / f"model{i}.onnx"
+        path.write_bytes(b"stands in for a model")
+        engine = inference_engine.InferenceEngine(model_path=str(path), device="dml" if "Dml" in provider else "cpu")
+        assert engine.is_loaded and isinstance(engine.ort_session, _GpuSession)
+        engines.append(engine)
+    return engines
+
+
+def _predict_on_threads(engines, frames=20):
+    img = np.zeros((48, 64, 3), dtype=np.uint8)
+    failures = []
+
+    def work(engine):
+        try:
+            for _ in range(frames):
+                engine.predict_mat(img)
+        except Exception as exc:
+            failures.append(exc)
+
+    threads = [threading.Thread(target=work, args=(engine,)) for engine in engines]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(20)
+    assert not failures, failures
+
+
+def test_directml_models_never_run_at_the_same_time(monkeypatch, tmp_path):
+    # Two DirectML sessions running at once on one GPU end the server process.
+    engines = _gpu_engines(monkeypatch, tmp_path, "DmlExecutionProvider")
+    _predict_on_threads(engines)
+    assert _GpuSession.most_at_once == 1
+
+
+def test_cpu_models_still_run_side_by_side(monkeypatch, tmp_path):
+    engines = _gpu_engines(monkeypatch, tmp_path, "CPUExecutionProvider")
+    _predict_on_threads(engines)
+    assert _GpuSession.most_at_once == 2
+
+
+def test_a_directml_model_is_freed_only_while_no_other_one_runs(monkeypatch, tmp_path):
+    # Freeing a DirectML session while another one runs ends the server process too.
+    running, dropped = _gpu_engines(monkeypatch, tmp_path, "DmlExecutionProvider")
+    running.ort_session.release.clear()
+    img = np.zeros((48, 64, 3), dtype=np.uint8)
+    worker = threading.Thread(target=running.predict_mat, args=(img,))
+    worker.start()
+    assert running.ort_session.entered.wait(5)
+
+    closer = threading.Thread(target=dropped.close)
+    closer.start()
+    closer.join(0.3)
+    assert closer.is_alive(), "close() did not wait for the model that was running"
+    assert dropped.ort_session is not None
+
+    running.ort_session.release.set()
+    worker.join(5)
+    closer.join(5)
+    assert not closer.is_alive()
+    assert dropped.ort_session is None and not dropped.is_loaded
+    assert _GpuSession.freed_while_running == 0
+    with pytest.raises(RuntimeError):
+        dropped.predict_mat(img)
+
+
 # ── Inference worker and continuous runner ────────────────────────────────────
 
 class _BlockingEngine:
@@ -143,7 +266,8 @@ def test_worker_takes_one_frame_at_a_time_and_can_skip_the_copy(monkeypatch):
     from app.services import vision_service
 
     engine = _BlockingEngine()
-    monkeypatch.setattr(vision_service, "_get_active_engine", lambda: (engine, "fake", None))
+    from app.services.line_service import line_manager
+    monkeypatch.setattr(line_manager, "engine_for_camera", lambda camera_id: (engine, "fake", None))
     monkeypatch.setattr(counting_module.counting_service, "process_frame", lambda *a, **k: [])
 
     worker = vision_service._CameraInferenceWorker("cam-worker-test")
@@ -204,7 +328,8 @@ def test_continuous_runner_feeds_frames_without_copying(monkeypatch):
 
     engine = _BlockingEngine()
     engine.release.set()
-    monkeypatch.setattr(vision_service, "_get_active_engine", lambda: (engine, "fake", None))
+    from app.services.line_service import line_manager
+    monkeypatch.setattr(line_manager, "engine_for_camera", lambda camera_id: (engine, "fake", None))
     monkeypatch.setattr(counting_module.counting_service, "process_frame", lambda *a, **k: [])
     camera = _ZeroCopyCamera()
     monkeypatch.setitem(app_state.cameras, "cam-runner-test", camera)

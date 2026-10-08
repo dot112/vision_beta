@@ -14,6 +14,21 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+class _NamedHostContext(ssl.SSLContext):
+    """A TLS context that checks the broker's certificate against one given name.
+
+    paho checks it against the address it connects to. A plant broker is often
+    reached by IP address while its certificate names a hostname.
+    """
+
+    server_name: Optional[str] = None
+
+    def wrap_socket(self, sock, *args, **kwargs):
+        if self.server_name:
+            kwargs["server_hostname"] = self.server_name
+        return super().wrap_socket(sock, *args, **kwargs)
+
+
 class MQTTClient:
     """
     Production-grade MQTT Client with full TLS / mTLS support.
@@ -82,8 +97,15 @@ class MQTTClient:
         self.will_retain = will_retain
 
         self.is_connected = False
+        # Why the broker last refused or dropped the connection ("" = no problem seen).
+        self.last_error = ""
         self.subscriptions: List[str] = []
+        self._subscription_qos: Dict[str, int] = {}
         self._handlers: Dict[str, List[Callable]] = {}
+        # Handlers that get a message's bytes as they came (subscribe_raw).
+        self._raw_handlers: Dict[str, List[Callable[[str, bytes], None]]] = {}
+        # Raw subscriptions that do not want a broker's retained messages.
+        self._skip_retained: set = set()
         self._client: Optional[mqtt.Client] = None
         # A thread lock, not asyncio.Lock: connect() is awaited from the API's event
         # loop and from the telemetry dispatcher's own loop in another thread.
@@ -95,37 +117,36 @@ class MQTTClient:
         self._rebuild = True
         # Called with True/False whenever the broker connection comes up or drops.
         self.on_state_change: Optional[Callable[[bool], None]] = None
+        # Called with this client before every CONNECT, paho's automatic reconnects
+        # included. It may change the will and the close message; the will sent is
+        # the one set when it returns.
+        self.before_connect: Optional[Callable[["MQTTClient"], None]] = None
 
     def _build_client(self) -> mqtt.Client:
-        proto_str = str(self.protocol_version).strip().lower()
-        if proto_str in ("5", "5.0", "v5", "mqttv5"):
+        # Callback version 2 gives MQTT 3.1.1 and MQTT 5 the same callbacks.
+        if self._is_v5():
             client = mqtt.Client(
+                mqtt.CallbackAPIVersion.VERSION2,
                 client_id=self.client_id or "",
                 protocol=mqtt.MQTTv5,
             )
         else:
             client = mqtt.Client(
+                mqtt.CallbackAPIVersion.VERSION2,
                 client_id=self.client_id or "",
                 protocol=mqtt.MQTTv311,
-                clean_session=self.clean_session,
+                # A broker refuses an empty client id unless the session is clean.
+                clean_session=bool(self.clean_session) or not self.client_id,
             )
 
         if self.username:
             client.username_pw_set(self.username, self.password)
 
-        # Node-RED Last Will & Testament (LWT)
-        if self.will_topic:
-            client.will_set(
-                topic=self.will_topic,
-                payload=self.will_payload or '{"status": "offline", "unexpected": true}',
-                qos=int(self.will_qos or 0),
-                retain=bool(self.will_retain),
-            )
-
         if self.tls_enabled:
             try:
                 import os
-                context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+                context = _NamedHostContext(ssl.PROTOCOL_TLS_CLIENT)
+                context.server_name = self.sni_server_name or None
                 if self.tls_insecure:
                     context.check_hostname = False
                     context.verify_mode = ssl.CERT_NONE
@@ -161,24 +182,37 @@ class MQTTClient:
                 logger.error("TLS configuration failed: %s", exc)
                 raise
 
+        client.on_pre_connect = self._on_pre_connect
         client.on_connect = self._on_connect
         client.on_disconnect = self._on_disconnect
         client.on_message = self._on_message
         return client
 
-    def _on_connect(self, client, userdata, flags, rc):
-        codes = {
-            0: "Connected successfully",
-            1: "Bad protocol version",
-            2: "Client ID rejected",
-            3: "Broker unavailable",
-            4: "Bad credentials",
-            5: "Not authorised",
-        }
-        if rc == 0:
+    def _on_pre_connect(self, client, userdata) -> None:
+        if self.before_connect is not None:
+            try:
+                self.before_connect(self)
+            except Exception:
+                logger.exception("MQTT before-connect hook failed")
+        # Node-RED Last Will & Testament (LWT)
+        if self.will_topic:
+            client.will_set(
+                topic=self.will_topic,
+                payload=self.will_payload or '{"status": "offline", "unexpected": true}',
+                qos=int(self.will_qos or 0),
+                retain=bool(self.will_retain),
+            )
+        else:
+            client.will_clear()
+
+    def _is_v5(self) -> bool:
+        return str(self.protocol_version).strip().lower() in ("5", "5.0", "v5", "mqttv5")
+
+    def _on_connect(self, client, userdata, flags, reason_code, properties=None):
+        if not reason_code.is_failure:
             self.is_connected = True
-            self._notify_state(True)
-            logger.info("MQTT connected to %s:%d — %s", self.host, self.port, codes.get(rc, "Connected successfully"))
+            self.last_error = ""
+            logger.info("MQTT connected to %s:%d as '%s'", self.host, self.port, self.client_id)
             # Send Node-RED Birth message if configured
             if self.birth_topic:
                 try:
@@ -194,33 +228,51 @@ class MQTTClient:
                     logger.debug("MQTT Birth message error: %s", b_err)
 
             for topic in self.subscriptions:
-                client.subscribe(topic)
+                client.subscribe(topic, qos=self._subscription_qos.get(topic, 0))
+            self._notify_state(True)
         else:
             self.is_connected = False
-            logger.error("MQTT connection refused: %s", codes.get(rc, f"Unknown rc={rc}"))
+            # The broker's own words: "Bad user name or password", "Not authorized", ...
+            self.last_error = f"the broker refused the connection: {reason_code}"
+            logger.error("MQTT connection to %s:%d refused: %s", self.host, self.port, reason_code)
 
-    def _on_disconnect(self, client, userdata, rc):
+    def _on_disconnect(self, client, userdata, flags, reason_code, properties=None):
+        was_connected = self.is_connected
         self.is_connected = False
         self._notify_state(False)
-        if rc != 0:
-            logger.warning("MQTT unexpectedly disconnected (rc=%d); reconnecting in the background", rc)
+        if reason_code.is_failure and not was_connected:
+            return  # the socket closing after a refusal: keep the broker's reason for refusing
+        if reason_code.is_failure:
+            self.last_error = f"the connection was lost: {reason_code}"
+            logger.warning("MQTT unexpectedly disconnected from %s:%d (%s); reconnecting in the background", self.host, self.port, reason_code)
         else:
             logger.info("MQTT disconnected cleanly from %s:%d", self.host, self.port)
 
     def _on_message(self, client, userdata, msg):
         topic = msg.topic
+        for pattern, handlers in self._raw_handlers.items():
+            if mqtt.topic_matches_sub(pattern, topic):
+                if msg.retain and pattern in self._skip_retained:
+                    continue
+                for cb in handlers:
+                    try:
+                        cb(topic, bytes(msg.payload))
+                    except Exception as exc:
+                        logger.error("MQTT handler error: %s", exc)
+        matching = [handlers for pattern, handlers in self._handlers.items() if mqtt.topic_matches_sub(pattern, topic)]
+        if not matching and any(mqtt.topic_matches_sub(pattern, topic) for pattern in self._raw_handlers):
+            return  # binary, for the raw handlers only: nothing to decode or log as text
         try:
             payload = json.loads(msg.payload.decode("utf-8"))
         except Exception:
-            payload = msg.payload.decode("utf-8")
+            payload = msg.payload.decode("utf-8", errors="replace")
         logger.info("MQTT Received [%s]: %s", topic, payload)
-        for pattern, handlers in self._handlers.items():
-            if mqtt.topic_matches_sub(pattern, topic):
-                for cb in handlers:
-                    try:
-                        cb(topic, payload)
-                    except Exception as exc:
-                        logger.error("MQTT handler error: %s", exc)
+        for handlers in matching:
+            for cb in handlers:
+                try:
+                    cb(topic, payload)
+                except Exception as exc:
+                    logger.error("MQTT handler error: %s", exc)
 
     def _notify_state(self, connected: bool) -> None:
         if self.on_state_change is not None:
@@ -249,7 +301,13 @@ class MQTTClient:
         self._client.reconnect_delay_set(min_delay=1, max_delay=60)
         self._rebuild = False
         try:
-            self._client.connect(self.host, self.port, keepalive=self.keepalive)
+            if self._is_v5():
+                self._client.connect(self.host, self.port, keepalive=self.keepalive, clean_start=bool(self.clean_session))
+            else:
+                self._client.connect(self.host, self.port, keepalive=self.keepalive)
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            raise
         finally:
             self._client.loop_start()
             self._loop_running = True
@@ -290,6 +348,8 @@ class MQTTClient:
                     if self.is_connected:
                         return True
 
+                if not self.last_error:
+                    self.last_error = "the broker did not answer in time"
                 logger.warning("MQTT connection timed out to %s:%d", self.host, self.port)
                 return False
 
@@ -300,33 +360,43 @@ class MQTTClient:
         finally:
             self._connect_guard.release()
 
-    async def disconnect(self) -> None:
-        if self._client:
+    def close(self) -> None:
+        """Send the close message, disconnect and stop paho's network thread. Blocks briefly."""
+        client = self._client
+        if client:
             if self.is_connected and self.close_topic:
                 try:
                     payload = self.close_payload or '{"status": "offline"}'
-                    self._client.publish(
+                    sent = client.publish(
                         self.close_topic,
                         payload,
                         qos=int(self.close_qos or 0),
                         retain=bool(self.close_retain),
                     )
+                    # Wait until it is out (at QoS 1 and 2: until the broker has
+                    # acknowledged it, so it has read everything sent before it
+                    # too). A socket closed while replies are still unread is
+                    # reset, and a broker then drops what it had not read yet.
+                    sent.wait_for_publish(timeout=2.0)
                     logger.info("MQTT Close message published to [%s]", self.close_topic)
                 except Exception as c_err:
                     logger.debug("MQTT Close message error: %s", c_err)
 
             # disconnect() first so the close message and DISCONNECT still go
-            # out; loop_stop() joins paho's network thread, off the event loop.
-            client = self._client
+            # out; loop_stop() joins paho's network thread.
             try:
                 client.disconnect()
             except Exception as exc:
                 logger.debug("MQTT disconnect error: %s", exc)
-            await asyncio.to_thread(client.loop_stop)
+            client.loop_stop()
             self._loop_running = False
             self._rebuild = True
         self.is_connected = False
         self._notify_state(False)
+
+    async def disconnect(self) -> None:
+        # close() joins a thread, so it runs off the event loop.
+        await asyncio.to_thread(self.close)
 
     async def publish(self, topic: str, payload: Dict[str, Any], qos: int = 0, retain: bool = False) -> bool:
         if not self._client or not self.is_connected:
@@ -334,8 +404,12 @@ class MQTTClient:
             if not ok:
                 return False
         try:
-            msg = json.dumps(payload)
+            msg = payload if isinstance(payload, (str, bytes)) else json.dumps(payload)
             info = self._client.publish(topic, msg, qos=qos, retain=retain)
+            if info.rc != mqtt.MQTT_ERR_SUCCESS:
+                self.last_error = f"the message was not accepted: {mqtt.error_string(info.rc)}"
+                logger.warning("MQTT publish to [%s] failed: %s", topic, mqtt.error_string(info.rc))
+                return False
             # paho-mqtt handles delivery in background thread via loop_start()
             logger.debug("MQTT Published -> [%s] QoS=%d", topic, qos)
             return True
@@ -343,15 +417,40 @@ class MQTTClient:
             logger.error("MQTT publish error: %s", exc)
             return False
 
+    def publish_nowait(self, topic: str, payload: Any, qos: int = 0, retain: bool = False) -> bool:
+        """Publish if connected. Never connects and never waits; callable from any thread."""
+        client = self._client
+        if client is None or not self.is_connected:
+            return False
+        try:
+            msg = payload if isinstance(payload, (str, bytes)) else json.dumps(payload)
+            return client.publish(topic, msg, qos=qos, retain=retain).rc == mqtt.MQTT_ERR_SUCCESS
+        except Exception as exc:
+            logger.debug("MQTT publish error: %s", exc)
+            return False
+
     async def subscribe(self, topic: str, callback: Optional[Callable] = None, qos: int = 0) -> bool:
         if topic not in self.subscriptions:
             self.subscriptions.append(topic)
+        self._subscription_qos[topic] = int(qos)
         if callback:
             self._handlers.setdefault(topic, []).append(callback)
         if self._client and self.is_connected:
             self._client.subscribe(topic, qos=qos)
         logger.info("MQTT Subscribed: [%s]", topic)
         return True
+
+    async def subscribe_raw(self, topic: str, callback: Callable[[str, bytes], None], qos: int = 0,
+                            skip_retained: bool = False) -> bool:
+        """Subscribe with a handler that gets each message's bytes, on paho's network thread.
+
+        With ``skip_retained`` the handler never gets a message the broker kept
+        and hands out again to every new subscription.
+        """
+        self._raw_handlers.setdefault(topic, []).append(callback)
+        if skip_retained:
+            self._skip_retained.add(topic)
+        return await self.subscribe(topic, qos=qos)
 
     def reconfigure(self, **kwargs) -> None:
         for k, v in kwargs.items():

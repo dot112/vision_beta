@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from app.db.models.user import User
 from app.dependencies import require_operator
-from app.events.alarm_events import AlarmSeverity, alarm_manager
+from app.events.alarm_events import ALARM_CATALOG, AlarmSeverity, alarm_manager
 from app.services.health_service import DOWN, health_service, to_prometheus
 
 # Public probe for load balancers, supervisors and PLC/SCADA heartbeats.
@@ -53,28 +53,38 @@ async def metrics(
     return JSONResponse(data)
 
 
+ALL_LINES_HELP = "With line_id, also the alarms that concern every line (PLC connection, inference, flows)"
+
+
 @router.get("/alarms", summary="List active alarms, most severe first")
 async def list_alarms(
     severity: Optional[AlarmSeverity] = None,
     source: Optional[str] = Query(None, description="Only alarms whose source starts with this prefix"),
     line_id: Optional[str] = Query(None, description="Only alarms raised for this production line"),
+    include_all_lines: bool = Query(False, description=ALL_LINES_HELP),
 ) -> Dict[str, Any]:
     alarms = alarm_manager.active(source_prefix=source)
     if severity:
         alarms = [a for a in alarms if a.severity == severity]
     if line_id:
-        alarms = [a for a in alarms if (a.details or {}).get("line_id") == line_id]
+        alarms = [a for a in alarms if a.concerns_line(line_id, include_all_lines)]
     return {"alarms": [a.to_dict() for a in alarms], "counts": alarm_manager.counts()}
+
+
+@router.get("/alarms/catalog", summary="Every kind of alarm the server can raise, with a label and scope")
+async def alarm_catalog() -> Dict[str, Any]:
+    return {"alarms": ALARM_CATALOG}
 
 
 @router.get("/alarms/history", summary="Recently cleared alarms, newest first")
 async def alarm_history(
     limit: int = Query(100, ge=1, le=500),
     line_id: Optional[str] = Query(None, description="Only alarms raised for this production line"),
+    include_all_lines: bool = Query(False, description=ALL_LINES_HELP),
 ) -> List[Dict[str, Any]]:
     alarms = alarm_manager.history(limit if not line_id else 500)
     if line_id:
-        alarms = [a for a in alarms if (a.details or {}).get("line_id") == line_id][:limit]
+        alarms = [a for a in alarms if a.concerns_line(line_id, include_all_lines)][:limit]
     return [a.to_dict() for a in alarms]
 
 

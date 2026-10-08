@@ -8,18 +8,31 @@ class _BodyTooLarge(Exception):
 
 
 class RequestBodyLimitMiddleware:
-    """Bound multipart request bodies before Starlette spools uploads to disk."""
+    """Bound multipart request bodies before Starlette spools uploads to disk.
+
+    ``limits`` maps a path to its largest body. A key ending in ``/*`` covers
+    every path below it (an upload address that carries an id).
+    """
 
     def __init__(self, app, limits: dict[str, int]):
         self.app = app
-        self.limits = limits
+        self.limits = {path: size for path, size in limits.items() if not path.endswith("/*")}
+        self.prefix_limits = {path[:-1]: size for path, size in limits.items() if path.endswith("/*")}
+
+    def _limit_for(self, path: str):
+        if path in self.limits:
+            return self.limits[path]
+        for prefix, size in self.prefix_limits.items():
+            if path.startswith(prefix):
+                return size
+        return None
 
     async def __call__(self, scope, receive: Callable[[], Awaitable[dict]], send: Callable[[dict], Awaitable[None]]):
-        if scope["type"] != "http" or scope.get("path") not in self.limits:
+        limit = self._limit_for(scope.get("path") or "") if scope["type"] == "http" else None
+        if limit is None:
             await self.app(scope, receive, send)
             return
 
-        limit = self.limits[scope["path"]]
         headers = {key.lower(): value for key, value in scope.get("headers", [])}
         content_length = headers.get(b"content-length")
         if content_length:

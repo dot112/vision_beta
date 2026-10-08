@@ -61,6 +61,7 @@ class PLCDriver(ABC):
         self.last_connect_error = ""
         if self.report_alarms:
             alarm_manager.clear_alarm(AlarmCode.PLC_CONNECT_FAILED, self.alarm_source, "connected")
+            alarm_manager.clear_alarm(AlarmCode.PLC_DISCONNECT_ERROR, self.alarm_source, "connected again")
 
     def _mark_connect_failed(self, reason: str) -> None:
         """Record a failed connection attempt and raise a critical alarm."""
@@ -78,11 +79,21 @@ class PLCDriver(ABC):
             logger.warning("PLC test connection to %s:%s failed: %s", self.host, self.port, reason)
 
     def _log_disconnect_error(self, exc: BaseException) -> None:
-        """Closing a socket failed. Not fatal, but never silent."""
+        """Closing a socket failed. Not fatal, but never silent: a warning alarm
+        until the next successful connect, since the PLC may still hold the old session."""
         logger.warning(
             "PLC %s (%s:%s) did not close cleanly: %s: %s",
             self.endpoint_id or "?", self.host, self.port, type(exc).__name__, exc,
         )
+        if self.report_alarms:
+            alarm_manager.raise_alarm(
+                AlarmCode.PLC_DISCONNECT_ERROR,
+                self.alarm_source,
+                f"PLC {self._ep.get('name') or self.endpoint_id} at {self.host}:{self.port} did not close "
+                f"its connection cleanly: {type(exc).__name__}: {exc}",
+                AlarmSeverity.WARNING,
+                {"endpoint_id": self.endpoint_id, "protocol": self.protocol, "host": self.host, "port": self.port},
+            )
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 

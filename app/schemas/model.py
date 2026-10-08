@@ -37,7 +37,13 @@ class ModelResponse(BaseModel):
     input_height: int
     confidence_threshold: float
     nms_threshold: float
+    # True while at least one vision camera runs the model (picked on Line setup).
     is_active: bool
+    # The cameras that run it: [{"line_id", "line_name", "camera_id", "camera_name"}].
+    used_by: List[Dict[str, Any]] = Field(default_factory=list)
+    # Whether it is in memory and, when a camera runs it and it is not, why.
+    loaded: bool = False
+    load_error: Optional[str] = None
     metadata_json: Optional[Dict[str, Any]] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

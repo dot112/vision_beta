@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.config import settings as app_settings
 from app.hardware.camera.base import CONNECT_ABORT, BaseCamera
+from app.hardware.camera.http_capture import HttpPictureCapture, NotAPictureSource
 from app.utils.logger import LogThrottle, get_logger, redact
 from app.utils.threads import run_supervised
 
@@ -32,11 +33,17 @@ class IPCamera(BaseCamera):
     - Zero-copy freshest frame distribution (0ms capture latency).
     - Automatic connection recovery and stream health watchdog.
     - Direct BGR numpy array access (grab_raw_frame) avoiding multi-pass JPEG encoding.
+    - HTTP sources that send JPEG pictures (MJPEG streams, snapshot URLs) are read
+      by HttpPictureCapture; everything else (RTSP, RTMP, HLS) by FFmpeg.
     """
+
+    FFMPEG_BACKEND = "cv2.CAP_FFMPEG (Threaded 0-Lag)"
 
     def __init__(self, camera_id: str, name: str, source: str, settings: Optional[Dict[str, Any]] = None):
         super().__init__(camera_id=camera_id, name=name, source=source, settings=settings)
         self._thread: Optional[threading.Thread] = None
+        self._reader: Optional[_ReaderLoop] = None
+        self._backend = self.FFMPEG_BACKEND
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
         self._new_frame_event = threading.Event()
@@ -116,6 +123,21 @@ class IPCamera(BaseCamera):
         if cv2 is None:
             return None
 
+        if stream_url.lower().startswith(("http://", "https://")):
+            try:
+                cap = HttpPictureCapture.open(
+                    stream_url, app_settings.CAMERA_OPEN_TIMEOUT_SECONDS, app_settings.CAMERA_READ_TIMEOUT_SECONDS,
+                )
+                self._backend = cap.backend
+                return cap
+            except NotAPictureSource as exc:
+                # Not JPEG pictures over HTTP (HLS, MPEG-TS, Digest login...): FFmpeg reads it below.
+                logger.debug("%s is left to FFmpeg: %s", redact(stream_url), redact(str(exc)))
+            except OSError as exc:
+                logger.debug("Failed opening stream %s: %s", redact(stream_url), redact(str(exc)))
+                return None
+        self._backend = self.FFMPEG_BACKEND
+
         transport = self.settings.get("transport", "tcp").lower()
         buffer_size = int(self.settings.get("buffer_size", 1))
 
@@ -172,6 +194,7 @@ class IPCamera(BaseCamera):
                     if ret and frame is not None:
                         self._active_url = stream_url
                         self.is_connected = True
+                        self.reconnecting = False
                         self.last_error = None
                         self.settings["active_stream_url"] = stream_url
 
@@ -188,9 +211,10 @@ class IPCamera(BaseCamera):
                         stop = threading.Event()
                         self._stop_event = stop
                         name = f"IPCamReader-{self.camera_id[:8]}"
+                        self._reader = _ReaderLoop(self, cap, stop)
                         self._thread = threading.Thread(
                             target=run_supervised,
-                            args=(name, _ReaderLoop(self, cap, stop), stop),
+                            args=(name, self._reader, stop),
                             kwargs={"kind": "camera_reader"},
                             name=name,
                             daemon=True,
@@ -227,6 +251,7 @@ class IPCamera(BaseCamera):
         retry_delay = 0.5
         lost_at: Optional[float] = None
         attempts = 0
+        quiet = False
 
         while not stop.is_set():
             cap = holder.cap
@@ -234,10 +259,16 @@ class IPCamera(BaseCamera):
                 holder.release()
                 if lost_at is None:
                     lost_at = time.monotonic()
-                    logger.warning("IP camera '%s' lost its stream; reconnecting", self.name)
+                    # A source whose pictures are further apart than the read timeout
+                    # (a slide show, a triggered camera) is reopened without a warning.
+                    quiet = bool(getattr(cap, "idle", False))
+                    logger.log(logging.DEBUG if quiet else logging.WARNING,
+                               "IP camera '%s' lost its stream; reconnecting", self.name)
+                    self.reconnecting = not quiet
                 attempts += 1
-                holder.cap = self._reopen_capture()
+                holder.cap, frame = self._reopen_capture()
                 if holder.cap is None:
+                    self.reconnecting = True
                     _reconnect_log.log(
                         logger, logging.WARNING, self.camera_id,
                         "IP camera '%s' is still unreachable after %d attempt(s); retrying at least every %.0f s",
@@ -247,11 +278,18 @@ class IPCamera(BaseCamera):
                         break
                     retry_delay = min(retry_delay * 2, max(1.0, app_settings.CAMERA_RECONNECT_MAX_SECONDS))
                     continue
-                logger.info("IP camera '%s' reconnected after %.0f s (%d attempt(s))",
-                            self.name, time.monotonic() - lost_at, attempts)
+                logger.log(logging.DEBUG if quiet and attempts == 1 else logging.INFO,
+                           "IP camera '%s' reconnected after %.0f s (%d attempt(s))",
+                           self.name, time.monotonic() - lost_at, attempts)
                 _reconnect_log.clear(self.camera_id)
                 self.last_error = None
+                self.reconnecting = False
                 lost_at, attempts, retry_delay, consecutive_errs = None, 0, 0.5, 0
+                if stop.is_set():
+                    break
+                # The picture read while reopening is the camera's current one: a
+                # source that sends a picture only when it changes sends no other.
+                self._publish(frame)
                 continue
 
             try:
@@ -274,19 +312,7 @@ class IPCamera(BaseCamera):
                     continue
 
                 consecutive_errs = 0
-                now = time.monotonic()
-
-                # Process ROI, rotation, flip in-place or fast path
-                processed = self._process_frame(frame)
-
-                with self._lock:
-                    self._latest_raw_mat = frame
-                    self._latest_processed_mat = processed
-                    self._latest_frame_id += 1
-                    self._latest_timestamp = now
-                    # Invalidate cached JPEG
-                    self._latest_jpeg = None
-                self._new_frame_event.set()
+                self._publish(frame)
 
             except Exception as e:
                 consecutive_errs += 1
@@ -298,17 +324,30 @@ class IPCamera(BaseCamera):
 
         logger.debug("IP camera reader loop stopped for %s", self.name)
 
-    def _reopen_capture(self) -> Optional[Any]:
-        """Open the stream that worked before. Returns the capture, or None if it is still down."""
+    def _publish(self, frame: Any) -> None:
+        """Make a picture the camera's latest one for the live stream, YOLO and the QR reader."""
+        # Process ROI, rotation, flip in-place or fast path
+        processed = self._process_frame(frame)
+        with self._lock:
+            self._latest_raw_mat = frame
+            self._latest_processed_mat = processed
+            self._latest_frame_id += 1
+            self._latest_timestamp = time.monotonic()
+            # Invalidate cached JPEG
+            self._latest_jpeg = None
+        self._new_frame_event.set()
+
+    def _reopen_capture(self) -> Tuple[Optional[Any], Optional[Any]]:
+        """Open the stream that worked before. Returns (capture, its first picture), or (None, None) if it is still down."""
         if not self._active_url:
-            return None
+            return None, None
         cap = None
         try:
             cap = self._open_capture(self._active_url)
             if cap and cap.isOpened():
-                ret, _ = cap.read()
-                if ret:
-                    return cap
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    return cap, frame
             self.last_error = f"IP camera '{self.name}' is not answering; reconnecting"
         except Exception as e:
             self.last_error = f"IP camera '{self.name}' reconnect failed: {redact(str(e))}"
@@ -318,15 +357,20 @@ class IPCamera(BaseCamera):
                 cap.release()
             except Exception:
                 pass
-        return None
+        return None, None
 
     def disconnect(self) -> None:
         self.is_connected = False
+        self.reconnecting = False
         self._stop_event.set()
 
         # The reader thread releases its capture as it exits. If it is still
         # inside a read (at most CAMERA_READ_TIMEOUT_SECONDS), it releases the
         # capture when the read returns; releasing it from here would race it.
+        # A capture that can end a waiting read safely is told to.
+        reader, self._reader = self._reader, None
+        if reader is not None:
+            reader.abort()
         thread = self._thread
         if thread is not None and thread.is_alive() and threading.current_thread() is not thread:
             thread.join(timeout=1.5)
@@ -414,7 +458,7 @@ class IPCamera(BaseCamera):
             "width": w,
             "height": h,
             "fps": 30.0,
-            "backend": "cv2.CAP_FFMPEG (Threaded 0-Lag)",
+            "backend": self._backend,
             "transport": self.settings.get("transport", "tcp"),
             "active_stream_url": self._active_url or self.source,
         }
@@ -439,6 +483,12 @@ class _ReaderLoop:
                 cap.release()
             except Exception as exc:
                 logger.warning("Error releasing IP camera stream: %s", exc)
+
+    def abort(self) -> None:
+        """Called by another thread: end a read that is waiting, where the capture supports it."""
+        abort = getattr(self.cap, "abort", None)
+        if abort is not None:
+            abort()
 
     def __call__(self) -> None:
         try:

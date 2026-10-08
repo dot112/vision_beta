@@ -26,13 +26,14 @@ async def detect_image(
     file: UploadFile = File(..., description="Image file (JPEG/PNG/BMP)"),
     confidence_threshold: Optional[float] = Query(default=None, ge=0.0, le=1.0),
     nms_threshold: Optional[float] = Query(default=None, ge=0.0, le=1.0),
+    model_id: Optional[str] = Query(default=None, max_length=64, description="The model to run; without it, the model of Line 1's counting camera"),
     db: AsyncSession = Depends(get_db),
 ) -> DetectionResponse:
     try:
         if file.content_type and not file.content_type.startswith("image/"):
             raise HTTPException(status_code=415, detail="Only image uploads are accepted")
         content = await read_upload_limited(file, settings.MAX_IMAGE_UPLOAD_BYTES)
-        return await VisionService.detect_image(db, content, confidence_threshold, nms_threshold)
+        return await VisionService.detect_image(db, content, confidence_threshold, nms_threshold, model_id=model_id)
     except HTTPException:
         raise
     except ApiInferenceBusy as exc:
@@ -46,10 +47,11 @@ async def detect_live_camera(
     camera_id: str,
     confidence_threshold: Optional[float] = Query(default=None, ge=0.0, le=1.0),
     nms_threshold: Optional[float] = Query(default=None, ge=0.0, le=1.0),
+    model_id: Optional[str] = Query(default=None, max_length=64, description="The model to run; without it, the camera's own model, else the model of Line 1's counting camera"),
     db: AsyncSession = Depends(get_db),
 ) -> LiveInspectionResponse:
     try:
-        return await VisionService.detect_live_camera(db, camera_id, confidence_threshold, nms_threshold)
+        return await VisionService.detect_live_camera(db, camera_id, confidence_threshold, nms_threshold, model_id=model_id)
     except ApiInferenceBusy as exc:
         raise _inference_busy(exc)
     except Exception as exc:
@@ -60,11 +62,12 @@ async def detect_live_camera(
 async def get_annotated_frame(
     camera_id: str,
     confidence_threshold: Optional[float] = Query(default=None, ge=0.0, le=1.0),
+    max_width: Optional[int] = Query(default=None, ge=160, le=3840, description="Send the picture no wider than this many pixels"),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
     try:
-        jpeg_bytes = await VisionService.get_annotated_frame(db, camera_id, confidence_threshold)
-        return Response(content=jpeg_bytes, media_type="image/jpeg")
+        jpeg_bytes = await VisionService.get_annotated_frame(db, camera_id, confidence_threshold, max_width)
+        return Response(content=jpeg_bytes, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
     except ApiInferenceBusy as exc:
         raise _inference_busy(exc)
     except Exception as exc:

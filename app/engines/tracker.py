@@ -471,6 +471,9 @@ class WirelineTracker:
 
         self.next_track_id = 1
         self.objects: Dict[int, TrackedObject] = {}
+        # Wire lines crossed during the last update(): (track_id, class_name, line 1 or 2).
+        # A QR reader set to capture on a line crossing listens to these.
+        self.line_crossings: List[Tuple[int, str, int]] = []
 
         # Anti-duplicate guard (fast, 1s/25px):
         # Stops same-object re-track that crosses the line again within 1 second
@@ -661,6 +664,7 @@ class WirelineTracker:
 
         # 7. Check Wireline Crossings using Smoothed Center Coordinates
         counted_events: List[Tuple[int, str, bool, float, Any, Optional[List[List[int]]], Tuple[float, float], Tuple[float, float]]] = []
+        self.line_crossings = []
 
 
         for oid, track in list(self.objects.items()):
@@ -670,6 +674,7 @@ class WirelineTracker:
 
             prev_pt = track.smooth_history[-2]
             curr_pt = track.smooth_history[-1]
+            crossed_before = (track.crossed_line1, track.crossed_line2)
 
             if is_horizontal_movement(orientation):
                 prev_coord = prev_pt[0]  # X (horizontal moving items)
@@ -760,6 +765,11 @@ class WirelineTracker:
                     elif not lines_ascending and (prev_coord <= line1_pos <= curr_coord):
                         track.crossed_line1 = True
                         crossing_completed = True
+
+            if track.crossed_line1 and not crossed_before[0]:
+                self.line_crossings.append((oid, track.class_name, 1))
+            if track.crossed_line2 and not crossed_before[1]:
+                self.line_crossings.append((oid, track.class_name, 2))
 
             if crossing_completed:
                 # Require confirmation (hits >= min_hits or age >= 2 or confirmed) before counting

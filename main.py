@@ -9,9 +9,8 @@ from typing import AsyncGenerator
 import uvicorn
 from fastapi import APIRouter, Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
 
 from app.config import settings
 from app.middleware.error_handler import unhandled_exception_handler
@@ -43,9 +42,24 @@ from app.routes.v1 import plc as plc_router
 from app.routes.v1 import health as health_router
 from app.routes.v1 import lines as lines_router
 from app.routes.v1 import products as products_router
+from app.routes.v1 import send_actions as send_actions_router
 
 setup_logging()
 logger = logging.getLogger(__name__)
+
+
+_BASE_DIR = Path(__file__).resolve().parent
+_ASSETS_DIR = _BASE_DIR / "assets"
+
+
+class _RevalidatedStaticFiles(StaticFiles):
+    """Dashboard scripts and images: the browser asks again on every load (a
+    304 when unchanged), so a server update reaches every open dashboard."""
+
+    def file_response(self, *args, **kwargs) -> Response:
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 
 def _flag_shutdown_on_signal() -> None:
@@ -75,17 +89,21 @@ def _flag_shutdown_on_signal() -> None:
 
 
 async def _connect_saved_hardware() -> None:
-    """The saved camera, MQTT broker, endpoint checks and line cameras. May take minutes if devices are off."""
-    try:
-        from app.services.settings_persistence_service import SettingsPersistenceService
-        await SettingsPersistenceService.connect_on_startup()
-    except Exception:
-        logger.exception("Could not restore the saved camera and communication connections")
+    """The line cameras, then the MQTT broker and the endpoint checks. May take minutes if devices are off.
+
+    Cameras come first: the endpoint check of a camera that is already
+    running does not open a second stream to it.
+    """
     try:
         from app.services.line_service import line_manager
         await line_manager.connect_on_startup()
     except Exception:
         logger.exception("Could not connect the production line cameras")
+    try:
+        from app.services.settings_persistence_service import SettingsPersistenceService
+        await SettingsPersistenceService.connect_on_startup()
+    except Exception:
+        logger.exception("Could not restore the saved communication connections")
 
 
 async def _start_saved_connections():
@@ -178,52 +196,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await AuthService.seed_default_users(db)
             AuthService.reset_all_sessions()
 
-        # 3. Automatically load active Vision Model into memory
-        async with AsyncSessionLocal() as db:
-            from app.db.models.model import VisionModel
-            from app.engines.inference_engine import InferenceEngine
-            from app.services.vision_service import COCO_CLASSES, DEFAULT_ONNX_PATH
-
-            stmt = select(VisionModel).where(VisionModel.is_active == True)
-            res = await db.execute(stmt)
-            active_m = res.scalar_one_or_none()
-
-            if active_m and os.path.exists(active_m.file_path):
-                engine_inst = InferenceEngine(
-                    model_path=active_m.file_path,
-                    classes=active_m.classes,
-                    input_size=(active_m.input_width, active_m.input_height),
-                    confidence_threshold=active_m.confidence_threshold,
-                    nms_threshold=active_m.nms_threshold,
-                    device=settings.INFERENCE_DEVICE,
-                )
-                if active_m.metadata_json and active_m.metadata_json.get("task"):
-                    engine_inst.task = str(active_m.metadata_json["task"]).strip().lower()
-                app_state.active_model = {
-                    "id": active_m.id,
-                    "name": active_m.name,
-                    "version": active_m.version,
-                    "file_path": active_m.file_path,
-                    "classes": active_m.classes,
-                    "engine": engine_inst,
-                }
-                logger.info("Auto-loaded active model from DB: '%s' (%s) on device '%s'", active_m.name, active_m.version, settings.INFERENCE_DEVICE)
-            elif os.path.exists(DEFAULT_ONNX_PATH):
-                engine_inst = InferenceEngine(
-                    model_path=DEFAULT_ONNX_PATH,
-                    classes=COCO_CLASSES,
-                    confidence_threshold=0.30,
-                    nms_threshold=0.45,
-                    device=settings.INFERENCE_DEVICE,
-                )
-                app_state.active_model = {
-                    "name": "YOLOv8n_COCO",
-                    "version": "v1.0",
-                    "file_path": DEFAULT_ONNX_PATH,
-                    "classes": COCO_CLASSES,
-                    "engine": engine_inst,
-                }
-                logger.info("Auto-loaded default YOLOv8n ONNX model (%s)", DEFAULT_ONNX_PATH)
+        # 3. (The vision models are loaded in step 4b: each vision camera names
+        # the model it runs, in the line settings.)
 
         # 4. Restore persistent server settings and PLC cards (no device I/O)
         try:
@@ -232,17 +206,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as st_err:
             logger.warning("Settings persistence restore error: %s", st_err)
 
-        # 4b. Product codes for QR checks, then each production line's model and cameras
+        # 4b. Product codes for QR checks, then the models the vision cameras run
         try:
-            from app.services.product_service import ProductService
+            from app.services.product_service import ProductService, product_catalog
             async with AsyncSessionLocal() as db:
                 count = await ProductService.refresh_catalog(db)
-            logger.info("Loaded %d product code(s) for QR checks", count)
+            logger.info("Loaded %d product code(s) in %d product list(s) for code checks", count, len(product_catalog.list_ids()))
         except Exception:
             logger.exception("Could not load product codes; QR reads will all be unknown")
         try:
             from app.services.line_service import line_manager
-            await line_manager.refresh_models()
+            problems = await line_manager.refresh_models()
+            logger.info("Loaded %d vision model(s) for the cameras that run them%s",
+                        len(line_manager.loaded_models()), f"; {len(problems)} could not be loaded" if problems else "")
         except Exception:
             logger.exception("Production line startup error")
 
@@ -250,6 +226,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # still booting after a power cut must not hold the API down, so wait a
         # bounded time and let the rest finish in the background.
         startup_connect = await _start_saved_connections()
+
+        # 4d. Sparkplug B: the lines as an edge node's devices, on every MQTT
+        # channel that has it switched on. Connects in the background.
+        try:
+            from app.services.sparkplug_service import SparkplugService
+            await SparkplugService.start()
+        except Exception:
+            logger.exception("Sparkplug B startup error")
 
         # 5. Start UDP Auto-Discovery Beacon
         try:
@@ -343,8 +327,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception:
         logger.exception("Failed to stop telemetry dispatcher cleanly")
     try:
-        from app.services.mqtt_service import MQTTService
+        # Each Sparkplug node says goodbye (NDEATH) while its broker is still connected.
+        from app.services.sparkplug_service import SparkplugService
+        await SparkplugService.stop()
+    except Exception:
+        logger.exception("Failed to stop Sparkplug B cleanly")
+    try:
+        from app.services.mqtt_service import MQTTChannels, MQTTService
         await MQTTService.disconnect()
+        await MQTTChannels.close_all()
     except Exception:
         logger.exception("Failed to disconnect MQTT cleanly")
     try:
@@ -395,6 +386,7 @@ def create_app() -> FastAPI:
             "/api/v1/qr/decode": settings.MAX_IMAGE_UPLOAD_BYTES + request_overhead_bytes,
             "/api/v1/mqtt/certs/upload": 4 * 1024 * 1024 + request_overhead_bytes,
             "/api/v1/products/import": 8 * 1024 * 1024 + request_overhead_bytes,
+            "/api/v1/products/lists/*": 8 * 1024 * 1024 + request_overhead_bytes,
         },
     )
     app.add_middleware(
@@ -408,8 +400,10 @@ def create_app() -> FastAPI:
     app.add_middleware(TimingMiddleware)
     app.add_exception_handler(Exception, unhandled_exception_handler)
 
-    if os.path.isdir("assets"):
-        app.mount("/assets", StaticFiles(directory="assets"), name="assets")
+    # Resolved from this file, not the working directory, so the dashboards
+    # keep their scripts, styles and fonts however the server is started.
+    if _ASSETS_DIR.is_dir():
+        app.mount("/assets", _RevalidatedStaticFiles(directory=str(_ASSETS_DIR)), name="assets")
 
     API_PREFIX = "/api/v1"
     app.include_router(auth_router.router, prefix=API_PREFIX)
@@ -434,6 +428,7 @@ def create_app() -> FastAPI:
         health_router,
         lines_router,
         products_router,
+        send_actions_router,
     ):
         protected_api.include_router(router_mod.router)
     app.include_router(protected_api)
@@ -524,7 +519,7 @@ def create_app() -> FastAPI:
         if not is_app:
             return HTMLResponse(content=RESTRICTED_ACCESS_HTML, status_code=403)
 
-        with open(filename, "r", encoding="utf-8") as f:
+        with open(_BASE_DIR / filename, "r", encoding="utf-8") as f:
             return HTMLResponse(
                 content=f.read(),
                 headers={
@@ -538,10 +533,10 @@ def create_app() -> FastAPI:
     async def get_dashboard(request: Request) -> HTMLResponse:
         return _serve_dashboard_file(request, "dashboard.html")
 
-    # Second dashboard design, served next to the original for side-by-side comparison
-    @app.get("/dashboard/pro", response_class=HTMLResponse, include_in_schema=False)
-    async def get_dashboard_pro(request: Request) -> HTMLResponse:
-        return _serve_dashboard_file(request, "dashboard_pro.html")
+    # The Pro design became the only dashboard; keep its old address working.
+    @app.get("/dashboard/pro", include_in_schema=False)
+    async def get_dashboard_pro() -> RedirectResponse:
+        return RedirectResponse(url="/dashboard", status_code=307)
 
     @app.get("/terms-of-use", include_in_schema=False)
     async def get_terms_of_use() -> Response:
@@ -564,7 +559,6 @@ def create_app() -> FastAPI:
             "message": f"Welcome to {settings.APP_NAME}",
             "docs": "/docs" if settings.DEBUG else None,
             "dashboard": "/dashboard",
-            "dashboard_pro": "/dashboard/pro",
         })
 
     return app

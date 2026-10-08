@@ -16,6 +16,8 @@ class TelemetryService:
         total_cams = await db.scalar(select(func.count(Camera.id))) or 0
         total_models = await db.scalar(select(func.count(VisionModel.id))) or 0
         
+        from app.services.line_service import line_manager
+
         det_row = (await db.execute(select(func.count(DetectionLog.id), func.avg(DetectionLog.inference_time_ms)))).one_or_none()
         total_inspections = det_row[0] if det_row else 0
         avg_latency = float(det_row[1]) if (det_row and det_row[1] is not None) else 0.0
@@ -24,7 +26,9 @@ class TelemetryService:
             "total_cameras": total_cams,
             "active_cameras": len(app_state.cameras),
             "total_models": total_models,
-            "active_model": app_state.active_model.get("name") if app_state.active_model else None,
+            # The model of Line 1's counting camera (version 1's active model), and every model in memory.
+            "active_model": line_manager.model_name(line_manager.default_model_id()),
+            "loaded_models": [model["name"] for model in line_manager.loaded_models()],
             "total_inspections": total_inspections,
             "total_detections": app_state.detection_count,
             "avg_inference_latency_ms": round(avg_latency, 2),

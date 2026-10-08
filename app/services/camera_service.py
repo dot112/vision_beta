@@ -94,42 +94,114 @@ def camera_orientation(
 
 
 class CameraService:
+    # Cameras being reconnected in the background after their address changed.
+    _restarting: Dict[str, "asyncio.Task[None]"] = {}
+
+    @staticmethod
+    async def sync_ip_cameras(db: Optional[AsyncSession] = None) -> List[str]:
+        """Bring the IP cameras saved under Connections into the database, and restart
+        every running camera whose saved address is no longer the one it reads from.
+
+        Called after each save of a camera address, so a changed address takes
+        effect at once instead of at the next manual Connect. Returns the ids of
+        the cameras it restarted.
+        """
+        if db is None:
+            from app.db.session import AsyncSessionLocal
+            async with AsyncSessionLocal() as own_db:
+                return await CameraService.sync_ip_cameras(own_db)
+
+        from app.services.settings_persistence_service import SettingsPersistenceService
+        moved: List[str] = []
+        dirty_db = False
+        for saved in SettingsPersistenceService.get_state().get("ip_cameras", []):
+            camera_id = saved.get("id")
+            source = saved.get("source")
+            if not camera_id or not source:
+                continue
+            name = saved.get("name") or "IP Camera"
+            existing = await CameraService.get_camera_by_id(db, camera_id)
+            if not existing:
+                db.add(Camera(
+                    id=camera_id,
+                    name=name,
+                    type="ip",
+                    source=source,
+                    settings={"auto_connect": saved.get("auto_connect", True)},
+                    is_active=False,
+                ))
+                dirty_db = True
+            elif existing.source != source or existing.name != name:
+                if existing.source != source:
+                    # A camera still waiting to connect is tried on the new address now.
+                    CameraReconnector.retry_now(camera_id)
+                existing.source = source
+                existing.name = name
+                dirty_db = True
+
+            driver = app_state.cameras.get(camera_id)
+            running_on = getattr(driver, "source", None)
+            if running_on is not None and running_on != source:
+                moved.append(camera_id)
+            elif driver is not None:
+                driver.name = name
+
+        if dirty_db:
+            await db.commit()
+        # After the commit: the restart reads the address from the database.
+        return [camera_id for camera_id in moved if CameraService.restart_camera(camera_id)]
+
+    @staticmethod
+    def restart_camera(camera_id: str) -> bool:
+        """Reconnect a camera on its saved address in the background.
+
+        Opening an address that does not answer takes many seconds, so the
+        request that saved it is not kept waiting. A camera that does not come
+        up is retried like one that was off when the server started. Returns
+        False when a restart is already running or the server is shutting down.
+        """
+        if camera_id in CameraService._restarting or app_state.shutting_down:
+            return False
+
+        async def run() -> None:
+            from app.db.session import AsyncSessionLocal
+            try:
+                async with AsyncSessionLocal() as db:
+                    ok, err = await CameraService.connect_camera(db, camera_id)
+                if ok:
+                    logger.info("Camera %s restarted on its new address", camera_id)
+                elif err != "Camera not found in database":
+                    logger.warning("Camera %s did not connect on its new address, retrying in the background: %s",
+                                   camera_id, err)
+                    CameraReconnector.want(camera_id)
+            except Exception:
+                logger.exception("Could not restart camera %s on its new address", camera_id)
+            finally:
+                CameraService._restarting.pop(camera_id, None)
+
+        CameraService._restarting[camera_id] = asyncio.create_task(run(), name=f"camera_restart_{camera_id}")
+        return True
+
+    @staticmethod
+    def connection_state(camera: Camera) -> str:
+        """What the Cameras page shows: connected, reconnecting, failed or disconnected.
+
+        "reconnecting" is a camera nobody disconnected that the server is
+        bringing back: its driver lost the stream or the device, it is being
+        retried in the background, or it is restarting on a new address.
+        """
+        driver = app_state.cameras.get(camera.id)
+        if driver is not None and getattr(driver, "is_connected", False):
+            return "reconnecting" if getattr(driver, "reconnecting", False) else "connected"
+        if camera.id in CameraService._restarting or camera.id in CameraReconnector.pending():
+            return "reconnecting"
+        return "failed" if camera.last_error else "disconnected"
+
     @staticmethod
     async def list_cameras(db: AsyncSession) -> List[Camera]:
         # Sync configured IP cameras from persistent settings into database
         try:
-            from app.services.settings_persistence_service import SettingsPersistenceService
-            state = SettingsPersistenceService.get_state()
-            ip_cams = state.get("ip_cameras", [])
-            
-            dirty_db = False
-            for ip_c in ip_cams:
-                c_id = ip_c.get("id")
-                c_source = ip_c.get("source")
-                if c_id and c_source:
-                    stmt_c = select(Camera).where(Camera.id == c_id)
-                    res_c = await db.execute(stmt_c)
-                    existing = res_c.scalar_one_or_none()
-                    
-                    if not existing:
-                        new_cam = Camera(
-                            id=c_id,
-                            name=ip_c.get("name", "IP Camera"),
-                            type="ip",
-                            source=c_source,
-                            settings={"auto_connect": ip_c.get("auto_connect", True)},
-                            is_active=False,
-                        )
-                        db.add(new_cam)
-                        dirty_db = True
-                    elif existing.source != c_source or existing.name != ip_c.get("name"):
-                        existing.source = c_source
-                        existing.name = ip_c.get("name", "IP Camera")
-                        dirty_db = True
-
-            if dirty_db:
-                await db.commit()
-
+            await CameraService.sync_ip_cameras(db)
         except Exception as sync_e:
             logger.debug("IP camera sync error: %s", sync_e)
             await db.rollback()
@@ -166,6 +238,7 @@ class CameraService:
         if not camera:
             return None
 
+        previous_source = camera.source
         if data.name is not None:
             camera.name = data.name
         if data.source is not None:
@@ -189,6 +262,16 @@ class CameraService:
         await db.commit()
         await db.refresh(camera)
         logger.info("Updated camera settings for id %s", camera_id)
+
+        if data.name is not None or data.source is not None:
+            # The saved Connections entry is copied over the database on every
+            # camera listing, so it has to carry the change too.
+            from app.services.settings_persistence_service import SettingsPersistenceService
+            SettingsPersistenceService.set_ip_camera_address(camera_id, camera.name, camera.source)
+        if camera.source != previous_source:
+            CameraReconnector.retry_now(camera_id)
+            if camera_id in app_state.cameras:
+                CameraService.restart_camera(camera_id)
         return camera
 
     @staticmethod
@@ -381,11 +464,32 @@ class CameraService:
             name=camera.name,
             type=camera.type,
             is_active=camera.is_active,
+            connection_state=CameraService.connection_state(camera),
             is_streaming=is_streaming,
             source=camera.source,
             properties=properties,
             last_error=camera.last_error,
         )
+
+    @staticmethod
+    async def grab_full_view(camera_id: str, max_width: int = 1280) -> Optional[bytes]:
+        """JPEG of a connected camera's picture before the ROI crop, at most max_width wide."""
+        driver: Optional[BaseCamera] = app_state.cameras.get(camera_id)
+        if driver is None or not driver.is_connected:
+            return None
+
+        def encode() -> Optional[bytes]:
+            import cv2
+            mat = driver.get_full_view_mat()
+            if mat is None:
+                return None
+            if mat.shape[1] > max_width:
+                scale = max_width / mat.shape[1]
+                mat = cv2.resize(mat, (max_width, max(1, int(mat.shape[0] * scale))), interpolation=cv2.INTER_AREA)
+            ok, buf = cv2.imencode(".jpg", mat, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            return buf.tobytes() if ok else None
+
+        return await asyncio.to_thread(encode)
 
     @staticmethod
     async def grab_frame(db: AsyncSession, camera_id: str) -> Tuple[bool, Optional[bytes], Optional[str]]:
@@ -476,6 +580,13 @@ class CameraReconnector:
     @classmethod
     def forget(cls, camera_id: str) -> None:
         cls._pending.pop(camera_id, None)
+
+    @classmethod
+    def retry_now(cls, camera_id: str) -> None:
+        """Try a waiting camera on the next pass (its address was just changed). Others are left alone."""
+        entry = cls._pending.get(camera_id)
+        if entry is not None:
+            entry.update({"next": time.monotonic(), "delay": cls.FIRST_DELAY_SECONDS, "attempts": 0})
 
     @classmethod
     def pending(cls) -> List[str]:

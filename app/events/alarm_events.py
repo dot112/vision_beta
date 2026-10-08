@@ -50,6 +50,7 @@ class AlarmState(str, Enum):
 class AlarmCode:
     """Well-known alarm codes. Free-form codes are allowed; these keep callers consistent."""
 
+    CAMERA_MODEL_UNAVAILABLE = "camera.model_unavailable"
     PLC_CONNECT_FAILED = "plc.connect_failed"
     PLC_DISCONNECT_ERROR = "plc.disconnect_error"
     PLC_ACTION_FAILED = "plc.action_failed"
@@ -60,6 +61,86 @@ class AlarmCode:
     FLOW_OVERLOAD = "flow.overload"
     FLOW_BOOTSTRAP_FAILED = "flow.bootstrap_failed"
     FLOW_ENDPOINT_UNRESOLVED = "flow.endpoint_unresolved"
+
+
+# Every well-known alarm, for pick-lists such as a PLC action's "Alarm" trigger.
+# scope "line": the alarm carries the production line it belongs to (details.line_id)
+# and only concerns that line. scope "server": it concerns the whole server or a
+# device lines can share (a PLC connection), so it concerns every line.
+ALARM_CATALOG: List[Dict[str, str]] = [
+    {"code": "camera.disconnected", "label": "Camera not connected", "group": "Cameras",
+     "severity": "critical", "scope": "line",
+     "description": "A camera on the line is not connected."},
+    {"code": "camera.stalled", "label": "Camera stalled", "group": "Cameras",
+     "severity": "critical", "scope": "line",
+     "description": "A connected camera on the line has sent no new frame for a few seconds."},
+    {"code": "camera.model_unavailable", "label": "Camera has no model it can run", "group": "Cameras",
+     "severity": "critical", "scope": "line",
+     "description": "A vision camera on the running line has no model, or its model could not be loaded: nothing is detected on it."},
+    {"code": "line.fps_low", "label": "Line frame rate low", "group": "Lines",
+     "severity": "warning", "scope": "line",
+     "description": "The running line processes fewer frames/s than its minimum; counts may be missed."},
+    {"code": "plc.action_failed", "label": "PLC action failed", "group": "PLC",
+     "severity": "critical", "scope": "line",
+     "description": "One of the line's PLC actions could not be sent."},
+    {"code": "plc.action_timeout", "label": "PLC action timed out", "group": "PLC",
+     "severity": "critical", "scope": "line",
+     "description": "The PLC did not answer one of the line's PLC actions; whether the output fired is unknown."},
+    {"code": "plc.connect_failed", "label": "PLC cannot connect", "group": "PLC",
+     "severity": "critical", "scope": "server",
+     "description": "The server cannot reach a PLC connection."},
+    {"code": "plc.disconnect_error", "label": "PLC did not disconnect cleanly", "group": "PLC",
+     "severity": "warning", "scope": "server",
+     "description": "Closing a PLC connection failed; the PLC may still hold the old session."},
+    {"code": "inference.model_not_loaded", "label": "No model loaded", "group": "Inference",
+     "severity": "critical", "scope": "server",
+     "description": "A vision camera of a running line is sending frames but no AI model at all is loaded."},
+    {"code": "inference.runner_stopped", "label": "Vision runner stopped", "group": "Inference",
+     "severity": "critical", "scope": "server",
+     "description": "The background inference worker is not running."},
+    {"code": "inference.stalled", "label": "Inference stalled", "group": "Inference",
+     "severity": "critical", "scope": "server",
+     "description": "Frames are arriving but nothing has been inferred for several seconds."},
+    {"code": "flow.action_failed", "label": "Flow output failed", "group": "Flows",
+     "severity": "warning", "scope": "server",
+     "description": "A flow's output node (MQTT, TCP, webhook or Modbus) failed."},
+    {"code": "flow.node_error", "label": "Flow node error", "group": "Flows",
+     "severity": "warning", "scope": "server",
+     "description": "A flow node raised an error."},
+    {"code": "flow.run_failed", "label": "Flow run failed", "group": "Flows",
+     "severity": "warning", "scope": "server",
+     "description": "A whole flow run aborted."},
+    {"code": "flow.overload", "label": "Flows overloaded", "group": "Flows",
+     "severity": "warning", "scope": "server",
+     "description": "Too many flow runs piled up and some were dropped."},
+    {"code": "flow.endpoint_unresolved", "label": "Flow connection unreadable", "group": "Flows",
+     "severity": "warning", "scope": "server",
+     "description": "A flow could not read the connection it sends to."},
+    {"code": "flow.bootstrap_failed", "label": "Flows not loaded", "group": "Flows",
+     "severity": "critical", "scope": "server",
+     "description": "Flows could not be loaded at start, so no flows run."},
+]
+
+
+_CATALOG_BY_CODE: Dict[str, Dict[str, str]] = {entry["code"]: entry for entry in ALARM_CATALOG}
+ALL_LINES = "*"
+
+
+def alarm_scope(code: str) -> Optional[str]:
+    """"line" or "server" for a catalogued code, None for a free-form one."""
+    entry = _CATALOG_BY_CODE.get(code)
+    return entry["scope"] if entry else None
+
+
+def alarm_line(code: str, details: Optional[Dict[str, Any]]) -> str:
+    """The line an alarm concerns: its line id, ALL_LINES for one that concerns
+    every line (a server-wide alarm, or a free-form one naming no line), or ""
+    for a line alarm that names no line (e.g. a camera no line uses)."""
+    line_id = str((details or {}).get("line_id") or "")
+    scope = alarm_scope(code)
+    if scope == "server" or (scope is None and not line_id):
+        return ALL_LINES
+    return line_id
 
 
 def _now() -> datetime:
@@ -90,9 +171,11 @@ class Alarm:
         def iso(dt: Optional[datetime]) -> Optional[str]:
             return dt.isoformat() if dt else None
 
+        lines = alarm_line(self.code, self.details)
         return {
             "id": self.id,
             "code": self.code,
+            "label": (_CATALOG_BY_CODE.get(self.code) or {}).get("label") or self.code,
             "source": self.source,
             "severity": self.severity.value,
             "state": self.state.value,
@@ -104,7 +187,13 @@ class Alarm:
             "acknowledged_at": iso(self.acknowledged_at),
             "acknowledged_by": self.acknowledged_by,
             "cleared_at": iso(self.cleared_at),
+            "line_id": lines if lines != ALL_LINES else None,
+            "all_lines": lines == ALL_LINES,
         }
+
+    def concerns_line(self, line_id: str, include_all_lines: bool = False) -> bool:
+        lines = alarm_line(self.code, self.details)
+        return lines == line_id or (include_all_lines and lines == ALL_LINES)
 
 
 class AlarmManager:
@@ -247,12 +336,16 @@ def clear_alarm(code: str, source: str, reason: str = "condition cleared") -> Op
 
 
 __all__ = [
+    "ALARM_CATALOG",
+    "ALL_LINES",
     "Alarm",
     "AlarmCode",
     "AlarmManager",
     "AlarmSeverity",
     "AlarmState",
+    "alarm_line",
     "alarm_manager",
+    "alarm_scope",
     "clear_alarm",
     "raise_alarm",
 ]

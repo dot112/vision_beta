@@ -92,6 +92,45 @@ def test_disconnect_error_is_logged_not_swallowed(caplog):
     asyncio.run(run())
     assert "did not close cleanly" in caplog.text
     assert "socket already gone" in caplog.text
+    alarm = alarm_manager.get(AlarmCode.PLC_DISCONNECT_ERROR, "plc:ep-line1")
+    assert alarm is not None
+    assert alarm.severity == AlarmSeverity.WARNING
+    assert "socket already gone" in alarm.message
+
+
+def test_disconnect_alarm_clears_on_next_connect_and_retired_drivers_stay_quiet():
+    class BrokenWriter:
+        def close(self):
+            raise OSError("socket already gone")
+
+    async def run():
+        async def accept_and_close(reader, writer):
+            writer.close()
+
+        server = await asyncio.start_server(accept_and_close, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        try:
+            driver = GenericTCPDriver(_endpoint(port))
+            driver._writer = BrokenWriter()
+            driver.is_connected = True
+            await driver.disconnect()
+            assert alarm_manager.get(AlarmCode.PLC_DISCONNECT_ERROR, "plc:ep-line1") is not None
+            assert await driver.connect() is True
+            assert alarm_manager.get(AlarmCode.PLC_DISCONNECT_ERROR, "plc:ep-line1") is None
+            await driver.disconnect()
+
+            # A driver retired because its endpoint changed closes without alarms.
+            pooled = PLCDriverFactory.get_driver(_endpoint(port, id="ep-retired"))
+            pooled._writer = BrokenWriter()
+            pooled.is_connected = True
+            PLCDriverFactory.invalidate("ep-retired")
+            await asyncio.sleep(0.05)
+            assert alarm_manager.active() == []
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    asyncio.run(run())
 
 
 def test_invalidating_a_driver_clears_its_alarms():
@@ -199,6 +238,32 @@ def test_unexpected_node_exception_raises_node_alarm():
     assert "ValueError" in alarm.message
 
 
+def test_node_error_alarm_clears_when_the_node_runs_cleanly():
+    node = {"id": "n2", "type": "delay", "config": {"delay_ms": "not-a-number"}}
+
+    async def run():
+        await _execute_node("flow-2", node, {})
+        assert alarm_manager.get(AlarmCode.FLOW_NODE_ERROR, "flow:flow-2/n2") is not None
+        # A test run of the fixed node must not clear the live flow's alarm.
+        fixed = {**node, "config": {"delay_ms": 0}}
+        await _execute_node("flow-2", fixed, {"_test": True})
+        assert alarm_manager.get(AlarmCode.FLOW_NODE_ERROR, "flow:flow-2/n2") is not None
+        passed, _, _ = await _execute_node("flow-2", fixed, {})
+        assert passed is True
+
+    asyncio.run(run())
+    assert alarm_manager.get(AlarmCode.FLOW_NODE_ERROR, "flow:flow-2/n2") is None
+
+
+def test_changing_or_removing_a_flow_clears_its_alarms():
+    alarm_manager.raise_alarm(AlarmCode.FLOW_NODE_ERROR, "flow:f1/n1", "boom")
+    alarm_manager.raise_alarm(AlarmCode.FLOW_RUN_FAILED, "flow:f1", "boom")
+    alarm_manager.raise_alarm(AlarmCode.FLOW_RUN_FAILED, "flow:f10", "another flow")
+
+    asyncio.run(FlowEngine().unload_flow("f1"))
+    assert [a.source for a in alarm_manager.active()] == ["flow:f10"]
+
+
 def test_debug_sink_failure_is_logged(caplog):
     def bad_sink(evt):
         raise RuntimeError("websocket closed")
@@ -242,6 +307,58 @@ def test_crashed_flow_run_raises_alarm():
     alarm = alarm_manager.get(AlarmCode.FLOW_RUN_FAILED, "flow:flow-9")
     assert alarm is not None
     assert "walk exploded" in alarm.message
+
+
+def _finish(engine, coro, flow_id, test=False):
+    task = asyncio.create_task(coro)
+    engine._tasks[task] = flow_id
+    if test:
+        engine._test_tasks.add(task)
+    task.add_done_callback(engine._on_task_done)
+    return task
+
+
+def test_flow_run_alarm_clears_on_next_clean_run_but_not_on_a_test_run():
+    async def boom():
+        raise RuntimeError("walk exploded")
+
+    async def fine():
+        return None
+
+    async def run():
+        engine = FlowEngine()
+        await asyncio.gather(_finish(engine, boom(), "flow-9"), return_exceptions=True)
+        await asyncio.sleep(0)
+        assert alarm_manager.get(AlarmCode.FLOW_RUN_FAILED, "flow:flow-9") is not None
+        await _finish(engine, fine(), "flow-9", test=True)
+        await asyncio.sleep(0)
+        assert alarm_manager.get(AlarmCode.FLOW_RUN_FAILED, "flow:flow-9") is not None
+        await _finish(engine, fine(), "flow-9")
+        await asyncio.sleep(0)
+        assert alarm_manager.get(AlarmCode.FLOW_RUN_FAILED, "flow:flow-9") is None
+        # A crashing test run never raises the live flow's alarm.
+        await asyncio.gather(_finish(engine, boom(), "flow-9", test=True), return_exceptions=True)
+        await asyncio.sleep(0)
+        assert alarm_manager.get(AlarmCode.FLOW_RUN_FAILED, "flow:flow-9") is None
+
+    asyncio.run(run())
+
+
+def test_overload_alarm_clears_once_load_falls_to_half_the_limit():
+    async def run():
+        engine = FlowEngine()
+        engine._max_active_runs = 4
+        gate = asyncio.Event()
+        await engine.load_flow({"id": "f", "is_active": True, "nodes": [], "links": []})
+        tasks = [_finish(engine, gate.wait(), "f") for _ in range(4)]
+        await engine.dispatch("detection", {})
+        assert alarm_manager.get(AlarmCode.FLOW_OVERLOAD, "flow_engine") is not None
+        gate.set()
+        await asyncio.gather(*tasks)
+        await asyncio.sleep(0)
+        assert alarm_manager.get(AlarmCode.FLOW_OVERLOAD, "flow_engine") is None
+
+    asyncio.run(run())
 
 
 def test_startup_migrations_keep_app_logging_enabled(client):

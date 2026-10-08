@@ -1,7 +1,7 @@
 from __future__ import annotations
 import asyncio, json, time, uuid
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
 from app.utils.logger import get_logger
 
@@ -276,153 +276,11 @@ async def _inc_exec(flow_id: str) -> None:
 
 # ── Node executor ──────────────────────────────────────────────────────
 async def _execute_node(fid: str, node: Dict, ctx: Dict) -> Tuple[bool, str, Dict]:
+    """Run one node. An exception raises the node's error alarm; a clean run clears it."""
     ntype = node.get("type", "")
-    cfg   = node.get("config", {})
     nid   = node.get("id", "?")
-    uctx  = dict(ctx)
     try:
-        # ── Condition / If ────────────────────────────────────────────────────
-        if ntype in ("if", "logic_switch"):
-            cond = _eval_condition(ctx, cfg.get("field","is_defect"), cfg.get("operator","=="), str(cfg.get("value","true")))
-            port = "out:0" if cond else "out:1"
-            await _emit_debug(fid, nid, "passed", f"If condition {cfg.get('field')} {cfg.get('operator')} {cfg.get('value')} -> {'TRUE (out:0)' if cond else 'FALSE (out:1)'}")
-            return True, port, uctx
-
-        # ── Compare ──────────────────────────────────────────────────────────
-        elif ntype in ("compare", "logic_compare"):
-            field = cfg.get("field", "total_inspected")
-            op = cfg.get("operator", ">")
-            val = str(cfg.get("value", "1000"))
-            passed = _eval_condition(ctx, field, op, val)
-            port = "out:0" if passed else "out:1"
-            await _emit_debug(fid, nid, "passed" if passed else "blocked", f"Compare {field} {op} {val} -> {port}")
-            return True, port, uctx
-
-        # ── AND / OR Gates ───────────────────────────────────────────────────
-        elif ntype in ("and", "logic_and"):
-            conditions = cfg.get("conditions") or []
-            if not conditions:
-                await _emit_debug(fid, nid, "blocked", "AND gate requires configured conditions")
-                return False, "out:0", uctx
-            passed = all(_eval_condition(ctx, c.get("field", ""), c.get("operator", "=="), str(c.get("value", ""))) for c in conditions)
-            await _emit_debug(fid, nid, "passed" if passed else "blocked", f"AND gate -> {passed}")
-            return passed, "out:0", uctx
-
-        elif ntype in ("or", "logic_or"):
-            conditions = cfg.get("conditions") or []
-            if not conditions:
-                await _emit_debug(fid, nid, "blocked", "OR gate requires configured conditions")
-                return False, "out:0", uctx
-            passed = any(_eval_condition(ctx, c.get("field", ""), c.get("operator", "=="), str(c.get("value", ""))) for c in conditions)
-            await _emit_debug(fid, nid, "passed" if passed else "blocked", f"OR gate -> {passed}")
-            return passed, "out:0", uctx
-
-        # ── Switch ───────────────────────────────────────────────────────────
-        elif ntype in ("switch",):
-            val = str(ctx.get(cfg.get("field","class_name"), "")).lower()
-            cases = [c.strip().lower() for c in str(cfg.get("cases","case1,case2")).split(",")]
-            port = f"out:{cases.index(val)}" if val in cases else f"out:{len(cases)}"
-            await _emit_debug(fid, nid, "passed", f"Switch '{val}' -> {port}")
-            return True, port, uctx
-
-        # ── Class Filter ──────────────────────────────────────────────────────
-        elif ntype in ("class_filter", "logic_class_filter"):
-            allowed = [c.strip().lower() for c in str(cfg.get("classes","")).split(",") if c.strip()]
-            defect_only = bool(cfg.get("defect_only", False))
-            cls = str(ctx.get("class_name","")).lower()
-            passed = bool(ctx.get("is_defect")) if defect_only else (cls in allowed if allowed else True)
-            await _emit_debug(fid, nid, "passed" if passed else "blocked", f"Class filter '{cls}' -> {'PASS' if passed else 'BLOCK'}")
-            return passed, "out:0", uctx
-
-        # ── Threshold Gate ───────────────────────────────────────────────────
-        elif ntype in ("threshold", "logic_threshold"):
-            field = cfg.get("field", "confidence")
-            mn, mx = float(cfg.get("min", 0.0)), float(cfg.get("max", 1.0))
-            try:
-                v = float(ctx.get(field, 0.0))
-                passed = mn <= v <= mx
-            except (TypeError, ValueError):
-                # A non-numeric reading blocks the branch; the pulse below shows the value.
-                passed = False
-            await _emit_debug(fid, nid, "passed" if passed else "blocked", f"Threshold {field}={ctx.get(field)} in [{mn},{mx}] -> {'PASS' if passed else 'BLOCK'}")
-            return passed, "out:0", uctx
-
-        # ── Delay / Timer ─────────────────────────────────────────────────────
-        elif ntype in ("delay", "logic_delay"):
-            ms = int(cfg.get("delay_ms", 80))
-            if ms < 0 or ms > 300_000:
-                return False, "out:0", uctx
-            await _emit_debug(fid, nid, "passed", f"Delay {ms}ms")
-            if ms > 0: await asyncio.sleep(ms / 1000.0)
-            return True, "out:0", uctx
-
-        # ── Debounce ──────────────────────────────────────────────────────────
-        elif ntype in ("debounce", "logic_debounce"):
-            cooldown = max(0, int(cfg.get("cooldown_ms", 200))) / 1000.0
-            key = (f"{fid}:test" if ctx.get("_test") else fid, nid)
-            now = time.monotonic()
-            last = _debounce_last.get(key)
-            if last is not None and now - last < cooldown:
-                await _emit_debug(fid, nid, "blocked", f"Debounce active for {max(0, cooldown - (now-last)):.3f}s")
-                return False, "out:0", uctx
-            _debounce_last[key] = now
-            await _emit_debug(fid, nid, "passed", f"Debounce {int(cooldown * 1000)}ms")
-            return True, "out:0", uctx
-
-        # ── Actuator Outputs ──────────────────────────────────────────────────
-        elif ntype in ("modbus_out", "action_modbus_coil", "action_modbus_register"):
-            if ctx.get("_test"):
-                msg = "TEST MODE: Modbus output suppressed"
-                await _emit_debug(fid, nid, "simulated", msg)
-                return True, "out:0", uctx
-            msg = await _exec_modbus(cfg, ctx)
-            passed = not any(word in msg.lower() for word in ("error", "exception", "failed"))
-            await _report_action(fid, nid, ntype, passed, msg); return passed, "out:0", uctx
-
-        elif ntype in ("mqtt_out", "action_mqtt_publish"):
-            if ctx.get("_test"):
-                msg = "TEST MODE: MQTT publish suppressed"
-                await _emit_debug(fid, nid, "simulated", msg)
-                return True, "out:0", uctx
-            ep = _resolve_endpoint(cfg.get("endpoint_id"))
-            msg = await _exec_mqtt(cfg, ctx, ep)
-            passed = "failed" not in msg.lower() and "exception" not in msg.lower()
-            await _report_action(fid, nid, ntype, passed, msg); return passed, "out:0", uctx
-
-        elif ntype in ("tcp_out", "action_tcp_publish"):
-            if ctx.get("_test"):
-                msg = "TEST MODE: TCP output suppressed"
-                await _emit_debug(fid, nid, "simulated", msg)
-                return True, "out:0", uctx
-            ep = _resolve_endpoint(cfg.get("endpoint_id"))
-            msg = await _exec_tcp(cfg, ctx, ep)
-            passed = "exception" not in msg.lower()
-            await _report_action(fid, nid, ntype, passed, msg); return passed, "out:0", uctx
-
-        elif ntype in ("api_out", "action_webhook_post"):
-            if ctx.get("_test"):
-                msg = "TEST MODE: webhook request suppressed"
-                await _emit_debug(fid, nid, "simulated", msg)
-                return True, "out:0", uctx
-            ep = _resolve_endpoint(cfg.get("endpoint_id"))
-            msg = await _exec_webhook(cfg, ctx, ep)
-            passed = "exception" not in msg.lower() and "failed" not in msg.lower()
-            await _report_action(fid, nid, ntype, passed, msg); return passed, "out:0", uctx
-
-        elif ntype in ("log_out", "action_dashboard_alert"):
-            title = cfg.get("title", f"Event Log: {ctx.get('class_name', 'item')}")
-            sev   = cfg.get("severity", "info")
-            await _emit_debug(fid, nid, "executed", f"Log: [{sev.upper()}] {title}")
-            try:
-                from app.events.event_bus import event_bus
-                await event_bus.publish("dashboard_alert", {"title": title, "severity": sev, "context": ctx})
-            except Exception as exc:
-                logger.warning("Flow %s could not publish dashboard alert '%s': %s", fid, title, exc)
-            return True, "out:0", uctx
-
-        else:
-            await _emit_debug(fid, nid, "error", f"Unknown node type: {ntype}")
-            return False, "out:0", uctx
+        result = await _run_node(fid, node, ctx)
     except Exception as exc:
         await _emit_debug(fid, nid, "error", str(exc))
         logger.exception("FlowEngine node error [%s/%s]", fid, nid)
@@ -433,6 +291,157 @@ async def _execute_node(fid: str, node: Dict, ctx: Dict) -> Tuple[bool, str, Dic
                 AlarmSeverity.WARNING,
                 {"flow_id": fid, "node_id": nid, "node_type": ntype},
             )
+        return False, "out:0", dict(ctx)
+    if not ctx.get("_test"):
+        alarm_manager.clear_alarm(AlarmCode.FLOW_NODE_ERROR, f"flow:{fid}/{nid}", "node ran without error")
+    return result
+
+async def _run_node(fid: str, node: Dict, ctx: Dict) -> Tuple[bool, str, Dict]:
+    ntype = node.get("type", "")
+    cfg   = node.get("config", {})
+    nid   = node.get("id", "?")
+    uctx  = dict(ctx)
+    # ── Condition / If ────────────────────────────────────────────────────
+    if ntype in ("if", "logic_switch"):
+        cond = _eval_condition(ctx, cfg.get("field","is_defect"), cfg.get("operator","=="), str(cfg.get("value","true")))
+        port = "out:0" if cond else "out:1"
+        await _emit_debug(fid, nid, "passed", f"If condition {cfg.get('field')} {cfg.get('operator')} {cfg.get('value')} -> {'TRUE (out:0)' if cond else 'FALSE (out:1)'}")
+        return True, port, uctx
+
+    # ── Compare ──────────────────────────────────────────────────────────
+    elif ntype in ("compare", "logic_compare"):
+        field = cfg.get("field", "total_inspected")
+        op = cfg.get("operator", ">")
+        val = str(cfg.get("value", "1000"))
+        passed = _eval_condition(ctx, field, op, val)
+        port = "out:0" if passed else "out:1"
+        await _emit_debug(fid, nid, "passed" if passed else "blocked", f"Compare {field} {op} {val} -> {port}")
+        return True, port, uctx
+
+    # ── AND / OR Gates ───────────────────────────────────────────────────
+    elif ntype in ("and", "logic_and"):
+        conditions = cfg.get("conditions") or []
+        if not conditions:
+            await _emit_debug(fid, nid, "blocked", "AND gate requires configured conditions")
+            return False, "out:0", uctx
+        passed = all(_eval_condition(ctx, c.get("field", ""), c.get("operator", "=="), str(c.get("value", ""))) for c in conditions)
+        await _emit_debug(fid, nid, "passed" if passed else "blocked", f"AND gate -> {passed}")
+        return passed, "out:0", uctx
+
+    elif ntype in ("or", "logic_or"):
+        conditions = cfg.get("conditions") or []
+        if not conditions:
+            await _emit_debug(fid, nid, "blocked", "OR gate requires configured conditions")
+            return False, "out:0", uctx
+        passed = any(_eval_condition(ctx, c.get("field", ""), c.get("operator", "=="), str(c.get("value", ""))) for c in conditions)
+        await _emit_debug(fid, nid, "passed" if passed else "blocked", f"OR gate -> {passed}")
+        return passed, "out:0", uctx
+
+    # ── Switch ───────────────────────────────────────────────────────────
+    elif ntype in ("switch",):
+        val = str(ctx.get(cfg.get("field","class_name"), "")).lower()
+        cases = [c.strip().lower() for c in str(cfg.get("cases","case1,case2")).split(",")]
+        port = f"out:{cases.index(val)}" if val in cases else f"out:{len(cases)}"
+        await _emit_debug(fid, nid, "passed", f"Switch '{val}' -> {port}")
+        return True, port, uctx
+
+    # ── Class Filter ──────────────────────────────────────────────────────
+    elif ntype in ("class_filter", "logic_class_filter"):
+        allowed = [c.strip().lower() for c in str(cfg.get("classes","")).split(",") if c.strip()]
+        defect_only = bool(cfg.get("defect_only", False))
+        cls = str(ctx.get("class_name","")).lower()
+        passed = bool(ctx.get("is_defect")) if defect_only else (cls in allowed if allowed else True)
+        await _emit_debug(fid, nid, "passed" if passed else "blocked", f"Class filter '{cls}' -> {'PASS' if passed else 'BLOCK'}")
+        return passed, "out:0", uctx
+
+    # ── Threshold Gate ───────────────────────────────────────────────────
+    elif ntype in ("threshold", "logic_threshold"):
+        field = cfg.get("field", "confidence")
+        mn, mx = float(cfg.get("min", 0.0)), float(cfg.get("max", 1.0))
+        try:
+            v = float(ctx.get(field, 0.0))
+            passed = mn <= v <= mx
+        except (TypeError, ValueError):
+            # A non-numeric reading blocks the branch; the pulse below shows the value.
+            passed = False
+        await _emit_debug(fid, nid, "passed" if passed else "blocked", f"Threshold {field}={ctx.get(field)} in [{mn},{mx}] -> {'PASS' if passed else 'BLOCK'}")
+        return passed, "out:0", uctx
+
+    # ── Delay / Timer ─────────────────────────────────────────────────────
+    elif ntype in ("delay", "logic_delay"):
+        ms = int(cfg.get("delay_ms", 80))
+        if ms < 0 or ms > 300_000:
+            return False, "out:0", uctx
+        await _emit_debug(fid, nid, "passed", f"Delay {ms}ms")
+        if ms > 0: await asyncio.sleep(ms / 1000.0)
+        return True, "out:0", uctx
+
+    # ── Debounce ──────────────────────────────────────────────────────────
+    elif ntype in ("debounce", "logic_debounce"):
+        cooldown = max(0, int(cfg.get("cooldown_ms", 200))) / 1000.0
+        key = (f"{fid}:test" if ctx.get("_test") else fid, nid)
+        now = time.monotonic()
+        last = _debounce_last.get(key)
+        if last is not None and now - last < cooldown:
+            await _emit_debug(fid, nid, "blocked", f"Debounce active for {max(0, cooldown - (now-last)):.3f}s")
+            return False, "out:0", uctx
+        _debounce_last[key] = now
+        await _emit_debug(fid, nid, "passed", f"Debounce {int(cooldown * 1000)}ms")
+        return True, "out:0", uctx
+
+    # ── Actuator Outputs ──────────────────────────────────────────────────
+    elif ntype in ("modbus_out", "action_modbus_coil", "action_modbus_register"):
+        if ctx.get("_test"):
+            msg = "TEST MODE: Modbus output suppressed"
+            await _emit_debug(fid, nid, "simulated", msg)
+            return True, "out:0", uctx
+        msg = await _exec_modbus(cfg, ctx)
+        passed = not any(word in msg.lower() for word in ("error", "exception", "failed"))
+        await _report_action(fid, nid, ntype, passed, msg); return passed, "out:0", uctx
+
+    elif ntype in ("mqtt_out", "action_mqtt_publish"):
+        if ctx.get("_test"):
+            msg = "TEST MODE: MQTT publish suppressed"
+            await _emit_debug(fid, nid, "simulated", msg)
+            return True, "out:0", uctx
+        ep = _resolve_endpoint(cfg.get("endpoint_id"))
+        msg = await _exec_mqtt(cfg, ctx, ep)
+        passed = "failed" not in msg.lower() and "exception" not in msg.lower()
+        await _report_action(fid, nid, ntype, passed, msg); return passed, "out:0", uctx
+
+    elif ntype in ("tcp_out", "action_tcp_publish"):
+        if ctx.get("_test"):
+            msg = "TEST MODE: TCP output suppressed"
+            await _emit_debug(fid, nid, "simulated", msg)
+            return True, "out:0", uctx
+        ep = _resolve_endpoint(cfg.get("endpoint_id"))
+        msg = await _exec_tcp(cfg, ctx, ep)
+        passed = "exception" not in msg.lower()
+        await _report_action(fid, nid, ntype, passed, msg); return passed, "out:0", uctx
+
+    elif ntype in ("api_out", "action_webhook_post"):
+        if ctx.get("_test"):
+            msg = "TEST MODE: webhook request suppressed"
+            await _emit_debug(fid, nid, "simulated", msg)
+            return True, "out:0", uctx
+        ep = _resolve_endpoint(cfg.get("endpoint_id"))
+        msg = await _exec_webhook(cfg, ctx, ep)
+        passed = "exception" not in msg.lower() and "failed" not in msg.lower()
+        await _report_action(fid, nid, ntype, passed, msg); return passed, "out:0", uctx
+
+    elif ntype in ("log_out", "action_dashboard_alert"):
+        title = cfg.get("title", f"Event Log: {ctx.get('class_name', 'item')}")
+        sev   = cfg.get("severity", "info")
+        await _emit_debug(fid, nid, "executed", f"Log: [{sev.upper()}] {title}")
+        try:
+            from app.events.event_bus import event_bus
+            await event_bus.publish("dashboard_alert", {"title": title, "severity": sev, "context": ctx})
+        except Exception as exc:
+            logger.warning("Flow %s could not publish dashboard alert '%s': %s", fid, title, exc)
+        return True, "out:0", uctx
+
+    else:
+        await _emit_debug(fid, nid, "error", f"Unknown node type: {ntype}")
         return False, "out:0", uctx
 
 # ── FlowEngine ─────────────────────────────────────────────────────────
@@ -445,6 +454,9 @@ class FlowEngine:
         self._compiled: Dict[str, Dict] = {}
         self._lock = asyncio.Lock()
         self._tasks: Dict[asyncio.Task, str] = {}
+        # Test runs share the live flow's id but must not raise or clear its alarms.
+        self._test_tasks: Set[asyncio.Task] = set()
+        self._overloaded = False
 
     @classmethod
     def get(cls) -> FlowEngine:
@@ -492,6 +504,10 @@ class FlowEngine:
         for task, active_flow_id in list(self._tasks.items()):
             if active_flow_id == flow_id:
                 task.cancel()
+        # Its errors belonged to the old version; a new one raises them again if they recur.
+        for alarm in alarm_manager.active(f"flow:{flow_id}"):
+            if alarm.source == f"flow:{flow_id}" or alarm.source.startswith(f"flow:{flow_id}/"):
+                alarm_manager.clear_alarm(alarm.code, alarm.source, "flow changed or removed")
 
     async def dispatch(self, event_type: str, payload: Dict) -> None:
         async with self._lock:
@@ -505,6 +521,7 @@ class FlowEngine:
                 continue
             self._schedule_run(fid, c, event_type, dict(payload))
         if dropped:
+            self._overloaded = True
             alarm_manager.raise_alarm(
                 AlarmCode.FLOW_OVERLOAD, "flow_engine",
                 f"FlowEngine dropped {dropped} run(s) for '{event_type}': {self._max_active_runs} active run limit reached",
@@ -512,11 +529,13 @@ class FlowEngine:
                 {"event_type": event_type, "dropped": dropped},
             )
 
-    def _schedule_run(self, flow_id: str, compiled: Dict, event_type: str, payload: Dict) -> bool:
+    def _schedule_run(self, flow_id: str, compiled: Dict, event_type: str, payload: Dict, test: bool = False) -> bool:
         if len(self._tasks) >= self._max_active_runs:
             return False
         task = asyncio.create_task(self._run_flow(flow_id, compiled, event_type, payload))
         self._tasks[task] = flow_id
+        if test:
+            self._test_tasks.add(task)
         task.add_done_callback(self._on_task_done)
         return True
 
@@ -524,10 +543,16 @@ class FlowEngine:
         """Run an isolated flow snapshot with all external outputs suppressed."""
         compiled = self._compile_flow({**flow_dict, "is_active": True})
         test_payload = {**payload, "_test": True}
-        return self._schedule_run(flow_dict["id"], compiled, event_type, test_payload)
+        return self._schedule_run(flow_dict["id"], compiled, event_type, test_payload, test=True)
 
     def _on_task_done(self, task: asyncio.Task) -> None:
         task_flow_id = self._tasks.pop(task, None)
+        is_test = task in self._test_tasks
+        self._test_tasks.discard(task)
+        # Clear at half the limit, so a load hovering at the limit does not flap the alarm.
+        if self._overloaded and len(self._tasks) <= self._max_active_runs // 2:
+            self._overloaded = False
+            alarm_manager.clear_alarm(AlarmCode.FLOW_OVERLOAD, "flow_engine", "flow load back to normal")
         if task.cancelled():
             return
         try:
@@ -536,6 +561,8 @@ class FlowEngine:
             return
         if exc:
             logger.error("FlowEngine run failed: %s", exc, exc_info=(type(exc), exc, exc.__traceback__))
+            if is_test:
+                return
             flow_id = task_flow_id or "unknown"
             alarm_manager.raise_alarm(
                 AlarmCode.FLOW_RUN_FAILED, f"flow:{flow_id}",
@@ -543,6 +570,8 @@ class FlowEngine:
                 AlarmSeverity.WARNING,
                 {"flow_id": flow_id},
             )
+        elif task_flow_id and not is_test:
+            alarm_manager.clear_alarm(AlarmCode.FLOW_RUN_FAILED, f"flow:{task_flow_id}", "flow ran without error")
 
     async def shutdown(self) -> None:
         tasks = list(self._tasks)
@@ -551,6 +580,7 @@ class FlowEngine:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
+        self._test_tasks.clear()
         async with self._lock:
             self._compiled.clear()
         _debounce_last.clear()

@@ -5,7 +5,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.db.models.user import User
 from app.dependencies import get_current_user, get_db, require_operator, require_supervisor
 from app.services.settings_persistence_service import SettingsPersistenceService
+from app.utils.logger import get_logger
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/system", tags=["System Settings & Real-Time Sync"])
 
@@ -34,7 +37,18 @@ async def update_system_settings(
         role=user.role,
         clearance_level=user.clearance_level,
     )
+    if "ip_cameras" in settings_in:
+        await _apply_ip_camera_addresses()
     return SettingsPersistenceService.redact_secrets(result)
+
+
+async def _apply_ip_camera_addresses() -> None:
+    """Running cameras move to the addresses just saved (the save itself has succeeded)."""
+    from app.services.camera_service import CameraService
+    try:
+        await CameraService.sync_ip_cameras()
+    except Exception:
+        logger.exception("Could not apply the saved IP camera addresses")
 
 
 @router.get("/audit-logs", summary="Get system audit change logs (Level 2+ Supervisor)")
@@ -70,8 +84,13 @@ async def list_communication_endpoints(
     # Which production lines use each channel (dispatch targets, PLC cards, cameras).
     from app.services.line_config import endpoints_used_by_line
     usage = [(line["name"], endpoints_used_by_line(line)) for line in SettingsPersistenceService.get_lines(with_logic=True)]
+    # The state of each channel's Sparkplug B edge node, for the channel's card.
+    from app.services.sparkplug_service import SparkplugService
+    nodes = SparkplugService.status()
     for endpoint in endpoints:
         endpoint["used_by"] = [name for name, used in usage if endpoint.get("id") in used]
+        if endpoint.get("id") in nodes:
+            endpoint["sparkplug_state"] = nodes[endpoint["id"]]
     return endpoints
 
 
@@ -179,12 +198,14 @@ async def add_or_update_ip_camera(
     """Registers an RTSP / HTTP IP Camera into persistent storage and camera pool."""
     if not camera_data.get("source"):
         raise HTTPException(status_code=400, detail="IP Camera stream URL (source) is required")
-    return SettingsPersistenceService.add_or_update_ip_camera(
+    record = SettingsPersistenceService.add_or_update_ip_camera(
         cam_data=camera_data,
         username=user.username,
         role=user.role,
         clearance_level=user.clearance_level,
     )
+    await _apply_ip_camera_addresses()
+    return record
 
 
 @router.delete("/ip-cameras/{cam_id}", summary="Remove an IP Camera (Level 2+ Supervisor)")

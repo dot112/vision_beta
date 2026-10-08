@@ -66,6 +66,8 @@ class CameraResponse(BaseModel):
     source: str
     settings: Dict[str, Any]
     is_active: bool
+    # connected, reconnecting (lost or being retried; nobody disconnected it), failed or disconnected
+    connection_state: str = "disconnected"
     last_error: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -79,6 +81,7 @@ class CameraStatusResponse(BaseModel):
     name: str
     type: CameraType
     is_active: bool
+    connection_state: str = "disconnected"
     is_streaming: bool
     source: str
     properties: Dict[str, Any]

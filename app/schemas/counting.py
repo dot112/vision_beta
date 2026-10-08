@@ -25,58 +25,6 @@ class CountingConfig(BaseModel):
         default=["defect", "defect_candidate", "scratch", "dent", "missing_cap", "broken"],
         description="List of class names considered defective (increments rejected count and calculates Defect PPM)",
     )
-    # ── Action Trigger Protocol Destination Toggles & Selected Endpoints ──
-    send_mqtt: bool = Field(default=True, description="Enable dispatching count JSON event to MQTT Broker")
-    mqtt_topic: str = Field(default="factory/inspection/wireline", description="MQTT topic to publish count events to")
-    mqtt_endpoint_id: Optional[str] = Field(default=None, description="Selected MQTT comms endpoint ID or 'all'")
-
-    send_tcp: bool = Field(default=False, description="Enable dispatching count JSON event to TCP Socket")
-    tcp_host: str = Field(default="127.0.0.1", description="Target TCP Socket Host IP")
-    tcp_port: int = Field(default=9000, description="Target TCP Socket Port")
-    tcp_endpoint_id: Optional[str] = Field(default=None, description="Selected TCP comms endpoint ID or 'all'")
-
-    send_webhook: bool = Field(default=False, description="Enable dispatching count JSON event to HTTP Webhook API")
-    webhook_url: str = Field(default="", description="Target HTTP/HTTPS API URL endpoint")
-    webhook_headers: Optional[Dict[str, str]] = Field(default={}, description="Optional custom HTTP request headers")
-    webhook_endpoint_id: Optional[str] = Field(default=None, description="Selected Webhook comms endpoint ID or 'all'")
-    dispatch_trigger: str = Field(
-        default="both",
-        description="Default condition triggering protocol dispatch: 'both' (all crossed), 'passed' (good units only), or 'rejected' (defects only)"
-    )
-    dispatched_fields: Optional[List[str]] = Field(
-        default=None,
-        description="Default custom list of payload field keys to include in external dispatch JSON. None/empty includes all fields."
-    )
-    mqtt_dispatch_trigger: str = Field(
-        default="both",
-        description="Condition triggering MQTT dispatch: 'both', 'passed', or 'rejected'"
-    )
-    mqtt_dispatched_fields: Optional[List[str]] = Field(
-        default=None,
-        description="Custom list of payload field keys for MQTT dispatch"
-    )
-    tcp_dispatch_trigger: str = Field(
-        default="both",
-        description="Condition triggering TCP dispatch: 'both', 'passed', or 'rejected'"
-    )
-    tcp_dispatched_fields: Optional[List[str]] = Field(
-        default=None,
-        description="Custom list of payload field keys for TCP dispatch"
-    )
-    webhook_dispatch_trigger: str = Field(
-        default="both",
-        description="Condition triggering Webhook dispatch: 'both', 'passed', or 'rejected'"
-    )
-    webhook_dispatched_fields: Optional[List[str]] = Field(
-        default=None,
-        description="Custom list of payload field keys for Webhook dispatch"
-    )
-
-    # ── QR reads sent through the same channels: 'off', 'all', 'known' or 'unknown' ──
-    mqtt_qr_dispatch: str = Field(default="off", description="Which QR reads go to MQTT: 'off', 'all', 'known' or 'unknown'")
-    tcp_qr_dispatch: str = Field(default="off", description="Which QR reads go to TCP: 'off', 'all', 'known' or 'unknown'")
-    webhook_qr_dispatch: str = Field(default="off", description="Which QR reads go to the webhook: 'off', 'all', 'known' or 'unknown'")
-
     # ── Conveyor Tracking & ByteTrack Parameters ──
     track_high_thresh: float = Field(
         default=0.50, ge=0.05, le=1.0, description="ByteTrack high-confidence threshold for stage 1 association"

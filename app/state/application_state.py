@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 
 @dataclass
@@ -18,9 +18,6 @@ class ApplicationState:
 
     # Active camera registry  {camera_id: camera_instance}
     cameras: Dict[str, Any] = field(default_factory=dict)
-
-    # Active inference model metadata
-    active_model: Optional[Dict[str, Any]] = None
 
     # System metrics
     processed_frames: int = 0

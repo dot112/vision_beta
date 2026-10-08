@@ -21,8 +21,11 @@ class PLCActionCard(BaseModel):
     # good_counter → trigger_condition: ">=N" | "==N" | "%N==0"
     # reject_counter → same pattern
     # class_detected → trigger_condition: "class==<name>"
+    # line_state   → trigger_condition: "on" | "off" | "toggled"
+    # alarm        → trigger_condition: "raised" | "cleared" | "toggled"
     trigger_condition: str = "reject"
     trigger_value: int = 1              # N for counter conditions
+    alarm_codes: List[str] = Field(default_factory=list)  # alarm trigger: picked codes, "*" = any
 
     # ── Target ────────────────────────────────────────────────────────────────
     target_type: str = "coil"          # coil | register | digital_output | memory_bit | tag | custom_payload

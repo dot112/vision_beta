@@ -3,6 +3,17 @@
 #   cp .env.example .env      # then set SECRET_KEY and ADMIN_INITIAL_PASSWORD
 #   docker compose up -d --build
 #
+# Hardware (NVIDIA GPU, USB cameras, serial adapters): run
+#   python3 docker/detect_hardware.py --up
+# instead. It writes docker-compose.override.yml for this machine, which Compose
+# reads together with this file, then builds and starts.
+#
+# MQTT broker (optional): a site without one gets a Mosquitto beside the server
+# with
+#   docker compose --profile broker up -d
+# after BROKER_PASSWORD is set in .env. Without `--profile broker` it is not
+# started. See the `mqtt` service below.
+#
 # Recovery:
 #   - restart: unless-stopped brings the container back after a crash, after
 #     the health watchdog stops a hung server (docker/supervise.py), after the
@@ -13,7 +24,8 @@
 #     failing within 10 s of starting (100 ms, doubling up to 1 minute).
 # Data:
 #   - the database, saved settings, models, uploads, MQTT certificates and logs
-#     are named volumes, kept across restarts, rebuilds and `docker compose down`
+#     (and the optional broker's messages) are named volumes, kept across
+#     restarts, rebuilds and `docker compose down`
 #     (only `docker compose down -v` deletes them). Everything else in the
 #     container is read-only or temporary.
 # Shutdown:
@@ -26,7 +38,7 @@ services:
   vision:
     build:
       context: .
-    image: fastapi-vision-server:2.0.0
+    image: fastapi-vision-server:1.0.0-beta
     restart: unless-stopped
     # tini as PID 1: reaps zombie processes and passes signals to the supervisor.
     init: true
@@ -72,8 +84,9 @@ services:
       - /tmp:size=64m,mode=1777
 
     # USB cameras and Modbus RTU serial adapters must be passed in explicitly.
-    # Uncomment what the machine has; a device listed here that does not exist
-    # stops the container from starting.
+    # docker/detect_hardware.py lists the ones this machine has in
+    # docker-compose.override.yml; or uncomment them here by hand. A device
+    # listed that does not exist stops the container from starting.
     # devices:
     #   - /dev/video0:/dev/video0
     #   - /dev/ttyUSB0:/dev/ttyUSB0
@@ -113,9 +126,61 @@ services:
         max-size: "10m"
         max-file: "5"
 
+  # Optional MQTT broker (Mosquitto), started only with `--profile broker`.
+  # Every client needs the login BROKER_USERNAME / BROKER_PASSWORD from .env.
+  # The vision server reaches it as host `mqtt`, port 1883 (add an MQTT channel
+  # with that address under Connections); Ignition and other devices use this
+  # machine's address and BROKER_PORT. It has no TLS: keep it on the plant
+  # network, or put it behind one that has.
+  mqtt:
+    profiles: ["broker"]
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    init: true
+    # Starts as root, as the image itself does: root can read the two mounted
+    # files and the volume whatever their owner on the host, and the broker
+    # gives root up for the image's `mosquitto` user once it has started.
+
+    environment:
+      BROKER_USERNAME: ${BROKER_USERNAME:-vision}
+      BROKER_PASSWORD: ${BROKER_PASSWORD:-}
+
+    # start.sh writes the password file from the two settings above and refuses
+    # to start the broker without a password.
+    entrypoint: ["/bin/sh", "/mosquitto/start.sh"]
+
+    # BROKER_BIND_ADDRESS limits it to one network card of the host.
+    ports:
+      - "${BROKER_BIND_ADDRESS:-0.0.0.0}:${BROKER_PORT:-1883}:1883"
+
+    volumes:
+      - ./docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./docker/mosquitto/start.sh:/mosquitto/start.sh:ro
+      # Retained messages, sessions and the password file.
+      - vision-broker:/mosquitto/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h 127.0.0.1 -p 1883 -u \"$${BROKER_USERNAME:-vision}\" -P \"$$BROKER_PASSWORD\" -t '$$SYS/broker/uptime' -C 1 -W 3 > /dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 256
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
 volumes:
   vision-data:
   vision-models:
   vision-uploads:
   vision-certs:
   vision-logs:
+  vision-broker:

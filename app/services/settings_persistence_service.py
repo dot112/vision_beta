@@ -11,11 +11,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from app.services.line_config import (
+    OLD_CLASS_KEYS,
+    OLD_SEND_KEYS,
     PRIMARY_LINE_ID,
     check_camera_ownership,
     endpoints_used_by_line,
     normalize_line,
-    upgrade_state_to_v2,
+    normalize_send_cards,
+    require_camera_models,
+    upgrade_state,
 )
 from app.utils.logger import get_logger
 
@@ -190,37 +194,21 @@ def backup_v1_files(database_url: str) -> List[str]:
     return written
 
 
-def counting_config_from_dict(cfg_data: Dict[str, Any]) -> "Any":
-    """Build a CountingConfig from a saved action_trigger dict, filling version 1 fallbacks."""
+def counting_config_from_dict(cfg_data: Dict[str, Any], camera: Optional[Dict[str, Any]] = None) -> "Any":
+    """Build a CountingConfig from a line's saved action_trigger and one of its vision cameras.
+
+    The count lines come from the line; which classes count as products and
+    which as defects come from the camera (none without a vision camera).
+    """
     from app.schemas.counting import CountingConfig
 
+    camera = camera or {}
     return CountingConfig(
         line1_position=cfg_data.get("line1_position", 0.35),
         line2_position=cfg_data.get("line2_position", 0.65),
         orientation=cfg_data.get("orientation", "horizontal"),
-        expected_classes=cfg_data.get("expected_classes", ["bottle", "can", "cup"]),
-        defect_classes=cfg_data.get("defect_classes", ["defect", "scratch", "broken"]),
-        send_mqtt=cfg_data.get("send_mqtt", False),
-        mqtt_topic=cfg_data.get("mqtt_topic", "factory/inspection/wireline"),
-        send_tcp=cfg_data.get("send_tcp", False),
-        tcp_host=cfg_data.get("tcp_host", "127.0.0.1"),
-        tcp_port=cfg_data.get("tcp_port", 9000),
-        send_webhook=cfg_data.get("send_webhook", False),
-        webhook_url=cfg_data.get("webhook_url", ""),
-        mqtt_endpoint_id=cfg_data.get("mqtt_endpoint_id"),
-        tcp_endpoint_id=cfg_data.get("tcp_endpoint_id"),
-        webhook_endpoint_id=cfg_data.get("webhook_endpoint_id"),
-        dispatch_trigger=cfg_data.get("dispatch_trigger", "both"),
-        dispatched_fields=cfg_data.get("dispatched_fields"),
-        mqtt_dispatch_trigger=cfg_data.get("mqtt_dispatch_trigger", cfg_data.get("dispatch_trigger", "both")),
-        mqtt_dispatched_fields=cfg_data.get("mqtt_dispatched_fields", cfg_data.get("dispatched_fields")),
-        tcp_dispatch_trigger=cfg_data.get("tcp_dispatch_trigger", cfg_data.get("dispatch_trigger", "both")),
-        tcp_dispatched_fields=cfg_data.get("tcp_dispatched_fields", cfg_data.get("dispatched_fields")),
-        webhook_dispatch_trigger=cfg_data.get("webhook_dispatch_trigger", cfg_data.get("dispatch_trigger", "both")),
-        webhook_dispatched_fields=cfg_data.get("webhook_dispatched_fields", cfg_data.get("dispatched_fields")),
-        mqtt_qr_dispatch=cfg_data.get("mqtt_qr_dispatch", "off"),
-        tcp_qr_dispatch=cfg_data.get("tcp_qr_dispatch", "off"),
-        webhook_qr_dispatch=cfg_data.get("webhook_qr_dispatch", "off"),
+        expected_classes=list(camera.get("expected_classes") or []),
+        defect_classes=list(camera.get("defect_classes") or []),
     )
 
 
@@ -250,30 +238,15 @@ DEFAULT_STATE: Dict[str, Any] = {
     "ip_cameras": [],
     "communication_endpoints": [],
     "plc_actions": [],
+    # Line 1's send cards (what it reports to other systems); other lines keep theirs in their entry.
+    "send_actions": [],
+    # Line 1's count lines. Its model and class lists are on its vision cameras (lines).
     "action_trigger": {
         "line1_position": 0.35,
         "line2_position": 0.65,
         "orientation": "horizontal",
-        "expected_classes": ["bottle", "can", "cup", "box"],
-        "defect_classes": ["defect", "scratch", "broken"],
-        "send_mqtt": False,
-        "mqtt_topic": "factory/inspection/wireline",
-        "send_tcp": False,
-        "tcp_host": "",
-        "tcp_port": 9000,
-        "send_webhook": False,
-        "webhook_url": "",
-        "dispatch_trigger": "both",
-        "dispatched_fields": None,
-        "mqtt_dispatch_trigger": "both",
-        "mqtt_dispatched_fields": None,
-        "tcp_dispatch_trigger": "both",
-        "tcp_dispatched_fields": None,
-        "webhook_dispatch_trigger": "both",
-        "webhook_dispatched_fields": None,
     },
     "active_camera_id": None,
-    "active_model_id": None,
     "camera_auto_connect": False,
     "audit_logs": [],
 }
@@ -312,22 +285,28 @@ class SettingsPersistenceService:
             try:
                 with open(STATE_FILE, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
-                    # Merge with default state structure
-                    # Deep copy: nested defaults must not be shared with the live state.
-                    merged = copy.deepcopy(DEFAULT_STATE)
-                    merged.update(loaded)
-                    cls._state = merged
-                    cls._prune_expired_audit_logs()
-                    if upgrade_state_to_v2(cls._state):
-                        logger.info("Settings upgraded to version 2: the current setup is now Line 1")
-                        cls.save()
-                    cls._apply_to_runtime_services()
-                    return cls._state
+                # The file is closed before an upgrade is saved: Windows does not
+                # replace a file that is still open.
+                # Merge with default state structure
+                # Deep copy: nested defaults must not be shared with the live state.
+                merged = copy.deepcopy(DEFAULT_STATE)
+                if "send_actions" not in loaded:
+                    # The upgrade below makes this list from the file's old send settings.
+                    del merged["send_actions"]
+                merged.update(loaded)
+                cls._state = merged
+                cls._prune_expired_audit_logs()
+                before = cls._state.get("schema_version", 1)
+                if upgrade_state(cls._state):
+                    logger.info("Settings upgraded from version %s to %s", before, cls._state.get("schema_version"))
+                    cls.save()
+                cls._apply_to_runtime_services()
+                return cls._state
             except Exception as exc:
                 logger.error("Error loading system_state.json: %s. Using default state.", exc)
 
         cls._state = copy.deepcopy(DEFAULT_STATE)
-        upgrade_state_to_v2(cls._state)
+        upgrade_state(cls._state)
         cls._state["audit_logs"] = [
             {
                 "id": str(uuid.uuid4())[:8],
@@ -382,6 +361,19 @@ class SettingsPersistenceService:
     @classmethod
     def get_active_camera_id(cls) -> Optional[str]:
         return cls.get_state().get("active_camera_id")
+
+    @classmethod
+    def camera_auto_connect(cls) -> bool:
+        """The Cameras page switch "Connect cameras when the server starts"."""
+        return cls.get_state().get("camera_auto_connect") is True
+
+    @classmethod
+    def set_active_camera_id(cls, camera_id: Optional[str]) -> None:
+        if not cls._state:
+            cls.load()
+        if cls._state.get("active_camera_id") != camera_id:
+            cls._state["active_camera_id"] = camera_id
+            cls.save()
 
     @classmethod
     def get_plc_actions(cls) -> List[Dict[str, Any]]:
@@ -440,7 +432,7 @@ class SettingsPersistenceService:
     def _raw_lines(cls) -> List[Dict[str, Any]]:
         if not cls._state:
             cls.load()
-        if upgrade_state_to_v2(cls._state):
+        if upgrade_state(cls._state):
             cls.save()
         return cls._state["lines"]
 
@@ -460,11 +452,47 @@ class SettingsPersistenceService:
 
     @classmethod
     def _line_view(cls, line: Dict[str, Any], with_logic: bool) -> Dict[str, Any]:
-        view = copy.deepcopy({k: v for k, v in line.items() if k not in ("action_trigger", "plc_actions")})
+        view = copy.deepcopy({k: v for k, v in line.items() if k not in ("action_trigger", "plc_actions", "send_actions")})
         if with_logic:
             view["action_trigger"] = cls.get_line_action_trigger(line["id"])
             view["plc_actions"] = cls.get_line_plc_actions(line["id"])
+            view["send_actions"] = cls.get_line_send_actions(line["id"])
         return view
+
+    # ── Send cards ────────────────────────────────────────────────────────────
+
+    @classmethod
+    def get_line_send_actions(cls, line_id: str) -> List[Dict[str, Any]]:
+        """A line's send cards (Line 1's are kept at the top level, like its PLC cards)."""
+        cards = cls._send_holder(line_id).get("send_actions")
+        return copy.deepcopy(cards) if isinstance(cards, list) else []
+
+    @classmethod
+    def _send_holder(cls, line_id: str) -> Dict[str, Any]:
+        """The dict that holds a line's send cards: the settings themselves for Line 1, else the line's entry."""
+        line = cls._find_line(line_id)  # loads and upgrades the settings when needed
+        if line is None:
+            raise KeyError(line_id)
+        return cls._state if line_id == PRIMARY_LINE_ID else line
+
+    @classmethod
+    def replace_line_send_actions(cls, line_id: str, cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Replace one line's send cards; returns a detached copy of what was saved. Raises ValueError."""
+        holder = cls._send_holder(line_id)
+        holder["send_actions"] = normalize_send_cards(
+            [{k: v for k, v in c.items() if k != "line_id"} if isinstance(c, dict) else c for c in cards]
+        )
+        return copy.deepcopy(holder["send_actions"])
+
+    @classmethod
+    def get_all_send_actions(cls) -> List[Dict[str, Any]]:
+        """Every line's send cards, each stamped with its line_id, for the dispatcher."""
+        cards: List[Dict[str, Any]] = []
+        for line in cls._raw_lines():
+            for card in cls.get_line_send_actions(line["id"]):
+                card["line_id"] = line["id"]
+                cards.append(card)
+        return cards
 
     @classmethod
     def get_line_action_trigger(cls, line_id: str) -> Dict[str, Any]:
@@ -523,6 +551,10 @@ class SettingsPersistenceService:
         if existing is not None and line_id == PRIMARY_LINE_ID:
             existing = {**existing, "action_trigger": cls.get_line_action_trigger(line_id)}
         line = normalize_line(raw, existing)
+        if "cameras" in raw:
+            # Only when the cameras are sent: a line saved before models were
+            # picked per camera can still be started, stopped and renamed.
+            require_camera_models(line)
         if existing is None and any(ln.get("id") == line["id"] for ln in lines):
             raise ValueError(f"Line id '{line['id']}' is already in use")
         if any(ln.get("name", "").lower() == line["name"].lower() and ln.get("id") != line["id"] for ln in lines):
@@ -530,6 +562,11 @@ class SettingsPersistenceService:
         check_camera_ownership([ln for ln in lines if ln.get("id") != line["id"]] + [line])
 
         trigger = line.pop("action_trigger", None)
+        send_cards = line.pop("send_actions", None)
+        if isinstance(trigger, dict):
+            # Settings that send cards and the cameras' class lists replaced are
+            # not kept, whoever still sends them.
+            trigger = {k: v for k, v in trigger.items() if k not in OLD_SEND_KEYS and k not in OLD_CLASS_KEYS}
         cards = line.pop("plc_actions", None)
         if cards is not None:
             from app.services.plc_failsafe_service import validate_safe_state
@@ -549,6 +586,7 @@ class SettingsPersistenceService:
                 "action_trigger", copy.deepcopy(DEFAULT_STATE["action_trigger"])
             )
             line["plc_actions"] = old.get("plc_actions", [])
+            line["send_actions"] = old.get("send_actions", [])
 
         if existing is None:
             lines.append(line)
@@ -556,6 +594,8 @@ class SettingsPersistenceService:
             lines[lines.index(next(ln for ln in lines if ln.get("id") == line["id"]))] = line
         if cards is not None:
             cls.replace_line_plc_actions(line["id"], cards)
+        if send_cards is not None:
+            cls.replace_line_send_actions(line["id"], send_cards)
         return cls.get_line(line["id"])
 
     @classmethod
@@ -571,7 +611,7 @@ class SettingsPersistenceService:
 
     @classmethod
     def lines_using_endpoint(cls, endpoint_id: str) -> List[str]:
-        """Names of the lines whose dispatch settings, PLC cards or cameras use this channel."""
+        """Names of the lines whose send cards, PLC cards or cameras use this channel."""
         names = []
         for line in cls.get_lines(with_logic=True):
             if endpoint_id in endpoints_used_by_line(line):
@@ -625,10 +665,15 @@ class SettingsPersistenceService:
         modified_categories = []
         change_summaries = []
 
-        for key in ["mqtt", "tcp", "webhook", "action_trigger", "active_camera_id", "active_model_id", "camera_auto_connect"]:
+        for key in ["mqtt", "tcp", "webhook", "action_trigger", "active_camera_id", "camera_auto_connect"]:
             if key in updates:
                 if isinstance(updates[key], dict) and isinstance(cls._state.get(key), dict):
                     safe_updates = copy.deepcopy(updates[key])
+                    if key == "action_trigger":
+                        # Send cards and the cameras' class lists replaced these
+                        # settings; an older client may still send them.
+                        for old_key in OLD_SEND_KEYS + OLD_CLASS_KEYS:
+                            safe_updates.pop(old_key, None)
                     for field, field_value in safe_updates.items():
                         if (field == "url" or field.endswith("_url")) and isinstance(field_value, str):
                             old_url = cls._state[key].get(field)
@@ -647,22 +692,6 @@ class SettingsPersistenceService:
                         l2 = at.get("line2_position", cls._state["action_trigger"].get("line2_position"))
                         ori = at.get("orientation", cls._state["action_trigger"].get("orientation", "horizontal"))
                         parts.append(f"lines=[{l1}, {l2}], ori={ori}")
-                    if "expected_classes" in at:
-                        parts.append(f"expected={at['expected_classes']}")
-                    if "defect_classes" in at:
-                        parts.append(f"defects={at['defect_classes']}")
-                    if "send_mqtt" in at:
-                        parts.append(f"mqtt={'on' if at['send_mqtt'] else 'off'}")
-                    if "mqtt_endpoint_id" in at:
-                        parts.append(f"mqtt_target='{at['mqtt_endpoint_id']}'")
-                    if "send_tcp" in at:
-                        parts.append(f"tcp={'on' if at['send_tcp'] else 'off'}")
-                    if "tcp_endpoint_id" in at:
-                        parts.append(f"tcp_target='{at['tcp_endpoint_id']}'")
-                    if "send_webhook" in at:
-                        parts.append(f"webhook={'on' if at['send_webhook'] else 'off'}")
-                    if "webhook_endpoint_id" in at:
-                        parts.append(f"webhook_target='{at['webhook_endpoint_id']}'")
                     if "plc_actions" in at:
                         saved_cards = cls.replace_plc_actions(at["plc_actions"])
                         try:
@@ -685,8 +714,6 @@ class SettingsPersistenceService:
                     change_summaries.append(f"Webhook ({_redact_url(u) if isinstance(u, str) else 'configured'})")
                 elif key == "active_camera_id":
                     change_summaries.append(f"Active Camera -> {updates[key]}")
-                elif key == "active_model_id":
-                    change_summaries.append(f"Active Model -> {updates[key]}")
 
         if "ip_cameras" in updates:
             existing_cameras = {
@@ -883,6 +910,24 @@ class SettingsPersistenceService:
         return record
 
     @classmethod
+    def set_ip_camera_address(cls, cam_id: str, name: str, source: str) -> bool:
+        """Write a camera's name and address, changed on the Cameras API, into its saved Connections entry."""
+        if not cls._state:
+            cls.load()
+        changed = False
+        for key in ("ip_cameras", "communication_endpoints"):
+            for entry in cls._state.get(key, []):
+                if entry.get("id") != cam_id or (key == "communication_endpoints" and entry.get("protocol") != "ipcam"):
+                    continue
+                if entry.get("name") != name or entry.get("source") != source:
+                    entry["name"], entry["source"] = name, source
+                    entry.pop("last_test_result", None)
+                    changed = True
+        if changed:
+            cls.save()
+        return changed
+
+    @classmethod
     def delete_ip_camera(
         cls,
         cam_id: str,
@@ -935,7 +980,6 @@ class SettingsPersistenceService:
         # Clear active camera reference if it was this camera
         if cls._state.get("active_camera_id") == cam_id:
             cls._state["active_camera_id"] = None
-            cls._state["camera_auto_connect"] = False
 
         # Remove runtime driver if present
         try:
@@ -1055,9 +1099,10 @@ class SettingsPersistenceService:
                 "keepalive": _bounded_int(endpoint_data.get("keepalive"), "MQTT keepalive", 60, 5, 3600),
                 "protocol_version": _endpoint_text(endpoint_data.get("protocol_version", (existing or {}).get("protocol_version", "3.1.1")), "MQTT protocol version", maximum=8),
                 "clean_session": _endpoint_bool(endpoint_data.get("clean_session", (existing or {}).get("clean_session")), "MQTT clean session", True),
-                "qos": _bounded_int(endpoint_data.get("qos"), "MQTT QoS", 1, 0, 2),
+                "qos": _bounded_int(endpoint_data.get("qos", (existing or {}).get("qos")), "MQTT QoS", 1, 0, 2),
                 "retain": _endpoint_bool(endpoint_data.get("retain", (existing or {}).get("retain")), "MQTT retain", False),
-                "topic": _endpoint_text(endpoint_data.get("topic", (existing or {}).get("topic", "factory/inspection/wireline")), "MQTT topic", maximum=512, required=True),
+                # The topic is a setting of each send card. A channel saved before that keeps its own.
+                "topic": _endpoint_text(endpoint_data.get("topic", (existing or {}).get("topic", "")), "MQTT topic", maximum=512),
                 "birth_topic": _endpoint_text(endpoint_data.get("birth_topic", (existing or {}).get("birth_topic", "")), "MQTT birth topic", maximum=512),
                 "birth_payload": _endpoint_payload(endpoint_data.get("birth_payload", (existing or {}).get("birth_payload", "")), "MQTT birth payload"),
                 "birth_qos": _bounded_int(endpoint_data.get("birth_qos"), "MQTT birth QoS", 0, 0, 2),
@@ -1073,19 +1118,38 @@ class SettingsPersistenceService:
             })
             if record["protocol_version"].lower() not in {"3.1.1", "5.0"}:
                 raise ValueError("MQTT protocol version must be 3.1.1 or 5.0")
-            state["mqtt"] = {
-                "host": record["host"],
-                "port": record["port"],
-                "keepalive": record["keepalive"],
-                "username": record["username"],
-                "password": record["password"],
-                "ca_cert": record["ca_cert_filename"],
-                "client_cert": record["client_cert_filename"],
-                "client_key": record["client_key_filename"],
-                "tls_enabled": record["tls_enabled"],
-                "auto_connect": bool(record["enabled"] and record["host"]),
-                "is_connected": state.get("mqtt", {}).get("is_connected", False),
+
+            # Sparkplug B: the production lines published as an edge node's devices
+            # through this broker (app/services/sparkplug_service.py).
+            from app.hardware.mqtt.sparkplug_codec import MAX_ID_LENGTH, id_problem
+            saved = existing or {}
+            sparkplug = {
+                "sparkplug_enabled": _endpoint_bool(endpoint_data.get("sparkplug_enabled", saved.get("sparkplug_enabled")), "Sparkplug B on/off", False),
+                "sparkplug_group_id": _endpoint_text(endpoint_data.get("sparkplug_group_id", saved.get("sparkplug_group_id", "")), "Sparkplug group ID", maximum=MAX_ID_LENGTH),
+                "sparkplug_node_id": _endpoint_text(endpoint_data.get("sparkplug_node_id", saved.get("sparkplug_node_id", "")), "Sparkplug edge node ID", maximum=MAX_ID_LENGTH),
+                "sparkplug_host_id": _endpoint_text(endpoint_data.get("sparkplug_host_id", saved.get("sparkplug_host_id", "")), "Sparkplug host ID", maximum=MAX_ID_LENGTH),
+                "sparkplug_allow_commands": _endpoint_bool(endpoint_data.get("sparkplug_allow_commands", saved.get("sparkplug_allow_commands")), "Sparkplug allow commands", False),
+                "sparkplug_interval_ms": _bounded_int(endpoint_data.get("sparkplug_interval_ms", saved.get("sparkplug_interval_ms")), "Sparkplug publish interval", 1000, 100, 60000),
             }
+            checked = [("sparkplug_host_id", "host ID")] if sparkplug["sparkplug_host_id"] else []
+            if sparkplug["sparkplug_enabled"]:
+                checked += [("sparkplug_group_id", "group ID"), ("sparkplug_node_id", "edge node ID")]
+            for key, label in checked:
+                problem = id_problem(sparkplug[key])
+                if problem:
+                    raise ValueError(f"Sparkplug {label} is not valid: {problem}")
+            if sparkplug["sparkplug_enabled"]:
+                # Two connections as one edge node would push each other's tags offline.
+                for other in endpoints:
+                    if other is existing or str(other.get("protocol", "")).lower() != "mqtt" or other.get("sparkplug_enabled") is not True:
+                        continue
+                    if (other.get("host"), other.get("port"), other.get("sparkplug_group_id"), other.get("sparkplug_node_id")) == (
+                            record["host"], record["port"], sparkplug["sparkplug_group_id"], sparkplug["sparkplug_node_id"]):
+                        raise ValueError(
+                            f"Sparkplug edge node '{sparkplug['sparkplug_group_id']}/{sparkplug['sparkplug_node_id']}' is already "
+                            f"published to this broker by the channel '{other.get('name')}'"
+                        )
+            record.update(sparkplug)
         elif proto == "ipcam":
             source = _endpoint_text(
                 endpoint_data.get("source", (existing or {}).get("source", "")),
@@ -1117,8 +1181,6 @@ class SettingsPersistenceService:
                 "auto_connect": record["enabled"],
                 "description": record["description"],
             }, username=username, role=role, clearance_level=clearance_level)
-            if not record["enabled"] and state.get("active_camera_id") == record["id"]:
-                state["camera_auto_connect"] = False
         elif proto == "webhook":
             url = _endpoint_text(endpoint_data.get("url", (existing or {}).get("url", "")), "Webhook URL", maximum=2048, required=record["enabled"])
             if existing and isinstance(existing.get("url"), str):
@@ -1315,6 +1377,25 @@ class SettingsPersistenceService:
                 PLCDriverFactory.invalidate(ep_id)
             except Exception as exc:
                 logger.warning("Could not invalidate cached PLC driver for endpoint %s: %s", ep_id, exc)
+        if proto == "mqtt" or previous_protocol == "mqtt":
+            # Each MQTT channel has its own broker connection: connect it with what was
+            # just saved, or close it when the channel was switched off.
+            try:
+                from app.services.mqtt_service import MQTTChannels
+                from app.services.sparkplug_service import SparkplugService
+                MQTTChannels.apply(existing or record)
+                # A channel with Sparkplug B on is also an edge node on its broker.
+                SparkplugService.apply(existing or record)
+            except Exception:
+                logger.exception("Could not apply the saved settings of MQTT channel %s", ep_id)
+        if proto == "ipcam":
+            # The camera reads its address from the database, and a running one keeps
+            # its stream open: without this the old address stays in use.
+            try:
+                from app.services.camera_service import CameraService
+                await CameraService.sync_ip_cameras()
+            except Exception:
+                logger.exception("Could not apply the saved address of IP camera %s", ep_id)
         return record
 
     @classmethod
@@ -1348,6 +1429,11 @@ class SettingsPersistenceService:
                     PLCDriverFactory.invalidate(endpoint_id)
                 except Exception as exc:
                     logger.warning("Could not invalidate cached PLC driver for endpoint %s: %s", endpoint_id, exc)
+            if target and target.get("protocol") == "mqtt":
+                from app.services.mqtt_service import MQTTChannels
+                from app.services.sparkplug_service import SparkplugService
+                MQTTChannels.drop(endpoint_id)
+                SparkplugService.drop(endpoint_id)
             cls.record_audit(
                 username=username,
                 role=role,
@@ -1418,28 +1504,21 @@ class SettingsPersistenceService:
                 return {"success": False, "message": "MQTT host is empty."}
             test_client = None
             try:
-                from app.hardware.mqtt.client import MQTTClient
-                from app.services.mqtt_service import _resolve_cert
-                test_client = MQTTClient(
-                    host=host,
-                    port=port,
-                    username=ep.get("username") or None,
-                    password=ep.get("password") or None,
-                    client_id=ep.get("client_id") or "test_probe",
-                    keepalive=int(ep.get("keepalive", 60)),
-                    clean_session=bool(ep.get("clean_session", True)),
-                    protocol_version=str(ep.get("protocol_version", "3.1.1")),
-                    tls_enabled=bool(ep.get("tls_enabled")),
-                    tls_insecure=False,
-                    sni_server_name=ep.get("sni_server_name") or None,
-                    ca_cert_path=_resolve_cert(ep.get("ca_cert_filename")),
-                    client_cert_path=_resolve_cert(ep.get("client_cert_filename")),
-                    client_key_path=_resolve_cert(ep.get("client_key_filename")),
-                )
+                from app.services.mqtt_service import MQTTChannels, client_for_channel
+                from app.services.sparkplug_service import SparkplugService
+                sparkplug = SparkplugService.describe(endpoint_id)
+                if MQTTChannels.connected_client(ep) is not None:
+                    return {"success": True, "message": f"Connected to MQTT broker {host}:{port}{sparkplug}"}
+                # A second connection with the channel's own client id would make the
+                # broker drop the channel's connection, so the test uses another id.
+                # It leaves out the birth, close and will messages: a test is not the device.
+                probe = {k: v for k, v in ep.items() if not k.startswith(("birth_", "close_", "will_"))}
+                test_client = client_for_channel(probe, client_id=f"{(ep.get('client_id') or 'vision')[:110]}_test")
                 res = await test_client.connect()
                 if res:
-                    return {"success": True, "message": f"Successfully authenticated with MQTT broker {host}:{port}"}
-                return {"success": False, "message": f"Could not connect to MQTT broker {host}:{port}"}
+                    return {"success": True, "message": f"Successfully authenticated with MQTT broker {host}:{port}{sparkplug}"}
+                why = f": {test_client.last_error}" if test_client.last_error else ""
+                return {"success": False, "message": f"Could not connect to MQTT broker {host}:{port}{why}"}
             except Exception as exc:
                 return {"success": False, "message": f"MQTT test error: {exc}"}
             finally:
@@ -1455,19 +1534,22 @@ class SettingsPersistenceService:
                 return {"success": False, "message": "IP stream source URL is empty."}
 
             # Check 1: If this camera is already connected and streaming in app_state, succeed immediately!
+            # It has to be reading this address and still delivering pictures: a
+            # driver stays "connected" while it retries a stream that has gone.
             try:
+                from app.config import settings as app_settings
                 from app.state.application_state import app_state
                 clean_src = str(source).strip()
-                clean_id = str(endpoint_id).strip()
                 for cid, driver in list(app_state.cameras.items()):
                     drv_src = str(getattr(driver, "source", "") or getattr(driver, "url", "") or "").strip()
-                    drv_id = str(getattr(driver, "camera_id", "") or cid).strip()
-                    if (cid == clean_id) or (drv_id == clean_id) or (drv_src and clean_src and drv_src == clean_src):
-                        if getattr(driver, "is_connected", False):
-                            return {
-                                "success": True,
-                                "message": f"Camera is connected and actively streaming ({cid})",
-                            }
+                    if not drv_src or drv_src != clean_src or not getattr(driver, "is_connected", False):
+                        continue
+                    last_frame_at = getattr(driver, "_latest_timestamp", None)
+                    if last_frame_at is None or time.monotonic() - last_frame_at <= app_settings.HEALTH_CAMERA_STALE_SECONDS:
+                        return {
+                            "success": True,
+                            "message": f"Camera is connected and actively streaming ({cid})",
+                        }
             except Exception as active_chk_err:
                 logger.debug("Active camera check error: %s", active_chk_err)
 
@@ -1568,14 +1650,7 @@ class SettingsPersistenceService:
 
     @classmethod
     def _apply_to_runtime_services(cls) -> None:
-        """Applies loaded state to runtime singletons: Line 1's counter and every other line."""
-        try:
-            from app.services.counting_service import counting_service
-            cfg_data = cls._state.get("action_trigger", {})
-            if cfg_data:
-                counting_service.update_config(counting_config_from_dict(cfg_data))
-        except Exception as exc:
-            logger.debug("Runtime counting_service sync: %s", exc)
+        """Applies loaded state to the runtime: every line's counters (Line 1's is counting_service)."""
         try:
             from app.services.line_service import line_manager
             line_manager.apply_state()
@@ -1599,6 +1674,7 @@ class SettingsPersistenceService:
         try:
             from app.services.plc_dispatcher_service import PLCDispatcherService
             PLCDispatcherService.load_cards()
+            PLCDispatcherService.watch_alarms()
             asyncio.create_task(PLCDispatcherService.autoconnect_drivers())
             from app.services.plc_failsafe_service import PLCFailsafeService
             PLCFailsafeService.start()
@@ -1606,46 +1682,21 @@ class SettingsPersistenceService:
         except Exception as plc_err:
             logger.warning("PLC dispatcher startup error: %s", plc_err)
 
+        # The send cards: what each line reports to other systems.
+        try:
+            from app.services.send_dispatcher_service import SendDispatcherService
+            SendDispatcherService.load_cards()
+            SendDispatcherService.watch_alarms()
+        except Exception as send_err:
+            logger.warning("Send card startup error: %s", send_err)
+
     @classmethod
     async def connect_on_startup(cls) -> None:
-        """Connect the saved camera and MQTT broker and test every endpoint. Can take a while."""
+        """Connect the saved MQTT broker and test every endpoint. Can take a while.
+
+        The cameras are connected by LineManager.connect_on_startup, before this.
+        """
         state = cls._state
-
-        if state.get("camera_auto_connect", False) is True:
-            try:
-                from app.db.session import AsyncSessionLocal
-                from app.services.camera_service import CameraReconnector, CameraService
-                from app.db.models.camera import Camera
-                from sqlalchemy import select
-
-                async with AsyncSessionLocal() as db:
-                    active_cam_id = state.get("active_camera_id")
-                    target_cam = None
-                    if active_cam_id:
-                        target_cam = await CameraService.get_camera_by_id(db, str(active_cam_id))
-                    if not target_cam:
-                        stmt = select(Camera).where(Camera.is_active == True).order_by(Camera.updated_at.desc()).limit(1)
-                        res = await db.execute(stmt)
-                        target_cam = res.scalar_one_or_none()
-                    if not target_cam:
-                        stmt = select(Camera).order_by(Camera.updated_at.desc()).limit(1)
-                        res = await db.execute(stmt)
-                        target_cam = res.scalar_one_or_none()
-
-                    if target_cam:
-                        success, err = await CameraService.connect_camera(db, target_cam.id)
-                        if success:
-                            cls._state["active_camera_id"] = target_cam.id
-                            cls.save()
-                            logger.info("Auto-connected last active camera '%s' [%s] on server startup", target_cam.name, target_cam.id)
-                        else:
-                            logger.warning("Failed to auto-connect last active camera '%s' on startup, retrying in the background: %s", target_cam.name, err)
-                            CameraReconnector.want(target_cam.id)
-                    else:
-                        logger.info("No configured camera found in database to auto-connect on startup")
-            except Exception as cam_err:
-                logger.warning("Camera auto-connect error on startup: %s", cam_err)
-
 
         # 1. Auto-connect MQTT from system config if enabled
         mqtt_cfg = state.get("mqtt", {})
@@ -1669,6 +1720,13 @@ class SettingsPersistenceService:
 
         # Refresh the persisted connection indicators on every server boot.
         endpoints = list(state.get("communication_endpoints", []))
+
+        # Every MQTT channel that is switched on gets its own broker connection.
+        try:
+            from app.services.mqtt_service import MQTTChannels
+            MQTTChannels.sync(endpoints)
+        except Exception:
+            logger.exception("Could not connect the saved MQTT channels")
         test_slots = asyncio.Semaphore(5)
 
         async def _startup_endpoint_check(endpoint: Dict[str, Any]) -> None:

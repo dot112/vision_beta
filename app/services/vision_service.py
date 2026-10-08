@@ -4,7 +4,6 @@ import asyncio
 import collections
 import contextlib
 import logging
-import os
 import threading
 import time
 from typing import Any, AsyncGenerator, AsyncIterator, Callable, Dict, List, Optional, Tuple
@@ -14,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.models.detection import DetectionLog
-from app.engines.inference_engine import InferenceEngine, begin_model_timing, end_model_timing
+from app.engines.inference_engine import begin_model_timing, end_model_timing
 from app.schemas.vision import DetectionResponse, LiveInspectionResponse
 from app.services.camera_service import CameraService
 from app.state.application_state import app_state
@@ -25,39 +24,28 @@ logger = get_logger(__name__)
 # A model or tracker that fails on every frame is reported once a minute, not 30 times a second.
 _error_log = LogThrottle(60.0)
 
-COCO_CLASSES = [
-    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
-    "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat",
-    "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack",
-    "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball",
-    "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket",
-    "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
-    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake",
-    "chair", "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop",
-    "mouse", "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
-    "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
-]
-
-DEFAULT_ONNX_CANDIDATES = [
-    "model_store/yolov8n/v1.0/yolov8n.onnx",
-    "model_store/model/v1.0/model.onnx",
-    "model_store/yolov8n_classes/v1.0/yolov8n.onnx",
-]
-DEFAULT_ONNX_PATH = next((p for p in DEFAULT_ONNX_CANDIDATES if os.path.exists(p)), "model_store/yolov8n/v1.0/yolov8n.onnx")
-
-# Initialize default engine with YOLOv8n if file exists
-_default_engine = InferenceEngine(device=settings.INFERENCE_DEVICE)
+def _clamp_int(value: Any, default: int, low: int, high: int) -> int:
+    try:
+        return max(low, min(high, int(value)))
+    except (TypeError, ValueError):
+        return default
 
 
-def _get_active_engine() -> Tuple[InferenceEngine, str, Optional[str]]:
-    """Returns (engine_instance, model_name, model_id)."""
-    if app_state.active_model and "engine" in app_state.active_model:
-        return (
-            app_state.active_model["engine"],
-            app_state.active_model.get("name", "ActiveModel"),
-            app_state.active_model.get("id"),
-        )
-    return _default_engine, "YOLOv8n_COCO" if _default_engine.is_loaded else "Default_Industrial_Vision", None
+def shrink_jpeg(jpeg: bytes, max_width: int, quality: int = 70) -> bytes:
+    """The same picture no wider than max_width. A picture that already fits is returned as it is."""
+    import cv2
+    import numpy as np
+
+    mat = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if mat is None:
+        return jpeg
+    height, width = mat.shape[:2]
+    if width <= max_width:
+        return jpeg
+    new_height = max(1, round(height * max_width / float(width)))
+    small = cv2.resize(mat, (int(max_width), new_height), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", small, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    return buf.tobytes() if ok else jpeg
 
 
 class _CameraInferenceWorker:
@@ -149,6 +137,14 @@ class _CameraInferenceWorker:
             try:
                 from app.services.line_service import line_manager
                 engine, _, _ = line_manager.engine_for_camera(self.camera_id)
+                if not getattr(engine, "is_loaded", True):
+                    # No model runs on this camera (none picked, or it did not
+                    # load): its video is still shown, with nothing detected.
+                    with self._lock:
+                        self._latest_detections = []
+                        self._latest_inference_ms = 0.0
+                        self._processed_frame_id = fid
+                    continue
                 det_response = engine.predict_mat(mat, conf_threshold=conf)
 
                 # Update real-time object tracking & wireline counters of the camera's line
@@ -211,6 +207,11 @@ class _CameraStreamPublisher:
     - Thread-safe frame caching for instantaneous snapshot grabs and WebSocket streaming.
     """
 
+    # A camera whose picture has not changed is drawn again this often, so that
+    # what was found in it after it arrived (detections, codes, a count) reaches
+    # the viewers. A camera showing a still picture is never redrawn otherwise.
+    STILL_REFRESH_SECONDS = 0.25
+
     def __init__(self, camera_id: str):
         self.camera_id = camera_id
         self._lock = threading.Lock()
@@ -222,7 +223,12 @@ class _CameraStreamPublisher:
 
         self._latest_annotated_jpeg: Optional[bytes] = None
         self._latest_raw_jpeg: Optional[bytes] = None
-        self._latest_frame_id: int = 0
+        # Each goes up when a picture that differs from the last one is ready to send.
+        self._annotated_seq: int = 0
+        self._raw_seq: int = 0
+        # Smaller copies of the latest annotated picture, {width: (seq, jpeg)},
+        # so every viewer of a small tile shares one resize per picture.
+        self._scaled: Dict[int, Tuple[int, bytes]] = {}
         self._fps_tracker: collections.deque = collections.deque(maxlen=30)
         self._current_fps: float = 0.0
 
@@ -268,14 +274,42 @@ class _CameraStreamPublisher:
             self._last_active_time = time.time()
             return self._latest_raw_jpeg
 
-    def get_latest_frame_id(self) -> int:
+    _MAX_SCALED_WIDTHS = 4
+
+    def get_latest_annotated_scaled(self, max_width: int) -> Tuple[Optional[bytes], Optional[bytes]]:
+        """(picture, ready) for a viewer that wants it no wider than max_width.
+
+        ``ready`` is the smaller copy when it was already made for this
+        picture; otherwise the caller shrinks ``picture`` off the event loop
+        and hands the result to store_scaled().
+        """
         with self._lock:
-            return self._latest_frame_id
+            self._last_active_time = time.time()
+            jpeg = self._latest_annotated_jpeg
+            cached = self._scaled.get(max_width)
+            if jpeg is not None and cached is not None and cached[0] == self._annotated_seq:
+                return jpeg, cached[1]
+            return jpeg, None
+
+    def store_scaled(self, max_width: int, source: bytes, scaled: bytes) -> None:
+        with self._lock:
+            if source is not self._latest_annotated_jpeg:
+                return  # a newer picture arrived meanwhile
+            if max_width not in self._scaled and len(self._scaled) >= self._MAX_SCALED_WIDTHS:
+                self._scaled.pop(next(iter(self._scaled)))
+            self._scaled[max_width] = (self._annotated_seq, scaled)
+
+    def get_latest_frame_id(self, stream_type: str = "annotated") -> int:
+        """A number that changes whenever a new picture of that kind is ready to send."""
+        with self._lock:
+            return self._raw_seq if stream_type == "raw" else self._annotated_seq
 
     def _publisher_loop(self) -> None:
         import cv2
 
         last_rendered_fid = -1
+        last_render_at = 0.0
+        paused = False
         target_interval = 1.0 / 30.0  # 30 FPS target
 
         while not self._stop_event.is_set():
@@ -283,8 +317,17 @@ class _CameraStreamPublisher:
 
             # If no active viewers, sleep and avoid wasting CPU/GPU
             if not self.has_subscribers:
+                if not paused:
+                    # The next viewer gets a picture drawn for them, not the one
+                    # left over from whenever the last viewer went away.
+                    paused = True
+                    with self._lock:
+                        self._latest_annotated_jpeg = None
+                        self._latest_raw_jpeg = None
+                        self._scaled.clear()
                 time.sleep(0.1)
                 continue
+            paused = False
 
             driver = app_state.cameras.get(self.camera_id)
             if not driver or not getattr(driver, "is_connected", False):
@@ -293,7 +336,8 @@ class _CameraStreamPublisher:
 
             # Check if camera has a fresh frame
             cur_fid = driver.get_latest_frame_id() if hasattr(driver, "get_latest_frame_id") else getattr(driver, "_latest_frame_id", 0)
-            if cur_fid == last_rendered_fid or cur_fid == 0:
+            fresh = cur_fid != last_rendered_fid
+            if cur_fid == 0 or (not fresh and loop_start - last_render_at < self.STILL_REFRESH_SECONDS):
                 if hasattr(driver, "wait_for_new_frame"):
                     driver.wait_for_new_frame(timeout=0.015)
                 else:
@@ -311,11 +355,13 @@ class _CameraStreamPublisher:
                 continue
 
             last_rendered_fid = fid
+            last_render_at = loop_start
             orig_h, orig_w = mat.shape[:2]
 
-            # Calculate actual video publishing FPS
+            # Calculate actual video publishing FPS (new camera pictures, not redraws of a still one)
             now = time.time()
-            self._fps_tracker.append(now)
+            if fresh:
+                self._fps_tracker.append(now)
             while self._fps_tracker and (now - self._fps_tracker[0]) > 2.0:
                 self._fps_tracker.popleft()
             fps = (len(self._fps_tracker) - 1) / (now - self._fps_tracker[0]) if len(self._fps_tracker) > 1 and (now - self._fps_tracker[0]) > 0.05 else 0.0
@@ -324,7 +370,10 @@ class _CameraStreamPublisher:
             # 1. Bandwidth optimization: resize display copy (default 640px max width).
             # mat is the camera's own buffer, so draw only on a private array: the
             # resize output, or a copy when no resize is needed.
-            max_width = 640
+            # The camera's own stream settings (Cameras & Capture page).
+            stream_settings = getattr(driver, "settings", None) or {}
+            max_width = _clamp_int(stream_settings.get("stream_max_width"), 640, 160, 3840)
+            quality = _clamp_int(stream_settings.get("stream_jpeg_quality"), 70, 20, 95)
             scale_x = 1.0
             scale_y = 1.0
             if orig_w > max_width:
@@ -342,7 +391,7 @@ class _CameraStreamPublisher:
             # 2. Render Raw JPEG only if raw subscribers exist
             raw_jpeg = None
             if want_raw:
-                ret_raw, raw_buf = cv2.imencode(".jpg", display_mat, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                ret_raw, raw_buf = cv2.imencode(".jpg", display_mat, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
                 raw_jpeg = raw_buf.tobytes() if ret_raw else None
 
             # 3. Retrieve latest AI detections & tracking info
@@ -352,7 +401,7 @@ class _CameraStreamPublisher:
             if want_ann and routed and routed[1] == "qr":
                 from app.services.qr_service import QRReaderPipeline
                 annotated_mat = QRReaderPipeline.draw_reads(self.camera_id, display_mat, scale_x, scale_y, fps)
-                ret_ann, ann_buf = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                ret_ann, ann_buf = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
                 annotated_jpeg = ann_buf.tobytes() if ret_ann else None
             elif want_ann:
                 worker = CameraStreamPipeline.get_worker(self.camera_id)
@@ -379,17 +428,24 @@ class _CameraStreamPublisher:
                     camera_id=self.camera_id,
                 )
 
+                # Codes a vision camera read beside its model are outlined on its video too.
+                if routed and routed[1] == "vision" and routed[0].reads_codes(self.camera_id):
+                    from app.services.qr_service import QRReaderPipeline
+                    QRReaderPipeline.draw_reads(self.camera_id, annotated_mat, scale_x, scale_y, banner=False)
+
                 # 5. Render Annotated JPEG (single encode per frame)
-                ret_ann, ann_buf = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                ret_ann, ann_buf = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
                 annotated_jpeg = ann_buf.tobytes() if ret_ann else None
 
-            # 6. Atomic update of cached frame bytes
+            # 6. Atomic update of cached frame bytes. A redraw that came out the
+            # same as the picture already sent is not sent again.
             with self._lock:
-                if annotated_jpeg is not None:
+                if annotated_jpeg is not None and annotated_jpeg != self._latest_annotated_jpeg:
                     self._latest_annotated_jpeg = annotated_jpeg
-                if raw_jpeg is not None:
+                    self._annotated_seq += 1
+                if raw_jpeg is not None and raw_jpeg != self._latest_raw_jpeg:
                     self._latest_raw_jpeg = raw_jpeg
-                self._latest_frame_id = fid
+                    self._raw_seq += 1
 
             # Maintain smooth 30 FPS timing
             elapsed = time.perf_counter() - loop_start
@@ -502,7 +558,7 @@ class CameraStreamPipeline:
                 if not driver or not getattr(driver, "is_connected", False):
                     break
 
-                fid = publisher.get_latest_frame_id()
+                fid = publisher.get_latest_frame_id("raw")
                 jpeg = publisher.get_latest_raw()
 
                 if jpeg and fid != last_fid:
@@ -673,7 +729,13 @@ class ContinuousVisionRunner:
 
     @classmethod
     def _loop(cls) -> None:
-        last_submitted_fids: Dict[str, int] = {}
+        # The last frame handed over per camera, as (driver, frame id): frame ids
+        # start again at 1 when a camera is reconnected, and a still picture's
+        # only frame must not be mistaken for the one already processed.
+        last_submitted_fids: Dict[str, Tuple[Any, int]] = {}
+        # Frames handed to the code reader, kept apart: a vision camera with
+        # Read codes on feeds its model and its code reader independently.
+        last_code_fids: Dict[str, Tuple[Any, int]] = {}
         while not cls._stop_event.is_set():
             cams = list(app_state.cameras.items())
             if not cams:
@@ -691,20 +753,24 @@ class ContinuousVisionRunner:
                     if routed is None or not routed[0].enabled:
                         continue
                     cur_fid = driver.get_latest_frame_id() if hasattr(driver, "get_latest_frame_id") else getattr(driver, "_latest_frame_id", 0)
-                    if cur_fid == last_submitted_fids.get(camera_id, 0) or cur_fid == 0:
+                    if cur_fid == 0:
                         continue
 
-                    if routed[1] == "qr":
+                    runtime, role = routed
+                    # Codes: a QR reader, or a vision camera with Read codes on. A camera
+                    # set to one picture per product decodes on a wire line crossing instead.
+                    if (role == "qr" or runtime.reads_codes(camera_id)) and not runtime.qr_triggered(camera_id) \
+                            and (driver, cur_fid) != last_code_fids.get(camera_id):
                         from app.services.qr_service import QRReaderPipeline
                         reader = QRReaderPipeline.get_worker(camera_id)
-                        if reader.is_busy:
-                            continue
-                        if hasattr(driver, "get_latest_raw_mat"):
-                            success, mat, fid = driver.get_latest_raw_mat(copy=False)
-                        else:
-                            success, mat, fid = driver.grab_raw_frame()
-                        if success and mat is not None and reader.submit_frame_if_idle(mat, fid):
-                            last_submitted_fids[camera_id] = fid
+                        if not reader.is_busy:
+                            if hasattr(driver, "get_latest_raw_mat"):
+                                success, mat, fid = driver.get_latest_raw_mat(copy=False)
+                            else:
+                                success, mat, fid = driver.grab_raw_frame()
+                            if success and mat is not None and reader.submit_frame_if_idle(mat, fid):
+                                last_code_fids[camera_id] = (driver, fid)
+                    if role == "qr" or (driver, cur_fid) == last_submitted_fids.get(camera_id):
                         continue
 
                     # Leave the frame for the next pass while inference is running,
@@ -719,10 +785,10 @@ class ContinuousVisionRunner:
                         success, mat, fid = driver.get_latest_raw_mat(copy=False)
                     else:
                         success, mat, fid = driver.grab_raw_frame()
-                    if success and mat is not None and fid != last_submitted_fids.get(camera_id, 0):
+                    if success and mat is not None and (driver, fid) != last_submitted_fids.get(camera_id):
                         # Runs AI inference + counting tracker on the worker thread
                         if worker.submit_frame_if_idle(mat, fid, copy=False):
-                            last_submitted_fids[camera_id] = fid
+                            last_submitted_fids[camera_id] = (driver, fid)
                 except Exception as ex:
                     _error_log.log(
                         logger, logging.WARNING, ("runner", camera_id),
@@ -867,8 +933,12 @@ class VisionService:
         image_bytes: bytes,
         conf_threshold: Optional[float] = None,
         nms_threshold: Optional[float] = None,
+        model_id: Optional[str] = None,
     ) -> DetectionResponse:
-        engine, model_name, model_id = _get_active_engine()
+        """model_id: the model to run. Without it, the model of Line 1's counting
+        camera (what version 1 called the active model)."""
+        from app.services.line_service import line_manager
+        engine, model_name, model_id = await line_manager.api_engine(model_id)
         async with api_inference_gate.slot() as run:
             response = await run(engine.predict, image_bytes, conf_threshold, nms_threshold)
 
@@ -893,9 +963,12 @@ class VisionService:
         conf_threshold: Optional[float] = None,
         nms_threshold: Optional[float] = None,
         queued: bool = True,
+        model_id: Optional[str] = None,
     ) -> LiveInspectionResponse:
         """queued=False is for production triggers (photo-eye or PLC): they skip
-        the API queue so they never wait behind ad-hoc detect calls."""
+        the API queue so they never wait behind ad-hoc detect calls.
+        model_id: the model to run. Without it, the camera's own model, else
+        the model of Line 1's counting camera."""
         if queued:
             api_inference_gate.check_capacity()
         # Grab the frame at request time, before any wait for the model. A
@@ -908,7 +981,7 @@ class VisionService:
         acq_ms = round((time.perf_counter() - cam_start) * 1000, 2)
 
         from app.services.line_service import line_manager
-        engine, model_name, model_id = line_manager.engine_for_camera(camera_id)
+        engine, model_name, model_id = await line_manager.api_engine(model_id, camera_id)
         async with (api_inference_gate.slot() if queued else _unqueued()) as run:
             det_response = await run(engine.predict_mat, mat, conf_threshold, nms_threshold)
 
@@ -949,15 +1022,26 @@ class VisionService:
         db: AsyncSession,
         camera_id: str,
         conf_threshold: Optional[float] = None,
+        max_width: Optional[int] = None,
     ) -> bytes:
+        """max_width: send the picture no wider than this (a small tile needs no full picture)."""
         driver = app_state.cameras.get(camera_id)
         if not driver or not getattr(driver, "is_connected", False):
             raise ValueError(f"Camera {camera_id} is offline")
         # Check publisher cache first for instant lock-free retrieval
         publisher = CameraStreamPipeline.get_publisher(camera_id)
-        cached = publisher.get_latest_annotated()
-        if cached:
-            return cached
+        if max_width:
+            cached, ready = publisher.get_latest_annotated_scaled(max_width)
+            if ready:
+                return ready
+            if cached:
+                scaled = await asyncio.to_thread(shrink_jpeg, cached, max_width)
+                publisher.store_scaled(max_width, cached, scaled)
+                return scaled
+        else:
+            cached = publisher.get_latest_annotated()
+            if cached:
+                return cached
 
         api_inference_gate.check_capacity()
         success, mat, fid, error = await CameraService.grab_raw_frame(db, camera_id)
@@ -970,12 +1054,14 @@ class VisionService:
         def _infer_and_render() -> bytes:
             # Inference, drawing and JPEG encoding all run off the event loop.
             import cv2
-            det_response = engine.predict_mat(mat, conf_threshold)
-            annotated_mat = engine.draw_annotations_mat(
-                mat, det_response.detections, det_response.inference_time_ms, camera_id=camera_id
-            )
+            if getattr(engine, "is_loaded", True):
+                det_response = engine.predict_mat(mat, conf_threshold)
+                detections, latency_ms = det_response.detections, det_response.inference_time_ms
+            else:
+                detections, latency_ms = [], 0.0  # no model runs on this camera
+            annotated_mat = engine.draw_annotations_mat(mat, detections, latency_ms, camera_id=camera_id)
             _, jpeg = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-            return jpeg.tobytes()
+            return shrink_jpeg(jpeg.tobytes(), max_width) if max_width else jpeg.tobytes()
 
         async with api_inference_gate.slot() as run:
             return await run(_infer_and_render)

@@ -8,7 +8,7 @@ It is intended to give operators a single place to monitor cameras and detection
 
 ## Main capabilities
 
-- **Vision:** Run object detection with YOLO-compatible ONNX models; load an active model on startup; configure confidence and NMS thresholds.
+- **Vision:** Run object detection with YOLO-compatible ONNX models; run a model of its own on each vision camera; configure confidence and NMS thresholds.
 - **Camera input:** Support USB cameras and RTSP/IP cameras through camera drivers and services.
 - **Tracking and counting:** Track detections, report line crossings and class counts, and expose telemetry through the API/dashboard.
 - **QR/barcode inspection:** Decode QR and 1D/2D barcode data from uploaded images or camera frames.

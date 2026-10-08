@@ -215,7 +215,7 @@ def _png_bytes() -> bytes:
     return buf.tobytes()
 
 
-def test_detect_image_uses_active_model_and_logs_result(client, admin_headers, fake_engine):
+def test_detect_image_runs_the_model_and_logs_result(client, admin_headers, fake_engine):
     res = client.post(
         f"{API}/vision/detect",
         headers=admin_headers,
@@ -281,8 +281,12 @@ def test_plc_action_cards_list(client, admin_headers):
 
 # ── Dashboards ────────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("path", ["/dashboard", "/dashboard/pro"])
-def test_dashboards_are_served_to_local_clients(client, path):
-    res = client.get(path)
+def test_dashboard_is_served_to_local_clients(client):
+    res = client.get("/dashboard")
     assert res.status_code == 200
     assert 'id="loginScreen"' in res.text
+
+
+def test_old_pro_address_redirects_to_the_dashboard(client):
+    res = client.get("/dashboard/pro", follow_redirects=False)
+    assert res.status_code == 307 and res.headers["location"] == "/dashboard"

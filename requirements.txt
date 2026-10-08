@@ -32,6 +32,8 @@ httpcore>=1.0.9
 websockets>=17.1
 requests>=2.34.2
 paho-mqtt>=2.1.0
+# Sparkplug B payloads (app/hardware/mqtt/sparkplug_codec.py). ONNX Runtime needs it too.
+protobuf>=4.25
 asyncua>=2.0.1,<3.0
 pyserial>=3.5                  # Modbus RTU over RS-485 / RS-232
 
@@ -39,6 +41,7 @@ pyserial>=3.5                  # Modbus RTU over RS-485 / RS-232
 opencv-python-headless>=5.0.0.93   # headless (server); swap for opencv-python on desktop
 numpy>=2.5.3
 pillow>=12.3.0
+zxing-cpp>=2.2,<4             # QR / Data Matrix / 1D code reader with corner points (wheels for x86-64 and arm64)
 
 # Use one ONNX Runtime distribution per platform to avoid provider-package conflicts.
 onnxruntime-directml>=1.24.4; platform_system == "Windows"

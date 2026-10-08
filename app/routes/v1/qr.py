@@ -14,6 +14,15 @@ router = APIRouter(prefix="/qr", tags=["QR & Barcodes"])
 logger = get_logger(__name__)
 
 
+@router.get("/code-types", summary="Code types a reader can be limited to (all, 2D, 1D, or one type)")
+async def list_code_types() -> dict:
+    """What Line setup offers for a camera that reads codes. The single types
+    are the ones the installed reader library supports."""
+    from app.engines.qr_engine import code_type_options, reader_backend
+
+    return {"backend": reader_backend(), "types": code_type_options()}
+
+
 @router.post("/decode", response_model=BarcodeDecodeResponse, summary="Decode QR/Barcodes in uploaded image")
 async def decode_image(
     file: UploadFile = File(..., description="Image file containing QR or barcodes"),
@@ -90,10 +99,12 @@ async def receive_mobile_scan(
     except Exception:
         pass
 
-    # 2. Check the code against the product list, then send it to the saved
-    # channels through the shared telemetry dispatcher.
+    # 2. Check the code against the product lists (the one the scan names, else
+    # all of them), then send it to the saved channels through the shared
+    # telemetry dispatcher.
     from app.services.product_service import product_catalog
-    product = product_catalog.lookup(code)
+    scan_list = payload.get("list_id") or payload.get("product_list_id")
+    product = product_catalog.lookup(code, str(scan_list)) if scan_list else product_catalog.lookup_any(code)
     scan_event_payload = {
         "event": "MOBILE_BARCODE_SCANNED",
         "code": code,

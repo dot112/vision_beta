@@ -1,0 +1,4 @@
+# Files that run inside Linux containers keep Unix line endings on every
+# checkout: a shell script or a Mosquitto config with CRLF does not work there.
+*.sh text eol=lf
+docker/mosquitto/mosquitto.conf text eol=lf

@@ -59,25 +59,39 @@ async def reset_counts(
     """
     runtime = _line(line_id)
     if req.reset_all:
-        runtime.reset()
-        res = runtime.counter.get_stats()
-    else:
-        res = runtime.counter.reset_counts(reset_all=False, classes_to_reset=req.classes_to_reset)
-    if user:
-        try:
-            from app.services.settings_persistence_service import SettingsPersistenceService
-            SettingsPersistenceService.record_audit(
-                username=user.username,
-                role=user.role,
-                clearance_level=user.clearance_level,
-                action="RESET_COUNTERS",
-                category="PRODUCTION",
-                details=f"Reset production inspection counters of line '{runtime.name}' to 0",
-                line_id=runtime.id,
-            )
-            SettingsPersistenceService.save()
-        except Exception:
-            pass
+        return reset_line_counters(runtime, user)
+    res = runtime.counter.reset_counts(reset_all=False, classes_to_reset=req.classes_to_reset)
+    _audit_reset(runtime, user)
+    return res
+
+
+def _audit_reset(runtime: Any, actor: Any) -> None:
+    if actor is None:
+        return
+    try:
+        from app.services.settings_persistence_service import SettingsPersistenceService
+        SettingsPersistenceService.record_audit(
+            username=actor.username,
+            role=actor.role,
+            clearance_level=actor.clearance_level,
+            action="RESET_COUNTERS",
+            category="PRODUCTION",
+            details=f"Reset production inspection counters of line '{runtime.name}' to 0",
+            line_id=runtime.id,
+        )
+        SettingsPersistenceService.save()
+    except Exception:
+        pass
+
+
+def reset_line_counters(runtime: Any, actor: Any) -> CountingStatsResponse:
+    """Reset every counter of a line for whoever asked: a signed-in user, or a Sparkplug host's command.
+
+    ``actor`` has a username, role and clearance_level, for the audit entry.
+    """
+    runtime.reset()
+    res = runtime.counter.get_stats()
+    _audit_reset(runtime, actor)
     return res
 
 

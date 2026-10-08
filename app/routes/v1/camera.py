@@ -24,6 +24,7 @@ def _public_camera(camera):
     from app.services.settings_persistence_service import SettingsPersistenceService
 
     result = SettingsPersistenceService.redact_secrets(CameraResponse.model_validate(camera).model_dump())
+    result["connection_state"] = CameraService.connection_state(camera)
     if result.get("last_error"):
         result["last_error"] = "Camera connection failed; consult server logs for details."
     return result
@@ -121,7 +122,16 @@ async def get_camera_status(camera_id: str, db: AsyncSession = Depends(get_db)) 
 
 
 @router.get("/{camera_id}/frame", summary="Grab instantaneous JPEG snapshot")
-async def grab_frame(camera_id: str, db: AsyncSession = Depends(get_db)) -> Response:
+async def grab_frame(
+    camera_id: str,
+    full: bool = Query(False, description="The whole picture before the ROI crop (to draw the ROI on)"),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    if full:
+        jpeg_bytes = await CameraService.grab_full_view(camera_id)
+        if not jpeg_bytes:
+            raise HTTPException(status_code=400, detail="The camera is not connected or has no picture yet")
+        return Response(content=jpeg_bytes, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
     success, jpeg_bytes, error = await CameraService.grab_frame(db, camera_id)
     if not success or not jpeg_bytes:
         raise HTTPException(status_code=400, detail="Failed to grab a frame from the configured camera")

@@ -16,6 +16,22 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
+# When a card fires is decided in card_triggers, the same for PLC cards and
+# send cards. The names below are what this module called them before that.
+from app.services.card_triggers import (  # noqa: F401  (re-exported)
+    ALARM_EVENT,
+    ANY_LINE,
+    LINE_STATE_EVENT,
+    alarm_event,
+    card_alarm_codes,
+    card_fires,
+    card_line as _card_line,
+    camera_matches as _camera_matches,
+    eval_counter as _eval_counter,
+    line_state_event,
+    normalize_trigger,
+    trigger_matches as _eval_condition,
+)
 from app.services.line_config import PRIMARY_LINE_ID
 from app.services.plc_failsafe_service import PLCFailsafeService
 from app.utils.logger import get_logger
@@ -43,64 +59,14 @@ def _normalize_card(card: dict) -> dict:
     Translate frontend field names to backend field names.
 
     The dashboard stores cards with short names (trigger, condition, delay_ms,
-    debounce_ms, duration_ms, exec_policy) and UI-level condition strings
-    (counter_reach, counter_exact, counter_modulo, class_present, and
-    class-filtered line crossings).
+    debounce_ms, duration_ms, exec_policy). The trigger and condition are
+    translated by card_triggers.normalize_trigger, shared with send cards;
+    the PLC-only fields are translated here.
 
     This function returns a *copy* with all names normalised so the rest of the
     dispatcher can work with one canonical naming convention.
     """
-    c = dict(card)   # shallow copy — don't mutate the original
-
-    # ── Trigger field: "trigger" → "trigger_type" ─────────────────────────────
-    if "trigger" in c and "trigger_type" not in c:
-        trigger_alias = {
-            "cross_line": "line_cross",
-            "line_cross": "line_cross",
-            "good_counter": "good_counter",
-            "reject_counter": "reject_counter",
-            "class": "class_detected",
-            "class_detected": "class_detected",
-            "qr_read": "qr_read",
-            "qr_known": "qr_known",
-            "qr_unknown": "qr_unknown",
-            "qr_no_read": "qr_no_read",
-        }
-        c["trigger_type"] = trigger_alias.get(str(c["trigger"]).lower(), c["trigger"])
-
-    # ── Condition field: "condition" → "trigger_condition" ────────────────────
-    if "condition" in c and "trigger_condition" not in c:
-        raw_cond = str(c["condition"]).lower()
-        set_val = str(c.get("set_value", "1") or "1").strip()
-        trigger_type = c.get("trigger_type", "line_cross")
-
-        if trigger_type in ("good_counter", "reject_counter"):
-            # Map UI counter condition names to backend format strings
-            n = int(set_val) if set_val.isdigit() else int(c.get("trigger_value", 1) or 1)
-            c["trigger_value"] = n
-            cond_map = {
-                "counter_reach":  f">={n}",
-                "counter_exact":  f"=={n}",
-                "counter_modulo": f"%{n}==0",
-            }
-            c["trigger_condition"] = cond_map.get(raw_cond, raw_cond)
-        elif trigger_type == "class_detected":
-            class_name = set_val or "defect"
-            if raw_cond in ("class_present", "class=="):
-                c["trigger_condition"] = f"class=={class_name}"
-            elif raw_cond == "class_absent":
-                # class_absent is not directly supported — we store it for
-                # future use but skip matching (returns False below)
-                c["trigger_condition"] = f"class_absent=={class_name}"
-            else:
-                c["trigger_condition"] = raw_cond
-        elif trigger_type == "line_cross" and raw_cond in ("class", "class_cross"):
-            # A class-filtered crossing uses the class carried by the crossing event.
-            class_filter = str(c.get("set_value", "") or "").strip()
-            c["trigger_condition"] = f"class=={class_filter}" if class_filter else "class=="
-        else:
-            # line_cross conditions are already compatible
-            c["trigger_condition"] = raw_cond
+    c = normalize_trigger(card)
 
     # ── Timing fields ─────────────────────────────────────────────────────────
     if "duration_ms" in c and "pulse_duration_ms" not in c:
@@ -119,120 +85,6 @@ def _normalize_card(card: dict) -> dict:
         c["operation"] = str(c["operation"]).upper()
 
     return c
-
-
-# ── Condition Evaluation ──────────────────────────────────────────────────────
-
-def _eval_condition(card: dict, event: dict) -> bool:
-    """
-    Return True when the card's trigger + condition matches the incoming event.
-
-    Accepts BOTH normalised field names (trigger_type, trigger_condition) and
-    raw UI field names (trigger, condition) — always normalise first via
-    _normalize_card() before calling this.
-
-    Event fields:
-      event_id          str   — unique per crossing / detection frame
-      result            str   — "good" | "reject" | "unknown"
-      good_count        int
-      reject_count      int
-      detected_classes  list[str]
-      timestamp         float
-    """
-    trigger = str(card.get("trigger_type", "line_cross")).lower()
-    condition = str(card.get("trigger_condition", "any")).lower()
-    trigger_value = int(card.get("trigger_value", 1) or 1)
-
-    # ── QR code triggers ──────────────────────────────────────────────────────
-    # A standalone QR read only fires QR cards; a synced crossing carries its
-    # code (or "no_read") and fires both kinds.
-    qr_status = event.get("qr_status")
-    if trigger in _QR_TRIGGERS:
-        if trigger == "qr_read":
-            return bool(event.get("qr_code"))
-        if trigger == "qr_known":
-            return qr_status == "known"
-        if trigger == "qr_unknown":
-            return qr_status == "unknown"
-        return qr_status == "no_read"
-    if event.get("event_type") == "qr_read":
-        return False
-
-    # ── Line cross ────────────────────────────────────────────────────────────
-    if trigger == "line_cross":
-        result = str(event.get("result", "unknown")).lower()
-        if condition == "any":
-            return True
-        if condition.startswith("class=="):
-            target = condition.split("==", 1)[1].strip().lower()
-            detected = {str(name).strip().lower() for name in event.get("detected_classes", [])}
-            return bool(target) and target in detected
-        return result == condition      # "good" or "reject"
-
-    # ── Good counter ──────────────────────────────────────────────────────────
-    if trigger == "good_counter":
-        count = int(event.get("good_count", 0))
-        return _eval_counter(condition, count, trigger_value)
-
-    # ── Reject counter ────────────────────────────────────────────────────────
-    if trigger == "reject_counter":
-        count = int(event.get("reject_count", 0))
-        return _eval_counter(condition, count, trigger_value)
-
-    # ── Class detected ────────────────────────────────────────────────────────
-    if trigger == "class_detected":
-        detected = [c.lower() for c in event.get("detected_classes", [])]
-        if condition.startswith("class=="):
-            target = condition.split("==", 1)[1].strip().lower()
-            return target in detected
-        if condition.startswith("class_in:"):
-            targets = {c.strip().lower() for c in condition[9:].split(",")}
-            return bool(targets & set(detected))
-        if condition.startswith("class_absent=="):
-            # class absent = NOT in detected
-            target = condition.split("==", 1)[1].strip().lower()
-            return target not in detected
-
-    return False
-
-
-_QR_TRIGGERS = ("qr_read", "qr_known", "qr_unknown", "qr_no_read")
-
-
-def _card_line(card: dict) -> str:
-    return str(card.get("line_id") or PRIMARY_LINE_ID)
-
-
-def _camera_matches(card: dict, event: dict) -> bool:
-    """A card naming a camera fires only for that camera. A card with no camera
-    fires for the line's counting camera and QR readers, not for a second
-    vision camera, so adding one does not double-fire existing cards."""
-    wanted = str(card.get("camera_id") or "").strip()
-    if wanted:
-        return str(event.get("camera_id") or "") == wanted
-    if event.get("event_type") == "qr_read":
-        return True
-    return event.get("counting_camera", True) is not False
-
-
-def _eval_counter(condition: str, count: int, n: int) -> bool:
-    """Evaluate counter condition string against a count value."""
-    c = condition.strip().lower().replace(" ", "")
-    if c.startswith(">="):
-        return count >= n
-    if c == f"=={n}" or c.startswith("=="):
-        try:
-            return count == int(c[2:])
-        except ValueError:
-            return count == n
-    if c.startswith("%") and "==0" in c:
-        # "%N==0" or "%10==0"
-        try:
-            divisor = int(c[1:c.index("==0")])
-            return (divisor > 0) and (count % divisor == 0) and (count > 0)
-        except (ValueError, AttributeError):
-            return (n > 0) and (count % n == 0) and (count > 0)
-    return False
 
 
 # ── Dispatcher ────────────────────────────────────────────────────────────────
@@ -318,7 +170,14 @@ class PLCDispatcherService:
             card = _normalize_card(c)
             card["line_id"] = line_id
             fresh.append(card)
+        before = {c.get("id") for c in cls._cards if _card_line(c) == line_id}
         cls._cards = [c for c in cls._cards if _card_line(c) != line_id] + fresh
+        # A deleted or switched-off action never fires again, so its failure alarm could never clear.
+        live = {c.get("id") for c in fresh if c.get("enabled", True) is True}
+        from app.events.alarm_events import alarm_manager
+        for cid in (before | {c.get("id") for c in fresh}) - live:
+            if cid:
+                alarm_manager.clear_source(f"plc_card:{cid}", "action deleted or switched off")
         for card in cls._cards:
             cid = card.get("id", "")
             if cid and cid not in cls._states:
@@ -356,8 +215,6 @@ class PLCDispatcherService:
             return
         now = time.monotonic()
         event_id = str(event.get("event_id", ""))
-        line_id = str(event.get("line_id") or PRIMARY_LINE_ID)
-        line_tasks = cls._line_tasks.setdefault(line_id, set())
 
         for card in cls._cards:
             if card.get("enabled", True) is not True:
@@ -365,13 +222,10 @@ class PLCDispatcherService:
             cid = card.get("id", "")
             if not cid:
                 continue
-            # A line's events only ever run that line's cards.
-            if _card_line(card) != line_id or not _camera_matches(card, event):
+            # ── Does the card fire for this event? (shared with send cards) ────
+            if not card_fires(card, event):
                 continue
-
-            # ── Condition check ───────────────────────────────────────────────
-            if not _eval_condition(card, event):
-                continue
+            card_line = _card_line(card)
 
             # ── Re-arm lockout ────────────────────────────────────────────────
             state = cls._states.setdefault(cid, _CardState(card_id=cid))
@@ -395,6 +249,7 @@ class PLCDispatcherService:
                 while len(state.fired_event_ids) > 500:
                     state.fired_event_ids.pop(next(iter(state.fired_event_ids)))
 
+            line_tasks = cls._line_tasks.setdefault(card_line, set())
             if len(line_tasks) >= cls._max_dispatch_tasks:
                 state.status = "failed"
                 state.last_result = {"success": False, "message": "PLC dispatch capacity reached for this line; event was dropped safely."}
@@ -409,6 +264,34 @@ class PLCDispatcherService:
             line_tasks.add(task)
             task.add_done_callback(cls._dispatch_tasks.discard)
             task.add_done_callback(line_tasks.discard)
+
+    @classmethod
+    def watch_alarms(cls) -> None:
+        """Run "Alarm" cards when an alarm is raised or cleared. Safe to call more than once."""
+        from app.events.event_bus import event_bus
+        from app.events.system_events import SystemEventType
+
+        event_bus.subscribe(SystemEventType.ALARM_RAISED, cls._on_alarm_raised)
+        event_bus.subscribe(SystemEventType.ALARM_CLEARED, cls._on_alarm_cleared)
+
+    @classmethod
+    async def _on_alarm_raised(cls, alarm: dict) -> None:
+        await cls._on_alarm(alarm, raised=True)
+
+    @classmethod
+    async def _on_alarm_cleared(cls, alarm: dict) -> None:
+        await cls._on_alarm(alarm, raised=False)
+
+    @classmethod
+    async def _on_alarm(cls, alarm: dict, raised: bool) -> None:
+        if not any(c.get("trigger_type") == "alarm" and c.get("enabled", True) is True for c in cls._cards):
+            return
+        from app.events.alarm_events import alarm_manager
+
+        event = alarm_event(alarm, raised, [a.to_dict() for a in alarm_manager.active()])
+        if not event["line_id"]:
+            return  # a line alarm on no line (a camera no line uses) concerns no line's cards
+        await cls.evaluate(event)
 
     @classmethod
     async def dispatch_manual(cls, card: dict) -> Dict[str, Any]:
@@ -457,7 +340,21 @@ class PLCDispatcherService:
 
         # ── Travel delay ──────────────────────────────────────────────────────
         if travel_ms > 0:
-            await asyncio.sleep(travel_ms / 1000.0)
+            wait = travel_ms / 1000.0
+            crossed_at = event.get("crossed_at")
+            if event.get("delay_from_crossing") and crossed_at is not None:
+                # The product's result was decided some time after it crossed
+                # the line (it waited for its code). The product has travelled
+                # on meanwhile, so that time is part of the travel delay.
+                wait -= time.monotonic() - float(crossed_at)
+                if wait < 0:
+                    logger.warning(
+                        "PLCDispatcher: card '%s' fires %.0f ms late: the product's result came after the card's "
+                        "travel delay of %d ms. Make the travel delay longer than the line's Sync window.",
+                        card.get("name", cid), -wait * 1000.0, travel_ms,
+                    )
+            if wait > 0:
+                await asyncio.sleep(wait)
 
         # ── Resolve endpoint + driver ─────────────────────────────────────────
         if not ep_id:

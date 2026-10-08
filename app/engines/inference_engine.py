@@ -155,6 +155,95 @@ def _blend_filled_rect(
     roi[:] = cv2.addWeighted(overlay, alpha, roi, beta, 0)
 
 
+# Count line colours (BGR): A, where products enter, and B, where they are counted.
+COUNT_LINE_A_COLOR = (255, 200, 40)    # azure
+COUNT_LINE_B_COLOR = (40, 190, 255)    # amber
+# How long line B flashes after a product is counted.
+COUNT_FLASH_SECONDS = 0.6
+
+
+def _label_chip(img: np.ndarray, text: str, center: Tuple[int, int], color: Tuple[int, int, int], scale: float) -> None:
+    """A rounded label in the line's colour with dark text, centred on ``center`` and kept inside the frame."""
+    h, w = img.shape[:2]
+    font_scale = 0.48 * scale
+    thick = max(1, int(round(1.4 * scale)))
+    (tw, th), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thick)
+    pad_x, pad_y = int(9 * scale), int(5 * scale)
+    cw, ch = tw + 2 * pad_x, th + base + 2 * pad_y
+    x1 = int(min(max(center[0] - cw // 2, 2), w - cw - 2))
+    y1 = int(min(max(center[1] - ch // 2, 2), h - ch - 2))
+    r = ch // 2
+    # Soft shadow, then the pill.
+    for dx, col in ((2, (15, 15, 15)), (0, color)):
+        oy = dx
+        cv2.rectangle(img, (x1 + r, y1 + oy), (x1 + cw - r, y1 + ch + oy), col, -1, cv2.LINE_AA)
+        cv2.circle(img, (x1 + r, y1 + r + oy), r, col, -1, cv2.LINE_AA)
+        cv2.circle(img, (x1 + cw - r, y1 + r + oy), r, col, -1, cv2.LINE_AA)
+    cv2.putText(img, text, (x1 + pad_x, y1 + pad_y + th), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (24, 24, 24), thick, cv2.LINE_AA)
+
+
+def _draw_count_lines(
+    img: np.ndarray,
+    vertical_lines: bool,
+    pos_a: float,
+    pos_b: float,
+    top: int = 0,
+    flash: float = 0.0,
+) -> None:
+    """Count lines A (entry) and B (count): a soft glow and a crisp core each,
+    a label on the line, a faint zone between them with arrows in the flow
+    direction (A towards B), and line B flashing for a moment (``flash`` 1 to 0)
+    after a product is counted. ``top`` keeps labels clear of the HUD bar."""
+    h, w = img.shape[:2]
+    scale = max(0.6, min(2.0, max(w, h) / 1280.0))
+    span = w if vertical_lines else h
+    a = int(min(max(pos_a, 0.0), 1.0) * (span - 1))
+    b = int(min(max(pos_b, 0.0), 1.0) * (span - 1))
+
+    def across(c: int, half: int) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+        return ((c - half, top), (c + half, h)) if vertical_lines else ((0, c - half), (w, c + half))
+
+    # 1. The zone between the lines, with chevrons pointing from A to B.
+    lo, hi = sorted((a, b))
+    if hi - lo > 2:
+        p1, p2 = ((lo, top), (hi, h)) if vertical_lines else ((0, lo), (w, hi))
+        _blend_filled_rect(img, p1, p2, (255, 255, 255), 0.05, 0.95)
+        size = int(9 * scale)
+        if hi - lo > 4 * size:
+            mid = (lo + hi) // 2
+            sign = 1 if b >= a else -1
+            region = img[top:h, lo:hi + 1] if vertical_lines else img[lo:hi + 1, 0:w]
+            overlay = region.copy()
+            along = (h - top) if vertical_lines else w
+            for frac in (0.18, 0.5, 0.82):
+                t = int(frac * along)
+                for k in (-1, 1):
+                    off = mid - lo + k * size  # two chevrons side by side read as an arrow
+                    if vertical_lines:
+                        tip = (off + sign * size // 2, t)
+                        pts = np.array([(tip[0] - sign * size, t - size), tip, (tip[0] - sign * size, t + size)], np.int32)
+                    else:
+                        tip = (t, off + sign * size // 2)
+                        pts = np.array([(t - size, tip[1] - sign * size), tip, (t + size, tip[1] - sign * size)], np.int32)
+                    cv2.polylines(overlay, [pts], False, (235, 235, 235), max(2, int(2 * scale)), cv2.LINE_AA)
+            cv2.addWeighted(overlay, 0.45, region, 0.55, 0, region)
+
+    # 2. The lines themselves.
+    for coord, color, label, glow in (
+        (a, COUNT_LINE_A_COLOR, "A  ENTRY", 0.0),
+        (b, COUNT_LINE_B_COLOR, "B  COUNT", max(0.0, min(1.0, flash))),
+    ):
+        half = int((6 + 8 * glow) * scale)
+        p1, p2 = across(coord, half)
+        _blend_filled_rect(img, p1, p2, color, 0.18 + 0.35 * glow, 0.82 - 0.35 * glow)
+        core = max(2, int(round((2 + 2 * glow) * scale)))
+        start, end = ((coord, top), (coord, h - 1)) if vertical_lines else ((0, coord), (w - 1, coord))
+        cv2.line(img, start, end, (20, 20, 20), core + 2, cv2.LINE_AA)  # dark edge for bright scenes
+        cv2.line(img, start, end, color, core, cv2.LINE_AA)
+        chip_at = (coord, top + int(20 * scale)) if vertical_lines else (int(56 * scale), coord)
+        _label_chip(img, label, chip_at, color, scale)
+
+
 # Seconds the current thread spent holding a model's lock since
 # begin_model_timing(); the API inference queue uses it to charge requests
 # only for model time, not for decoding, drawing or waiting.
@@ -175,6 +264,14 @@ def end_model_timing() -> Optional[float]:
 def _record_model_time(seconds: float) -> None:
     if getattr(_model_timing, "active", False):
         _model_timing.seconds = (_model_timing.seconds or 0.0) + seconds
+
+
+# DirectML ends the process (a native crash, nothing to catch) when two of its
+# sessions run at the same time on one GPU, or when one is freed while another
+# runs. Every engine on DirectML therefore runs and frees its session under
+# this one lock. The GPU works through them in turn anyway, so the frame rate
+# of several models together stays about the same.
+_DML_LOCK = threading.Lock()
 
 
 class InferenceEngine:
@@ -275,10 +372,14 @@ class InferenceEngine:
                     num_threads = _intra_op_threads(cpu_only=providers == ["CPUExecutionProvider"])
                     opts.intra_op_num_threads = num_threads
 
-                    self.ort_session = ort.InferenceSession(model_path, opts, providers=providers)
+                    session = ort.InferenceSession(model_path, opts, providers=providers)
 
                     # Log which provider is actually running
-                    active_prov = (self.ort_session.get_providers() or ["unknown"])[0]
+                    active_prov = (session.get_providers() or ["unknown"])[0]
+                    if "Dml" in active_prov:
+                        self._inference_lock = _DML_LOCK
+                    with self._inference_lock:
+                        self.ort_session = session  # frees a session loaded before
                     is_gpu = any(x in active_prov for x in ("Dml", "CUDA", "Tensorrt", "MIGraphX", "ROCM", "CoreML"))
                     logger.info("Active execution provider: %s  [%s]", active_prov, "GPU" if is_gpu else "CPU")
                     self.input_name = self.ort_session.get_inputs()[0].name
@@ -313,6 +414,13 @@ class InferenceEngine:
             logger.error("Failed to load model %s: %s", model_path, exc)
             self.is_loaded = False
             return False
+
+    def close(self) -> None:
+        """Free the model. Call it when an engine is dropped: see _DML_LOCK."""
+        with self._inference_lock:
+            self.is_loaded = False
+            self.ort_session = None
+            self.net = None
 
     def predict(
         self,
@@ -359,6 +467,8 @@ class InferenceEngine:
 
                 with self._inference_lock:
                     held_from = time.perf_counter()
+                    if self.ort_session is None and self.net is None:
+                        raise RuntimeError("the model was unloaded while this frame waited")
                     if self.ort_session is not None:
                         outputs = self.ort_session.run(None, {self.input_name: blob})
                     else:
@@ -655,32 +765,16 @@ class InferenceEngine:
                 rej_c = counting_service.rejected_count
                 ppm_val = counting_service.products_per_minute
 
-                # Line 1 & 2 — 20px wide all-translucent band (no opaque line)
-                BAND = 10  # ±10px around line center = 20px total width
-                if is_horizontal_movement(cfg.orientation):
-                    # Horizontal Mode (counts horizontal moving items): wirelines are vertical lines across X
-                    l1_x = int(cfg.line1_position * w)
-                    l2_x = int(cfg.line2_position * w)
-
-                    # --- Line 1: yellow translucent 20px band ---
-                    _blend_filled_rect(img, (max(0, l1_x - BAND), 0), (min(w, l1_x + BAND), h), (255, 230, 0), 0.30, 0.70)
-                    cv2.putText(img, "WIRELINE 1: ENTRY", (l1_x + BAND + 4, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 230, 0), 2)
-
-                    # --- Line 2: cyan translucent 20px band ---
-                    _blend_filled_rect(img, (max(0, l2_x - BAND), 0), (min(w, l2_x + BAND), h), (0, 215, 255), 0.30, 0.70)
-                    cv2.putText(img, "WIRELINE 2: EXIT (COUNT)", (l2_x + BAND + 4, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 215, 255), 2)
-                else:
-                    # Vertical Mode (counts vertical moving items): wirelines are horizontal lines across Y
-                    l1_y = int(cfg.line1_position * h)
-                    l2_y = int(cfg.line2_position * h)
-
-                    # --- Line 1: yellow translucent 20px band ---
-                    _blend_filled_rect(img, (0, max(0, l1_y - BAND)), (w, min(h, l1_y + BAND)), (255, 230, 0), 0.30, 0.70)
-                    cv2.putText(img, "WIRELINE 1: ENTRY", (12, max(20, l1_y - BAND - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 230, 0), 2)
-
-                    # --- Line 2: cyan translucent 20px band ---
-                    _blend_filled_rect(img, (0, max(0, l2_y - BAND)), (w, min(h, l2_y + BAND)), (0, 215, 255), 0.30, 0.70)
-                    cv2.putText(img, "WIRELINE 2: EXIT (COUNT)", (12, max(20, l2_y - BAND - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 215, 255), 2)
+                # Count lines A and B (vertical lines when products move sideways).
+                since_count = time.time() - counting_service.last_count_at
+                _draw_count_lines(
+                    img,
+                    is_horizontal_movement(cfg.orientation),
+                    float(cfg.line1_position),
+                    float(cfg.line2_position),
+                    top=32,  # below the HUD bar
+                    flash=1.0 - since_count / COUNT_FLASH_SECONDS if since_count < COUNT_FLASH_SECONDS else 0.0,
+                )
 
                 # Target markers — only for CONFIRMED tracks (no trail, no ghost dots)
                 for obj in list(counting_service.get_tracker(camera_id).objects.values()):
