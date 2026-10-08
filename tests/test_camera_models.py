@@ -125,6 +125,8 @@ def test_upgrade_makes_the_camera_that_fed_line1_its_counting_camera():
     assert state()["lines"][0]["cameras"] == [{
         "camera_id": "cam-9", "role": "vision", "counting": True, "qr_hold_ms": 1500,
         "model_id": "model-active", "expected_classes": ["can"], "defect_classes": [],
+        # Version 8: a camera from before keeps rejecting classes named "defect", "scratch" or "broken".
+        "name_based_defects": True,
     }]
     # Without an active model nothing was detected, so there is nothing to carry over.
     assert state(active_model_id=None)["lines"][0]["cameras"] == []

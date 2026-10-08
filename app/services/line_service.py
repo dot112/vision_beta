@@ -209,9 +209,7 @@ class LineRuntime:
                 aux = CountingService(line_id=self.id, line_name=self.name, camera_id=cid)
                 self.aux_counters[cid] = aux
             aux.line_name = self.name
-            config = counting_config_from_dict(trigger or {}, cam)
-            overrides = {k: cam[k] for k in ("line1_position", "line2_position", "orientation") if k in cam}
-            self._set_config(aux, config.model_copy(update=overrides) if overrides else config)
+            self._set_config(aux, counting_config_from_dict(trigger or {}, cam))
 
         self.code_checks = code_checks(self.cameras)
         sync = line.get("sync") or {}

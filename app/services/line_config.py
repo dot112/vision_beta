@@ -25,7 +25,9 @@ PRIMARY_LINE_ID = "line-1"
 #   5  send cards instead of one "send results" setting per protocol
 #   6  each vision camera names its own model and its own class lists
 #   7  each send card on an MQTT channel names its own topic
-SCHEMA_VERSION = 7
+#   8  each vision camera holds its own counting settings (count lines, direction,
+#      tracking, whether defect names reject)
+SCHEMA_VERSION = 8
 MAX_CAMERAS_PER_LINE = 2
 CAMERA_ROLES = ("vision", "qr")
 QR_DISPATCH_MODES = ("off", "all", "known", "unknown")
@@ -86,6 +88,24 @@ OLD_SEND_KEYS = (
 # What a vision camera holds since version 6: the model that runs on it, and
 # which of that model's classes count as products and which as defects.
 CAMERA_MODEL_KEYS = ("model_id", "expected_classes", "defect_classes")
+# Which way products cross the count lines: A then B, B then A, or either way.
+COUNT_DIRECTIONS = ("forward", "backward", "both")
+# Tracking settings a vision camera may change: (lowest, highest, whole number).
+TRACKING_LIMITS = {
+    "track_high_thresh": (0.05, 1.0, False),
+    "track_low_thresh": (0.01, 0.9, False),
+    "match_threshold": (0.1, 2.0, False),
+    "max_missed_frames": (1, 120, True),
+    "max_speed_pixels": (10.0, 1000.0, False),
+    "min_hits": (1, 10, True),
+    "position_tolerance": (20.0, 600.0, False),
+}
+TRACKING_KEYS = tuple(TRACKING_LIMITS)
+# Settings of a vision camera that a client written before them does not send:
+# a camera sent without one keeps what is saved.
+CAMERA_KEPT_KEYS = CAMERA_MODEL_KEYS + (
+    "name_based_defects", "direction", "tracking", "line1_position", "line2_position", "orientation",
+)
 # Once kept per line in action_trigger; an older client that still sends them is ignored.
 OLD_CLASS_KEYS = ("expected_classes", "defect_classes")
 MAX_CLASSES_PER_LIST = 200
@@ -272,7 +292,40 @@ def normalize_camera(raw: Any, index: int) -> Dict[str, Any]:
             if orientation not in ("horizontal", "vertical"):
                 raise ValueError(f"{label} orientation must be 'horizontal' or 'vertical'")
             camera["orientation"] = orientation
+        direction = raw.get("direction")
+        if direction not in (None, ""):
+            if direction not in COUNT_DIRECTIONS:
+                raise ValueError(f"{label} count direction must be 'forward', 'backward' or 'both'")
+            camera["direction"] = direction
+        tracking = _tracking(raw.get("tracking"), label)
+        if tracking:
+            camera["tracking"] = tracking
+        # A class whose name contains "defect", "scratch" or "broken" also rejects
+        # (what every camera did before this could be switched off). Left out, a
+        # camera does what cameras always did: the name rule applies.
+        if raw.get("name_based_defects") is not None:
+            camera["name_based_defects"] = _bool(raw.get("name_based_defects"), f"{label} defects by name", True)
     return camera
+
+
+def _tracking(value: Any, label: str) -> Dict[str, Any]:
+    """A vision camera's tracking settings; the ones left out keep their defaults."""
+    if value in (None, ""):
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} tracking settings must be an object")
+    out: Dict[str, Any] = {}
+    for key, raw in value.items():
+        if key not in TRACKING_LIMITS:
+            raise ValueError(f"{label}: '{key}' is not a tracking setting")
+        if raw in (None, ""):
+            continue
+        low, high, whole = TRACKING_LIMITS[key]
+        number = _number(raw, f"{label} {key.replace('_', ' ')}", low, low, high)
+        if whole and number != int(number):
+            raise ValueError(f"{label} {key.replace('_', ' ')} must be a whole number")
+        out[key] = int(number) if whole else number
+    return out
 
 
 def publish_topic_problem(topic: Any) -> Optional[str]:
@@ -363,19 +416,19 @@ def normalize_send_cards(raw: Any) -> List[Dict[str, Any]]:
 
 
 def _fill_camera_models(cameras: List[Any], saved: List[Dict[str, Any]], line_model: Any) -> List[Any]:
-    """Cameras sent by a client, with the model and class lists a client left out.
+    """Cameras sent by a client, with the settings a client left out (CAMERA_KEPT_KEYS).
 
-    A client written before version 6 sends cameras without them, and may send
-    one ``model_id`` for the whole line. A camera sent without a model gets
-    that line model, else keeps the one it has; class lists that are left out
-    stay as they are saved.
+    A client written before version 6 sends cameras without a model and class
+    lists, and may send one ``model_id`` for the whole line. A camera sent
+    without a model gets that line model, else keeps the one it has; the other
+    settings that are left out stay as they are saved.
     """
     by_id = {c.get("camera_id"): c for c in saved if isinstance(c, dict) and c.get("role", "vision") == "vision"}
     filled = []
     for cam in cameras:
         if isinstance(cam, dict) and str(cam.get("role") or "vision").strip().lower() == "vision":
             kept = by_id.get(str(cam.get("camera_id") or "").strip()) or {}
-            defaults = {key: kept[key] for key in CAMERA_MODEL_KEYS if key in kept}
+            defaults = {key: kept[key] for key in CAMERA_KEPT_KEYS if key in kept}
             if line_model not in (None, ""):
                 defaults["model_id"] = line_model
             cam = {**defaults, **cam}
@@ -730,6 +783,19 @@ def _upgrade_to_v7(state: Dict[str, Any]) -> None:
         broker["auto_connect"] = False
 
 
+def _upgrade_to_v8(state: Dict[str, Any]) -> None:
+    """Every vision camera holds its own counting settings.
+
+    A class whose name contains "defect", "scratch" or "broken" was always a
+    defect; that is now a switch per camera, on for every existing camera so
+    it keeps rejecting what it rejected.
+    """
+    for line in state.get("lines") or []:
+        for camera in (line.get("cameras") or []) if isinstance(line, dict) else []:
+            if isinstance(camera, dict) and camera.get("role", "vision") == "vision":
+                camera.setdefault("name_based_defects", True)
+
+
 # (version reached, step). Append a step for every change to the settings' shape.
 _UPGRADES = (
     (3, _upgrade_to_v3),
@@ -737,6 +803,7 @@ _UPGRADES = (
     (5, _upgrade_to_v5),
     (6, _upgrade_to_v6),
     (7, _upgrade_to_v7),
+    (8, _upgrade_to_v8),
 )
 
 

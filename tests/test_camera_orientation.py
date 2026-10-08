@@ -1,4 +1,5 @@
-"""Callers that pass no rotation/flip get them from the camera's own settings."""
+"""A camera's rotation and flips turn its picture (in the driver); counting and
+drawing then follow the product flow set on the camera, not the rotation."""
 from __future__ import annotations
 
 import numpy as np
@@ -17,33 +18,31 @@ class _RecordingTracker:
         return []
 
 
-def _orientation(call):
-    return call["camera_rotation"], call["camera_flip_h"], call["camera_flip_v"]
-
-
-def test_process_frame_uses_the_cameras_rotation_and_flips(fake_camera):
+def test_process_frame_hands_the_tracker_the_cameras_counting_settings():
+    from app.schemas.counting import CountingConfig
     from app.services.counting_service import CountingService
 
-    fake_camera("cam-rot").settings = {"rotation": 180, "flip_h": True}
     counter = CountingService(dispatch_telemetry=False)
+    counter.update_config(CountingConfig(
+        orientation="vertical", direction="backward", defect_classes=["dent"],
+        name_based_defects=False, min_hits=3, max_speed_pixels=300.0,
+    ))
     tracker = _RecordingTracker()
     counter._trackers["cam-rot"] = tracker
 
-    counter.process_frame([], 640, 480, camera_id="cam-rot")
-    # A caller that passes a rotation is left alone.
-    counter.process_frame([], 640, 480, camera_rotation=90, camera_id="cam-rot")
-    # A flip the caller passes is kept.
-    counter.process_frame([], 640, 480, camera_flip_h=False, camera_id="cam-rot")
+    counter.process_frame([], 640, 480, camera_rotation=180, camera_id="cam-rot")
 
-    assert _orientation(tracker.calls[0]) == (180, True, False)
-    assert _orientation(tracker.calls[1]) == (90, None, None)
-    assert _orientation(tracker.calls[2]) == (180, False, False)
+    call = tracker.calls[0]
+    assert (call["orientation"], call["direction"]) == ("vertical", "backward")
+    assert call["defect_classes"] == ["dent"] and call["name_based_defects"] is False
+    assert (call["min_hits"], call["max_speed_pixels"]) == (3, 300.0)
 
 
-def test_annotated_frame_uses_the_cameras_rotation_and_flips(fake_camera):
+def test_the_drawing_does_not_depend_on_the_camera_rotation(fake_camera):
     from app.engines.inference_engine import InferenceEngine
 
-    fake_camera("cam-rot").settings = {"rotation": 180, "flip_h": True}
+    # "No rotation" is saved as 0, which used to be read as 90 degrees.
+    fake_camera("cam-rot").settings = {"rotation": 0, "flip_h": True}
     engine = InferenceEngine(device="cpu")
     blank = np.zeros((480, 640, 3), dtype=np.uint8)
 
@@ -51,20 +50,7 @@ def test_annotated_frame_uses_the_cameras_rotation_and_flips(fake_camera):
         return engine.draw_annotations_mat(blank.copy(), [], draw_wirelines=False, camera_id="cam-rot", **orientation)
 
     looked_up = draw()
-    assert np.array_equal(looked_up, draw(camera_rotation=180, camera_flip_h=True, camera_flip_v=False))
-    assert not np.array_equal(looked_up, draw(camera_rotation=180, camera_flip_h=False, camera_flip_v=False))
-    assert not np.array_equal(looked_up, draw(camera_rotation=90))
-
-
-def test_orientation_falls_back_to_the_active_camera(fake_camera, monkeypatch):
-    from app.services.camera_service import camera_orientation
-    from app.services.settings_persistence_service import SettingsPersistenceService
-
-    fake_camera("cam-first").settings = {"rotation": 90}
-    fake_camera("cam-active").settings = {"rotation": 270, "flip_v": True}
-    SettingsPersistenceService.get_state()  # loads the state the active camera is saved in
-    monkeypatch.setitem(SettingsPersistenceService._state, "active_camera_id", "cam-active")
-
-    assert camera_orientation(None) == (270, False, True)
-    assert camera_orientation("cam-not-connected") == (270, False, True)
-    assert camera_orientation("cam-first") == (90, False, False)
+    assert np.array_equal(looked_up, draw(camera_rotation=90))
+    assert np.array_equal(looked_up, draw(camera_rotation=180, camera_flip_h=False, camera_flip_v=True))
+    # The default flow is top to bottom: the exit band is along the bottom edge.
+    assert np.mean(looked_up[460:480, :]) > 0 and np.mean(looked_up[:, 0:20][:440]) == 0
