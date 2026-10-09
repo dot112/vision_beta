@@ -2,44 +2,26 @@
 
 Start one new session per section, **in order**. Paste the prompt as the session's first message.
 
-Sections 2 to 5 have a `<BRANCH>` placeholder. Replace it with the branch the previous session reports when it finishes; it is also written in the table in `docs/progress/README.md` on that branch. If you forget, the session finds it with the command in the prompt.
+Sections 3 to 5 have a `<BRANCH>` placeholder. Replace it with the branch the previous session reports when it finishes; it is also written in the table in `docs/progress/README.md` on that branch. If you forget, the session finds it with the command in the prompt. Session 2's prompt already names its branch.
+
+**If a section's branch was merged into `main` with "Squash and merge"**, start the next session from `main` instead (`git fetch origin main && git checkout -B <your session branch> origin/main`). Starting from the old branch brings the same changes back as separate commits, and `main` then reports conflicts (this happened once: see the merge commit `78c51a7` on `claude/tender-cerf-qzfcle`).
 
 ---
 
 ## Session 1: Logic fixes (rest of Section 1)
 
-```text
-Continue the work on this repository from branch claude/busy-babbage-h9j4ln:
-  git fetch origin claude/busy-babbage-h9j4ln && git checkout -B <your session branch> origin/claude/busy-babbage-h9j4ln
-
-Read docs/progress/README.md, then docs/progress/section-1-logic-fixes.md, and do what is left of Section 1:
-- M1: TCP channels use their delimiter, timeout, "keep connection open" and server mode.
-- M2: text-template messages on send cards.
-- P2: PLC WRITE value sources and the strobe.
-- P1: remove the fake "Wait for PLC ACK" option.
-- The docs for this section.
-The vision part of Section 1 is already done (commit c631fe0); do not redo it.
-
-Rules: follow the rules in docs/progress/README.md. Keep existing lines working exactly as before. Add the tests listed in the section file. Run `pytest` and `ruff check .` until both are green. Take screenshots of the changed dashboard parts at 1440 px and 375 px.
-
-When done:
-1. In docs/progress/section-1-logic-fixes.md, fill in "Status" and "Notes for the next section".
-2. In the table in docs/progress/README.md, set Section 1 to Done and write your branch name.
-3. Commit and push your branch.
-4. Reply with your branch name and a short summary.
-Do not start Section 2.
-```
+**Done** on `claude/tender-cerf-qzfcle`. Its prompt is not needed any more.
 
 ---
 
 ## Session 2: Camera cards on Line setup (up to 8 cameras)
 
 ```text
-Start from the branch where Section 1 was finished: <BRANCH>
-  git fetch origin <BRANCH> && git checkout -B <your session branch> origin/<BRANCH>
-(If you do not know the branch: `git fetch origin '+refs/heads/claude/*:refs/remotes/origin/claude/*'`, then use the newest branch whose docs/progress/README.md marks Section 1 as Done.)
+Start from the branch where Section 1 was finished: claude/tender-cerf-qzfcle
+  git fetch origin claude/tender-cerf-qzfcle && git checkout -B <your session branch> origin/claude/tender-cerf-qzfcle
+(If that branch has been merged into main, start from main instead: git fetch origin main && git checkout -B <your session branch> origin/main.)
 
-Read docs/progress/README.md, then docs/progress/section-2-camera-cards.md, and do Section 2:
+Read docs/progress/README.md, then docs/progress/section-1-logic-fixes.md ("Notes for the next section"), then docs/progress/section-2-camera-cards.md, and do Section 2:
 - the camera cards on Line setup, with every camera setting inside its card;
 - up to 8 cameras per line;
 - per-camera counting settings in the UI;

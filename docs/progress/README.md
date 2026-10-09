@@ -43,6 +43,8 @@ git fetch origin <branch of the previous section>
 git checkout -B <your own session branch> origin/<branch of the previous section>
 ```
 
+If the previous section's branch was already merged into `main` with "Squash and merge", start from `origin/main` instead: the squash puts the same changes into `main` as one new commit, and a branch that still carries the original commits conflicts with it.
+
 Section 4 only needs Section 1. It *can* run beside 2 and 3, but it touches the same files (`line_service.py`, `counting_service.py`, `assets/production_lines.js`, `main.py`). Run it in parallel only if someone is ready to resolve the merge.
 
 **When a section is finished:**
