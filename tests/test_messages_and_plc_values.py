@@ -575,8 +575,9 @@ class _Runtime:
     def camera_entry(self, camera_id):
         return next((c for c in self.cameras if c["camera_id"] == camera_id), None)
 
+    @property
     def counting_camera_id(self):
-        return "vis"
+        return next((c["camera_id"] for c in self.cameras if c.get("role") == "vision" and c.get("counting")), None)
 
 
 @pytest.fixture
@@ -622,6 +623,24 @@ PRODUCT = {"event_type": "crossing", "line_id": PRIMARY_LINE_ID, "camera_id": "v
 def test_each_value_source(one_line, source, event, value):
     from app.services.plc_dispatcher_service import PLCDispatcherService
     assert PLCDispatcherService.write_value(_write_card(source=source), event) == value
+
+
+@pytest.mark.parametrize("event, value", [
+    ({**PRODUCT, "camera_id": "free-cam"}, 3.0),                                     # a free camera feeding the line
+    ({key: v for key, v in PRODUCT.items() if key != "camera_id"}, 3.0),
+    ({**PRODUCT, "camera_id": "free-cam", "detected_classes": ["label"]}, 0.0),
+])
+def test_class_index_of_a_camera_not_on_the_line_uses_the_counting_camera(one_line, event, value):
+    from app.services.plc_dispatcher_service import PLCDispatcherService
+    assert PLCDispatcherService.write_value(_write_card(source="class_index"), event) == value
+
+
+def test_class_index_is_0_when_the_line_has_no_counting_camera(one_line):
+    import app.services.line_service as line_module
+    from app.services.plc_dispatcher_service import PLCDispatcherService
+    line_module.line_manager.runtime.cameras = []
+    for event in ({**PRODUCT, "camera_id": "free-cam"}, {key: v for key, v in PRODUCT.items() if key != "camera_id"}):
+        assert PLCDispatcherService.write_value(_write_card(source="class_index"), event) == 0.0
 
 
 @pytest.mark.parametrize("source, event, word", [
