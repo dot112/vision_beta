@@ -36,7 +36,7 @@ Vision cameras get a **trigger mode** (one picture per trigger instead of tracki
   - **MELSEC SLMP:** `melsec_driver.read_bit`. Add a word read (batch read command).
   - **Omron FINS:** `fins_driver.read_bit`. Add a word read (memory area read).
   - **Generic TCP:** no read: answer "not supported".
-- **PLC card "Wait for ACK"** was removed in Section 1 (P1), because it did nothing.
+- **PLC card "Wait for ACK"** was removed in Section 1 (P1), because it did nothing. The dialog has no ACK select and new cards carry no `ack_mode`; an old saved `ack_mode` stays in the file, does nothing and reports `sent` (`test_an_old_wait_for_ack_card_reports_sent`).
 - **`/api/v1/control/trigger/{camera_id}`** (`app/routes/v1/control.py`) runs one detection and returns it. It counts nothing and fires no card.
 - **Line start/stop:** `set_line_running(line_id, running, actor)` in `app/routes/v1/lines.py` (the actor needs `username`, `role` and `clearance_level`; Sparkplug passes a `CommandActor`, see `app/services/sparkplug_service.py`). Counter reset: `reset_line_counters(runtime, actor)` in `app/routes/v1/counting.py`.
 - **Triggered QR picture:** `QRReaderPipeline.get_worker(camera_id).request_capture(track_id=, class_name=, wire_line=, delay=)` (`app/services/qr_service.py`).
@@ -78,21 +78,24 @@ Vision cameras get a **trigger mode** (one picture per trigger instead of tracki
 5. **Batch number:**
    - `LineRuntime.batch`, saved in the line's settings so it survives a restart;
    - set by `PUT /api/v1/lines/{id}/batch` `{"batch": "…"}` (Supervisor, audited), by a `set_batch` input, and on the Line dashboard (a field next to the line state; Supervisor);
-   - added to every product event and payload (`batch`), to every product record (Section 4's `batch` column), to send card fields (`MESSAGE_FIELDS["batch"]`, the template placeholder from Section 1) and to the PLC value source `batch` (Section 1 P2).
+   - added to every product event and payload (`batch`), to every product record (Section 4's `batch` column), to send card fields (`MESSAGE_FIELDS["batch"]`, for JSON cards).
+   - Section 1 already reads the key `batch`: the `{batch}` placeholder (`line_config.TEMPLATE_FIELDS`, `send_dispatcher_service.template_values`, the dashboard's `_sendPlaceholders` and `sendTemplateValues`) and the PLC value source `batch` (`PLCDispatcherService.write_value` reads `event["batch"]` and refuses a missing or non-number batch). So put the batch in the message payload *and* in the PLC event; they are built apart (for example in `finish_crossing`). A line start or an alarm event has no batch: add it there too, or let `write_value` fall back to the line's batch, as it does for the counts.
+   - Give the examples a batch: the sample event of `dispatch_manual` (until then a `batch` card's **Test** fails), and `sample_payload` and the dashboard's `sendSampleMessage` (keep the two in step).
 
    Optional: a Sparkplug tag `Line/Batch` (it needs a rebirth when added; only if simple).
 6. **Trigger inspection** (vision camera count mode, set on the camera card, Counting section: **Moving products cross count lines** (default) / **One picture per trigger**). Camera field `count_mode`: `"track"` | `"trigger"`; add it to `CAMERA_KEPT_KEYS`.
    - **Trigger sources:** a PLC input with action `capture` naming the camera; `POST /api/v1/lines/{id}/trigger` (`{"camera_id": optional}`; the line's trigger-mode cameras by default; scope `inspection:trigger`); and `/api/v1/control/trigger/{camera_id}`, which now does the same when the camera is in trigger mode (keep its old answer shape and add the product's result).
    - **On a trigger:**
      - wait for the camera's **next** processed frame (the inference worker's `_processed_frame_id` changes), at most 2 s, else no result;
-     - take its detections; any detection of a defect class (`is_defect_class` with the camera's name rule) → reject;
+     - take its detections; any detection of a defect class → reject: `is_defect_class(name, config.defect_classes, config.name_based_defects)` with the camera's `CountingConfig` (`line_manager.counter_for_camera(camera_id).config`), as `detect_live_camera` does (a camera saved without `name_based_defects` keeps the name rule on);
      - any product class (or any detection when the product list is empty) → good;
      - nothing found → the camera's `no_product` setting: `ignore` (no product), `reject` (reason `nothing_detected`) or `good`.
+       - `nothing_detected` is a new reason: add a `REASON_*` constant to `line_config.REJECT_REASONS` and a number to `REJECT_REASON_CODES` (for example 6; without one, the PLC value source `reject_reason_code` writes 9, "other"). Add that number to the dashboard's `PLC_VALUE_SOURCE_HINTS.reject_reason_code` and to `README.md`.
    - Then make **one** crossing (track id = a trigger counter) and finish it like a tracked product: through `_on_crossing` when the line has Sync or joined cameras, else `finish_crossing`. It is then counted, recorded and sent.
    - In trigger mode the tracker's crossings for that camera are ignored; `ContinuousVisionRunner` keeps feeding frames so the picture is fresh.
 7. **Reject confirmation** (replaces the removed "Wait for ACK"):
-   - A PLC action card can name `confirm_input_id` (a signal card of the same line with action `confirm_card`) and `confirm_timeout_ms` (50 to 10000).
-   - After the card fires successfully, the dispatcher waits for that input's edge within the timeout:
+   - A PLC action card can name `confirm_input_id` (a signal card of the same line with action `confirm_card`) and `confirm_timeout_ms` (50 to 10000). Check them beside `validate_write_value` (`plc_failsafe_service.py`; every PLC route and `save_line` already call it), and add them to `line_config.PLC_CARD_KEPT_KEYS` so a client that leaves them out keeps them.
+   - After the card fires successfully (`_dispatch` reports `sent`; a card with a strobe only once its strobe is pulsed too), the dispatcher waits for that input's edge within the timeout:
      - it comes → status `confirmed`;
      - else status `not_confirmed` and a critical alarm `plc.action_not_confirmed` (add it to the catalog, scope `line`), cleared on the next confirmed fire.
    - Several fires waiting at once are confirmed in order (a FIFO per card).
@@ -105,7 +108,7 @@ Vision cameras get a **trigger mode** (one picture per trigger instead of tracki
    - a note that Generic TCP channels cannot be read, and that sensors faster than the poll need the PLC counter type.
 
    The PLC action dialog gets **Confirmation signal** and **timeout**. The camera card (Section 2) gets **Count mode** and **When nothing is found**.
-9. **Docs:** `README.md` gets a new part "PLC signals (inputs)", plus batch, trigger mode and reject confirmation in the Line setup steps. `API_KEY_QUICKSTART.md` gets the new endpoints. Update `FILE_TREE.md` and `PROJECT_DESCRIPTION.md` ("the PLC is output-only" is no longer true).
+9. **Docs:** `README.md` gets a new part "PLC signals (inputs)", plus batch, trigger mode and reject confirmation in the Line setup steps. In the PLC actions paragraph Section 1 wrote (**PLC actions that write a value**), update *Batch number*, *Reject reason code*, the **Test** example values and the sentence on the removed *Wait for PLC ACK / Reply*. `API_KEY_QUICKSTART.md` gets the new endpoints. Update `FILE_TREE.md` and `PROJECT_DESCRIPTION.md` ("the PLC is output-only" is no longer true).
 
 ## Tests to add (`tests/test_plc_inputs.py`)
 
@@ -115,7 +118,7 @@ Vision cameras get a **trigger mode** (one picture per trigger instead of tracki
 - A sensor product on a reader-only line with Sync pairs with its code and gets one result.
 - Trigger mode: a reject, a good, nothing found (all three settings), a timeout with no frame, the API trigger, and `/control/trigger` still answering.
 - Reject confirmation: confirmed in time, not confirmed (alarm raised and then cleared), two fires waiting at once.
-- A read error raises and clears `plc.input_failed`; reads never interleave with writes on one endpoint (hold the lock in a fake driver and check the order).
+- A read error raises and clears `plc.input_failed`; reads never interleave with writes on one endpoint (hold the lock in a fake driver and check the order; `_SlowDriver` and the `slow_plc` fixture in `tests/test_messages_and_plc_values.py` already do this for the strobe).
 - **End to end:** start `test codes/plc_simulator.py` (Modbus TCP) on a free port from a temporary copy of the server. Toggle a coil to start the line, step a register as a product counter, and check the counts and records.
 
 ## Acceptance
