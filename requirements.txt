@@ -52,3 +52,5 @@ psutil>=7.2.2                   # System resource monitoring
 nvidia-ml-py>=13.615.71         # NVIDIA GPU stats (optional, Windows/Linux)
 PyYAML>=6.0.3
 packaging>=26.3
+# Time zones for the records export (Windows has no system time zone database).
+tzdata; platform_system == "Windows"

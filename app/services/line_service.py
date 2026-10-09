@@ -644,6 +644,12 @@ class LineRuntime:
         with self._lock:
             return (dict(self.last_capture) if self.last_capture else None), self._capture_jpeg
 
+    def _record(self, payload: Dict[str, Any], kind: str, counted: bool, **extra: Any) -> None:
+        """Keep one product or code read in the product records (not for a counter that sends nothing)."""
+        if self.counter.dispatch_telemetry:
+            from app.services.production_records_service import record_event
+            record_event(payload, kind, counted, **extra)
+
     def _emit_no_read(self, camera_id: str, capture: Dict[str, Any]) -> None:
         with self._lock:
             self.qr_stats["no_reads"] += 1
@@ -674,6 +680,7 @@ class LineRuntime:
             "qr_paired": None,
             "timestamp": time.time(),
         }
+        self._record(payload, "code", counted=False, product_list_id=self.product_list_id(camera_id))
         self._publish(("qr_code",), payload, plc_event)
 
     def _handle_read(self, read: Dict[str, Any]) -> None:
@@ -824,6 +831,7 @@ class LineRuntime:
             reason=reason,
             fields=fields or None,
             plc_fields=plc_fields or None,
+            record={"product_list_id": read.get("product_list_id")} if kind == "paired" else None,
             # With a code check or joined cameras the result may come some time
             # after the crossing; a reject gate's travel delay still runs from
             # the crossing, where the product was.
@@ -917,6 +925,7 @@ class LineRuntime:
         status = "known" if read["known"] else "unknown"
         self._remember(read, status, paired)
         payload, plc_event = self._qr_events(read, status, paired)
+        self._record(payload, "code", counted=False, product_list_id=read.get("product_list_id"))
         self._publish(("qr_code",), payload, plc_event)
 
     def _emit_code_product(self, read: Dict[str, Any]) -> None:
@@ -929,7 +938,8 @@ class LineRuntime:
         if reject:
             with self._lock:
                 self.qr_stats["code_rejects"] += 1
-        totals = self.counter.count_product(read["product_name"] or "code not in list", reject)
+        class_name = read["product_name"] or "code not in list"
+        totals = self.counter.count_product(class_name, reject)
         payload, plc_event = self._qr_events(read, status, paired=None)
         payload.update({
             "result": "REJECTED" if reject else "PASSED",
@@ -950,6 +960,9 @@ class LineRuntime:
             "crossed_at": read["t"],
             "delay_from_crossing": True,
         })
+        # The product's class in the records is the name its count is kept under.
+        self._record(payload, "product", counted=True, class_name=class_name, track_id=read.get("track_id"),
+                     product_list_id=read.get("product_list_id"))
         self._publish(("qr_code", "reading"), payload, plc_event)
 
     def recent_reads(self, limit: int = 50) -> List[Dict[str, Any]]:

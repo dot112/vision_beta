@@ -99,6 +99,16 @@ class Settings(BaseSettings):
     CAMERA_OPEN_TIMEOUT_SECONDS: float = 10.0
     CAMERA_READ_TIMEOUT_SECONDS: float = 5.0
 
+    # ─── Production records ──────────────────────────────────────────────────
+    # Every product and code read is kept in the product_records table for the
+    # Records page and its exports. Rows older than this many days are deleted
+    # once an hour; 0 = keep them for ever.
+    RECORDS_RETENTION_DAYS: int = 90
+    # Rows waiting to be written (normally under a second's worth). When the
+    # database cannot keep up, the oldest are dropped past this and the
+    # records.dropped alarm is raised.
+    RECORDS_QUEUE_LIMIT: int = 100000
+
     LOG_LEVEL: str = "INFO"
     LOG_DIR: str = "./logs"
     # logs/app.log, rotated at LOG_FILE_MAX_BYTES and keeping LOG_FILE_BACKUP_COUNT

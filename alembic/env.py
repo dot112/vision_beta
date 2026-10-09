@@ -13,6 +13,7 @@ from app.db.base import Base
 import app.db.models.user        # noqa: F401
 import app.db.models.api_key     # noqa: F401
 import app.db.models.product     # noqa: F401
+import app.db.models.production_record  # noqa: F401
 import app.db.models.detection   # noqa: F401
 import app.db.models.rule        # noqa: F401
 import app.db.models.action      # noqa: F401

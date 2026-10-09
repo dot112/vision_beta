@@ -22,7 +22,7 @@ depends_on = None
 # Tables owned by later revisions. Base.metadata holds every imported model,
 # including ones added after this revision, so they must be left to their own
 # migration or a fresh database fails with "table already exists".
-_LATER_TABLES = {"api_keys", "product_lists"}
+_LATER_TABLES = {"api_keys", "product_lists", "product_records"}
 
 
 def _initial_tables():

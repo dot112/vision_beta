@@ -43,6 +43,7 @@ from app.routes.v1 import health as health_router
 from app.routes.v1 import lines as lines_router
 from app.routes.v1 import products as products_router
 from app.routes.v1 import send_actions as send_actions_router
+from app.routes.v1 import records as records_router
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -190,6 +191,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app_state.db_ready = True
         logger.info("Database ready and schema verified")
 
+        # Product records: queued by the counters from here on, written once a second.
+        from app.services.production_records_service import production_recorder
+        production_recorder.start()
+
         # 2. Seed Default 3-Level Access Clearance Users & Reset Active Sessions
         async with AsyncSessionLocal() as db:
             from app.services.auth_service import AuthService
@@ -205,6 +210,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await SettingsPersistenceService.restore_on_startup()
         except Exception as st_err:
             logger.warning("Settings persistence restore error: %s", st_err)
+
+        # 4a. Each line's counters as they were before the restart, from the
+        # product records since the line's last reset.
+        try:
+            from app.services.production_records_service import restore_line_counts
+            restored = await restore_line_counts()
+            logger.info("Line counters restored from the product records: %s",
+                        ", ".join(f"{line_id} {total}" for line_id, total in restored.items()) or "no lines")
+        except Exception:
+            logger.exception("Could not restore the line counters from the product records")
 
         # 4b. Product codes for QR checks, then the models the vision cameras run
         try:
@@ -348,6 +363,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception:
         logger.exception("Failed to release cameras cleanly")
 
+    try:
+        # The last product records, while the database is still open.
+        from app.services.production_records_service import production_recorder
+        await production_recorder.stop()
+    except Exception:
+        logger.exception("Failed to write the last product records")
+
     from app.db.session import engine
     await engine.dispose()
     from app.events.system_events import set_event_loop
@@ -429,6 +451,7 @@ def create_app() -> FastAPI:
         lines_router,
         products_router,
         send_actions_router,
+        records_router,
     ):
         protected_api.include_router(router_mod.router)
     app.include_router(protected_api)

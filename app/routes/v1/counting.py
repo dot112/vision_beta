@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from app.db.models.user import User
 from app.dependencies import require_supervisor
 from app.schemas.counting import CountingConfig, CountingStatsResponse, ResetCountsRequest, TrackInfo
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/counting", tags=["Wireline Object Counting & PPM"])
 
@@ -61,8 +64,19 @@ async def reset_counts(
     if req.reset_all:
         return reset_line_counters(runtime, user)
     res = runtime.counter.reset_counts(reset_all=False, classes_to_reset=req.classes_to_reset)
+    if req.classes_to_reset:
+        _mark_reset(runtime, req.classes_to_reset)
     _audit_reset(runtime, user)
     return res
+
+
+def _mark_reset(runtime: Any, classes: Optional[List[str]] = None) -> None:
+    """Save when the counters (or some classes) were reset: after a restart they count from the records since then."""
+    try:
+        from app.services.settings_persistence_service import SettingsPersistenceService
+        SettingsPersistenceService.mark_counts_reset(runtime.id, classes)
+    except Exception:
+        logger.exception("Could not save the reset time of line %s", runtime.id)
 
 
 def _audit_reset(runtime: Any, actor: Any) -> None:
@@ -90,6 +104,7 @@ def reset_line_counters(runtime: Any, actor: Any) -> CountingStatsResponse:
     ``actor`` has a username, role and clearance_level, for the audit entry.
     """
     runtime.reset()
+    _mark_reset(runtime)
     res = runtime.counter.get_stats()
     _audit_reset(runtime, actor)
     return res
