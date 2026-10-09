@@ -23,12 +23,15 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from app.services.counting_service import CountingService, counting_service
 from app.services.line_config import (
+    CODE_REASONS,
     DEFAULT_SYNC_WINDOW_MS,
     PRIMARY_LINE_ID,
     camera_station,
     code_checks,
     code_verdict,
-    product_verdict,
+    join_settings,
+    joined_cameras,
+    product_result,
     reads_codes,
 )
 from app.utils.logger import get_logger
@@ -139,6 +142,200 @@ class SyncPairer:
         return len(self._crossings) + len(self._reads)
 
 
+# ── Joined cameras ────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class JoinedStation:
+    """A vision camera whose result joins the counting camera's product."""
+    camera_id: str
+    offset: float   # s from the counting camera to this camera (negative: this camera is before it)
+    window: float   # s: how far from the expected time a crossing still matches
+    missing: str    # "reject" or "ignore": what a product this camera saw nothing of gets
+
+
+class _Product:
+    """A product the counting camera saw cross, waiting for its code and its joined cameras."""
+
+    __slots__ = ("crossing", "t", "stations", "code_waiting", "kind", "read", "seen", "times")
+
+    def __init__(self, crossing: Dict[str, Any], t: float, stations: Tuple[JoinedStation, ...], code_waiting: bool):
+        self.crossing = crossing
+        self.t = t
+        # The joined cameras as they were set when the product crossed: a change
+        # of the settings meanwhile does not change what it waits for.
+        self.stations = stations
+        self.code_waiting = code_waiting
+        self.kind: Optional[str] = None   # "paired" / "no_read" once Sync is done with it; None without Sync
+        self.read: Optional[Dict[str, Any]] = None
+        self.seen: Dict[str, Optional[Dict[str, Any]]] = {}  # camera -> its crossing, or None: saw nothing
+        self.times: Dict[str, float] = {}
+
+    def deadline(self, station: JoinedStation) -> float:
+        return self.t + station.offset + station.window
+
+    def done(self) -> bool:
+        return not self.code_waiting and all(st.camera_id in self.seen for st in self.stations)
+
+    def results(self) -> Dict[str, Optional[Dict[str, Any]]]:
+        """What each joined camera saw of the product, in card order (product_verdict's ``stations``)."""
+        return {st.camera_id: self.seen.get(st.camera_id) for st in self.stations}
+
+    def missing(self) -> Dict[str, str]:
+        return {st.camera_id: st.missing for st in self.stations}
+
+
+class ProductAssembly:
+    """One result per product from the counting camera, its code and the joined cameras.
+
+    Bookkeeping only, like SyncPairer: the caller passes monotonic times and
+    calls expire(now) when next_deadline() is reached; every call returns the
+    products that are complete, oldest first.
+
+    A joined camera's crossing at ``t_j`` matches the product the counting
+    camera saw at ``t_c`` when ``|t_j - offset - t_c| <= window`` (the closest
+    product that has no result from that camera yet). A camera before the
+    counting camera (negative offset) sees a product first: its crossing waits
+    until no product can match it any more, then it is dropped as unmatched.
+    A product is complete when its code is done (with Sync on) and every joined
+    camera has answered or passed its deadline, ``t_c + offset + window``.
+    """
+
+    def __init__(self) -> None:
+        self.stations: Tuple[JoinedStation, ...] = ()
+        self._products: List[_Product] = []
+        self._waiting: Dict[str, Deque[Tuple[float, Dict[str, Any]]]] = {}
+        self._stats: Dict[str, Dict[str, int]] = {}
+        self._stats_lock = threading.Lock()
+
+    def configure(self, stations: List[JoinedStation]) -> None:
+        self.stations = tuple(stations)
+        ids = {st.camera_id for st in self.stations}
+        for camera_id in list(self._waiting):
+            if camera_id not in ids:
+                del self._waiting[camera_id]
+        with self._stats_lock:
+            for camera_id in ids:
+                self._stats.setdefault(camera_id, {"matched": 0, "unmatched": 0, "rejects": 0, "no_result": 0})
+
+    def station(self, camera_id: str) -> Optional[JoinedStation]:
+        return next((st for st in self.stations if st.camera_id == camera_id), None)
+
+    def holds(self, crossing: Dict[str, Any]) -> bool:
+        return any(product.crossing is crossing for product in self._products)
+
+    @property
+    def waiting(self) -> int:
+        return len(self._products) + sum(len(queue) for queue in self._waiting.values())
+
+    def _count(self, camera_id: str, key: str) -> None:
+        with self._stats_lock:
+            if camera_id in self._stats:
+                self._stats[camera_id][key] += 1
+
+    def _match(self, product: _Product, station: JoinedStation, crossing: Dict[str, Any], t: float) -> None:
+        product.seen[station.camera_id] = crossing
+        product.times[station.camera_id] = t
+        self._count(station.camera_id, "matched")
+        if crossing.get("is_defect"):
+            self._count(station.camera_id, "rejects")
+
+    def add_product(self, crossing: Dict[str, Any], t: float, code_waiting: bool) -> List[_Product]:
+        """The counting camera saw a product cross at ``t``."""
+        product = _Product(crossing, t, self.stations, code_waiting)
+        for station in self.stations:
+            queue = self._waiting.get(station.camera_id)
+            if not queue:
+                continue
+            gaps = [(abs(t_j - station.offset - t), index) for index, (t_j, _) in enumerate(queue)]
+            gap, index = min(gaps)
+            if gap <= station.window:
+                t_j, seen = queue[index]
+                del queue[index]
+                self._match(product, station, seen, t_j)
+        self._products.append(product)
+        return self.expire(t)
+
+    def add_station(self, camera_id: str, crossing: Dict[str, Any], t: float) -> List[_Product]:
+        """A joined camera saw a product cross at ``t``."""
+        station = self.station(camera_id)
+        if station is None:
+            return self.expire(t)
+        expected = t - station.offset
+        candidates = [
+            (abs(expected - product.t), order, product)
+            for order, product in enumerate(self._products)
+            if station in product.stations and camera_id not in product.seen
+            and abs(expected - product.t) <= station.window
+        ]
+        if candidates:
+            self._match(min(candidates, key=lambda c: c[:2])[2], station, crossing, t)
+        else:
+            self._waiting.setdefault(camera_id, collections.deque()).append((t, crossing))
+        return self.expire(t)
+
+    def code_result(self, crossing: Dict[str, Any], kind: str, read: Optional[Dict[str, Any]], now: float) -> List[_Product]:
+        """Sync is done with a product: its code (``kind`` "paired") or none ("no_read")."""
+        for product in self._products:
+            if product.crossing is crossing:
+                product.code_waiting = False
+                product.kind = kind
+                product.read = read if kind == "paired" else None
+                break
+        return self.expire(now)
+
+    def expire(self, now: float) -> List[_Product]:
+        for station in self.stations:
+            queue = self._waiting.get(station.camera_id)
+            # A crossing no product can claim any more: the counting camera
+            # would have seen its product by t_j - offset + window.
+            while queue and now > queue[0][0] - station.offset + station.window:
+                queue.popleft()
+                self._count(station.camera_id, "unmatched")
+        finished: List[_Product] = []
+        for product in list(self._products):
+            for station in product.stations:
+                if station.camera_id not in product.seen and now > product.deadline(station):
+                    product.seen[station.camera_id] = None
+                    self._count(station.camera_id, "no_result")
+            if product.done():
+                self._products.remove(product)
+                finished.append(product)
+        return finished
+
+    def next_deadline(self) -> Optional[float]:
+        times = [
+            product.deadline(station)
+            for product in self._products
+            for station in product.stations
+            if station.camera_id not in product.seen
+        ]
+        times += [
+            queue[0][0] - station.offset + station.window
+            for station in self.stations
+            for queue in (self._waiting.get(station.camera_id),)
+            if queue
+        ]
+        return min(times) if times else None
+
+    def stats(self, camera_id: str) -> Optional[Dict[str, int]]:
+        """matched, unmatched (crossings no product claimed), rejects, no_result (products it saw nothing of)."""
+        with self._stats_lock:
+            found = self._stats.get(camera_id)
+            return dict(found) if found is not None else None
+
+    def reset_stats(self) -> None:
+        with self._stats_lock:
+            for stats in self._stats.values():
+                for key in stats:
+                    stats[key] = 0
+
+
+def _camera_name(camera_id: Optional[str]) -> Optional[str]:
+    from app.state.application_state import app_state
+
+    return getattr(app_state.cameras.get(camera_id or ""), "name", None)
+
+
 # ── One line ──────────────────────────────────────────────────────────────────
 
 class LineRuntime:
@@ -171,6 +368,8 @@ class LineRuntime:
         self._capture_seq = 0
         self.qr_recent: Deque[Dict[str, Any]] = collections.deque(maxlen=100)
         self.qr_stats = {"codes_read": 0, "known": 0, "unknown": 0, "no_reads": 0, "unpaired": 0, "code_rejects": 0}
+        # Products waiting for the vision cameras that join the counting camera's result.
+        self.assembly = ProductAssembly()
         self._frames: Dict[str, Deque[float]] = {}
         self._lock = threading.Lock()
         self._sync_timer: Optional[asyncio.TimerHandle] = None
@@ -212,12 +411,21 @@ class LineRuntime:
             aux.line_name = self.name
             self._set_config(aux, counting_config_from_dict(trigger or {}, cam))
 
+        # A joined camera's products are matched to the counting camera's: it counts nothing on its own.
+        stations = []
+        for cam in joined_cameras(self.cameras) if self.counting_camera_id else []:
+            offset, window, missing = join_settings(cam)
+            stations.append(JoinedStation(cam["camera_id"], offset / 1000.0, window / 1000.0, missing))
+        self.assembly.configure(stations)
+        for cid, aux in self.aux_counters.items():
+            aux.event_sink = self._joined_sink(cid) if self.assembly.station(cid) else None
+
         self.code_checks = code_checks(self.cameras)
         sync = line.get("sync") or {}
         was_on = self.sync_enabled
         self.sync_enabled = bool(sync.get("enabled")) and self.has_role("vision") and self.has_code_reader
         self.pairer.window = int(sync.get("window_ms") or DEFAULT_SYNC_WINDOW_MS) / 1000.0
-        self.counter.event_sink = self._on_crossing if self.sync_enabled else None
+        self.counter.event_sink = self._on_crossing if self.sync_enabled or self.assembly.stations else None
         if was_on and not self.sync_enabled:
             self._run_on_loop(self._flush_sync)
 
@@ -492,7 +700,28 @@ class LineRuntime:
         self._run_on_loop(self._handle_crossing, crossing, t)
 
     def _handle_crossing(self, crossing: Dict[str, Any], t: float) -> None:
+        if self.assembly.stations:
+            # The product waits for its joined cameras (and, with Sync on, for its code too).
+            self._finish_products(self.assembly.add_product(crossing, t, code_waiting=self.sync_enabled))
+            if not self.sync_enabled:
+                self._schedule_expiry()
+                return
         self._process(self.pairer.add_crossing(t, crossing))
+        self._schedule_expiry()
+
+    def _joined_sink(self, camera_id: str) -> Callable[[Dict[str, Any]], None]:
+        return lambda crossing: self._on_joined_crossing(camera_id, crossing)
+
+    def _on_joined_crossing(self, camera_id: str, crossing: Dict[str, Any]) -> None:
+        """Event sink of a joined camera's counter (inference thread): its crossing is matched
+        to one of the counting camera's products and is not counted on its own."""
+        t = time.monotonic()
+        if self._loop() is None:
+            return  # nothing to match it to: the counting camera counts on its own result
+        self._run_on_loop(self._handle_joined_crossing, camera_id, crossing, t)
+
+    def _handle_joined_crossing(self, camera_id: str, crossing: Dict[str, Any], t: float) -> None:
+        self._finish_products(self.assembly.add_station(camera_id, crossing, t))
         self._schedule_expiry()
 
     def _schedule_expiry(self) -> None:
@@ -500,15 +729,17 @@ class LineRuntime:
         if self._sync_timer is not None:
             self._sync_timer.cancel()
             self._sync_timer = None
-        deadline = self.pairer.next_deadline()
-        if loop is None or deadline is None:
+        deadlines = [d for d in (self.pairer.next_deadline(), self.assembly.next_deadline()) if d is not None]
+        if loop is None or not deadlines:
             return
         # A little past the deadline so the oldest entry has expired when it fires.
-        self._sync_timer = loop.call_later(max(0.0, deadline - time.monotonic()) + 0.005, self._expire)
+        self._sync_timer = loop.call_later(max(0.0, min(deadlines) - time.monotonic()) + 0.005, self._expire)
 
     def _expire(self) -> None:
         self._sync_timer = None
-        self._process(self.pairer.expire(time.monotonic()))
+        now = time.monotonic()
+        self._process(self.pairer.expire(now))
+        self._finish_products(self.assembly.expire(now))
         self._schedule_expiry()
 
     def _flush_sync(self) -> None:
@@ -525,46 +756,96 @@ class LineRuntime:
                         self.qr_stats["unpaired"] += 1
                     self._emit_qr(read, paired=False)
                     continue
-                # One result per product: the vision camera's and, where a
-                # camera checks codes, the paired code's (or the missing code's).
-                reject, reason = product_verdict(
-                    bool(crossing["is_defect"]), read if kind == "paired" else None, self.code_checks,
-                )
-                result = self._result(reject) if self.code_checks else None
-                if kind == "paired":
-                    status = "known" if read["known"] else "unknown"
-                    fields = {
-                        "qr_code": read["code"],
-                        "qr_format": read["format"],
-                        "qr_status": status,
-                        "product_name": read["product_name"],
-                        "qr_paired": True,
-                    }
-                    self._remember(read, status, paired=True, class_name=crossing.get("class_name"),
-                                   result=result, reason=reason)
-                else:
-                    status = "no_read"
-                    fields = {"qr_code": None, "qr_format": None, "qr_status": "no_read", "product_name": None, "qr_paired": False}
-                    with self._lock:
-                        self.qr_stats["no_reads"] += 1
-                    self._remember(None, "no_read", paired=False, class_name=crossing.get("class_name"),
-                                   camera_id=crossing.get("camera_id"), result=result, reason=reason)
-                if reject and reason not in (None, "vision_class"):
-                    with self._lock:
-                        self.qr_stats["code_rejects"] += 1
-                self.counter.finish_crossing(
-                    crossing,
-                    reject=reject,
-                    reason=reason,
-                    fields=fields,
-                    plc_fields={"qr_code": fields["qr_code"], "qr_status": status, "qr_paired": fields["qr_paired"]},
-                    # With a code check the result may come as late as the Sync
-                    # window; a reject gate's travel delay still runs from the
-                    # crossing, where the product was.
-                    delay_from_crossing=bool(self.code_checks),
-                )
+                if self.assembly.holds(crossing):
+                    # The product also waits for its joined cameras.
+                    self._finish_products(self.assembly.code_result(crossing, kind, read, time.monotonic()))
+                    continue
+                self._finish_product(crossing, kind, read)
             except Exception:
                 logger.exception("Line %s: failed to send a synced event", self.id)
+
+    def _finish_products(self, products: List[_Product]) -> None:
+        for product in products:
+            try:
+                self._finish_product(product.crossing, product.kind, product.read, product)
+            except Exception:
+                logger.exception("Line %s: failed to send a product's event", self.id)
+
+    def _finish_product(self, crossing: Dict[str, Any], kind: Optional[str], read: Optional[Dict[str, Any]],
+                        product: Optional[_Product] = None) -> None:
+        """Count one product with its one result and send its one event.
+
+        ``kind``: "paired" or "no_read" when Sync paired it with its code (or
+        found none); None without Sync. ``product``: what its joined cameras
+        saw, on a line that has them.
+        """
+        # One result per product: the vision camera's, the joined cameras' and,
+        # where a camera checks codes, the paired code's (or the missing code's).
+        reject, reason, reject_camera = product_result(
+            bool(crossing["is_defect"]), read if kind == "paired" else None, self.code_checks,
+            product.results() if product else None, product.missing() if product else None,
+            crossing.get("camera_id"),
+        )
+        result = self._result(reject) if self.code_checks else None
+        fields: Dict[str, Any] = {}
+        plc_fields: Dict[str, Any] = {}
+        if kind == "paired":
+            status = "known" if read["known"] else "unknown"
+            fields = {
+                "qr_code": read["code"],
+                "qr_format": read["format"],
+                "qr_status": status,
+                "product_name": read["product_name"],
+                "qr_paired": True,
+            }
+            self._remember(read, status, paired=True, class_name=crossing.get("class_name"),
+                           result=result, reason=reason)
+        elif kind == "no_read":
+            status = "no_read"
+            fields = {"qr_code": None, "qr_format": None, "qr_status": "no_read", "product_name": None, "qr_paired": False}
+            with self._lock:
+                self.qr_stats["no_reads"] += 1
+            self._remember(None, "no_read", paired=False, class_name=crossing.get("class_name"),
+                           camera_id=crossing.get("camera_id"), result=result, reason=reason)
+        if kind is not None:
+            plc_fields = {"qr_code": fields["qr_code"], "qr_status": status, "qr_paired": fields["qr_paired"]}
+        if reject and reason in CODE_REASONS:
+            with self._lock:
+                self.qr_stats["code_rejects"] += 1
+        if product is not None:
+            fields["stations"] = self._station_rows(product)
+            fields["reject_camera_id"] = reject_camera
+            plc_fields["reject_camera_id"] = reject_camera
+            # A card that names a joined camera fires for the products it takes part in.
+            plc_fields["joined_cameras"] = [st.camera_id for st in product.stations]
+        self.counter.finish_crossing(
+            crossing,
+            reject=reject,
+            reason=reason,
+            fields=fields or None,
+            plc_fields=plc_fields or None,
+            # With a code check or joined cameras the result may come some time
+            # after the crossing; a reject gate's travel delay still runs from
+            # the crossing, where the product was.
+            delay_from_crossing=bool(self.code_checks) or product is not None,
+        )
+
+    @staticmethod
+    def _station_rows(product: _Product) -> List[Dict[str, Any]]:
+        """The message's ``stations``: what each joined camera saw of the product, in card order."""
+        rows = []
+        for station in product.stations:
+            seen = product.seen.get(station.camera_id)
+            rows.append({
+                "camera_id": station.camera_id,
+                "camera_name": _camera_name(station.camera_id),
+                "result": "no_result" if seen is None else ("reject" if seen.get("is_defect") else "good"),
+                "class_name": seen.get("class_name") if seen else None,
+                "confidence": round(float(seen.get("confidence") or 0.0), 4) if seen else None,
+                # How long after the counting camera this camera saw it (negative: before).
+                "travel_ms": int(round((product.times[station.camera_id] - product.t) * 1000)) if seen else None,
+            })
+        return rows
 
     @staticmethod
     def _result(reject: bool) -> str:
@@ -679,6 +960,7 @@ class LineRuntime:
         self.counter.reset_counts()
         for aux in self.aux_counters.values():
             aux.reset_counts()
+        self.assembly.reset_stats()
         with self._lock:
             for key in self.qr_stats:
                 self.qr_stats[key] = 0
@@ -1160,9 +1442,14 @@ class LineManager:
                 station = camera_station(cam)
                 aux = runtime.aux_counters.get(cam["camera_id"])
                 if station:
-                    # Own station or joined to the product result; such a camera counts on its own.
                     row["station"] = station
-                if aux is not None:
+                joined = runtime.assembly.stats(cam["camera_id"]) if station == "join" else None
+                if joined is not None:
+                    # A joined camera counts nothing on its own: how its crossings matched the line's products.
+                    offset, window, missing = join_settings(cam)
+                    row.update({"join_offset_ms": offset, "join_window_ms": window, "join_missing": missing,
+                                "station_stats": joined})
+                elif aux is not None:
                     row["counts"] = {
                         "total_inspected": aux.total_inspected,
                         "good_count": aux.good_count,

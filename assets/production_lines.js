@@ -189,6 +189,9 @@
         .pl-fold-body { display:none; padding:2px 2px 14px; }
         .pl-fold.open .pl-fold-body { display:block; }
         .pl-form-tight { grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px 12px; }
+        .pl-join { margin-top:12px; padding-top:12px; border-top:1px dashed var(--border-color); }
+        .pl-join-wait { font-size:12px; margin-top:8px; }
+        .pl-join-late { border-left:3px solid var(--warning-color); padding:6px 10px; font-size:12px; margin-top:8px; }
         .pl-form-tight .form-group { margin-bottom:8px; }
         .pl-check { font-size:12.5px; color:var(--text-color); cursor:pointer; align-items:flex-start; flex-wrap:nowrap; }
         .pl-check input { margin-top:2px; flex:none; }
@@ -913,7 +916,22 @@
                 <div class="pl-note pl-job-note"></div></div>
             <div class="form-group pl-station" style="margin-bottom:0"><label class="form-label">Inspection station result</label>
                 <select class="form-input" data-f="station">${option("own", "Own station: counts and rejects on its own", station)}${option("join", "Joins the product result", station)}</select>
-                <div class="pl-note pl-station-note"></div></div>`;
+                <div class="pl-note pl-station-note"></div>
+                <div class="pl-join">
+                    <div class="pl-form-grid pl-form-tight">
+                        <div class="form-group" style="margin:0"><label class="form-label">Travel time from the counting camera (ms)</label>
+                            <input type="number" class="form-input" data-f="join_offset" min="-60000" max="60000" step="10" value="${esc(numOrEmpty(cam.join_offset_ms) === "" ? 0 : cam.join_offset_ms)}">
+                            <div class="pl-note">How long a product takes from the counting camera to this one. Negative: this camera is before the counting camera.</div></div>
+                        <div class="form-group" style="margin:0"><label class="form-label">Match window (ms)</label>
+                            <input type="number" class="form-input" data-f="join_window" min="50" max="10000" step="10" value="${esc(numOrEmpty(cam.join_window_ms) === "" ? 500 : cam.join_window_ms)}">
+                            <div class="pl-note">How far from that time a crossing still belongs to the product (50 to 10000).</div></div>
+                    </div>
+                    <div class="form-group" style="margin:10px 0 0"><label class="form-label">When no result</label>
+                        <select class="form-input" data-f="join_missing">${option("ignore", "Ignore: the other cameras decide", cam.join_missing || "ignore")}${option("reject", "Reject the product", cam.join_missing || "ignore")}</select>
+                        <div class="pl-note">What a product gets when this camera sees nothing of it within the match window (reason "station_no_result").</div></div>
+                    <div class="pl-note pl-join-wait"></div>
+                    <div class="pl-join-late" hidden></div>
+                </div></div>`;
 
         const modelBody = `
             <div class="form-group"><label class="form-label">Vision model</label><select class="form-input" data-f="model">${modelOptions(cam.model_id || "")}</select>
@@ -1080,7 +1098,7 @@
     const JOB_NOTES = {
         counting: "Line totals come from this camera. Exactly one vision camera counts.",
         counting_qr: "Counts and inspects with the AI model and reads codes on the same picture, for a line with one camera.",
-        station: "Counts and rejects on its own and fires only the PLC and send cards that name it.",
+        station: "An inspection station: on its own (it counts and rejects by itself) or joined to the counting camera's product result.",
         station_qr: "An inspection station that also reads codes on the same picture.",
         qr: "Reads codes. With a vision camera on the line, Sync pairs each product with its code.",
     };
@@ -1099,9 +1117,12 @@
         card.querySelector(".pl-job-note").textContent = JOB_NOTES[job] || "";
         const stationShown = job === "station" || job === "station_qr";
         card.querySelector(".pl-station").hidden = !stationShown;
-        card.querySelector(".pl-station-note").textContent = cardValue(card, "station") === "join"
-            ? "Joins the product result: comes with the next update. Until then this camera works as an own station."
+        const joins = cardValue(card, "station") === "join";
+        card.querySelector(".pl-station-note").textContent = joins
+            ? "Looks at the counting camera's products, before or after it on the belt. Each crossing is matched to one product by its travel time; the product gets one result (rejected when any camera rejects it), is counted once and sends one event. This camera counts nothing on its own."
             : "Counts and rejects on its own, as a second camera always did.";
+        card.querySelector(".pl-join").hidden = !(stationShown && joins);
+        if (stationShown && joins) syncJoin(card);
         // Codes
         const trigger = cardValue(card, "qr_trigger");
         const action = cardValue(card, "qr_action");
@@ -1122,6 +1143,29 @@
         renderModelState(card);
         updateConnection(card);
         drawCountLines(card);
+    }
+
+    // A joined camera: when its result is known, and the reject cards that would fire before it.
+    function syncJoin(card) {
+        const offset = parseInt(cardValue(card, "join_offset"), 10) || 0;
+        const windowMs = parseInt(cardValue(card, "join_window"), 10) || 500;
+        const latest = Math.max(0, offset + windowMs);
+        card.querySelector(".pl-join-wait").textContent = (latest > 0
+            ? `A product's result can come up to ${latest} ms after the counting camera sees it (travel time + match window): a reject gate's travel delay must be longer than that.`
+            : "This camera's result is known when the counting camera sees the product.")
+            + ` Products must pass further apart than twice the match window (${2 * windowMs} ms), or a crossing can be matched to the wrong product.`;
+        const rejects = ((state.detail && state.detail.plc_actions) || []).filter((c) => {
+            if (c.enabled === false) return false;
+            const trigger = String(c.trigger || c.trigger_type || "").toLowerCase();
+            const condition = String(c.condition || c.trigger_condition || "").toLowerCase();
+            return trigger === "reject_counter" || ((trigger === "cross_line" || trigger === "line_cross") && condition === "reject");
+        });
+        const late = rejects.filter((c) => (parseInt(c.delay_ms ?? c.travel_delay_ms, 10) || 0) < latest);
+        const box = card.querySelector(".pl-join-late");
+        box.hidden = !late.length;
+        box.textContent = late.length
+            ? `Fires late: ${late.map((c) => `PLC action '${c.name || c.id}' (${parseInt(c.delay_ms ?? c.travel_delay_ms, 10) || 0} ms)`).join(", ")} ${late.length === 1 ? "has a travel delay" : "have travel delays"} shorter than ${latest} ms. Make ${late.length === 1 ? "it" : "them"} longer on the PLC page.`
+            : "";
     }
 
     function syncLineSetup() {
@@ -1438,6 +1482,7 @@
             }
             markDirty();
             if (t.dataset.f === "line1" || t.dataset.f === "line2") syncCard(card, cardsOnPage().indexOf(card));
+            if (t.dataset.f === "join_offset" || t.dataset.f === "join_window") syncJoin(card);
         });
         bindCountLineDrag(card);
     }
@@ -1779,6 +1824,13 @@
                 tracking,
             });
             if (!spec.counting) entry.station = cardValue(card, "station") || "own";
+            if (entry.station === "join") {
+                Object.assign(entry, {
+                    join_offset_ms: num(cardValue(card, "join_offset")),
+                    join_window_ms: num(cardValue(card, "join_window")),
+                    join_missing: cardValue(card, "join_missing") || "ignore",
+                });
+            }
             if (spec.codes) entry.read_codes = true;
         }
         if (spec.codes) {
@@ -1984,11 +2036,25 @@
     function tileDetail(cam) {
         const limited = Boolean(cam.code_type && cam.code_type !== "all");
         if (cam.role === "qr") return `${isTriggered(cam) ? `One picture per product on wire line ${cam.qr_trigger === "line1" ? 1 : 2}` : "Reads codes continuously"}${limited ? ` · ${codeTypeLabel(cam.code_type)}` : ""}`;
-        const job = cam.counting ? "Counting" : cam.station === "join" ? "Joins the product result" : "Own station";
+        const ms = cam.join_offset_ms || 0;
+        const job = cam.counting ? "Counting" : cam.station === "join" ? `Joined ${ms > 0 ? "+" : ""}${ms} ms` : "Own station";
         return `${job}${cam.read_codes ? " · reads codes" : ""}${cam.model_name ? ` · ${cam.model_name}` : ""}`;
     }
 
+    // The whole of a tile's detail line, which may be cut short on a small tile.
+    function tileTitle(cam) {
+        if (cam.station !== "join") return tileDetail(cam);
+        return `${tileDetail(cam)} · joins the product result ${cam.join_offset_ms || 0} ms after the counting camera (negative: before it), `
+            + `match window ${cam.join_window_ms || 500} ms, when no result: ${cam.join_missing === "reject" ? "reject" : "ignore"}`;
+    }
+
     function tileFigures(cam) {
+        if (cam.station_stats) {
+            // A joined camera counts nothing on its own: how its crossings matched the line's products.
+            const j = cam.station_stats;
+            return `<span>Matched <b>${count(j.matched)}</b></span><span>Unmatched <b style="color:var(--warning-color)">${count(j.unmatched)}</b></span>`
+                + `<span>Rejects <b style="color:var(--danger-color)">${count(j.rejects)}</b></span><span>No result <b style="color:var(--warning-color)">${count(j.no_result)}</b></span>`;
+        }
         if (!cam.counts) return "";
         const c = cam.counts;
         return `<span>Inspected <b>${count(c.total_inspected)}</b></span><span>Good <b style="color:var(--success-color)">${count(c.good_count)}</b></span><span>Rejected <b style="color:var(--danger-color)">${count(c.rejected_count)}</b></span>`;
@@ -2002,7 +2068,7 @@
             state.codeTypesAsked = true;
             loadCodeTypes().then(renderFeedRow);
         }
-        const signature = JSON.stringify([state.lineId, cams.map((c) => [c.camera_id, c.name || cameraName(c.camera_id), c.role, c.counting, c.station, c.read_codes, c.connected, c.qr_trigger, c.code_type, secondView(c)]), state.codeTypes.length]);
+        const signature = JSON.stringify([state.lineId, cams.map((c) => [c.camera_id, c.name || cameraName(c.camera_id), c.role, c.counting, c.station, c.join_offset_ms, c.join_window_ms, c.read_codes, c.connected, c.qr_trigger, c.code_type, secondView(c)]), state.codeTypes.length]);
         if (!cams.length) { stopStripFeeds(); ensureFeedRow(false); return; }
         const row = ensureFeedRow(true);
         if (!row) return;
@@ -2030,7 +2096,7 @@
                     <span class="pl-strip-name" title="${esc(name)}">${esc(name)}</span>
                     <span class="pl-badge">${esc(roleLabel(cam, true))}</span>
                 </div>
-                <div class="pl-note pl-strip-detail">${esc(tileDetail(cam))}</div>
+                <div class="pl-note pl-strip-detail" title="${esc(tileTitle(cam))}">${esc(tileDetail(cam))}</div>
                 <button type="button" class="video-box pl-strip-pic" title="Show ${esc(name)} large" aria-label="Show ${esc(name)} large">
                     <img class="video-img" alt="${esc(name)}">
                     <div class="pl-feed-caption" style="display:none"></div>

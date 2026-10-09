@@ -3595,7 +3595,9 @@ const SEND_RUNTIME_FIELDS = ["sent_count", "last_sent_at", "last_result"];
 let _sendMessageFields = [
     ["event", "Event name"], ["timestamp", "Time"], ["line", "Line (id and name)"], ["line_state", "Line state (started / stopped)"],
     ["camera_id", "Camera"], ["track_id", "Product track number"], ["class_name", "Class"], ["result", "Result (PASSED / REJECTED)"],
-    ["is_defect", "Rejected (true / false)"], ["reject_reason", "Reject reason (vision class, code not in list, code in reject list, no code)"],
+    ["is_defect", "Rejected (true / false)"], ["reject_reason", "Reject reason (vision class, code not in list, code in reject list, no code, joined camera saw nothing)"],
+    ["stations", "Joined cameras (what each saw of the product)"],
+    ["reject_camera_id", "Camera that rejected the product (a line with joined cameras)"],
     ["confidence", "Confidence"], ["bbox", "Box in the picture"], ["smooth_center", "Position"], ["velocity", "Speed"],
     ["qr", "Code (text, type, known, product name)"], ["counts", "Counts per class"],
     ["metrics", "Totals (inspected, good, rejected, per minute, yield)"], ["alarm", "Alarm (code, message, severity)"],
@@ -3609,8 +3611,8 @@ let _sendFieldsLoaded = false;
 // The {placeholders} a text message can use. Replaced by the server's list (GET /api/v1/send/fields) when it loads.
 let _sendPlaceholders = [
     "line_id", "line_name", "line_state", "event", "timestamp", "date", "time", "camera_id", "camera_name", "track_id",
-    "class_name", "confidence", "result", "result_code", "reject_reason", "code", "code_format", "code_status", "product_name",
-    "good_count", "rejected_count", "total_inspected", "yield_percentage", "products_per_minute", "batch", "alarm_code", "alarm_message",
+    "class_name", "confidence", "result", "result_code", "reject_reason", "reject_camera", "code", "code_format", "code_status",
+    "product_name", "good_count", "rejected_count", "total_inspected", "yield_percentage", "products_per_minute", "batch", "alarm_code", "alarm_message",
 ].map(name => ({ name, label: name }));
 
 function loadSendMessageFields() {
@@ -4050,13 +4052,17 @@ function sendTemplateValues(m) {
     const at = m.timestamp ? new Date(m.timestamp) : new Date();
     const pad = n => String(n).padStart(2, "0");
     const result = pick("result");
+    // The camera whose result rejected the product (a line with joined cameras names it).
+    let rejectCamera = pick("reject_camera_id");
+    if (rejectCamera === null && pick("reject_reason") === "vision_class") rejectCamera = pick("camera_id");
+    if (rejectCamera !== null && rejectCamera === pick("camera_id")) rejectCamera = pick("camera_name") ?? rejectCamera;
     return {
         line_id: pick("line_id"), line_name: pick("line_name"), line_state: pick("line_state"), event: pick("event"),
         timestamp: pick("timestamp"), date: `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`,
         time: `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`,
         camera_id: pick("camera_id"), camera_name: pick("camera_name"), track_id: pick("track_id"), class_name: pick("class_name"),
         confidence: pick("confidence"), result, result_code: result === null ? null : ({ PASSED: 1, REJECTED: 2 }[String(result).toUpperCase()] ?? null),
-        reject_reason: pick("reject_reason"), code: pick("code", "qr_code"), code_format: pick("format", "qr_format"),
+        reject_reason: pick("reject_reason"), reject_camera: rejectCamera, code: pick("code", "qr_code"), code_format: pick("format", "qr_format"),
         code_status: pick("qr_status"), product_name: pick("product_name"),
         good_count: metric("good_count"), rejected_count: metric("rejected_count"), total_inspected: metric("total_inspected"),
         yield_percentage: metric("yield_percentage"), products_per_minute: metric("products_per_minute"),
