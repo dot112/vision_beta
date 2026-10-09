@@ -10,7 +10,7 @@ It is intended to give operators a single place to monitor cameras and detection
 
 - **Vision:** Run object detection with YOLO-compatible ONNX models; run a model of its own on each vision camera; configure confidence and NMS thresholds.
 - **Camera input:** Support USB cameras and RTSP/IP cameras through camera drivers and services.
-- **Tracking and counting:** Track detections, report line crossings and class counts, and expose telemetry through the API/dashboard.
+- **Tracking and counting:** Track detections, report line crossings and class counts, and expose telemetry through the API/dashboard. Up to 8 cameras per production line; an extra vision camera inspects on its own or joins the counting camera's product result (matched by travel time), so a product inspected by several cameras gets one result.
 - **QR/barcode inspection:** Decode QR and 1D/2D barcode data from uploaded images or camera frames.
 - **Rules, actions and flows:** Evaluate inspection rules and route events through action/flow engines. Configured actions can affect production equipment or integrations.
 - **Industrial communications:** Provide PLC and communications drivers/services, including S7, Modbus TCP, Ethernet/IP, OPC UA (anonymous/no-security connections), and generic TCP channels (a client with a connection per message or one kept open, or a server that devices connect to, each with its own message delimiter), plus MQTT and webhook-style integrations. Messages are JSON or text from a template, and a PLC write can carry a value of the product (result, counts, class, reject reason) followed by a strobe. Confirm each driver and target-device configuration against the deployment hardware.

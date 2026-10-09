@@ -41,6 +41,9 @@ MESSAGE_FIELDS: Dict[str, Tuple[str, ...]] = {
     "result": ("result",),
     "is_defect": ("is_defect",),
     "reject_reason": ("reject_reason",),
+    # What each vision camera that joins the product result saw of the product, and which camera rejected it.
+    "stations": ("stations",),
+    "reject_camera_id": ("reject_camera_id",),
     "confidence": ("confidence",),
     "bbox": ("bbox",),
     "smooth_center": ("smooth_center",),
@@ -87,6 +90,14 @@ def template_values(payload: Dict[str, Any]) -> Dict[str, Any]:
     moment = _local_moment(payload.get("timestamp"))
     result = pick("result")
     camera_id = pick("camera_id")
+    # The camera whose result rejected the product: named by a line with joined
+    # cameras, else the vision camera when it found the defect.
+    reject_camera = pick("reject_camera_id")
+    if reject_camera is None and pick("reject_reason") == "vision_class":
+        reject_camera = camera_id
+    camera_name = pick("camera_name") or _camera_name(camera_id)
+    if reject_camera is not None:
+        reject_camera = (camera_name if reject_camera == camera_id else _camera_name(reject_camera)) or reject_camera
     values = {
         "line_id": pick("line_id"),
         "line_name": pick("line_name"),
@@ -96,13 +107,14 @@ def template_values(payload: Dict[str, Any]) -> Dict[str, Any]:
         "date": moment.strftime("%Y-%m-%d"),
         "time": moment.strftime("%H:%M:%S"),
         "camera_id": camera_id,
-        "camera_name": pick("camera_name") or _camera_name(camera_id),
+        "camera_name": camera_name,
         "track_id": pick("track_id"),
         "class_name": pick("class_name"),
         "confidence": pick("confidence"),
         "result": result,
         "result_code": {"PASSED": 1, "REJECTED": 2}.get(str(result).upper()) if result is not None else None,
         "reject_reason": pick("reject_reason"),
+        "reject_camera": reject_camera,
         "code": pick("code", "qr_code"),
         "code_format": pick("format", "qr_format"),
         "code_status": pick("qr_status"),

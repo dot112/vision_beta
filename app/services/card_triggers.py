@@ -13,7 +13,8 @@ Events:
   alarm          an alarm was raised or cleared
 
 Event fields used here: event_type, line_id, camera_id, counting_camera,
-result ("good" / "reject", the product's final result), good_count,
+joined_cameras (the cameras that join a product's result), result ("good" /
+"reject", the product's final result), reject_reason, reject_camera_id, good_count,
 reject_count, detected_classes, qr_code, qr_status ("known" / "unknown" /
 "no_read"), qr_paired, line_running, alarm_code, alarm_raised, active_alarms.
 """
@@ -211,12 +212,14 @@ def trigger_matches(card: dict, event: dict) -> bool:
 def camera_matches(card: dict, event: dict) -> bool:
     """A card naming a camera fires only for that camera. A card with no camera
     fires for the line's counting camera and QR readers, not for a second
-    vision camera, so adding one does not double-fire existing cards."""
+    vision camera, so adding one does not double-fire existing cards. A vision
+    camera that joins the counting camera's result sends no event of its own:
+    a card naming it fires for the products it takes part in."""
     if event.get("event_type") in (LINE_STATE_EVENT, ALARM_EVENT):
         return True  # a line starts or stops, or an alarm goes on or off, as a whole
     wanted = str(card.get("camera_id") or "").strip()
     if wanted:
-        return str(event.get("camera_id") or "") == wanted
+        return str(event.get("camera_id") or "") == wanted or wanted in (event.get("joined_cameras") or ())
     if event.get("event_type") == "qr_read":
         return True
     return event.get("counting_camera", True) is not False

@@ -66,8 +66,11 @@ async def _view(line_id: str, with_logic: bool) -> Dict[str, Any]:
     runtime = _manager().get(line_id)
     line["status"] = _manager().summary(runtime) if runtime else None
     if with_logic:
+        # How fast the line runs now: a joined camera's match window is checked against the gap between products.
+        rate = runtime.counter.products_per_minute if runtime and runtime.enabled else 0.0
         line["warnings"] = [
-            await _name_cameras(warning, line.get("cameras")) for warning in line_warnings(line, await _model_info(line))
+            await _name_cameras(warning, line.get("cameras"))
+            for warning in line_warnings(line, await _model_info(line), products_per_minute=rate)
         ]
     return line
 

@@ -240,6 +240,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_auto_connect.py
     ├── test_bundled_broker.py
     ├── test_bytetrack_kalman.py
+    ├── test_camera_cards.py
     ├── test_camera_models.py
     ├── test_camera_orientation.py
     ├── test_camera_roi_and_qr.py
@@ -249,6 +250,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_flow_engine.py
     ├── test_health.py
     ├── test_ip_camera_http.py
+    ├── test_joined_cameras.py
     ├── test_lines.py
     ├── test_lines_api.py
     ├── test_logic_fixes.py

@@ -32,9 +32,18 @@ MAX_CAMERAS_PER_LINE = 8
 CAMERA_ROLES = ("vision", "qr")
 # What a vision camera that is not the counting camera does with its result:
 #   own   counts and rejects on its own and fires only the cards that name it
-#   join  its reject is merged into the counting camera's product (Section 3;
-#         until then it behaves like "own")
+#   join  looks at the counting camera's products, before or after it on the belt:
+#         each of its crossings is matched to one of them by travel time, and the
+#         product gets one result from both (it does not count on its own)
 STATIONS = ("own", "join")
+# A joined camera's travel time from the counting camera (negative: it is before
+# it), how far from that time a crossing still matches, and what a product it saw
+# nothing of gets.
+JOIN_OFFSET_LIMIT_MS = 60000
+JOIN_WINDOW_LIMITS_MS = (50, 10000)
+DEFAULT_JOIN_WINDOW_MS = 500
+JOIN_MISSING = ("reject", "ignore")
+JOIN_KEYS = ("join_offset_ms", "join_window_ms", "join_missing")
 # The model confidence a vision camera may ask for instead of the model's own threshold.
 CONFIDENCE_LIMITS = (0.05, 0.99)
 QR_DISPATCH_MODES = ("off", "all", "known", "unknown")
@@ -60,15 +69,19 @@ REASON_VISION = "vision_class"
 REASON_NOT_LISTED = "code_not_in_list"
 REASON_LISTED = "code_in_reject_list"
 REASON_NO_CODE = "no_code"
-REJECT_REASONS = (REASON_VISION, REASON_NOT_LISTED, REASON_LISTED, REASON_NO_CODE)
+# A joined vision camera saw nothing of the product within its match window, and is set to reject then.
+REASON_STATION_NO_RESULT = "station_no_result"
+REJECT_REASONS = (REASON_VISION, REASON_NOT_LISTED, REASON_LISTED, REASON_NO_CODE, REASON_STATION_NO_RESULT)
+# The reasons that come from a product's code.
+CODE_REASONS = (REASON_NOT_LISTED, REASON_LISTED, REASON_NO_CODE)
 
 # What a PLC WRITE card writes ("value_source"): its fixed number (as before),
 # or a value of the product or the line at the moment of the write.
 PLC_VALUE_SOURCES = ("fixed", "result_code", "good_count", "reject_count", "total_count",
                      "class_index", "reject_reason_code", "batch")
 # A rejected product's reason as a number for the PLC (0: not rejected, 9: any other reason).
-# "station_no_result": a joined vision camera gave no result in time (Section 3).
-REJECT_REASON_CODES = {REASON_VISION: 1, REASON_NOT_LISTED: 2, REASON_LISTED: 3, REASON_NO_CODE: 4, "station_no_result": 5}
+REJECT_REASON_CODES = {REASON_VISION: 1, REASON_NOT_LISTED: 2, REASON_LISTED: 3, REASON_NO_CODE: 4,
+                       REASON_STATION_NO_RESULT: 5}
 OTHER_REJECT_REASON_CODE = 9
 # PLC card settings an older client does not know of: kept when it leaves them out.
 PLC_CARD_KEPT_KEYS = ("value_source", "strobe_address", "strobe_pulse_ms")
@@ -124,7 +137,7 @@ TRACKING_KEYS = tuple(TRACKING_LIMITS)
 CAMERA_KEPT_KEYS = CAMERA_MODEL_KEYS + (
     "name_based_defects", "direction", "tracking", "line1_position", "line2_position", "orientation",
     "confidence", "station",
-)
+) + JOIN_KEYS
 # The count lines a vision camera copies from its line's action_trigger (version 8 step).
 COUNT_LINE_KEYS = ("line1_position", "line2_position", "orientation")
 # Once kept per line in action_trigger; an older client that still sends them is ignored.
@@ -197,29 +210,64 @@ def code_verdict(action: Optional[str], known: bool) -> Optional[str]:
 
 
 def product_verdict(vision_reject: bool, read: Optional[Dict[str, Any]],
-                    checks: Dict[str, Dict[str, str]]) -> Tuple[bool, Optional[str]]:
-    """(reject, reason) for one product, decided once.
+                    checks: Dict[str, Dict[str, str]],
+                    stations: Optional[Dict[str, Optional[Dict[str, Any]]]] = None,
+                    missing: Optional[Dict[str, str]] = None) -> Tuple[bool, Optional[str]]:
+    """(reject, reason) for one product, decided once (product_result() also says which camera rejected it).
 
-    ``vision_reject``: the vision camera found a defect (False on a line without one).
+    ``vision_reject``: the counting camera found a defect (False on a line without one).
     ``read``: the code paired with the product (``camera_id``, ``known``), or None when none was read.
     ``checks``: code_checks() of the line.
+    ``stations``: what each joined camera saw of the product, in card order:
+    ``{camera_id: {"is_defect", "class_name", "confidence"}}``, or None for a
+    camera that saw nothing of it in its match window.
+    ``missing``: each joined camera's "When no result" (``"reject"`` / ``"ignore"``).
 
-        vision  code check          result
-        good    passed              good
-        good    failed              reject
-        reject  any                 reject
-        any     no code, "ignore"   as the vision camera says
-        any     no code, "reject"   reject
+        counting  joined cameras      code check          result
+        good      all good            passed              good
+        good      all good            failed              reject (the code's reason)
+        reject    any                 any                 reject (vision_class)
+        good      one rejects         any                 reject (vision_class, that camera)
+        any       ...                 no code, "ignore"   as the cameras say
+        any       ...                 no code, "reject"   reject (no_code)
+        good      one saw nothing,    passed              good
+                  "ignore"
+        good      one saw nothing,    passed              reject (station_no_result)
+                  "reject"
+
+    When several reject, the reason is the first of: the counting camera, the
+    joined cameras in card order, the code, a joined camera that saw nothing.
     """
+    reject, reason, _ = product_result(vision_reject, read, checks, stations, missing)
+    return reject, reason
+
+
+def product_result(vision_reject: bool, read: Optional[Dict[str, Any]],
+                   checks: Dict[str, Dict[str, str]],
+                   stations: Optional[Dict[str, Optional[Dict[str, Any]]]] = None,
+                   missing: Optional[Dict[str, str]] = None,
+                   counting_camera_id: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[str]]:
+    """(reject, reason, the camera whose result rejected the product) for one product; see product_verdict()."""
     if vision_reject:
-        return True, REASON_VISION
+        return True, REASON_VISION, counting_camera_id
+    stations = stations or {}
+    for camera_id, seen in stations.items():
+        if seen is not None and seen.get("is_defect"):
+            return True, REASON_VISION, camera_id
     if read is not None:
         check = checks.get(read.get("camera_id"))
         reason = code_verdict(check["action"], bool(read.get("known"))) if check else None
-        return reason is not None, reason
-    if any(check["no_read"] == "reject" for check in checks.values()):
-        return True, REASON_NO_CODE
-    return False, None
+        if reason is not None:
+            return True, reason, read.get("camera_id")
+    else:
+        refusing = next((camera_id for camera_id, check in checks.items() if check["no_read"] == "reject"), None)
+        if refusing is not None:
+            return True, REASON_NO_CODE, refusing
+    missing = missing or {}
+    for camera_id, seen in stations.items():
+        if seen is None and missing.get(camera_id) == "reject":
+            return True, REASON_STATION_NO_RESULT, camera_id
+    return False, None, None
 
 
 def _class_names(value: Any, label: str) -> List[str]:
@@ -337,7 +385,35 @@ def normalize_camera(raw: Any, index: int) -> Dict[str, Any]:
             if station not in STATIONS:
                 raise ValueError(f"{label} station must be 'own' (its own result) or 'join' (joins the product result)")
             camera["station"] = station
+        if camera.get("station") == "join":
+            camera.update(_join_settings(raw, label))
     return camera
+
+
+def _join_settings(raw: Dict[str, Any], label: str) -> Dict[str, Any]:
+    """A joined camera's travel time from the counting camera, match window and "When no result"."""
+    offset = _number(raw.get("join_offset_ms"), f"{label} travel time from the counting camera", 0,
+                     -JOIN_OFFSET_LIMIT_MS, JOIN_OFFSET_LIMIT_MS)
+    low, high = JOIN_WINDOW_LIMITS_MS
+    window = _number(raw.get("join_window_ms"), f"{label} match window", DEFAULT_JOIN_WINDOW_MS, low, high)
+    missing = str(raw.get("join_missing") or "ignore").strip().lower()
+    if missing not in JOIN_MISSING:
+        raise ValueError(f"{label}: when it sees nothing of a product must be 'reject' or 'ignore'")
+    return {"join_offset_ms": int(round(offset)), "join_window_ms": int(round(window)), "join_missing": missing}
+
+
+def join_settings(camera: Dict[str, Any]) -> Tuple[int, int, str]:
+    """(travel time ms, match window ms, "reject" / "ignore") of a joined camera; defaults where it has none."""
+    try:
+        settings = _join_settings(camera, "")
+    except ValueError:
+        settings = {"join_offset_ms": 0, "join_window_ms": DEFAULT_JOIN_WINDOW_MS, "join_missing": "ignore"}
+    return settings["join_offset_ms"], settings["join_window_ms"], settings["join_missing"]
+
+
+def joined_cameras(cameras: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The vision cameras whose result joins the counting camera's product, in card order."""
+    return [cam for cam in cameras if camera_station(cam) == "join"]
 
 
 def camera_station(camera: Dict[str, Any]) -> Optional[str]:
@@ -402,6 +478,7 @@ TEMPLATE_FIELDS: Dict[str, str] = {
     "result": "Result (PASSED / REJECTED)",
     "result_code": "Result code (1 good, 2 reject)",
     "reject_reason": "Reject reason",
+    "reject_camera": "Camera that rejected the product",
     "code": "Code read",
     "code_format": "Code type",
     "code_status": "Code status (known / unknown / no_read)",
@@ -652,10 +729,20 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
             f"Set the other one to Inspection station."
         )
     if vision and not counting:
-        vision[0]["counting"] = True
+        # The first vision camera counts, unless it is set to join the counting camera's result.
+        first = next((c for c in vision if c.get("station") != "join"), None)
+        if first is None:
+            raise ValueError(
+                f"Camera {cameras.index(vision[0]) + 1} joins the product result of the counting camera, but the line "
+                f"has no counting camera. Set one vision camera to Counting."
+            )
+        first["counting"] = True
     for cam in vision:
         if cam["counting"]:
-            cam.pop("station", None)  # the counting camera makes the product result
+            # The counting camera makes the product result; it joins nothing.
+            cam.pop("station", None)
+            for key in JOIN_KEYS:
+                cam.pop(key, None)
     if not vision and any(c.get("qr_trigger", "continuous") != "continuous" for c in cameras):
         raise ValueError("Capturing when a product crosses a wire line needs a vision camera on the line")
 
@@ -1096,18 +1183,22 @@ def model_warnings(line: Dict[str, Any], models: Dict[str, Dict[str, Any]]) -> L
     return warnings
 
 
-def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any]]] = None) -> List[str]:
+def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any]]] = None,
+                  products_per_minute: float = 0.0) -> List[str]:
     """Things about a saved line the user should look at; none of them stops the line.
 
     ``models`` adds the warnings about the vision cameras' models (model_warnings).
+    ``products_per_minute``: how fast the line runs now; with it, a joined
+    camera whose match window could reach the next product is warned about.
     """
     warnings: List[str] = model_warnings(line, models) if models is not None else []
     cameras = line.get("cameras") or []
     checks = code_checks(cameras)
-    if not checks:
+    joined = joined_cameras(cameras) if counting_camera(line) else []
+    if not checks and not joined:
         return warnings
     has_vision = any(c.get("role") == "vision" for c in cameras)
-    if not has_vision:
+    if checks and not has_vision:
         hold = max(int(c.get("qr_hold_ms") or DEFAULT_QR_HOLD_MS) for c in cameras if c["camera_id"] in checks)
         warnings.append(
             f"This line has no vision camera, so each code read counts as one product. A code counts again only "
@@ -1116,6 +1207,15 @@ def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any
         )
         return warnings
     window = int((line.get("sync") or {}).get("window_ms") or DEFAULT_SYNC_WINDOW_MS)
+    # How long after its crossing a product's result can take, and what it waits for.
+    # (ms, order, the joined camera, or None for the Sync window); the order breaks ties.
+    waits: List[Tuple[int, int, Optional[Dict[str, Any]]]] = []
+    if checks:
+        waits.append((window, 0, None))
+    for order, cam in enumerate(joined, start=1):
+        offset, match, _ = join_settings(cam)
+        waits.append((offset + match, order, cam))
+    latest, _, waits_for = max(waits, key=lambda wait: wait[:2])
     for card in line.get("plc_actions") or []:
         if card.get("enabled", True) is not True:
             continue
@@ -1126,12 +1226,34 @@ def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any
             delay = int(float(card.get("delay_ms", card.get("travel_delay_ms", 0)) or 0))
         except (TypeError, ValueError):
             delay = 0
-        if acts_on_reject and delay < window:
+        if not acts_on_reject or delay >= latest:
+            continue
+        name = card.get("name") or card.get("id")
+        if waits_for is None:
             warnings.append(
-                f"PLC action '{card.get('name') or card.get('id')}' has a travel delay of {delay} ms, shorter than the "
+                f"PLC action '{name}' has a travel delay of {delay} ms, shorter than the "
                 f"Sync window ({window} ms). A product's result can take as long as the Sync window (when no code is "
                 f"read), so this action would fire late. Make its travel delay longer than the Sync window."
             )
+            continue
+        offset, match, _ = join_settings(waits_for)
+        warnings.append(
+            f"PLC action '{name}' has a travel delay of {delay} ms, shorter than the time a product's result can take: "
+            f"Camera {cameras.index(waits_for) + 1} joins the product result {offset} ms after the counting camera with a {match} ms match "
+            f"window, so the result can come {latest} ms after the crossing and this action would fire late. "
+            f"Make its travel delay longer than {latest} ms."
+        )
+    if products_per_minute and products_per_minute > 0:
+        gap = 60000.0 / float(products_per_minute)
+        for cam in joined:
+            _, match, _ = join_settings(cam)
+            if 2 * match > gap:
+                warnings.append(
+                    f"Camera {cameras.index(cam) + 1}: its match window ({match} ms) reaches the next product: products "
+                    f"now pass about {gap:.0f} ms apart ({products_per_minute:g} a minute), and products must be further "
+                    f"apart than twice the window. A crossing could be matched to the wrong product. Make the match "
+                    f"window shorter than {int(gap / 2)} ms."
+                )
     return warnings
 
 

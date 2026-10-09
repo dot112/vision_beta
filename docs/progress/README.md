@@ -32,7 +32,7 @@ Make the software work on almost any production line:
 |---|---|---|---|---|---|
 | 1 | Logic fixes (vision, messages, PLC outputs) | [section-1-logic-fixes.md](section-1-logic-fixes.md) | — | **Done** | `claude/tender-cerf-qzfcle` |
 | 2 | Camera cards on Line setup, up to 8 cameras | [section-2-camera-cards.md](section-2-camera-cards.md) | 1 | **Done** | `claude/magical-ritchie-r7rxvs` |
-| 3 | Several vision cameras: own station or joined result | [section-3-joined-cameras.md](section-3-joined-cameras.md) | 2 | Not started | — |
+| 3 | Several vision cameras: own station or joined result | [section-3-joined-cameras.md](section-3-joined-cameras.md) | 2 | **Done** | `claude/section-3-joined-cameras-mg2wnm` |
 | 4 | Product records in the database, Records page, CSV/XLSX export | [section-4-product-records.md](section-4-product-records.md) | 1 (3 only for the `stations` detail) | Not started | — |
 | 5 | PLC inputs, batch number, trigger inspection, reject confirmation | [section-5-plc-inputs.md](section-5-plc-inputs.md) | 2 and 4 | Not started | — |
 
@@ -60,9 +60,9 @@ FastAPI server (`main.py`) plus one HTML dashboard (`dashboard.html`, plus `asse
 
 | Area | Files | What it does |
 |---|---|---|
-| Line settings | `app/services/line_config.py` | Shape, validation and **upgrade steps** of the saved settings (`data/system_state.json`). `normalize_line`, `normalize_camera`, `normalize_send_card`, `product_verdict`, `_UPGRADES`, `SCHEMA_VERSION` (now **8**), `MAX_CAMERAS_PER_LINE` (**8**), `camera_station`. No runtime imports. |
+| Line settings | `app/services/line_config.py` | Shape, validation and **upgrade steps** of the saved settings (`data/system_state.json`). `normalize_line`, `normalize_camera`, `normalize_send_card`, `product_verdict` / `product_result`, `join_settings`, `joined_cameras`, `_UPGRADES`, `SCHEMA_VERSION` (now **8**), `MAX_CAMERAS_PER_LINE` (**8**), `camera_station`. No runtime imports. |
 | Settings storage | `app/services/settings_persistence_service.py` | Loads and saves the JSON state, lines, endpoints (Connections), PLC and send cards, and the audit log. `counting_config_from_dict()` builds a camera's `CountingConfig`. **Line 1 keeps `action_trigger`, `plc_actions` and `send_actions` at the top level of the state** (version 1 compatibility); other lines keep them inside their entry. |
-| Lines at runtime | `app/services/line_service.py` | `LineManager` (`line_manager`) and one `LineRuntime` per line. Routes camera frames to lines, holds the counters (Line 1 uses the module-level `counting_service`), Sync pairing (`SyncPairer`), QR reads, and the models per camera. |
+| Lines at runtime | `app/services/line_service.py` | `LineManager` (`line_manager`) and one `LineRuntime` per line. Routes camera frames to lines, holds the counters (Line 1 uses the module-level `counting_service`), Sync pairing (`SyncPairer`), joined cameras (`ProductAssembly`: one result per product from the counting camera, its code and the joined cameras), QR reads, and the models per camera. |
 | Counting | `app/services/counting_service.py`, `app/engines/tracker.py` | `CountingService.process_frame` → `WirelineTracker.update` → crossing events. `finish_crossing()` counts one product with its final result and sends **one** event (event bus, PLC cards, send cards). `count_product()` is for products with no vision camera. |
 | Vision pipeline | `app/services/vision_service.py`, `app/engines/inference_engine.py` | Per-camera inference worker threads, the stream publisher (draws boxes and count lines), `ContinuousVisionRunner` (feeds every connected camera of a running line), and the detect API. |
 | Cameras | `app/services/camera_service.py`, `app/hardware/camera/*`, `app/routes/v1/camera.py` | Camera database rows (`Camera.settings` JSON holds resolution, rotation, ROI and so on), drivers, connect/reconnect. |
@@ -88,7 +88,7 @@ FastAPI server (`main.py`) plus one HTML dashboard (`dashboard.html`, plus `asse
 - **Set up and run the checks:**
   ```bash
   python3 -m venv /tmp/venv && /tmp/venv/bin/pip install -q -r requirements.txt -r requirements-dev.txt
-  /tmp/venv/bin/python -m pytest -q -p no:cacheprovider     # 716 pass after Section 2
+  /tmp/venv/bin/python -m pytest -q -p no:cacheprovider     # 749 pass after Section 3
   /tmp/venv/bin/ruff check .
   ```
   CI (`.github/workflows/ci.yml`) runs lint, the tests, and a Docker Compose start/stop check on every push.
