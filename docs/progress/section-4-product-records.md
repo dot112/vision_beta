@@ -45,7 +45,7 @@ Not started.
      - `result` String(8): `"good"` / `"reject"` / NULL for code rows;
      - `reject_reason` String(32), `class_name` String(128), `confidence` Float, `track_id` Integer;
      - `code` String(512), `code_format` String(32), `code_status` String(16) (`known` / `unknown` / `no_read`), `product_name` String(128), `product_list_id` String(36);
-     - `batch` String(64) (filled by Section 5; NULL until then);
+     - `batch` String(64): the payload's `batch`, which Section 5 fills (the `{batch}` placeholder already reads that key); NULL until then;
      - `details` JSON: `vision_result`, `stations` (Section 3), `bbox`, `reject_camera_id`.
    - **Indexes:** `(line_id, recorded_at)`, `(recorded_at)`, `(batch)`, `(code)`.
    - **Migration** `alembic/versions/0006_product_records.py`.
@@ -56,14 +56,14 @@ Not started.
    - On a database error, keep the rows (up to the cap), retry on the next tick, and raise `records.write_failed` (critical) after 3 failed tries in a row; clear it on success.
    - On shutdown, flush what is left, in the lifespan, before the database is closed.
    - **Retention:** a new `RECORDS_RETENTION_DAYS` in `app/config.py` and `.env.example` (default 90; 0 = keep for ever). Once an hour, delete older rows in chunks of 5000, so the database is never locked for long.
-3. **Hooks** (one call each; build the row from the payload / read already at hand):
+3. **Hooks** (one call each; build the row from the payload / read already at hand). The payloads name the code fields differently: a vision product's code comes in `fields` as `qr_code` / `qr_format` / `qr_status`; a code read, a no-read and a code-only product carry `code` / `format` / `qr_status`; none of them carries `camera_name`. `send_dispatcher_service.template_values(payload)` (Section 1) already maps all of them to `code`, `code_format`, `code_status`, `camera_name` (looked up in `app_state.cameras`) and `batch`, the names this table uses. The hooks:
    - `CountingService.finish_crossing`: `kind="product"`, `counted = self.camera_id is None` (own station = False), result, reason, class, confidence, track, code fields from `fields`, and `details`.
    - `LineRuntime._emit_code_product`: `kind="product"`, `counted=True`, from the read.
    - `LineRuntime._emit_qr` / `_emit_no_read`: `kind="code"`, `counted=False`.
    - Respect `dispatch_telemetry=False` counters (tests) by not recording them, or record only when the recorder is started. Then the existing tests do not need a database writer.
 4. **Counts survive a restart.**
    - Each line saves `counts_reset_at` (an ISO UTC time) in its settings entry (Line 1: top level, like its other v1 keys, or inside its line entry; pick one and document it).
-   - Set it when the counters are reset (`reset_line_counters` in `app/routes/v1/counting.py`, which Sparkplug also uses), and in the v8 upgrade step to the upgrade time, so existing lines do not suddenly show old records.
+   - Set it when the counters are reset (`reset_line_counters` in `app/routes/v1/counting.py`, which Sparkplug also uses), and in the v8 upgrade step to the upgrade time, so existing lines do not suddenly show old records. That step is `line_config._upgrade_to_v8`. It already sets `name_based_defects` on vision cameras and sets every TCP channel in `communication_endpoints` to newline, client mode and `keep_open: false`: add to it and keep both. `tests/test_logic_fixes.py::test_version_8_keeps_the_name_rule_on_every_existing_vision_camera` compares `state["lines"]` with a copy taken before the upgrade, so that test must drop `counts_reset_at` too.
    - At startup, after `line_manager.apply_state()`, each line's counter gets its `total_inspected`, `good_count`, `rejected_count`, `counts_by_class` and `rejects_by_class` from `SELECT … WHERE line_id=? AND counted AND kind='product' AND recorded_at >= counts_reset_at GROUP BY class_name, result`. Add a `CountingService.restore(totals)` method.
 5. **API** `app/routes/v1/records.py`, registered like the other v1 routers in `main.py`:
    - `GET /api/v1/records`:

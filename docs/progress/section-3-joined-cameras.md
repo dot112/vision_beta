@@ -53,13 +53,13 @@ Every vision camera that is not the counting camera chooses, on its card:
 3. **The verdict** (`product_verdict` in `line_config.py`): add `stations` = `{camera_id: {"is_defect", "class_name", "confidence"} or None}` and the join rules.
    - **Reject** when the counting camera rejects, any joined camera rejects (reason `vision_class`, plus `reject_camera_id`), a joined camera has no result and its `join_missing` is `"reject"` (reason `station_no_result`), or the code check rejects (as today).
    - **Order of reasons:** vision of the counting camera, then joined cameras in card order, then code, then missing.
-   - Update the docstring table. Add `station_no_result` to `REJECT_REASONS`.
+   - Update the docstring table. Add `station_no_result` to `REJECT_REASONS` with a `REASON_*` constant, beside `REASON_VISION` and the others. `REJECT_REASON_CODES` (Section 1) already maps `"station_no_result"` to 5; use the new constant there.
 4. **The event** (`finish_crossing` gets the extra fields through `fields` / `plc_fields`):
    - the payload gains `stations: [{camera_id, camera_name, result, class_name, confidence}]` and `reject_camera_id`;
    - the PLC event gains `reject_camera_id`;
    - `delay_from_crossing=True` whenever the line has joined cameras.
 
-   Add `stations` to `MESSAGE_FIELDS` in `send_dispatcher_service.py`, and to the text template placeholders if Section 1 added them (for example `{reject_camera}`). Add `station_no_result` to the reject reason codes of the PLC value source (Section 1 P2: code 5).
+   Add `stations` to `MESSAGE_FIELDS` in `send_dispatcher_service.py`. Section 1 added text templates, so also add a placeholder (for example `{reject_camera}`): it goes into `TEMPLATE_FIELDS` in `line_config.py` (`parse_template` refuses a name that is not there), gets its value in `send_dispatcher_service.template_values()`, and is added to the dashboard's fallback list `_sendPlaceholders` and to `sendTemplateValues()` in `dashboard.html`. The PLC value source needs no change: `REJECT_REASON_CODES` already gives `station_no_result` code 5, and the PLC dialog's hint already says so. The `class_index` source (`PLCDispatcherService._class_index`) looks up `detected_classes[0]` in the lists of the PLC event's `camera_id`, so it writes the counting camera's class; an event that carries its own `class_index` (for example through `plc_fields`) is written as it is (`write_value`).
 5. **Warnings** (`line_warnings`): a reject card whose travel delay is shorter than the latest result time (`max(offset_j + window_j)`, and the Sync window) gets a warning naming the card and the camera. Also warn when two joined cameras' windows overlap the next product. As a rule of thumb, products must be further apart than `2 × window`; say so in the card's help text.
 6. **Line setup UI** (the camera card from Section 2, Job section): when "Joins the product result" is chosen, show:
    - **Travel time from the counting camera (ms)**, with a note that a negative value means "before the counting camera";
@@ -84,7 +84,7 @@ Use the fake tracker / counter helpers from `tests/test_reader_actions.py` and `
 ## Acceptance
 
 - `pytest` and `ruff check .` are green.
-- Lines without joined cameras behave exactly as before: run the whole suite, especially `test_reader_actions.py`, `test_send_cards.py` and `test_qr_trigger.py`.
+- Lines without joined cameras behave exactly as before: run the whole suite, especially `test_reader_actions.py`, `test_send_cards.py`, `test_qr_trigger.py` and `test_messages_and_plc_values.py` (703 tests pass after Section 1).
 
 ## Notes for the next section
 

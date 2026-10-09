@@ -36,8 +36,8 @@ On **Line setup** the user adds cameras as **cards**. Each card holds every sett
    - `confidence`: 0.05 to 0.99, or empty for the model's own threshold. Pass it to the inference worker: `ContinuousVisionRunner._loop` calls `worker.submit_frame_if_idle(mat, fid, copy=False)`. Give it the camera's `confidence` (look it up through `line_manager.route(camera_id)[0].camera_entry(camera_id)`, or keep it on the runtime for speed).
    - `station`: `"own"` (default for non-counting vision cameras) or `"join"`. **Store and validate it now; the join behavior is Section 3.** For now a `join` camera behaves like `own`, and the UI shows "Joins the product result: comes with the next update", or keep the option hidden until Section 3.
    - Section 3 fills in `join_offset_ms`, `join_window_ms` and `join_missing`.
-   - `name` is **not** stored in the line: the camera's name is the database row's `Camera.name` (rename through `PATCH /cameras/{id}`).
-3. **Upgrade (extend `_upgrade_to_v8`, do not add v9):** copy the line's `action_trigger` count lines (`line1_position`, `line2_position`, `orientation`) into each vision camera that has none. For Line 1 the trigger is at the top level of the state (`state["action_trigger"]`); for other lines it is `line["action_trigger"]`. A line behaves exactly as before. Keep the line-level values: Line 1's top-level `action_trigger` is what version 1 and old API clients (`POST /counting/config`, `GET /system/settings`) read.
+   - `name` is **not** stored in the line: the camera's name is the database row's `Camera.name` (rename through `PATCH /cameras/{id}`). That `PATCH` does not change a connected driver's `name`, and the send cards' `{camera_name}` placeholder (Section 1, `send_dispatcher_service._camera_name`) reads `app_state.cameras[id].name`: on a rename, update the driver's `name` too.
+3. **Upgrade (extend `_upgrade_to_v8`, do not add v9):** copy the line's `action_trigger` count lines (`line1_position`, `line2_position`, `orientation`) into each vision camera that has none. For Line 1 the trigger is at the top level of the state (`state["action_trigger"]`); for other lines it is `line["action_trigger"]`. A line behaves exactly as before. Keep the line-level values: Line 1's top-level `action_trigger` is what version 1 and old API clients (`POST /counting/config`, `GET /system/settings`) read. The step already sets `name_based_defects` on every vision camera in `state["lines"]` and pins the TCP channels in `communication_endpoints` (Section 1). Add the copy to its camera loop. Its tests must still pass: `test_version_8_keeps_the_name_rule_on_every_existing_vision_camera` in `tests/test_logic_fixes.py` (it compares the lines before and after the step) and `test_old_tcp_channels_keep_sending_what_they_sent` in `tests/test_messages_and_plc_values.py`.
 4. **`POST /api/v1/counting/config`** changes a running counter until the line's settings change again (see `LineRuntime._set_config`). Leave it as is.
 5. **Validation messages** name the camera by its position and its name where known.
 
@@ -74,7 +74,7 @@ Replace the fixed two boxes with:
      - **Flow direction** as one choice: top → bottom, bottom → top, left → right, right → left. Save it as `orientation` + `direction`, with lines A < B: top→bottom = `horizontal`/`forward`, bottom→top = `horizontal`/`backward`, left→right = `vertical`/`forward`, right→left = `vertical`/`backward`.
      - **Count mode:** "A then B" (the direction above) or "Both ways" (`direction: both`).
      - **Count lines A and B**, as two number boxes **and** draggable lines on the card's picture (draw the two lines on a canvas over the picture; dragging updates the boxes).
-     - **Advanced tracking:** min hits, missed frames, max speed px, match threshold, position tolerance, high/low confidence. Empty = default; show the defaults as placeholders (from `TRACKING_LIMITS` / `CountingConfig`).
+     - **Advanced tracking:** min hits, missed frames, max speed px, match threshold, position tolerance, high/low confidence. Empty = default; show the defaults as placeholders (from `TRACKING_LIMITS` / `CountingConfig`). A key the client leaves out keeps its saved value (`CAMERA_KEPT_KEYS`, `_fill_camera_models`). So to go back to a default, send the key empty (`""` or `null`, and `tracking: {}`) instead of leaving it out. The same holds for the count lines, `orientation` and `direction`.
   5. **Codes** (code reader jobs): code type, when to read (continuous / one picture on wire line 1 or 2), picture delay, hold time, action, product list, when no code is read. Move this unchanged from `cameraBoxHtml`, with the same notes (`ACTION_NOTES`, `READER_ONLY_NOTE`).
   6. **Image:** width, height, FPS, rotation, flip H/V, **ROI** (enable switch, X/Y/W/H and drag-to-draw on the full picture `GET /api/v1/cameras/{id}/frame?full=true`), USB controls (brightness, contrast, saturation, exposure, auto exposure) for USB, transport and buffer for IP.
      - Move the code out of the Cameras-page dialog into functions that render into a given container; keep the dialog working for cameras that belong to no line.
@@ -99,7 +99,7 @@ Replace the single second feed with a **camera strip**:
 
 ### Docs
 
-`README.md`, "Production lines (version 2)" → "Setting up a line": rewrite step 2 for the cards, the up-to-8 limit, the per-camera counting settings, and the defect-name switch. Update `PROJECT_DESCRIPTION.md` and `FILE_TREE.md` if files are added.
+`README.md`, "Production lines (version 2)" → "Setting up a line": rewrite step 2 for the cards, the up-to-8 limit, the per-camera counting settings, and the defect-name switch. Section 1 described the last two in the **Counting per vision camera** paragraph under step 3, which says "the dashboard does not show them yet". Move it into step 2 and drop that part. Update `PROJECT_DESCRIPTION.md` and `FILE_TREE.md` if files are added.
 
 ## Tests to add (`tests/test_camera_cards.py`)
 
@@ -107,7 +107,7 @@ Replace the single second feed with a **camera strip**:
 - Each vision camera counts with its **own** count lines and direction (two cameras, different flows).
 - The confidence threshold reaches `predict_mat` (the fake engine in `conftest.py` records calls).
 - **The v8 upgrade copies the line's count lines into its cameras.** A version 7 file loads, upgrades, and counts exactly as before, for Line 1 (top-level `action_trigger`) and for another line.
-- A client that sends cameras without the new fields keeps them (extends the Section 1 test).
+- A client that sends cameras without the new fields keeps them (extends `test_a_client_that_does_not_send_the_new_settings_leaves_them_as_saved` in `tests/test_logic_fixes.py`).
 - Choosing a second counting camera is refused with a clear message (`normalize_line` already refuses two; check the message).
 - **UI check with Playwright** (a scratch script, not a pytest test, unless you add a light one): add three cards, change a flow direction, drag a count line, save, reload, and see the values kept. Screenshots at 1440 px and 375 px.
 

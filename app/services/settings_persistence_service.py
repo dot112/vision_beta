@@ -13,10 +13,13 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from app.services.line_config import (
     OLD_CLASS_KEYS,
     OLD_SEND_KEYS,
+    PLC_CARD_KEPT_KEYS,
     PRIMARY_LINE_ID,
+    SEND_CARD_KEPT_KEYS,
     TRACKING_KEYS,
     check_camera_ownership,
     endpoints_used_by_line,
+    keep_card_fields,
     normalize_line,
     normalize_send_cards,
     require_camera_models,
@@ -429,9 +432,11 @@ class SettingsPersistenceService:
         if not isinstance(cards, list) or any(not isinstance(card, dict) for card in cards):
             raise ValueError("PLC action cards must be a list of objects")
 
-        from app.services.plc_failsafe_service import validate_safe_state
+        from app.services.plc_failsafe_service import validate_safe_state, validate_write_value
+        cards = keep_card_fields(cards, cls._state.get("plc_actions"), PLC_CARD_KEPT_KEYS)
         for card in cards:
             validate_safe_state(card)
+            validate_write_value(card)
 
         saved_cards = copy.deepcopy(cards)
         cls._state["plc_actions"] = saved_cards
@@ -497,9 +502,8 @@ class SettingsPersistenceService:
     def replace_line_send_actions(cls, line_id: str, cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Replace one line's send cards; returns a detached copy of what was saved. Raises ValueError."""
         holder = cls._send_holder(line_id)
-        holder["send_actions"] = normalize_send_cards(
-            [{k: v for k, v in c.items() if k != "line_id"} if isinstance(c, dict) else c for c in cards]
-        )
+        cards = [{k: v for k, v in c.items() if k != "line_id"} if isinstance(c, dict) else c for c in cards]
+        holder["send_actions"] = normalize_send_cards(keep_card_fields(cards, holder.get("send_actions"), SEND_CARD_KEPT_KEYS))
         return copy.deepcopy(holder["send_actions"])
 
     @classmethod
@@ -544,9 +548,11 @@ class SettingsPersistenceService:
             raise KeyError(line_id)
         if not isinstance(cards, list) or any(not isinstance(card, dict) for card in cards):
             raise ValueError("PLC action cards must be a list of objects")
-        from app.services.plc_failsafe_service import validate_safe_state
+        from app.services.plc_failsafe_service import validate_safe_state, validate_write_value
+        cards = keep_card_fields(cards, line.get("plc_actions"), PLC_CARD_KEPT_KEYS)
         for card in cards:
             validate_safe_state(card)
+            validate_write_value(card)
         line["plc_actions"] = [{k: v for k, v in c.items() if k != "line_id"} for c in copy.deepcopy(cards)]
         return copy.deepcopy(line["plc_actions"])
 
@@ -581,17 +587,22 @@ class SettingsPersistenceService:
 
         trigger = line.pop("action_trigger", None)
         send_cards = line.pop("send_actions", None)
+        if isinstance(raw.get("send_actions"), list):
+            # As the client sent them (checked above), so that replace_line_send_actions
+            # keeps the settings an older client leaves out.
+            send_cards = raw["send_actions"]
         if isinstance(trigger, dict):
             # Settings that send cards and the cameras' class lists replaced are
             # not kept, whoever still sends them.
             trigger = {k: v for k, v in trigger.items() if k not in OLD_SEND_KEYS and k not in OLD_CLASS_KEYS}
         cards = line.pop("plc_actions", None)
         if cards is not None:
-            from app.services.plc_failsafe_service import validate_safe_state
+            from app.services.plc_failsafe_service import validate_safe_state, validate_write_value
             for card in cards:
                 if not isinstance(card, dict):
                     raise ValueError("PLC action cards must be a list of objects")
                 validate_safe_state(card)
+                validate_write_value(card)
 
         if line["id"] == PRIMARY_LINE_ID:
             if isinstance(trigger, dict):
@@ -1078,12 +1089,22 @@ class SettingsPersistenceService:
 
         # Protocol-specific field mappings
         if proto == "tcp":
+            from app.services.tcp_channels import TCP_MODES, validate_delimiter
+
+            saved = existing if previous_protocol == "tcp" else {}
+            mode = endpoint_data.get("mode", saved.get("mode", "client"))
+            if mode not in TCP_MODES:
+                raise ValueError("TCP mode must be 'client' or 'server'")
             record.update({
+                # In server mode, the address to listen on (0.0.0.0: every network).
                 "host": _endpoint_host(endpoint_data.get("host", (existing or {}).get("host", "")), "TCP host", required=record["enabled"]),
                 "port": _endpoint_port(endpoint_data.get("port", (existing or {}).get("port")), "TCP port", 9000),
-                "delimiter": endpoint_data.get("delimiter", "\\n"),
-                "mode": endpoint_data.get("mode", "client"),
-                "timeout": _bounded_int(endpoint_data.get("timeout"), "TCP timeout", 5, 1, 30),
+                # What ends each message, as typed: escapes such as \n stand for their character; "" is nothing.
+                "delimiter": validate_delimiter(endpoint_data.get("delimiter", saved.get("delimiter", "\\n"))),
+                "mode": mode,
+                "timeout": _bounded_int(endpoint_data.get("timeout", saved.get("timeout")), "TCP timeout", 5, 1, 30),
+                # Client mode: keep one connection open instead of one per message.
+                "keep_open": _endpoint_bool(endpoint_data.get("keep_open", saved.get("keep_open")), "Keep connection open", False),
             })
             # Sync to global tcp state if enabled
             if record["enabled"]:
@@ -1406,6 +1427,14 @@ class SettingsPersistenceService:
                 SparkplugService.apply(existing or record)
             except Exception:
                 logger.exception("Could not apply the saved settings of MQTT channel %s", ep_id)
+        if proto == "tcp" or previous_protocol == "tcp":
+            # A server channel listens on its port; a channel that keeps its
+            # connection open drops it when its address changes.
+            try:
+                from app.services.tcp_channels import TcpChannels
+                TcpChannels.apply(existing or record)
+            except Exception:
+                logger.exception("Could not apply the saved settings of TCP channel %s", ep_id)
         if proto == "ipcam":
             # The camera reads its address from the database, and a running one keeps
             # its stream open: without this the old address stays in use.
@@ -1447,6 +1476,9 @@ class SettingsPersistenceService:
                     PLCDriverFactory.invalidate(endpoint_id)
                 except Exception as exc:
                     logger.warning("Could not invalidate cached PLC driver for endpoint %s: %s", endpoint_id, exc)
+            if target and target.get("protocol") == "tcp":
+                from app.services.tcp_channels import TcpChannels
+                TcpChannels.drop(endpoint_id)
             if target and target.get("protocol") == "mqtt":
                 from app.services.mqtt_service import MQTTChannels
                 from app.services.sparkplug_service import SparkplugService
@@ -1497,6 +1529,16 @@ class SettingsPersistenceService:
             return {"success": False, "message": f"Endpoint '{endpoint_id}' not found."}
 
         proto = ep.get("protocol", "tcp").lower()
+        if proto == "tcp" and str(ep.get("mode") or "client").lower() == "server":
+            # A server channel is not connected to: it listens, and devices connect to it.
+            from app.services.tcp_channels import TcpChannels
+            if ep.get("enabled", True) is not True:
+                return {"success": False, "message": "The channel is switched off, so it does not listen."}
+            try:
+                status = await TcpChannels.status(ep)
+            except Exception as exc:
+                return {"success": False, "message": f"TCP server check failed: {exc}"}
+            return {"success": status["listening"], "message": status["message"]}
         if proto == "tcp":
             host = ep.get("host", "127.0.0.1")
             port = int(ep.get("port", 9000))
@@ -1745,6 +1787,12 @@ class SettingsPersistenceService:
             MQTTChannels.sync(endpoints)
         except Exception:
             logger.exception("Could not connect the saved MQTT channels")
+        # Every TCP channel in server mode listens on its port.
+        try:
+            from app.services.tcp_channels import TcpChannels
+            TcpChannels.sync(endpoints)
+        except Exception:
+            logger.exception("Could not start the saved TCP channels")
         test_slots = asyncio.Semaphore(5)
 
         async def _startup_endpoint_check(endpoint: Dict[str, Any]) -> None:

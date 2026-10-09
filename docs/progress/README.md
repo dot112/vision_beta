@@ -2,6 +2,7 @@
 
 This folder hands the work over to new sessions: **one session per section**.
 Each section file can be read on its own: it has what is done, what is left, the files to change, the tests to write, and the checks to run.
+The first message to paste into each section's session is in [session-prompts.md](session-prompts.md).
 Every session must keep its own section file up to date.
 
 ## The goal (from the owner)
@@ -29,7 +30,7 @@ Make the software work on almost any production line:
 
 | # | Section | File | Depends on | Status | Branch with the work |
 |---|---|---|---|---|---|
-| 1 | Logic fixes (vision, messages, PLC outputs) | [section-1-logic-fixes.md](section-1-logic-fixes.md) | — | **Partly done**: vision part committed; messages and PLC parts left | `claude/busy-babbage-h9j4ln` |
+| 1 | Logic fixes (vision, messages, PLC outputs) | [section-1-logic-fixes.md](section-1-logic-fixes.md) | — | **Done** | `claude/tender-cerf-qzfcle` |
 | 2 | Camera cards on Line setup, up to 8 cameras | [section-2-camera-cards.md](section-2-camera-cards.md) | 1 | Not started | — |
 | 3 | Several vision cameras: own station or joined result | [section-3-joined-cameras.md](section-3-joined-cameras.md) | 2 | Not started | — |
 | 4 | Product records in the database, Records page, CSV/XLSX export | [section-4-product-records.md](section-4-product-records.md) | 1 (3 only for the `stations` detail) | Not started | — |
@@ -41,6 +42,8 @@ Make the software work on almost any production line:
 git fetch origin <branch of the previous section>
 git checkout -B <your own session branch> origin/<branch of the previous section>
 ```
+
+If the previous section's branch was already merged into `main` with "Squash and merge", start from `origin/main` instead: the squash puts the same changes into `main` as one new commit, and a branch that still carries the original commits conflicts with it.
 
 Section 4 only needs Section 1. It *can* run beside 2 and 3, but it touches the same files (`line_service.py`, `counting_service.py`, `assets/production_lines.js`, `main.py`). Run it in parallel only if someone is ready to resolve the merge.
 
@@ -85,7 +88,7 @@ FastAPI server (`main.py`) plus one HTML dashboard (`dashboard.html`, plus `asse
 - **Set up and run the checks:**
   ```bash
   python3 -m venv /tmp/venv && /tmp/venv/bin/pip install -q -r requirements.txt -r requirements-dev.txt
-  /tmp/venv/bin/python -m pytest -q -p no:cacheprovider     # 646 pass on c631fe0
+  /tmp/venv/bin/python -m pytest -q -p no:cacheprovider     # 703 pass after Section 1
   /tmp/venv/bin/ruff check .
   ```
   CI (`.github/workflows/ci.yml`) runs lint, the tests, and a Docker Compose start/stop check on every push.
@@ -102,7 +105,7 @@ FastAPI server (`main.py`) plus one HTML dashboard (`dashboard.html`, plus `asse
 | V3 | `counting_config_from_dict` | Count direction and tracking settings were never read from the settings. Also, "both" mode never counted a product moving from line B back to line A. | 1, **done** (no UI yet: Section 2) |
 | V4 | `VisionService.detect_live_camera`, `/control/trigger/{camera}` | `passed` used the name rule; the trigger endpoint does not count anything. | 1 **done** (passed); trigger: Section 5 |
 | V5 | `CountingService` | The speed figure was read without a lock; a partial reset broke good + rejected = total. | 1, **done** |
-| M1 | `send_dispatcher_service.deliver` (TCP) | The TCP channel's delimiter, timeout and mode (client/server) are ignored: always JSON + `\n`, a new connection per message, a 2 s timeout. | 1 |
-| M2 | Send cards | JSON only, no text format. | 1 |
-| P1 | PLC card "Wait for PLC ACK / Reply" | Does nothing but change the status text. | 1 (remove), 5 (real confirmation) |
-| P2 | PLC cards | WRITE only writes a fixed number; no data + strobe in one card. | 1 |
+| M1 | `send_dispatcher_service.deliver` (TCP) | The TCP channel's delimiter, timeout and mode (client/server) are ignored: always JSON + `\n`, a new connection per message, a 2 s timeout. | 1, **done** |
+| M2 | Send cards | JSON only, no text format. | 1, **done** |
+| P1 | PLC card "Wait for PLC ACK / Reply" | Does nothing but change the status text. | 1 (removed, **done**), 5 (real confirmation) |
+| P2 | PLC cards | WRITE only writes a fixed number; no data + strobe in one card. | 1, **done** |

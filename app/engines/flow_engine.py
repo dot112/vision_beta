@@ -140,7 +140,6 @@ async def _exec_mqtt(cfg: Dict, ctx: Dict, endpoint: Optional[Dict]) -> str:
         return f"MQTT exception: {exc}"
 
 async def _exec_tcp(cfg: Dict, ctx: Dict, endpoint: Optional[Dict]) -> str:
-    writer = None
     try:
         if not endpoint:
             return "TCP exception: no configured endpoint selected"
@@ -152,21 +151,14 @@ async def _exec_tcp(cfg: Dict, ctx: Dict, endpoint: Optional[Dict]) -> str:
         port = int(endpoint.get("port", 0))
         if not host or not (1 <= port <= 65535):
             return "TCP exception: configured endpoint is invalid"
+        # The channel's own delimiter, timeout and mode, as a send card's message.
+        from app.services.tcp_channels import TcpChannels, frame
         payload = {**ctx, "timestamp": datetime.now(timezone.utc).isoformat()}
-        msg = (json.dumps(payload) + "\n").encode("utf-8")
-        reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=2.5)
-        writer.write(msg)
-        await writer.drain()
-        return f"TCP {len(msg)}b -> {host}:{port}"
+        msg = frame(json.dumps(payload), endpoint)
+        ok, detail = await TcpChannels.send(endpoint, msg)
+        return f"TCP {len(msg)}b -> {host}:{port}" if ok else f"TCP exception: {detail}"
     except Exception as exc:
         return f"TCP exception: {exc}"
-    finally:
-        if writer is not None:
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except Exception as exc:
-                logger.debug("TCP output socket did not close cleanly: %s", exc)
 
 async def _exec_webhook(cfg: Dict, ctx: Dict, endpoint: Optional[Dict]) -> str:
     try:

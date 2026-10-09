@@ -82,8 +82,12 @@ def check_send_cards(line: Dict[str, Any], cards: List[Dict[str, Any]]) -> None:
 
 @router.get("/fields", summary="What a send card's message can contain")
 async def list_message_fields(user: User = Depends(require_operator)) -> Dict[str, Any]:
-    from app.services.send_dispatcher_service import MESSAGE_FIELDS
-    return {"fields": [{"id": field, "label": label, "keys": list(MESSAGE_FIELDS[field])} for field, label in FIELD_LABELS]}
+    """"fields": what a JSON message can hold; "placeholders": the {name}s a text message's template can use."""
+    from app.services.send_dispatcher_service import MESSAGE_FIELDS, TEMPLATE_FIELDS
+    return {
+        "fields": [{"id": field, "label": label, "keys": list(MESSAGE_FIELDS[field])} for field, label in FIELD_LABELS],
+        "placeholders": [{"name": name, "label": label} for name, label in TEMPLATE_FIELDS.items()],
+    }
 
 
 @router.get("/actions", summary="A line's send cards, with how often each has sent and its last outcome")

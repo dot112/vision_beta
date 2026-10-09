@@ -198,30 +198,41 @@
             <div id="commPanelTcp" class="comm-proto-panel">
                 <div class="cam-settings-section">TCP Socket Parameters</div>
                 <div class="cam-settings-row">
-                    <div class="form-group" style="margin:0"><label class="form-label">Host IP / Domain *</label>
-                        <input type="text" id="tcpHostInput" class="form-input" placeholder="192.168.1.50" value="127.0.0.1" /></div>
-                    <div class="form-group" style="margin:0"><label class="form-label">Port *</label>
-                        <input type="number" id="tcpPortInput" class="form-input" placeholder="9000" value="9000" /></div>
+                    <div class="form-group" style="margin:0"><label class="form-label" for="tcpModeInput">Connection Mode</label>
+                        <select id="tcpModeInput" class="form-input" onchange="updateTcpPanel()">
+                            <option value="client">Client: connect to the device</option>
+                            <option value="server">Server: devices connect to this server</option>
+                        </select></div>
+                    <div class="form-group" style="margin:0"><label class="form-label" for="tcpTimeoutInput">Timeout (seconds)</label>
+                        <input type="number" id="tcpTimeoutInput" class="form-input" value="5" min="1" max="30" /></div>
                 </div>
                 <div class="cam-settings-row">
-                    <div class="form-group" style="margin:0"><label class="form-label">Connection Mode</label>
-                        <select id="tcpModeInput" class="form-input">
-                            <option value="client">Client (Connect to PLC / Server)</option>
-                            <option value="server">Server (Listen for incoming connections)</option>
-                        </select></div>
-                    <div class="form-group" style="margin:0"><label class="form-label">Framing Delimiter</label>
-                        <select id="tcpDelimiterInput" class="form-input">
-                            <option value="\n">\n (Newline - LF)</option>
-                            <option value="\r\n">\r\n (Windows - CRLF)</option>
-                            <option value="\0">\0 (Null-byte terminated)</option>
-                            <option value="">None / Raw Binary Stream</option>
-                        </select></div>
+                    <div class="form-group" style="margin:0"><label class="form-label" for="tcpHostInput" id="tcpHostLabel">Host IP / Domain *</label>
+                        <input type="text" id="tcpHostInput" class="form-input" placeholder="192.168.1.50" value="127.0.0.1" oninput="updateTcpPanel()" /></div>
+                    <div class="form-group" style="margin:0"><label class="form-label" for="tcpPortInput">Port *</label>
+                        <input type="number" id="tcpPortInput" class="form-input" placeholder="9000" value="9000" min="1" max="65535" oninput="updateTcpPanel()" /></div>
                 </div>
-                <div class="cam-settings-row">
-                    <div class="form-group" style="margin:0"><label class="form-label">Timeout (Seconds)</label>
-                        <input type="number" id="tcpTimeoutInput" class="form-input" value="5" min="1" max="60" /></div>
-                    <div></div>
+                <div id="tcpModeHint" class="tcp-mode-hint"></div>
+                <div class="form-group" id="tcpKeepOpenRow" style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin:10px 0 0">
+                    <div>
+                        <label class="form-label" style="margin:0" for="tcpKeepOpenInput">Keep connection open</label>
+                        <div style="font-size:11px;color:var(--text-muted)">One connection for every message instead of a new one each time. After a failure it connects again on the next message, waiting 1 s, then up to 30 s, between tries; the alarm "Message channel down" stays on until a message goes out.</div>
+                    </div>
+                    <label class="switch"><input type="checkbox" id="tcpKeepOpenInput" /><span class="slider"></span></label>
                 </div>
+                <div class="cam-settings-row" style="margin-top:10px">
+                    <div class="form-group" style="margin:0"><label class="form-label" for="tcpDelimiterInput">End of each message (delimiter)</label>
+                        <select id="tcpDelimiterInput" class="form-input" onchange="updateTcpPanel()">
+                            <option value="\n">\n (newline, LF)</option>
+                            <option value="\r\n">\r\n (Windows, CRLF)</option>
+                            <option value="\0">\0 (null byte)</option>
+                            <option value="">None</option>
+                            <option value="custom">Custom…</option>
+                        </select></div>
+                    <div class="form-group" id="tcpDelimiterCustomRow" style="margin:0;display:none"><label class="form-label" for="tcpDelimiterCustomInput">Custom delimiter</label>
+                        <input type="text" id="tcpDelimiterCustomInput" class="form-input" maxlength="32" spellcheck="false" placeholder="e.g. \x03 or &lt;END&gt;\r\n" style="font-family:monospace" /></div>
+                </div>
+                <div id="tcpDelimiterHint" style="font-size:11px;color:var(--text-muted);margin-top:4px"></div>
             </div>
 
             <!-- 2. MQTT Broker Panel (Node-RED Compatible Full Settings) -->
@@ -2699,6 +2710,10 @@ function renderCommsGrid() {
         let badgeLabel = "TCP Socket";
         let detailText = `${ep.host || "127.0.0.1"}:${ep.port || 9000}`;
         let iconSvg = COMM_PROTO_ICONS.tcp;
+        if (proto === "tcp") {
+            if (ep.mode === "server") { badgeLabel = "TCP Server"; detailText = `Listens on ${detailText}`; }
+            else if (ep.keep_open === true) detailText += " · kept open";
+        }
 
         if (proto === "mqtt") {
             badgeClass = "badge-mqtt";
@@ -2985,6 +3000,46 @@ function selectCommProto(proto) {
     });
 }
 
+// The TCP panel: a saved delimiter is escaped text (\n stands for a newline). An older file may hold the
+// real characters; they are shown escaped. One that is not in the list is a custom delimiter.
+const TCP_DELIMITER_CHOICES = ["\\n", "\\r\\n", "\\0", ""];
+function escapeTcpDelimiter(text) {
+    return String(text ?? "").replace(/[\r\n\t\0]/g, ch => ({ "\r": "\\r", "\n": "\\n", "\t": "\\t", "\0": "\\0" })[ch]);
+}
+function setTcpDelimiterFields(saved) {
+    const text = escapeTcpDelimiter(saved);
+    const custom = !TCP_DELIMITER_CHOICES.includes(text);
+    document.getElementById("tcpDelimiterInput").value = custom ? "custom" : text;
+    document.getElementById("tcpDelimiterCustomInput").value = custom ? text : "";
+}
+function tcpDelimiterValue() {
+    const choice = document.getElementById("tcpDelimiterInput").value;
+    return choice === "custom" ? document.getElementById("tcpDelimiterCustomInput").value : choice;
+}
+function updateTcpPanel() {
+    const server = document.getElementById("tcpModeInput")?.value === "server";
+    const host = (document.getElementById("tcpHostInput")?.value || "").trim();
+    const port = parseInt(document.getElementById("tcpPortInput")?.value) || 9000;
+    const hostLabel = document.getElementById("tcpHostLabel");
+    if (hostLabel) hostLabel.textContent = server ? "Listen on address *" : "Host IP / Domain *";
+    document.getElementById("tcpHostInput").placeholder = server ? "0.0.0.0 (every network)" : "192.168.1.50";
+    const keepRow = document.getElementById("tcpKeepOpenRow");
+    if (keepRow) keepRow.style.display = server ? "none" : "flex";
+    const hint = document.getElementById("tcpModeHint");
+    if (hint) {
+        hint.textContent = server
+            ? `Devices connect to this server at port ${port}${host && host !== "0.0.0.0" ? ` (address ${host})` : ""}. Every message goes to every connected device; with none connected, sending fails and says so. 0.0.0.0 listens on every network.`
+            : `This server connects to ${host || "the device"}:${port} to send each message.`;
+    }
+    const custom = document.getElementById("tcpDelimiterInput")?.value === "custom";
+    const customRow = document.getElementById("tcpDelimiterCustomRow");
+    if (customRow) customRow.style.display = custom ? "block" : "none";
+    const delimHint = document.getElementById("tcpDelimiterHint");
+    if (delimHint) delimHint.textContent = custom
+        ? "Text added after each message. \\n \\r \\t \\0 \\\\ and \\xHH (a byte in hex, e.g. \\x03) stand for that character."
+        : "Added after each message, so the device knows where one ends.";
+}
+
 function toggleMqttSparkplugFields() {
     const box = document.getElementById("mqttSparkplugFields");
     if (box) box.style.display = document.getElementById("mqttSparkplugInput")?.checked ? "block" : "none";
@@ -3035,8 +3090,10 @@ function openAddCommModal(protocol = "tcp") {
     document.getElementById("tcpHostInput").value = "127.0.0.1";
     document.getElementById("tcpPortInput").value = "9000";
     document.getElementById("tcpModeInput").value = "client";
-    document.getElementById("tcpDelimiterInput").value = "\\n";
+    setTcpDelimiterFields("\\n");
     document.getElementById("tcpTimeoutInput").value = "5";
+    document.getElementById("tcpKeepOpenInput").checked = false;
+    updateTcpPanel();
 
     const defMqtt = window._lastServerSettings?.mqtt;
     if (defMqtt && defMqtt.host) {
@@ -3152,9 +3209,11 @@ function openEditCommModal(endpointId) {
     if (proto === "tcp") {
         document.getElementById("tcpHostInput").value = ep.host || "127.0.0.1";
         document.getElementById("tcpPortInput").value = ep.port || 9000;
-        document.getElementById("tcpModeInput").value = ep.mode || "client";
-        document.getElementById("tcpDelimiterInput").value = ep.delimiter ?? "\\n";
+        document.getElementById("tcpModeInput").value = ep.mode === "server" ? "server" : "client";
+        setTcpDelimiterFields(ep.delimiter ?? "\\n");
         document.getElementById("tcpTimeoutInput").value = ep.timeout || 5;
+        document.getElementById("tcpKeepOpenInput").checked = ep.keep_open === true;
+        updateTcpPanel();
     } else if (proto === "mqtt") {
         document.getElementById("mqttHostInput").value = ep.host || "";
         document.getElementById("mqttPortInput").value = ep.port || 1883;
@@ -3324,8 +3383,9 @@ async function saveCommEndpoint() {
         payload.host = host;
         payload.port = port;
         payload.mode = document.getElementById("tcpModeInput").value;
-        payload.delimiter = document.getElementById("tcpDelimiterInput").value;
-        payload.timeout = parseInt(document.getElementById("tcpTimeoutInput").value) || 5;
+        payload.delimiter = tcpDelimiterValue();
+        payload.timeout = Math.min(30, Math.max(1, parseInt(document.getElementById("tcpTimeoutInput").value) || 5));
+        payload.keep_open = payload.mode === "client" && document.getElementById("tcpKeepOpenInput").checked;
     } else if (proto === "mqtt") {
         const host = document.getElementById("mqttHostInput").value.trim();
         const port = parseInt(document.getElementById("mqttPortInput").value) || 1883;
@@ -3742,13 +3802,22 @@ const SEND_FIELD_KEYS = {
     alarm: ["alarm_code", "alarm_message", "alarm_severity", "alarm_source", "alarm_raised"],
 };
 let _sendFieldsLoaded = false;
+// The {placeholders} a text message can use. Replaced by the server's list (GET /api/v1/send/fields) when it loads.
+let _sendPlaceholders = [
+    "line_id", "line_name", "line_state", "event", "timestamp", "date", "time", "camera_id", "camera_name", "track_id",
+    "class_name", "confidence", "result", "result_code", "reject_reason", "code", "code_format", "code_status", "product_name",
+    "good_count", "rejected_count", "total_inspected", "yield_percentage", "products_per_minute", "batch", "alarm_code", "alarm_message",
+].map(name => ({ name, label: name }));
 
 function loadSendMessageFields() {
     if (_sendFieldsLoaded || !currentAuthToken) return;
     _sendFieldsLoaded = true;
     fetch("/api/v1/send/fields")
         .then(res => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
-        .then(body => { if (Array.isArray(body.fields) && body.fields.length) _sendMessageFields = body.fields; })
+        .then(body => {
+            if (Array.isArray(body.fields) && body.fields.length) _sendMessageFields = body.fields;
+            if (Array.isArray(body.placeholders) && body.placeholders.length) _sendPlaceholders = body.placeholders;
+        })
         .catch(() => { _sendFieldsLoaded = false; })
         .finally(() => { if (_sendActionEditingDraft) refreshSendModalBody(); });
 }
@@ -3833,6 +3902,11 @@ async function applySendActionCards() {
         showToast(`'${noTopic.name}': ${sendTopicProblem(noTopic.topic)}`, "warning");
         return false;
     }
+    const badText = _sendActionCards.find(c => c.format === "text" && sendTemplateProblem(c.template));
+    if (badText) {
+        showToast(`'${badText.name}': ${sendTemplateProblem(badText.template)}`, "warning");
+        return false;
+    }
     _sendActionApplyInFlight = true;
     updateSendActionSaveState();
     const snapshot = _sendActionCards.map(card => Object.fromEntries(Object.entries(card).filter(([key]) => !SEND_RUNTIME_FIELDS.includes(key))));
@@ -3872,6 +3946,8 @@ function addSendActionCard() {
         condition: "any",
         set_value: "",
         fields: null,
+        format: "json",
+        template: "",
     };
     _sendActionCards.push(card);
     markSendActionsChanged();
@@ -3922,8 +3998,12 @@ function sendCardSummary(c) {
     const channelName = ep ? (ep.name || proto) : (c.endpoint_id ? "Channel deleted" : "None (no channel chosen)");
     const topic = sendCardIsMqtt(c) ? (String(c.topic || "").trim() || "No topic yet") : "";
     const fields = Array.isArray(c.fields) && c.fields.length ? c.fields : null;
-    const contents = fields ? `${fields.length} field${fields.length === 1 ? "" : "s"}` : "Whole message";
-    const contentsFull = fields ? fields.map(id => (_sendMessageFields.find(f => f.id === id) || { label: id }).label).join(", ") : "Everything the event carries";
+    const isText = c.format === "text";
+    const template = String(c.template || "");
+    const contents = isText ? `Text: ${template.length > 40 ? template.slice(0, 40) + "…" : template}`
+        : (fields ? `${fields.length} field${fields.length === 1 ? "" : "s"}` : "Whole message");
+    const contentsFull = isText ? `Text: ${template}`
+        : (fields ? fields.map(id => (_sendMessageFields.find(f => f.id === id) || { label: id }).label).join(", ") : "Everything the event carries");
     const last = c.last_result && c.last_result.message
         ? `${c.last_result.success ? "Last" : "Failed"}: ${c.last_result.message}` : "Ready";
     return { ...cardTriggerSummary(c), channelName, proto, topic, badgeClass: ep ? "badge-plc" : "badge-outline",
@@ -4061,6 +4141,11 @@ function saveSendActionFromModal() {
             document.getElementById("sendTopicInput")?.focus();
             return;
         }
+        if (draft.format === "text" && sendTemplateProblem(draft.template)) {
+            updateSendPreview();
+            document.getElementById("sendTemplateInput")?.focus();
+            return;
+        }
         _sendActionCards[index] = draft;
         markSendActionsChanged();
     }
@@ -4086,6 +4171,93 @@ function setSendWholeMessage(whole) {
     if (!_sendActionEditingDraft) return;
     _sendActionEditingDraft.fields = whole ? null : ["event", "timestamp", "line", "result"];
     refreshSendModalBody();
+}
+
+// JSON (the fields picked below) or text (a template with {placeholders}).
+function setSendFormat(format) {
+    const draft = _sendActionEditingDraft;
+    if (!draft) return;
+    draft.format = format === "text" ? "text" : "json";
+    if (draft.format === "text" && !String(draft.template || "").trim()) {
+        const kind = cardTriggerKind(draft.trigger);
+        draft.template = kind === "line_state" ? "{line_name};{line_state}"
+            : kind === "alarm" ? "{alarm_code};{alarm_message}"
+                : kind === "qr" ? "{code};{code_status};{product_name}"
+                    : "{result_code};{class_name};{good_count};{rejected_count}";
+    }
+    refreshSendModalBody();
+}
+
+function setSendTemplate(value) {
+    if (!_sendActionEditingDraft) return;
+    _sendActionEditingDraft.template = value;
+    updateSendPreview();
+}
+
+// Put {name} into the template where the cursor is.
+function insertSendPlaceholder(name) {
+    const area = document.getElementById("sendTemplateInput");
+    if (!area || !_sendActionEditingDraft) return;
+    const start = area.selectionStart ?? area.value.length;
+    const end = area.selectionEnd ?? start;
+    const token = `{${name}}`;
+    area.value = area.value.slice(0, start) + token + area.value.slice(end);
+    area.focus();
+    area.selectionStart = area.selectionEnd = start + token.length;
+    setSendTemplate(area.value);
+}
+
+// A text template, as the server reads it (line_config.parse_template): {name} is a placeholder,
+// {{ and }} are a brace, \r \n \t \\ are escapes. Returns the text with the values filled in and
+// the first problem ("" when there is none).
+const SEND_TEMPLATE_TOKEN = /\{\{|\}\}|\{([^{}]*)\}|\\[rnt\\]|[{}]/g;
+const SEND_TEMPLATE_ESCAPES = { "\\r": "\r", "\\n": "\n", "\\t": "\t", "\\\\": "\\" };
+function renderSendTemplate(template, values = {}) {
+    template = String(template || "");
+    const known = new Set(_sendPlaceholders.map(p => p.name));
+    let text = "", pos = 0, problem = "";
+    for (const m of template.matchAll(SEND_TEMPLATE_TOKEN)) {
+        text += template.slice(pos, m.index);
+        pos = m.index + m[0].length;
+        const token = m[0];
+        if (token === "{{" || token === "}}") text += token[0];
+        else if (token in SEND_TEMPLATE_ESCAPES) text += SEND_TEMPLATE_ESCAPES[token];
+        else if (m[1] !== undefined) {
+            const name = m[1].trim().toLowerCase();
+            if (!known.has(name)) { problem = problem || (name ? `{${m[1]}} is not a placeholder` : "{} names no placeholder"); continue; }
+            const value = values[name];
+            text += value === null || value === undefined ? "" : String(value);
+        } else problem = problem || `A single '${token}' must be written '${token}${token}'`;
+    }
+    text += template.slice(pos);
+    if (!template.trim()) problem = "Enter the text of the message.";
+    else if (template.length > 1024) problem = "The text can be at most 1024 characters.";
+    return { text, problem };
+}
+function sendTemplateProblem(template) {
+    return renderSendTemplate(template).problem;
+}
+
+// The value of each placeholder for an example message (send_dispatcher_service.template_values does the same).
+function sendTemplateValues(m) {
+    const metrics = m.metrics && typeof m.metrics === "object" ? m.metrics : {};
+    const pick = (...keys) => { for (const k of keys) if (m[k] !== undefined && m[k] !== null) return m[k]; return null; };
+    const metric = k => (m[k] !== undefined && m[k] !== null) ? m[k] : (metrics[k] ?? null);
+    const at = m.timestamp ? new Date(m.timestamp) : new Date();
+    const pad = n => String(n).padStart(2, "0");
+    const result = pick("result");
+    return {
+        line_id: pick("line_id"), line_name: pick("line_name"), line_state: pick("line_state"), event: pick("event"),
+        timestamp: pick("timestamp"), date: `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`,
+        time: `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`,
+        camera_id: pick("camera_id"), camera_name: pick("camera_name"), track_id: pick("track_id"), class_name: pick("class_name"),
+        confidence: pick("confidence"), result, result_code: result === null ? null : ({ PASSED: 1, REJECTED: 2 }[String(result).toUpperCase()] ?? null),
+        reject_reason: pick("reject_reason"), code: pick("code", "qr_code"), code_format: pick("format", "qr_format"),
+        code_status: pick("qr_status"), product_name: pick("product_name"),
+        good_count: metric("good_count"), rejected_count: metric("rejected_count"), total_inspected: metric("total_inspected"),
+        yield_percentage: metric("yield_percentage"), products_per_minute: metric("products_per_minute"),
+        batch: pick("batch"), alarm_code: pick("alarm_code"), alarm_message: pick("alarm_message"),
+    };
 }
 
 function toggleSendField(fieldId, checked) {
@@ -4126,10 +4298,10 @@ function sendSampleMessage(card) {
     if (kind === "qr") {
         const noRead = card.trigger === "qr_no_read";
         const known = card.trigger !== "qr_unknown" && !noRead;
-        return { event: noRead ? "QR_CODE_NO_READ" : "QR_CODE_READ", timestamp: now, ...line, camera_id: "example-camera", code: noRead ? null : "4006381333931", format: noRead ? null : "EAN13", qr_status: noRead ? "no_read" : (known ? "known" : "unknown"), known, product_name: known ? "Example product" : null, paired: null };
+        return { event: noRead ? "QR_CODE_NO_READ" : "QR_CODE_READ", timestamp: now, ...line, camera_id: "example-camera", camera_name: "Line camera", code: noRead ? null : "4006381333931", format: noRead ? null : "EAN13", qr_status: noRead ? "no_read" : (known ? "known" : "unknown"), known, product_name: known ? "Example product" : null, paired: null };
     }
     const reject = card.trigger === "reject_counter" || card.condition === "reject";
-    return { event: "WIRELINE_OBJECT_CROSSED", timestamp: now, ...line, camera_id: "example-camera", track_id: 104, class_name: reject ? "defect" : "bottle", result: reject ? "REJECTED" : "PASSED", is_defect: reject, reject_reason: reject ? "vision_class" : null, confidence: 0.94, bbox: { x1: 142, y1: 88, x2: 235, y2: 340 }, smooth_center: { x: 188.5, y: 214.0 }, velocity: { vx: 0.0, vy: 3.4 }, ...totals };
+    return { event: "WIRELINE_OBJECT_CROSSED", timestamp: now, ...line, camera_id: "example-camera", camera_name: "Line camera", track_id: 104, class_name: reject ? "defect" : "bottle", result: reject ? "REJECTED" : "PASSED", is_defect: reject, reject_reason: reject ? "vision_class" : null, confidence: 0.94, bbox: { x1: 142, y1: 88, x2: 235, y2: 340 }, smooth_center: { x: 188.5, y: 214.0 }, velocity: { vx: 0.0, vy: 3.4 }, ...totals };
 }
 
 function updateSendPreview() {
@@ -4137,6 +4309,18 @@ function updateSendPreview() {
     const pre = document.getElementById("sendPayloadPreview");
     if (!draft || !pre) return;
     const sample = sendSampleMessage(draft);
+    const count = document.getElementById("sendPreviewFieldCount");
+    if (draft.format === "text") {
+        const { text, problem } = renderSendTemplate(draft.template, sendTemplateValues(sample));
+        pre.textContent = text;
+        if (count) count.textContent = `Text, ${text.length} character${text.length === 1 ? "" : "s"}`;
+        const hint = document.getElementById("sendTemplateHint");
+        if (hint) {
+            hint.textContent = problem || "Each {name} is replaced by its value; one with no value is left empty. {{ and }} write a brace; \\r \\n \\t write a carriage return, a newline and a tab. A TCP channel adds its own delimiter after the text.";
+            hint.style.color = problem ? "var(--warning-color, #f59e0b)" : "var(--text-muted)";
+        }
+        return;
+    }
     let message = sample;
     const fields = Array.isArray(draft.fields) && draft.fields.length ? draft.fields : null;
     if (fields) {
@@ -4148,7 +4332,6 @@ function updateSendPreview() {
         if (!Object.keys(message).length) message = sample;  // the server sends the whole event rather than nothing
     }
     pre.textContent = JSON.stringify(message, null, 2);
-    const count = document.getElementById("sendPreviewFieldCount");
     if (count) count.textContent = fields ? `${fields.length} field${fields.length === 1 ? "" : "s"} picked` : "Whole message";
 }
 
@@ -4170,8 +4353,10 @@ function refreshSendModalBody() {
     channels.forEach(ep => {
         channelOptions += `<option value="${escapeHtml(ep.id)}" ${card.endpoint_id === ep.id ? "selected" : ""}>${escapeHtml(ep.name || "Channel")} [${escapeHtml((ep.protocol || "").toUpperCase())} - ${escapeHtml(sendChannelText(ep))}]${ep.enabled === false ? " (switched off)" : ""}</option>`;
     });
+    const isText = card.format === "text";
     const whole = !(Array.isArray(card.fields) && card.fields.length);
     const picked = new Set(whole ? [] : card.fields);
+    const chips = _sendPlaceholders.map(p => `<button type="button" class="send-chip" title="${escapeHtml(p.label)}" onclick="insertSendPlaceholder(this.dataset.name)" data-name="${escapeHtml(p.name)}">{${escapeHtml(p.name)}}</button>`).join("");
     const fieldBoxes = _sendMessageFields.map(f => `
         <label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;cursor:pointer">
             <input type="checkbox" value="${escapeHtml(f.id)}" ${picked.has(f.id) ? "checked" : ""} style="margin-top:2px;flex-shrink:0" onchange="toggleSendField(this.value, this.checked)" />
@@ -4237,7 +4422,22 @@ function refreshSendModalBody() {
             <select class="form-input" ${kind === "line_state" || isAlarm ? "disabled" : ""} onchange="setSendDraft('camera_id', this.value, false)">${cardCameraOptionsHtml(card)}</select>
         </div>
 
-        <!-- 4. What the message contains -->
+        <!-- 4. What the message contains: JSON fields, or text from a template -->
+        <div class="form-group" style="margin:0">
+            <label class="form-label" style="font-size:11.5px;font-weight:600" for="sendFormatInput">Message format:</label>
+            <select id="sendFormatInput" class="form-input" onchange="setSendFormat(this.value)">
+                <option value="json" ${isText ? "" : "selected"}>JSON: the fields picked below</option>
+                <option value="text" ${isText ? "selected" : ""}>Text: your own template, e.g. for a printer or an older PLC</option>
+            </select>
+        </div>
+        ${isText ? `
+        <div>
+            <label class="form-label" style="font-weight:600;margin-bottom:6px" for="sendTemplateInput">Message text:</label>
+            <textarea id="sendTemplateInput" class="form-input" rows="3" maxlength="1024" spellcheck="false" style="font-family:monospace;font-size:12.5px;resize:vertical" placeholder="e.g. {result_code};{class_name};{code}" oninput="setSendTemplate(this.value)">${escapeHtml(card.template || "")}</textarea>
+            <div id="sendTemplateHint" style="font-size:10px;margin-top:3px"></div>
+            <div style="font-size:11px;color:var(--text-muted);margin:10px 0 6px">Click a value to put it in the text:</div>
+            <div class="send-chips">${chips}</div>
+        </div>` : `
         <div>
             <label class="form-label" style="font-weight:600;margin-bottom:8px">Message contents:</label>
             <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;cursor:pointer;margin-bottom:8px">
@@ -4245,7 +4445,7 @@ function refreshSendModalBody() {
                 <span>Send the whole message (everything the event carries)</span>
             </label>
             <div style="display:${whole ? "none" : "grid"};grid-template-columns:repeat(auto-fill, minmax(230px, 1fr));gap:10px;padding:12px;background:var(--input-bg);border:1px solid var(--border-color);border-radius:8px">${fieldBoxes}</div>
-        </div>
+        </div>`}
 
         <!-- 5. Preview -->
         <div>
@@ -4463,7 +4663,6 @@ async function loadPlcActionCards() {
             delay_ms: 450,
             debounce_ms: 100,
             exec_policy: "once_per_event",
-            ack_mode: "unconfirmed",
             fired_count: 0,
             last_fired: null
         }];
@@ -4549,7 +4748,9 @@ function addPlcActionCard() {
         delay_ms: 450,
         debounce_ms: 100,
         exec_policy: "once_per_event",
-        ack_mode: "unconfirmed",
+        value_source: "fixed",
+        strobe_address: "",
+        strobe_pulse_ms: 100,
         fired_count: 0,
         last_fired: null
     };
@@ -4711,6 +4912,28 @@ function plcAlarmPickerHtml(card, toggleFn = "togglePlcAlarmCode") {
 
 /* ─── Compact Card Grid Rendering ───────────────────────────────────────── */
 // What a PLC action card does, in words, for the card and list views.
+// What a WRITE card writes (the server checks the same list: line_config.PLC_VALUE_SOURCES).
+const PLC_VALUE_SOURCES = [
+    { id: "fixed", label: "Fixed number", short: "fixed number" },
+    { id: "result_code", label: "Result code: 1 good, 2 reject", short: "result code" },
+    { id: "good_count", label: "Good count", short: "good count" },
+    { id: "reject_count", label: "Reject count", short: "reject count" },
+    { id: "total_count", label: "Total count (good + rejected)", short: "total count" },
+    { id: "class_index", label: "Class number", short: "class number" },
+    { id: "reject_reason_code", label: "Reject reason code", short: "reject reason" },
+    { id: "batch", label: "Batch number (a number only)", short: "batch number" },
+];
+const PLC_VALUE_SOURCE_HINTS = {
+    fixed: "",
+    result_code: "1 for a good product, 2 for a rejected one.",
+    good_count: "The line's good count, with this product.",
+    reject_count: "The line's reject count, with this product.",
+    total_count: "Good + rejected, with this product.",
+    class_index: "The product's class as a number: its place in the camera's \"Products to count\" list followed by \"Defects to reject\", from 1. 0 when it is in neither.",
+    reject_reason_code: "0 not rejected, 1 vision class, 2 code not in the list, 3 code in the reject list, 4 no code read, 5 a joined camera gave no result, 9 other.",
+    batch: "The line's batch number. It must be a number; until a batch is set, the action fails and says why.",
+};
+
 function plcCardSummary(c, plcEndpoints) {
     const targetEp = plcEndpoints.find(e => e.id === c.plc_endpoint_id);
     const targetEpName = targetEp ? (targetEp.name || "PLC") : "None (No Channel Selected)";
@@ -4725,7 +4948,11 @@ function plcCardSummary(c, plcEndpoints) {
     if (opName === "OFF") opName = "RESET";
     let actionSummary = opName;
     if (opName === "PULSE") actionSummary = `PULSE ${c.duration_ms ?? 150}ms`;
-    else if (opName === "WRITE") actionSummary = `WRITE ${c.write_value ?? 1}`;
+    else if (opName === "WRITE") {
+        const source = PLC_VALUE_SOURCES.find(v => v.id === (c.value_source || "fixed"));
+        actionSummary = source && source.id !== "fixed" ? `WRITE ${source.short}` : `WRITE ${c.write_value ?? 1}`;
+        if (String(c.strobe_address || "").trim()) actionSummary += ` + strobe ${String(c.strobe_address).trim()}`;
+    }
     if (c.delay_ms && c.delay_ms > 0) actionSummary += ` (Delay ${c.delay_ms}ms)`;
 
     return { targetEpName, protoTitle, badgeClass, triggerSummary, condSummary, condFull, actionSummary };
@@ -4930,6 +5157,7 @@ function refreshPlcModalBody(cardId) {
     if (curOp === "on") curOp = "set";
     if (curOp === "off") curOp = "reset";
     if (curOp === "write_value") curOp = "write";
+    const valueSource = PLC_VALUE_SOURCES.some(v => v.id === card.value_source) ? card.value_source : "fixed";
 
     container.dataset.cardId = card.id;
     container.innerHTML = `
@@ -5035,11 +5263,35 @@ function refreshPlcModalBody(cardId) {
             </div>
         </div>
 
-        <!-- 7. Value to Write (shown only if operation === 'write') -->
-        <div class="form-group" style="margin:0;display:${curOp === 'write' ? 'block' : 'none'}">
-            <label class="form-label" style="font-size:11.5px;font-weight:600">Value to Write (Word / Numeric):</label>
-            <input type="number" class="form-input" value="${escapeHtml(card.write_value ?? 1)}" oninput="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'write_value', parseFloat(this.value)||0); renderPlcActionCards()" />
-        </div>
+        <!-- 7. What a WRITE writes, and the strobe that tells the PLC the value is there -->
+        ${curOp === 'write' ? `
+        <div class="plc-write-box">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px">
+                <div class="form-group" style="margin:0">
+                    <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcValueSourceInput">Value:</label>
+                    <select id="plcValueSourceInput" class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'value_source', this.value); refreshPlcModalBody(document.getElementById('plcModalBodyContainer').dataset.cardId); renderPlcActionCards()">
+                        ${PLC_VALUE_SOURCES.map(v => `<option value="${v.id}" ${valueSource === v.id ? 'selected' : ''}>${escapeHtml(v.label)}</option>`).join("")}
+                    </select>
+                </div>
+                ${valueSource === 'fixed' ? `
+                <div class="form-group" style="margin:0">
+                    <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcWriteValueInput">Number to write:</label>
+                    <input type="number" id="plcWriteValueInput" class="form-input" value="${escapeHtml(card.write_value ?? 1)}" oninput="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'write_value', parseFloat(this.value)||0); renderPlcActionCards()" />
+                </div>` : ''}
+            </div>
+            ${PLC_VALUE_SOURCE_HINTS[valueSource] ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px">${escapeHtml(PLC_VALUE_SOURCE_HINTS[valueSource])} The value is taken when the action fires; the Test button writes example values (a rejected product, counts of 1, class 1).</div>` : ''}
+            <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px;margin-top:12px">
+                <div class="form-group" style="margin:0">
+                    <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcStrobeInput">Then pulse strobe address:</label>
+                    <input type="text" id="plcStrobeInput" class="form-input" maxlength="128" value="${escapeHtml(card.strobe_address || '')}" placeholder="Optional, e.g. ${escapeHtml(curTargetPlaceholder.replace(/^e\.g\.\s*/, ''))}" oninput="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'strobe_address', this.value.trim()); renderPlcActionCards()" />
+                </div>
+                <div class="form-group" style="margin:0">
+                    <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcStrobePulseInput">Strobe pulse (ms):</label>
+                    <input type="number" id="plcStrobePulseInput" class="form-input" min="10" max="10000" step="10" value="${escapeHtml(card.strobe_pulse_ms ?? 100)}" oninput="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'strobe_pulse_ms', Math.min(10000, Math.max(10, parseInt(this.value) || 100)))" />
+                </div>
+            </div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:4px">After the value is written, this address is pulsed so the PLC knows a new value is there. Nothing else is sent to this PLC between the two. Leave it empty for no strobe.</div>
+        </div>` : ''}
 
         <!-- 8. Industrial Timing: Conveyor Travel Delay & Re-arm Lockout -->
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
@@ -5055,7 +5307,7 @@ function refreshPlcModalBody(cardId) {
             </div>
         </div>
 
-        <!-- 9. Execution Policy & Handshake / ACK -->
+        <!-- 9. Execution Policy -->
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11px;font-weight:600">Execution Policy:</label>
@@ -5064,13 +5316,7 @@ function refreshPlcModalBody(cardId) {
                     <option value="every_frame" ${card.exec_policy === 'every_frame' ? 'selected' : ''}>Every Matching Frame</option>
                 </select>
             </div>
-            <div class="form-group" style="margin:0">
-                <label class="form-label" style="font-size:11px;font-weight:600">Handshake / ACK:</label>
-                <select class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'ack_mode', this.value); renderPlcActionCards()">
-                    <option value="unconfirmed" ${card.ack_mode !== 'wait_ack' ? 'selected' : ''}>Fire &amp; Forget (Unconfirmed)</option>
-                    <option value="wait_ack" ${card.ack_mode === 'wait_ack' ? 'selected' : ''}>Wait for PLC ACK / Reply</option>
-                </select>
-            </div>
+            <div></div>
         </div>
     `;
 }
@@ -5120,6 +5366,8 @@ function onPlcModalOperationChange(cardId, opVal) {
     const card = getEditablePlcActionCard(cardId);
     if (!card) return;
     card.operation = opVal;
+    // Only a WRITE card writes a value of the product.
+    if (opVal !== "write" && card.value_source && card.value_source !== "fixed") card.value_source = "fixed";
     refreshPlcModalBody(cardId);
     renderPlcActionCards();
 }

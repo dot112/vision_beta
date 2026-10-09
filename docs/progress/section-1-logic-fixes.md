@@ -4,11 +4,12 @@ Read [README.md](README.md) first: it has the goal, the owner's decisions, the p
 
 ## Status
 
-- **Partly done.** The vision part is committed on `claude/busy-babbage-h9j4ln`:
+- **Done.** Everything is on `claude/tender-cerf-qzfcle` (it starts from `claude/busy-babbage-h9j4ln`):
   - `5d46863`: two Linux-only test races fixed;
-  - `c631fe0`: counting logic.
-- After `c631fe0`: 646 tests pass and `ruff check .` is clean.
-- **Left:** M1 (TCP channels), M2 (text templates), P2 (PLC write value sources and strobe), P1 (remove the fake "wait for ACK"), and the docs for this section.
+  - `c631fe0`: counting logic (vision part);
+  - the next commit on `claude/tender-cerf-qzfcle`: M1 (TCP channels), M2 (text templates), P2 (PLC value sources and strobe), P1 (fake "wait for ACK" removed), docs.
+- 703 tests pass (Python 3.13 and 3.12) and `ruff check .` is clean.
+- Screenshots of the TCP panel (client and server mode), the send card dialog in text mode and the PLC dialog's WRITE part were checked at 1440 px and 375 px (no browser errors); they were shared in the session, not committed.
 
 ## Done (c631fe0): what changed and why
 
@@ -25,7 +26,27 @@ Read [README.md](README.md) first: it has the goal, the owner's decisions, the p
 
 There is **no UI** yet for direction, tracking or the name switch; that is Section 2 (the camera cards).
 
-## Left to do
+## Done (second commit): what was built, and where it differs from the plan
+
+| Item | What was built | Where |
+|---|---|---|
+| M1 | `TcpChannels` (`send`, `apply`, `drop`, `sync`, `status`, `close_all`) and `frame()` / `decode_delimiter()`. Every TCP sender uses it: `deliver()`, `send_to_channels()` (phone scans), the flow engine's `_exec_tcp`, and `POST /comms/tcp/test`. `CountingService._dispatch_tcp` is gone. Kept connections and listeners live only on the dispatcher loop; `_on_loop()` hops there from any other loop. A kept connection reads (and drops) what the device sends, so it notices a closed connection before the next message. | `app/services/tcp_channels.py`, `send_dispatcher_service.py`, `counting_service.py`, `flow_engine.py`, `routes/v1/comms.py` |
+| M1, settings | `add_or_update_endpoint` checks `mode`, `delimiter` (text, at most 32 characters), `timeout`, `keep_open`, and keeps the saved values a client leaves out. Save → `TcpChannels.apply`, delete → `drop`, startup (`connect_on_startup`) → `sync`. The **Test** of a server channel reports its listener ("Listening on …; N devices connected") instead of connecting to itself. | `settings_persistence_service.py` |
+| M1, shutdown | `CountingService.shutdown()` waits for the queue to drain, then `TcpChannels.close_all()`, then stops the dispatcher (main.py's lifespan already calls it). | `counting_service.py` |
+| M1, alarm | `send.channel_down` (scope `server`, `warning`, source `channel:<id>`), in `ALARM_CATALOG` and `AlarmCode.SEND_CHANNEL_DOWN`. Raised by a kept connection that fails and by a port that cannot be opened (retried with the same back-off); cleared when a message goes out, the listener opens, or the channel stops keeping a connection or listening. | `alarm_events.py`, `tcp_channels.py` |
+| M1, old files | **Differs:** the v8 step sets every existing TCP channel to `delimiter "\n"`, `mode "client"`, `keep_open false`, because the old code ignored the saved delimiter and mode. A channel saved with "None" or "server" keeps sending what it really sent until someone changes it. The saved `timeout` is used as it is (5 s by default instead of the old fixed 2 s); a channel with no `timeout` key uses 2 s. | `line_config._upgrade_to_v8` |
+| M1, extra | Delimiters also take `\xHH` (a byte in hex, e.g. `\x03` for ETX framing). | `tcp_channels.decode_delimiter` |
+| M2 | Send card `format` (`json`/`text`) and `template` (at most 1024 characters, required for text). **Differs:** `TEMPLATE_FIELDS` and `parse_template()` live in `line_config.py` (it has no runtime imports and `normalize_send_card` checks the template); `send_dispatcher_service` imports them and has `template_values()` / `render_template()`. Placeholder names are matched after strip + lower case (`{ Code }` works). `\\` is also an escape. `GET /send/fields` returns `placeholders: [{name, label}]` beside `fields`. `send_test` sends a text card's rendered sample as it is (no `"test"` key; that is JSON only). Both sample payloads (server and browser) gained `camera_name: "Line camera"`. | `line_config.py`, `send_dispatcher_service.py`, `routes/v1/send_actions.py` |
+| M2, webhook | As planned: text goes with `Content-Type: text/plain; charset=utf-8` unless the channel's headers set one. **Note:** the Connections dialog fills a new webhook channel's headers with `Content-Type: application/json`, so on such a channel a text card goes out as JSON content type; change the channel's header for plain text. | `deliver()` |
+| M2, kept fields | `keep_card_fields(cards, saved, SEND_CARD_KEPT_KEYS)`: an older client that leaves `format`/`template` out keeps them, through `POST /send/actions/batch` and `PUT /lines/{id}` (`save_line` now passes the cards as the client sent them). | `line_config.py`, `settings_persistence_service.py` |
+| P2 | `value_source` (`line_config.PLC_VALUE_SOURCES`), `strobe_address`, `strobe_pulse_ms`. `validate_write_value(card)` beside `validate_safe_state`, called in `replace_plc_actions`, `replace_line_plc_actions` (so every PLC route) and `save_line`, and in the Test route (422). `PLCDispatcherService.write_value(card, event)` works the value out after the travel delay. Counts come from the event, or from the line's counter for an event that is not a product (line start, alarm). `class_index` uses the event's camera, else the counting camera. `reject_reason_code` uses `line_config.REJECT_REASON_CODES` (5 = `station_no_result` is already mapped for Section 3). A value the event does not have fails the card ("Nothing was written: …") with the usual alarm. Kept fields: `PLC_CARD_KEPT_KEYS`. | `plc_dispatcher_service.py`, `plc_failsafe_service.py`, `line_config.py` |
+| P2, strobe | Pulsed inside the endpoint lock after a successful operation (any operation, though the dialog offers it only for WRITE). A failed strobe fails the card and **stops the retries**, so the PLC never sees two strobes for one value. `last_result` gained `value` and `strobe`. | `PLCDispatcherService._dispatch` |
+| P2, Test | `dispatch_manual` sends a sample event: reject, `vision_class`, good/reject/total count 1, class index 1. A `batch` card fails there until Section 5. | `dispatch_manual` |
+| P1 | The ACK select is gone from the dialog, new cards carry no `ack_mode`, and `_dispatch` always reports `sent`. Old saved `ack_mode` values stay in the file and do nothing. | `dashboard.html`, `plc_dispatcher_service.py`, `schemas/plc.py` |
+| Dashboard | TCP panel: mode first, host label "Listen on address" in server mode, a hint line ("Devices connect to this server at port …"), **Keep connection open** (client only), **Custom…** delimiter with its own box (older real control characters are shown escaped), timeout 1 to 30. The Connections list says "TCP Server" / "kept open". Send card dialog: **Message format**, template textarea, placeholder chips (`.send-chip`), live preview with the same parser as the server (`renderSendTemplate`, `sendTemplateValues`), problems shown under the textarea and blocking OK/Apply, summary "Text: …". PLC dialog WRITE part: **Value** select with a hint per source, the fixed number only for "Fixed number", **Then pulse strobe address** and **Strobe pulse (ms)**; changing the operation away from WRITE resets the source to fixed; the summary names the source and the strobe. | `dashboard.html`, `assets/dashboard.css` |
+| Tests | `tests/test_messages_and_plc_values.py` (57 tests): every delimiter on the wire, the channel timeout, one connection per message, keep-open on one connection, reconnect with the alarm raised and cleared, a device closing a kept connection, server mode with two devices and with none, a busy port, settings checks and kept fields, the v8 step, the dispatcher loop, text templates (checks, rendering, TCP, MQTT, webhook Content-Type, Test button, API), every PLC value source, refused values, strobe order and lock, a failed strobe, the Test button's sample values, old `wait_ack`, PLC API checks. | `tests/` |
+
+## The plan this section followed
 
 ### M1: TCP channels do what their settings say
 
@@ -128,4 +149,9 @@ In `tests/test_logic_fixes.py` or a new `tests/test_messages_and_plc_values.py`.
 
 ## Notes for the next section
 
-(Fill in when done: branch, commits, anything Section 2 must know.)
+- **Start from** `claude/tender-cerf-qzfcle`.
+- **Section 2 (camera cards):** the camera settings from c631fe0 still have no UI: `direction`, `tracking{}`, per-camera `line1_position`/`line2_position`/`orientation`, and `name_based_defects` (missing = on, so every camera still rejects classes named like a defect until the switch is turned off). They are validated in `normalize_camera` and kept by `CAMERA_KEPT_KEYS`. The dashboard's native `<select>`s are replaced by custom dropdowns (`initCustomSelects`); in Playwright, scroll to an input next to a select, not to the select itself.
+- **Section 3:** add `"station_no_result"` to `line_config.REJECT_REASONS` with a `REASON_*` constant; `REJECT_REASON_CODES` already maps it to 5.
+- **Section 5:** put the line's `batch` into the product's message payload (for `{batch}` in templates) and into the PLC event (`PLCDispatcherService.write_value` reads `event["batch"]`; a non-number already fails with a clear message). The real reject confirmation replaces the removed ACK choice.
+- **New settings this section added** (all with defaults, no new schema version): endpoint `keep_open`; send card `format`, `template`; PLC card `value_source`, `strobe_address`, `strobe_pulse_ms`. Clients that leave them out keep the saved values (`keep_card_fields`, `SEND_CARD_KEPT_KEYS`, `PLC_CARD_KEPT_KEYS`).
+- **A flaky test seen once:** `tests/test_sparkplug_commands.py::test_what_is_not_a_command_changes_nothing[True]` timed out waiting for a metric in one full run on Python 3.13 and passed on every rerun and alone. It does not touch what this section changed; if it shows up again, look at the Sparkplug publish timing.

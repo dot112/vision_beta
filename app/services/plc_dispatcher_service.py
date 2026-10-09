@@ -6,7 +6,7 @@ Runtime engine that:
   2. Receives vision events (line crossings, counter increments, class detections).
   3. Evaluates each card's trigger/condition/re-arm/execution-policy.
   4. Dispatches the configured PLC operation through the appropriate hardware driver.
-  5. Maintains detailed per-card execution status (idle / queued / executing / sent / acked / failed / timeout).
+  5. Maintains detailed per-card execution status (idle / queued / executing / sent / failed / timeout).
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ from app.services.card_triggers import (  # noqa: F401  (re-exported)
     normalize_trigger,
     trigger_matches as _eval_condition,
 )
-from app.services.line_config import PRIMARY_LINE_ID
+from app.services.line_config import OTHER_REJECT_REASON_CODE, PRIMARY_LINE_ID, REJECT_REASON_CODES
 from app.services.plc_failsafe_service import PLCFailsafeService
 from app.utils.logger import get_logger
 
@@ -44,7 +44,7 @@ logger = get_logger(__name__)
 @dataclass
 class _CardState:
     card_id: str
-    status: str = "idle"                # idle|queued|executing|sent|acked|failed|timeout
+    status: str = "idle"                # idle|queued|executing|sent|failed|timeout
     last_fired_at: float = 0.0          # epoch seconds
     # Insertion-ordered so the oldest IDs are evicted first (a set would drop an arbitrary one,
     # possibly the event just fired, and let once_per_event fire it twice).
@@ -298,11 +298,80 @@ class PLCDispatcherService:
         """
         Manually fire a card's PLC action (test button).
         Returns the execution result dict synchronously.
+
+        A card that writes a value of the product writes example values:
+        a rejected product, counts of 1, class number 1.
         """
         cid = card.get("id", "")
         state = cls._states.setdefault(cid, _CardState(card_id=cid))
-        await cls._dispatch(card, state, event={"event_id": f"manual_{int(time.time())}"})
+        event = {"event_id": f"manual_{int(time.time())}", "manual": True, "result": "reject", "reject_reason": "vision_class",
+                 "good_count": 1, "reject_count": 1, "total_count": 1, "class_index": 1}
+        await cls._dispatch(card, state, event=event)
         return {**state.last_result, "status": state.status}
+
+    @staticmethod
+    def write_value(card: dict, event: dict) -> float:
+        """What a card writes for an event (its value_source). Raises ValueError when the event has no such value."""
+        source = str(card.get("value_source") or "fixed").strip().lower()
+        if source == "fixed":
+            return float(card.get("write_value", 0.0) or 0.0)
+        result = str(event.get("result") or "").lower()
+        if source == "result_code":
+            if result not in ("good", "reject"):
+                raise ValueError("this event has no product result to write")
+            return 1.0 if result == "good" else 2.0
+        if source in ("good_count", "reject_count", "total_count"):
+            good, rejected = event.get("good_count"), event.get("reject_count")
+            if good is None or rejected is None:
+                # An event that is not a product (a line start, an alarm): the line's totals now.
+                from app.services.line_service import line_manager
+                runtime = line_manager.get(_card_line(card))
+                if runtime is None:
+                    raise ValueError("the line's counts are not available")
+                good, rejected = runtime.counter.good_count, runtime.counter.rejected_count
+            if source == "total_count":
+                total = event.get("total_count")
+                return float(total if total is not None else int(good) + int(rejected))
+            return float(good if source == "good_count" else rejected)
+        if source == "class_index":
+            if event.get("class_index") is not None:
+                return float(event["class_index"])
+            return float(PLCDispatcherService._class_index(card, event))
+        if source == "reject_reason_code":
+            if result != "reject":
+                return 0.0
+            return float(REJECT_REASON_CODES.get(event.get("reject_reason"), OTHER_REJECT_REASON_CODE))
+        if source == "batch":
+            batch = event.get("batch")
+            if batch in (None, ""):
+                raise ValueError("the line has no batch number to write")
+            try:
+                value = float(str(batch).strip())
+            except ValueError:
+                raise ValueError(f"the batch number '{batch}' is not a number, so it cannot be written") from None
+            if value != value or value in (float("inf"), float("-inf")):
+                raise ValueError(f"the batch number '{batch}' is not a number, so it cannot be written")
+            return value
+        raise ValueError(f"'{source}' is not a value a card can write")
+
+    @staticmethod
+    def _class_index(card: dict, event: dict) -> int:
+        """The product's class as a number: its place (from 1) in its camera's "Products to count"
+        followed by "Defects to reject"; 0 when it is in neither."""
+        classes = event.get("detected_classes") or []
+        name = str(classes[0]).strip().lower() if classes else ""
+        if not name:
+            return 0
+        from app.services.line_service import line_manager
+        runtime = line_manager.get(str(event.get("line_id") or _card_line(card)))
+        if runtime is None:
+            return 0
+        camera_id = event.get("camera_id") or runtime.counting_camera_id()
+        entry = (runtime.camera_entry(camera_id) if camera_id else None) or runtime.camera_entry(runtime.counting_camera_id() or "")
+        if not entry:
+            return 0
+        listed = [str(c).strip().lower() for c in (entry.get("expected_classes") or []) + (entry.get("defect_classes") or [])]
+        return listed.index(name) + 1 if name in listed else 0
 
     @classmethod
     async def shutdown(cls) -> None:
@@ -327,7 +396,8 @@ class PLCDispatcherService:
         address = str(card.get("target_address", ""))
         travel_ms = int(card.get("travel_delay_ms", 0) or 0)
         pulse_ms = int(card.get("pulse_duration_ms", 150) or 150)
-        write_val = float(card.get("write_value", 0.0) or 0.0)
+        strobe = str(card.get("strobe_address") or "").strip()
+        strobe_ms = int(card.get("strobe_pulse_ms") or 100)
         on_failure = str(card.get("on_failure", "skip")).lower()
         retry_attempts = int(card.get("retry_attempts", 2) or 0)
         retry_delay_ms = max(0, int(card.get("retry_delay_ms", 100) if card.get("retry_delay_ms") is not None else 100))
@@ -400,6 +470,16 @@ class PLCDispatcherService:
             cls._notify_status_change()
             return
 
+        # The value is worked out now, after the travel delay: what the event says at the moment of the write.
+        try:
+            write_val = cls.write_value(card, event) if operation == "WRITE" else 0.0
+        except ValueError as value_err:
+            state.status = "failed"
+            state.last_result = {"success": False, "message": f"Nothing was written: {value_err}", "endpoint": endpoint.get("name", ep_id)}
+            cls._report_alarm(card, endpoint, "failed", state.last_result["message"])
+            cls._notify_status_change()
+            return
+
         from app.hardware.plc.factory import PLCDriverFactory
         try:
             driver = PLCDriverFactory.get_driver(endpoint)
@@ -420,6 +500,7 @@ class PLCDispatcherService:
             logger.warning("PLCDispatcher: automatic retry suppressed for TOGGLE card '%s'", card.get("name", cid))
         ok = False
         msg = ""
+        strobe_failed = False
 
         timeout_s = float(endpoint.get("timeout", 3))
         for attempt in range(1, attempts + 1):
@@ -459,7 +540,24 @@ class PLCDispatcherService:
                         # request, so drop the connection and start clean.
                         await driver.disconnect()
                         raise
-                if ok:
+                    if ok and strobe:
+                        # Still inside the endpoint lock: no other card's write
+                        # comes between the data and its strobe.
+                        try:
+                            strobe_ok, strobe_msg = await asyncio.wait_for(
+                                driver.execute_operation(operation="PULSE", address=strobe, pulse_duration_ms=strobe_ms),
+                                timeout=timeout_s + (strobe_ms / 1000.0) + 1,
+                            )
+                        except asyncio.TimeoutError:
+                            await driver.disconnect()
+                            raise
+                        if strobe_ok:
+                            msg = f"{msg}; strobe {strobe} pulsed {strobe_ms} ms"
+                        else:
+                            # The data is written; a retry would write it and strobe again.
+                            ok, strobe_failed = False, True
+                            msg = f"{msg}, but the strobe {strobe} failed: {strobe_msg}"
+                if ok or strobe_failed:
                     break
             except asyncio.TimeoutError:
                 msg = f"Attempt {attempt}: PLC operation timed out; actuation state is unknown and was not retried"
@@ -482,8 +580,9 @@ class PLCDispatcherService:
 
         # ── Update status ─────────────────────────────────────────────────────
         if ok:
-            ack_mode = str(card.get("ack_mode", "unconfirmed")).lower()
-            state.status = "unconfirmed" if ack_mode == "wait_ack" else "sent"
+            # A card saved with the old "Wait for PLC ACK" choice did not wait for
+            # anything either: it is "sent" like every other.
+            state.status = "sent"
         else:
             state.status = "timeout" if "timed out" in msg.lower() else "failed"
 
@@ -494,6 +593,8 @@ class PLCDispatcherService:
             "protocol": endpoint.get("plc_sub_protocol", "unknown"),
             "operation": operation,
             "address": address,
+            "value": write_val if operation == "WRITE" else None,
+            "strobe": strobe or None,
             "event_result": event.get("result"),
             "attempts": attempt,
         }
