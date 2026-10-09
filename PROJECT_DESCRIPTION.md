@@ -31,6 +31,8 @@ The runtime state is partly process-local. `app/config.py` requires `WORKERS=1`,
 ## Important folders and files
 
 - `dashboard.html` — Main browser control and monitoring interface.
+- `assets/production_lines.js` — The dashboard's production line pages: line selector, Plant overview, Lines, Products, Line setup (the line and one card per camera, up to 8, holding every camera setting) and the Line dashboard's camera strip.
+- `assets/camera_settings.js` — A camera's image and video settings (resolution, rotation, ROI, USB/IP controls, stream size) as a form, used by the Line setup camera cards and the Cameras page Settings window.
 - `main.py` — FastAPI application, lifecycle setup, router registration and static/dashboard serving.
 - `app/routes/v1/` — REST and WebSocket route handlers.
 - `app/engines/` — Inference, tracking, QR, rules, actions and flow engines.

@@ -35,108 +35,8 @@
         <div class="comm-modal-header cam-settings-title">
             <span>Settings — <span id="camSettingsCamName">Camera</span></span>
         </div>
-        <div class="comm-modal-body cam-settings-body">
-        <div class="cam-settings-section">
-            Resolution &amp; Stream
-        </div>
-        <div class="cam-settings-row">
-            <div class="form-group" style="margin:0"><label class="form-label">Width (px)</label>
-                <input type="number" id="csWidth" class="form-input" placeholder="640" min="80" max="3840" /></div>
-            <div class="form-group" style="margin:0"><label class="form-label">Height (px)</label>
-                <input type="number" id="csHeight" class="form-input" placeholder="480" min="60" max="2160" /></div>
-        </div>
-        <div class="cam-settings-row triple">
-            <div class="form-group" style="margin:0"><label class="form-label">FPS</label>
-                <input type="number" id="csFPS" class="form-input" placeholder="25" min="1" max="120" /></div>
-            <div class="form-group" style="margin:0"><label class="form-label">JPEG Quality %</label>
-                <input type="number" id="csJpegQuality" class="form-input" placeholder="65" min="20" max="95" /></div>
-            <div class="form-group" style="margin:0"><label class="form-label">Max Stream Width</label>
-                <input type="number" id="csMaxWidth" class="form-input" placeholder="640" min="160" max="3840" /></div>
-        </div>
-        <div class="cam-settings-section">
-            Rotation &amp; Flip
-        </div>
-        <div class="cam-settings-row">
-            <div class="form-group" style="margin:0"><label class="form-label">Rotation</label>
-                <select id="csRotation" class="form-input">
-                    <option value="">No Rotation</option>
-                    <option value="90">90° Clockwise</option>
-                    <option value="180">180°</option>
-                    <option value="270">270° (CCW)</option>
-                </select></div>
-            <div class="form-group" style="margin:0;padding-top:20px;display:flex;gap:16px;align-items:center">
-                <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
-                    <input type="checkbox" id="csFlipH" /> Flip H</label>
-                <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
-                    <input type="checkbox" id="csFlipV" /> Flip V</label>
-            </div>
-        </div>
-        <div class="cam-settings-section">
-            Region of Interest (ROI / Crop)
-        </div>
-        <div class="form-hint" style="margin:-4px 0 10px">Only this part of the picture goes to the AI model, the QR reader and the live video. Drag on the picture to draw it.</div>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
-            <span class="form-label" style="margin:0">Enable ROI</span>
-            <label class="switch"><input type="checkbox" id="csROIEnabled" onchange="updateROIPreview()" /><span class="slider"></span></label>
-            <button type="button" class="btn-action btn-sm btn-outline" style="margin-left:auto" onclick="resetROI()">Whole picture</button>
-        </div>
-        <div id="csROIFields">
-            <div class="cam-settings-row triple">
-                <div class="form-group" style="margin:0"><label class="form-label">X % (left)</label>
-                    <input type="number" id="csROIX" class="form-input" value="0" min="0" max="99" oninput="updateROIPreview()" /></div>
-                <div class="form-group" style="margin:0"><label class="form-label">Y % (top)</label>
-                    <input type="number" id="csROIY" class="form-input" value="0" min="0" max="99" oninput="updateROIPreview()" /></div>
-                <div></div>
-            </div>
-            <div class="cam-settings-row triple">
-                <div class="form-group" style="margin:0"><label class="form-label">Width %</label>
-                    <input type="number" id="csROIW" class="form-input" value="100" min="1" max="100" oninput="updateROIPreview()" /></div>
-                <div class="form-group" style="margin:0"><label class="form-label">Height %</label>
-                    <input type="number" id="csROIH" class="form-input" value="100" min="1" max="100" oninput="updateROIPreview()" /></div>
-                <div></div>
-            </div>
-            <div class="roi-preview" id="roiPreview">
-                <img id="roiPreviewImg" alt="" hidden />
-                <div class="roi-box" id="roiBoxPreview" style="left:0;top:0;width:100%;height:100%"></div>
-                <span class="roi-preview-note" id="roiPreviewNote">Crop preview</span>
-            </div>
-        </div>
-        <div id="csUsbControls" style="display:none">
-            <div class="cam-settings-section">
-                Image Controls (USB)
-            </div>
-            <div class="cam-settings-row">
-                <div class="form-group" style="margin:0"><label class="form-label">Brightness</label>
-                    <input type="range" id="csBrightness" class="form-input" min="-100" max="100" value="0" style="padding:4px" /></div>
-                <div class="form-group" style="margin:0"><label class="form-label">Contrast</label>
-                    <input type="range" id="csContrast" class="form-input" min="-100" max="100" value="0" style="padding:4px" /></div>
-            </div>
-            <div class="cam-settings-row">
-                <div class="form-group" style="margin:0"><label class="form-label">Saturation</label>
-                    <input type="range" id="csSaturation" class="form-input" min="-100" max="100" value="0" style="padding:4px" /></div>
-                <div class="form-group" style="margin:0"><label class="form-label">Exposure</label>
-                    <input type="range" id="csExposure" class="form-input" min="-13" max="0" value="-6" style="padding:4px" /></div>
-            </div>
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-                <span class="form-label" style="margin:0">Auto Exposure</span>
-                <label class="switch"><input type="checkbox" id="csAutoExposure" checked /><span class="slider"></span></label>
-            </div>
-        </div>
-        <div id="csIpControls" style="display:none">
-            <div class="cam-settings-section">
-                IP Stream Settings
-            </div>
-            <div class="cam-settings-row">
-                <div class="form-group" style="margin:0"><label class="form-label">Transport Protocol</label>
-                    <select id="csTransport" class="form-input">
-                        <option value="tcp">TCP (Reliable)</option>
-                        <option value="udp">UDP (Low Latency)</option>
-                    </select></div>
-                <div class="form-group" style="margin:0"><label class="form-label">Buffer Size</label>
-                    <input type="number" id="csBuffer" class="form-input" value="1" min="1" max="10" /></div>
-            </div>
-        </div>
-        </div>
+        <!-- Filled by assets/camera_settings.js (the same form as a camera card's Image and Video on Line setup) -->
+        <div class="comm-modal-body cam-settings-body" id="camSettingsForm"></div>
         <div class="comm-modal-footer">
             <button type="button" class="btn-action btn-outline" onclick="closeCamSettings()">Cancel</button>
             <div class="comm-modal-footer-actions">
@@ -1049,46 +949,8 @@
 
 <!-- ════════ TAB 2 — LINE SETUP ══════════════════════════════════════════ -->
 <div id="tabActionTrigger" class="tab-page">
-    <!-- Step 1, "Line and cameras", is added above by assets/production_lines.js -->
-
-    <!-- Step 2: counting and rejects -->
-    <div class="card-panel" id="countingSetupCard">
-        <div class="card-panel-header">
-            <div>
-                <span class="card-panel-title">Counting and rejects</span>
-                <div class="card-panel-sub">Where products are counted in the picture. Which classes count as products or as defects is picked per camera, in the line setup above.</div>
-            </div>
-            <div class="card-actions">
-                <button class="btn-action btn-blue restricted-l2" onclick="saveActionTriggerConfig()">Save changes</button>
-            </div>
-        </div>
-        <div class="form-grid">
-            <div class="form-group">
-                <label class="form-label" for="selectWirelineMode">Product flow direction</label>
-                <select id="selectWirelineMode" class="form-input" onchange="onWirelineModeChange(this.value)">
-                    <option value="horizontal">Top to bottom (count lines run across)</option>
-                    <option value="vertical">Left to right (count lines run down)</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label class="form-label" id="lblLine1" for="cfgLine1">Count line A position</label>
-                <input type="number" id="cfgLine1" class="form-input" min="0" max="1" step="0.05" value="0.35" />
-                <div class="form-hint" id="hintLine1">0 = top edge, 1 = bottom edge of the picture.</div>
-            </div>
-            <div class="form-group">
-                <label class="form-label" id="lblLine2" for="cfgLine2">Count line B position</label>
-                <input type="number" id="cfgLine2" class="form-input" min="0" max="1" step="0.05" value="0.65" />
-                <div class="form-hint" id="hintLine2">Must be further along the flow than line A.</div>
-            </div>
-        </div>
-        <div class="danger-zone">
-            <div>
-                <b>Reset all counts</b>
-                <span>Sets Inspected, Good and Rejected for this line back to 0. This cannot be undone.</span>
-            </div>
-            <button class="btn-action btn-red restricted-l2" onclick="confirmResetAllCounts()">Reset counts…</button>
-        </div>
-    </div>
+    <!-- Step 1, the line and its camera cards (every camera setting, the count lines
+         and Reset counts), is added above by assets/production_lines.js -->
 
     <!-- Step 3: send results -->
     <div class="card-panel" id="sendResultsCard">
@@ -1556,19 +1418,6 @@ document.addEventListener("keydown", (e) => {
 });
 
 /* ─── Comms Config Sync & Dropdown Management ────────────────────────────── */
-// Line setup fields changed and not saved yet, by element id. The settings
-// poll leaves these alone; saving them or a full settings load clears the list.
-const _unsavedLineSetupFields = new Set();
-const _LINE_SETUP_FIELD_IDS = ["selectWirelineMode", "cfgLine1", "cfgLine2"];
-// Only the user's own edits fire these events; values written by code do not.
-["input", "change"].forEach(type => document.addEventListener(type, (e) => {
-    if (_LINE_SETUP_FIELD_IDS.includes(e.target?.id)) _unsavedLineSetupFields.add(e.target.id);
-}, true));
-
-function clearUnsavedLineSetup() {
-    _unsavedLineSetupFields.clear();
-}
-
 function getCommsConfig() {
     const eps = Array.isArray(allCommsEndpoints) ? allCommsEndpoints : [];
     const tcpEp = eps.find(e => (e.protocol || "").toLowerCase() === "tcp" && e.enabled !== false);
@@ -1657,23 +1506,6 @@ window.addEventListener("DOMContentLoaded", () => {
         showLoginScreen();
     }
 
-    // Load the locally saved counting configuration
-    try {
-        const localCfg = JSON.parse(localStorage.getItem("action_trigger_cfg") || "{}");
-        if (localCfg.line1_position !== undefined && document.getElementById("cfgLine1")) document.getElementById("cfgLine1").value = localCfg.line1_position;
-        if (localCfg.line2_position !== undefined && document.getElementById("cfgLine2")) document.getElementById("cfgLine2").value = localCfg.line2_position;
-        if (localCfg.orientation !== undefined && document.getElementById("selectWirelineMode")) {
-            const isVert = (localCfg.orientation === "vertical" || localCfg.orientation === "vertical_lines" || localCfg.orientation === "horizontal_mode");
-            const modeVal = isVert ? "vertical" : "horizontal";
-            const sel = document.getElementById("selectWirelineMode");
-            if (sel) {
-                sel.value = modeVal;
-                if (typeof sel._updateCustomSelectUI === "function") sel._updateCustomSelectUI();
-            }
-            updateWirelineModeUI(modeVal);
-        }
-    } catch (_) {}
-
     startStatsPolling();
 });
 
@@ -1758,13 +1590,15 @@ function initCustomSelects() {
 
             opts.forEach(opt => {
                 const item = document.createElement('div');
-                item.className = 'custom-select-item' + (opt.value === currentVal ? ' selected' : '');
+                item.className = 'custom-select-item' + (opt.value === currentVal ? ' selected' : '') + (opt.disabled ? ' disabled' : '');
                 item.setAttribute('role', 'option');
                 item.setAttribute('data-value', opt.value);
+                if (opt.disabled) item.setAttribute('aria-disabled', 'true');
                 item.textContent = opt.text;
 
                 item.addEventListener('click', (e) => {
                     e.stopPropagation();
+                    if (opt.disabled) return;  // e.g. a camera that belongs to another line
                     select.value = opt.value;
                     label.textContent = opt.text;
                     menu.querySelectorAll('.custom-select-item').forEach(el => el.classList.remove('selected'));
@@ -2555,8 +2389,6 @@ async function loadServerSettings() {
             lastKnownStateVer = data.version || 1;
             if (data.boot_id) lastServerBootId = data.boot_id;
             window._lastServerSettings = data;
-            // A full load (sign-in, another line, Connections) shows what is saved.
-            clearUnsavedLineSetup();
             applyServerSettingsToUI(data);
             await loadMqttCertDropdowns({
                 ca: data.mqtt?.ca_cert || data.mqtt?.ca_cert_filename,
@@ -2616,34 +2448,6 @@ function applyServerSettingsToUI(data) {
         }
         if (document.getElementById("tcpTestHost")) document.getElementById("tcpTestHost").value = data.tcp.host || "127.0.0.1";
         if (document.getElementById("tcpTestPort")) document.getElementById("tcpTestPort").value = data.tcp.port || 9000;
-    }
-    if (data.action_trigger) {
-        const at = data.action_trigger;
-        // A field that is changed but not saved yet stays as the user left it.
-        const setField = (id, prop, value) => {
-            const el = document.getElementById(id);
-            if (el && !_unsavedLineSetupFields.has(id)) el[prop] = value;
-        };
-        setField("cfgLine1", "value", at.line1_position ?? 0.35);
-        setField("cfgLine2", "value", at.line2_position ?? 0.65);
-        if (at.orientation !== undefined && !_unsavedLineSetupFields.has("selectWirelineMode")) {
-            const isVert = (at.orientation === "vertical" || at.orientation === "vertical_lines" || at.orientation === "horizontal_mode");
-            const modeVal = isVert ? "vertical" : "horizontal";
-            const sel = document.getElementById("selectWirelineMode");
-            if (sel) {
-                sel.value = modeVal;
-                if (typeof sel._updateCustomSelectUI === "function") sel._updateCustomSelectUI();
-            }
-            updateWirelineModeUI(modeVal);
-        }
-
-        try {
-            localStorage.setItem("action_trigger_cfg", JSON.stringify({
-                line1_position: at.line1_position ?? 0.35,
-                line2_position: at.line2_position ?? 0.65,
-                orientation: at.orientation || "horizontal",
-            }));
-        } catch (_) {}
     }
     populateActionCommsDropdowns();
 }
@@ -4473,19 +4277,6 @@ function updateSendTopicHint() {
     hint.style.color = problem ? "var(--warning-color, #f59e0b)" : "var(--text-muted)";
 }
 
-function updateWirelineModeUI(mode) {
-    const isVert = (mode === "vertical" || mode === "vertical_lines" || mode === "horizontal_mode");
-    setText("lblLine1", "Count line A position");
-    setText("lblLine2", "Count line B position");
-    setText("hintLine1", isVert ? "0 = left edge, 1 = right edge of the picture." : "0 = top edge, 1 = bottom edge of the picture.");
-    setText("hintLine2", isVert ? "Further right than line A, in the direction products move." : "Further down than line A, in the direction products move.");
-}
-
-async function onWirelineModeChange(val) {
-    updateWirelineModeUI(val);
-    await saveActionTriggerConfig(true);
-}
-
 
 /* ─── PLC Action Trigger & Discrete Logic Engine ────────────────────────── */
 let _plcActionCards = [];
@@ -5373,49 +5164,6 @@ function onPlcModalOperationChange(cardId, opVal) {
 }
 
 
-async function saveActionTriggerConfig(silent = false) {
-    const orientation = document.getElementById("selectWirelineMode")?.value || "horizontal";
-    try {
-        localStorage.setItem("action_trigger_cfg", JSON.stringify({
-            line1_position:   parseFloat(document.getElementById("cfgLine1")?.value || "0.35"),
-            line2_position:   parseFloat(document.getElementById("cfgLine2")?.value || "0.65"),
-            orientation:      orientation,
-            plc_actions:      _plcActionCards,
-        }));
-    } catch (_) {}
-
-    // What the line sends is on its send cards ("Send results" below), saved with their own Apply.
-    // Which classes count as products or defects is saved per camera, with the line setup.
-    const body = {
-        line1_position:            parseFloat(document.getElementById("cfgLine1")?.value || "0.35"),
-        line2_position:            parseFloat(document.getElementById("cfgLine2")?.value || "0.65"),
-        orientation:               orientation,
-    };
-    try {
-        const res = await fetch("/api/v1/system/settings", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${currentAuthToken}` },
-            body: JSON.stringify({ action_trigger: body })
-        });
-        if (res.ok) {
-            clearUnsavedLineSetup();
-            fetchStats();
-            if (!silent) {
-                showModal("Configuration Saved", "Counting settings applied and saved on the server.");
-            }
-        } else {
-            const e = await res.json();
-            if (!silent) {
-                showModal("Access Denied", e.detail || "Requires Supervisor Level 2+");
-            }
-        }
-    } catch {
-        if (!silent) {
-            showModal("Network Error", "Could not update configuration");
-        }
-    }
-}
-
 async function testSendLiveCountersToTCP() {
     const {tcp} = getCommsConfig();
     const payload = {
@@ -5755,54 +5503,12 @@ async function deleteCam(id, name) {
 // The camera the settings window is open for. Saving goes to this camera, not to
 // whichever row happens to be selected in the camera list.
 let _camSettingsCam = null;
-let _roiPreviewUrl = null;
 
 function openCamSettings(id, name, type, settings) {
     _camSettingsCam = { id, name, type };
     document.getElementById("camSettingsCamName").textContent = name;
-    settings = settings || {};
-
-    // Populate resolution
-    document.getElementById("csWidth").value       = settings.width  || "";
-    document.getElementById("csHeight").value      = settings.height || "";
-    document.getElementById("csFPS").value         = settings.fps    || "";
-    document.getElementById("csJpegQuality").value = settings.stream_jpeg_quality || 65;
-    document.getElementById("csMaxWidth").value    = settings.stream_max_width    || 640;
-
-    // Rotation & flip
-    document.getElementById("csRotation").value    = settings.rotation || "";
-    document.getElementById("csFlipH").checked     = !!settings.flip_h;
-    document.getElementById("csFlipV").checked     = !!settings.flip_v;
-
-    // ROI
-    const roiEnabled = !!settings.roi_enabled;
-    document.getElementById("csROIEnabled").checked = roiEnabled;
-    document.getElementById("csROIX").value = settings.roi_x != null ? (parseFloat(settings.roi_x)*100).toFixed(0) : 0;
-    document.getElementById("csROIY").value = settings.roi_y != null ? (parseFloat(settings.roi_y)*100).toFixed(0) : 0;
-    document.getElementById("csROIW").value = settings.roi_w != null ? (parseFloat(settings.roi_w)*100).toFixed(0) : 100;
-    document.getElementById("csROIH").value = settings.roi_h != null ? (parseFloat(settings.roi_h)*100).toFixed(0) : 100;
-    updateROIPreview();
-    loadROIPreviewPicture(id);
-
-    // USB-only controls
-    const isUsb = (type === "usb");
-    document.getElementById("csUsbControls").style.display = isUsb ? "" : "none";
-    if (isUsb) {
-        document.getElementById("csBrightness").value  = settings.brightness  ?? 0;
-        document.getElementById("csContrast").value    = settings.contrast    ?? 0;
-        document.getElementById("csSaturation").value  = settings.saturation  ?? 0;
-        document.getElementById("csExposure").value    = settings.exposure    ?? -6;
-        document.getElementById("csAutoExposure").checked = settings.auto_exposure !== false;
-    }
-
-    // IP-only controls
-    const isIp = (type === "ip");
-    document.getElementById("csIpControls").style.display = isIp ? "" : "none";
-    if (isIp) {
-        document.getElementById("csTransport").value = settings.transport || "tcp";
-        document.getElementById("csBuffer").value    = settings.buffer_size || 1;
-    }
-
+    const form = CameraSettingsForm.render(document.getElementById("camSettingsForm"), { id, type, settings: settings || {} }, ["image", "video"]);
+    form.loadPicture(() => Boolean(_camSettingsCam && _camSettingsCam.id === id));
     document.getElementById("camSettingsOverlay").classList.add("active");
     setTimeout(initCustomSelects, 30);
 }
@@ -5813,139 +5519,10 @@ function closeCamSettings(evt) {
     _camSettingsCam = null;
 }
 
-// The camera's whole picture (before any crop) behind the ROI box.
-async function loadROIPreviewPicture(id) {
-    const img = document.getElementById("roiPreviewImg");
-    const note = document.getElementById("roiPreviewNote");
-    const box = document.getElementById("roiPreview");
-    img.hidden = true;
-    box.style.aspectRatio = "";
-    note.textContent = "Loading the camera picture…";
-    try {
-        const res = await fetch(`/api/v1/cameras/${encodeURIComponent(id)}/frame?full=true`);
-        if (!res.ok) throw new Error();
-        const url = URL.createObjectURL(await res.blob());
-        if (!_camSettingsCam || _camSettingsCam.id !== id) { URL.revokeObjectURL(url); return; }
-        if (_roiPreviewUrl) URL.revokeObjectURL(_roiPreviewUrl);
-        _roiPreviewUrl = url;
-        img.onload = () => {
-            box.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;
-            img.hidden = false;
-            note.textContent = "";
-        };
-        img.src = url;
-    } catch (_) {
-        note.textContent = "Connect the camera to draw the ROI on its picture.";
-    }
-}
-
-function readROIFields() {
-    const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
-    const x = clamp(parseFloat(document.getElementById("csROIX").value) || 0, 0, 99);
-    const y = clamp(parseFloat(document.getElementById("csROIY").value) || 0, 0, 99);
-    const w = clamp(parseFloat(document.getElementById("csROIW").value) || 100, 1, 100 - x);
-    const h = clamp(parseFloat(document.getElementById("csROIH").value) || 100, 1, 100 - y);
-    return { x, y, w, h };
-}
-
-function updateROIPreview() {
-    const { x, y, w, h } = readROIFields();
-    const on = document.getElementById("csROIEnabled").checked;
-    const box = document.getElementById("roiBoxPreview");
-    document.getElementById("csROIFields").classList.toggle("roi-off", !on);
-    box.hidden = !on;
-    box.style.left   = `${x}%`;
-    box.style.top    = `${y}%`;
-    box.style.width  = `${w}%`;
-    box.style.height = `${h}%`;
-}
-
-function setROIFields(x, y, w, h) {
-    const r = (v) => String(Math.round(v));
-    document.getElementById("csROIX").value = r(x);
-    document.getElementById("csROIY").value = r(y);
-    document.getElementById("csROIW").value = r(w);
-    document.getElementById("csROIH").value = r(h);
-    updateROIPreview();
-}
-
-function resetROI() {
-    setROIFields(0, 0, 100, 100);
-}
-
-// Drag on the picture to draw the ROI (mouse, pen or touch).
-(function initROIDrawing() {
-    const area = document.getElementById("roiPreview");
-    if (!area) return;
-    let start = null;
-    const pct = (e) => {
-        const r = area.getBoundingClientRect();
-        return {
-            x: Math.min(Math.max((e.clientX - r.left) / r.width * 100, 0), 100),
-            y: Math.min(Math.max((e.clientY - r.top) / r.height * 100, 0), 100),
-        };
-    };
-    area.addEventListener("pointerdown", (e) => {
-        start = pct(e);
-        area.setPointerCapture(e.pointerId);
-        document.getElementById("csROIEnabled").checked = true;
-        e.preventDefault();
-    });
-    area.addEventListener("pointermove", (e) => {
-        if (!start) return;
-        const p = pct(e);
-        setROIFields(Math.min(start.x, p.x), Math.min(start.y, p.y), Math.max(Math.abs(p.x - start.x), 1), Math.max(Math.abs(p.y - start.y), 1));
-    });
-    const end = () => {
-        if (!start) return;
-        start = null;
-        const { w, h } = readROIFields();
-        if (w < 3 || h < 3) resetROI();  // a click, not a drag
-    };
-    area.addEventListener("pointerup", end);
-    area.addEventListener("pointercancel", end);
-})();
-
 async function saveCamSettings() {
     const cam = _camSettingsCam;
     if (!cam) return;
-
-    const { x, y, w, h } = readROIFields();
-
-    const patch = {
-        settings: {
-            width:  parseInt(document.getElementById("csWidth").value)  || null,
-            height: parseInt(document.getElementById("csHeight").value) || null,
-            fps:    parseInt(document.getElementById("csFPS").value)    || null,
-            stream_jpeg_quality: parseInt(document.getElementById("csJpegQuality").value) || 65,
-            stream_max_width:    parseInt(document.getElementById("csMaxWidth").value)    || 640,
-            rotation: document.getElementById("csRotation").value === "" ? 0 : parseInt(document.getElementById("csRotation").value, 10),
-            flip_h:   document.getElementById("csFlipH").checked,
-            flip_v:   document.getElementById("csFlipV").checked,
-            roi_enabled: document.getElementById("csROIEnabled").checked,
-            roi_x: (x / 100), roi_y: (y / 100),
-            roi_w: (w / 100), roi_h: (h / 100),
-        }
-    };
-
-    if (cam.type === "usb") {
-        Object.assign(patch.settings, {
-            brightness:    parseFloat(document.getElementById("csBrightness").value),
-            contrast:      parseFloat(document.getElementById("csContrast").value),
-            saturation:    parseFloat(document.getElementById("csSaturation").value),
-            exposure:      parseFloat(document.getElementById("csExposure").value),
-            auto_exposure: document.getElementById("csAutoExposure").checked,
-        });
-    }
-    if (cam.type === "ip") {
-        Object.assign(patch.settings, {
-            transport:   document.getElementById("csTransport").value,
-            buffer_size: parseInt(document.getElementById("csBuffer").value) || 1,
-        });
-    }
-
-    // Remove null values
-    Object.keys(patch.settings).forEach(k => { if (patch.settings[k] === null) delete patch.settings[k]; });
+    const patch = { settings: CameraSettingsForm.read(document.getElementById("camSettingsForm"), cam.type) };
 
     try {
         const res = await fetch(`/api/v1/cameras/${encodeURIComponent(cam.id)}`, {
@@ -6721,7 +6298,9 @@ function lineCamName(c) {
 
 function lineFeedCam(status) {
     const cams = (status && status.cameras) || [];
-    return cams.find(c => c.role === "vision" && c.counting) || cams.find(c => c.role === "vision") || cams[0] || null;
+    // The camera shown large: one picked in the camera strip (assets/production_lines.js), else the counting camera.
+    const picked = window.ProductionLines && window.ProductionLines.feedCameraId ? window.ProductionLines.feedCameraId() : null;
+    return (picked && cams.find(c => c.camera_id === picked)) || cams.find(c => c.role === "vision" && c.counting) || cams.find(c => c.role === "vision") || cams[0] || null;
 }
 
 function renderLineStatus(detail) {
@@ -7139,7 +6718,8 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
     setInterval(tick, 1000);
 })();
 </script>
-<script src="/assets/production_lines.js?v=2.2.2"></script>
+<script src="/assets/camera_settings.js?v=2.3.0"></script>
+<script src="/assets/production_lines.js?v=2.3.0"></script>
 <script>
 /* ─── Cameras: Connect / Disconnect / Settings / Delete on every row ────────
    Runs after assets/production_lines.js has added its Line and Role columns. */

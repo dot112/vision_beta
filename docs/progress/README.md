@@ -31,7 +31,7 @@ Make the software work on almost any production line:
 | # | Section | File | Depends on | Status | Branch with the work |
 |---|---|---|---|---|---|
 | 1 | Logic fixes (vision, messages, PLC outputs) | [section-1-logic-fixes.md](section-1-logic-fixes.md) | — | **Done** | `claude/tender-cerf-qzfcle` |
-| 2 | Camera cards on Line setup, up to 8 cameras | [section-2-camera-cards.md](section-2-camera-cards.md) | 1 | Not started | — |
+| 2 | Camera cards on Line setup, up to 8 cameras | [section-2-camera-cards.md](section-2-camera-cards.md) | 1 | **Done** | `claude/magical-ritchie-r7rxvs` |
 | 3 | Several vision cameras: own station or joined result | [section-3-joined-cameras.md](section-3-joined-cameras.md) | 2 | Not started | — |
 | 4 | Product records in the database, Records page, CSV/XLSX export | [section-4-product-records.md](section-4-product-records.md) | 1 (3 only for the `stations` detail) | Not started | — |
 | 5 | PLC inputs, batch number, trigger inspection, reject confirmation | [section-5-plc-inputs.md](section-5-plc-inputs.md) | 2 and 4 | Not started | — |
@@ -60,7 +60,7 @@ FastAPI server (`main.py`) plus one HTML dashboard (`dashboard.html`, plus `asse
 
 | Area | Files | What it does |
 |---|---|---|
-| Line settings | `app/services/line_config.py` | Shape, validation and **upgrade steps** of the saved settings (`data/system_state.json`). `normalize_line`, `normalize_camera`, `normalize_send_card`, `product_verdict`, `_UPGRADES`, `SCHEMA_VERSION` (now **8**). No runtime imports. |
+| Line settings | `app/services/line_config.py` | Shape, validation and **upgrade steps** of the saved settings (`data/system_state.json`). `normalize_line`, `normalize_camera`, `normalize_send_card`, `product_verdict`, `_UPGRADES`, `SCHEMA_VERSION` (now **8**), `MAX_CAMERAS_PER_LINE` (**8**), `camera_station`. No runtime imports. |
 | Settings storage | `app/services/settings_persistence_service.py` | Loads and saves the JSON state, lines, endpoints (Connections), PLC and send cards, and the audit log. `counting_config_from_dict()` builds a camera's `CountingConfig`. **Line 1 keeps `action_trigger`, `plc_actions` and `send_actions` at the top level of the state** (version 1 compatibility); other lines keep them inside their entry. |
 | Lines at runtime | `app/services/line_service.py` | `LineManager` (`line_manager`) and one `LineRuntime` per line. Routes camera frames to lines, holds the counters (Line 1 uses the module-level `counting_service`), Sync pairing (`SyncPairer`), QR reads, and the models per camera. |
 | Counting | `app/services/counting_service.py`, `app/engines/tracker.py` | `CountingService.process_frame` → `WirelineTracker.update` → crossing events. `finish_crossing()` counts one product with its final result and sends **one** event (event bus, PLC cards, send cards). `count_product()` is for products with no vision camera. |
@@ -73,7 +73,7 @@ FastAPI server (`main.py`) plus one HTML dashboard (`dashboard.html`, plus `asse
 | Lines API | `app/routes/v1/lines.py` | `PUT /lines/{id}` (`_save` → `SettingsPersistenceService.save_line`), `apply_line()`, `set_line_running()`, `/start`, `/stop`, `/clone`. |
 | Alarms | `app/events/alarm_events.py` | `alarm_manager.raise_alarm/clear_alarm`, and `ALARM_CATALOG` (add new codes there). |
 | DB | `app/db/models/*`, `alembic/versions/*` | SQLite (async). Revision 0001 builds tables from the models, so **a new table must be added to `_LATER_TABLES` in `0001_initial_schema.py`** and created by its own revision (see 0004/0005). Also import the model in `alembic/env.py`. |
-| Dashboard | `dashboard.html`, `assets/production_lines.js` | `production_lines.js` adds the line selector, the Plant overview, Lines and Products pages, and the Line setup "line and cameras" card. Its `window.fetch` wrapper adds `?line_id=` to `/api/v1/counting/`, `/api/v1/plc/actions` and `/api/v1/send/actions` calls while a line other than Line 1 is selected. |
+| Dashboard | `dashboard.html`, `assets/production_lines.js`, `assets/camera_settings.js` | `production_lines.js` adds the line selector, the Plant overview, Lines and Products pages, Line setup (the line section and one card per camera, up to 8, with every camera setting; Section 2) and the Line dashboard's camera strip. `camera_settings.js` is a camera's image/video form (card Image and Video folds, and the Cameras page dialog). Its `window.fetch` wrapper adds `?line_id=` to `/api/v1/counting/`, `/api/v1/plc/actions` and `/api/v1/send/actions` calls while a line other than Line 1 is selected. |
 
 ## Rules for working in this repository
 
@@ -88,7 +88,7 @@ FastAPI server (`main.py`) plus one HTML dashboard (`dashboard.html`, plus `asse
 - **Set up and run the checks:**
   ```bash
   python3 -m venv /tmp/venv && /tmp/venv/bin/pip install -q -r requirements.txt -r requirements-dev.txt
-  /tmp/venv/bin/python -m pytest -q -p no:cacheprovider     # 703 pass after Section 1
+  /tmp/venv/bin/python -m pytest -q -p no:cacheprovider     # 716 pass after Section 2
   /tmp/venv/bin/ruff check .
   ```
   CI (`.github/workflows/ci.yml`) runs lint, the tests, and a Docker Compose start/stop check on every push.
@@ -102,7 +102,7 @@ FastAPI server (`main.py`) plus one HTML dashboard (`dashboard.html`, plus `asse
 |---|---|---|---|
 | V1 | `tracker.py` | A class named like "defect", "scratch" or "broken" was always rejected, even when not ticked. | 1, **done** |
 | V2 | `vision_service.py`, `camera_service.camera_orientation` | `int(rotation or 90)` read "No rotation" (0) as 90°, and the exit edge was taken from the rotation, not from the flow. | 1, **done** |
-| V3 | `counting_config_from_dict` | Count direction and tracking settings were never read from the settings. Also, "both" mode never counted a product moving from line B back to line A. | 1, **done** (no UI yet: Section 2) |
+| V3 | `counting_config_from_dict` | Count direction and tracking settings were never read from the settings. Also, "both" mode never counted a product moving from line B back to line A. | 1, **done** (UI: Section 2, **done**) |
 | V4 | `VisionService.detect_live_camera`, `/control/trigger/{camera}` | `passed` used the name rule; the trigger endpoint does not count anything. | 1 **done** (passed); trigger: Section 5 |
 | V5 | `CountingService` | The speed figure was read without a lock; a partial reset broke good + rejected = total. | 1, **done** |
 | M1 | `send_dispatcher_service.deliver` (TCP) | The TCP channel's delimiter, timeout and mode (client/server) are ignored: always JSON + `\n`, a new connection per message, a 2 s timeout. | 1, **done** |

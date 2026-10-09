@@ -840,6 +840,8 @@ select option { background-color: var(--card-bg); color: var(--text-color); }
 .custom-select-item:hover { background: var(--panel-head); }
 .custom-select-item.selected { background: var(--primary-tint); font-weight: 600; }
 .custom-select-item.selected::after { content: "✓"; font-size: 12px; color: var(--primary-color); }
+.custom-select-item.disabled { opacity: 0.45; cursor: not-allowed; }
+.custom-select-item.disabled:hover { background: transparent; }
 
 /* Toggle switch */
 .switch { position: relative; display: inline-block; width: 40px; height: 22px; flex-shrink: 0; }
@@ -955,7 +957,7 @@ th.col-actions, td.col-actions { text-align: right; width: 1%; white-space: nowr
 .roi-box { position: absolute; border: 2px solid var(--primary-color); box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5); pointer-events: none; }
 .roi-box[hidden] { display: none; }
 .roi-preview-note { position: absolute; top: 6px; left: 8px; font-size: 12px; color: var(--text-faint); pointer-events: none; }
-#csROIFields.roi-off .cam-settings-row { opacity: 0.5; }
+.cs-roi-fields.roi-off .cam-settings-row { opacity: 0.5; }
 
 /* ── Connections ────────────────────────────────────────────────────────── */
 .comms-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 16px; margin-top: 16px; min-width: 0; }

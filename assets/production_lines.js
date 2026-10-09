@@ -6,8 +6,12 @@
  *   - a line selector in the header; Line dashboard and Line setup follow it
  *     and each browser remembers its choice;
  *   - the Plant overview, Lines and Products pages;
- *   - the line and cameras card (cameras, roles, Sync, model) on Line setup,
- *     a second camera feed and a list of recent QR reads on Line dashboard;
+ *   - Line setup: the line's own settings, then one card per camera (up to
+ *     8) holding every setting of that camera: device, job, model and
+ *     classes, counting (flow, count lines drawn on its picture, tracking),
+ *     code reading, image (resolution, ROI...) and video. One Save;
+ *   - on Line dashboard, a camera strip beside the large feed and a list of
+ *     recent QR reads;
  *   - Line and Role columns on Cameras, "Used by" on Connections, and a
  *     line filter on Audit log.
  *
@@ -20,6 +24,7 @@
     "use strict";
 
     const PRIMARY = "line-1";
+    const MAX_CAMERAS_PER_LINE = 8;  // line_config.MAX_CAMERAS_PER_LINE
     const STORAGE_KEY = "selected_line_id";
     const state = {
         lineId: localStorage.getItem(STORAGE_KEY) || PRIMARY,
@@ -40,9 +45,8 @@
         blobUrls: {},
         codeTypes: [],        // GET /qr/code-types (set to the three groups below until it loads)
         secondView: {},       // camera_id -> "live" | "capture" on the Line Dashboard
-        captureShown: null,   // id of the QR picture on screen
-        inlineCaptureShown: null,  // the same, in the reads panel (a main camera that reads codes)
-        feedRetryAt: 0,
+        captureShown: {},     // where a QR picture is shown -> id of the picture on screen
+        bigCamera: {},        // line id -> camera shown large on the Line Dashboard (picked in the strip)
     };
 
     // ── Small helpers ─────────────────────────────────────────────────────────
@@ -140,8 +144,63 @@
         .pl-code { font-family:monospace; font-size:12px; }
         .pl-inline { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
         .pl-inline .form-input { width:auto; flex:1; min-width:160px; }
-        .pl-feed-row { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:20px; }
+        .pl-feed-row { display:grid; grid-template-columns:minmax(0, 2fr) minmax(0, 1fr); gap:20px; margin-bottom:20px; align-items:start; }
         .pl-feed-row > .card-panel { margin-bottom:0; min-width:0; }
+        .pl-strip { display:grid; grid-template-columns:1fr; gap:12px; align-content:start; min-width:0; }
+        .pl-strip.many { grid-template-columns:1fr 1fr; }
+        .pl-strip-tile { margin-bottom:0; padding:10px 12px; min-width:0; }
+        .pl-strip-head { display:flex; align-items:center; gap:6px; min-width:0; }
+        .pl-strip-head .pl-dot { margin-right:0; flex:none; }
+        .pl-strip-name { font-size:13px; font-weight:700; color:var(--text-color); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; min-width:0; }
+        .pl-strip-detail { margin:2px 0 8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .pl-strip-pic { display:block; width:100%; padding:0; border:0; cursor:zoom-in; aspect-ratio:4/3; min-height:0; }
+        .pl-strip-pic .video-img { object-fit:contain; }
+        .pl-strip-overlay { font-size:11px; font-weight:700; letter-spacing:1.5px; color:rgba(255,255,255,.75); text-transform:uppercase; }
+        .pl-strip-figures { margin-top:8px; }
+        .pl-strip-tools { margin-top:8px; }
+        .pl-strip-tools .pl-seg button { white-space:nowrap; padding:5px 9px; }
+        .pl-strip-test { font-size:11px; padding:4px 10px; }
+        .pl-badge { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; border-radius:4px; padding:2px 7px; white-space:nowrap; background:var(--panel-head, rgba(127,127,127,.12)); color:var(--text-muted); border:1px solid var(--border-color); flex:none; }
+        .pl-badge.job-counting { color:var(--primary-color); border-color:var(--primary-color); }
+        .pl-badge.job-station { color:var(--warning-color); border-color:var(--warning-color); }
+        .pl-badge.job-qr { color:var(--success-color); border-color:var(--success-color); }
+        .pl-cam-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(360px, 1fr)); gap:16px; align-items:start; margin-bottom:20px; }
+        .pl-card { margin-bottom:0; min-width:0; padding:14px 16px; }
+        .pl-card [hidden] { display:none !important; }
+        .pl-card.pl-flash { box-shadow:0 0 0 3px var(--primary-color); transition:box-shadow .3s; }
+        .pl-card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+        .pl-card-title { display:flex; align-items:center; gap:7px; min-width:0; }
+        .pl-card-title .pl-dot { margin-right:0; flex:none; }
+        .pl-card-name { font-size:15px; font-weight:700; color:var(--text-color); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+        .pl-card-tools { display:flex; gap:4px; flex:none; }
+        .pl-icon-btn { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:6px; border:1px solid var(--border-color); background:transparent; color:var(--text-muted); cursor:pointer; }
+        .pl-icon-btn:hover:not(:disabled) { color:var(--text-color); border-color:var(--primary-color); }
+        .pl-icon-btn.danger:hover:not(:disabled) { color:var(--danger-color); border-color:var(--danger-color); }
+        .pl-icon-btn:disabled { opacity:.4; cursor:not-allowed; }
+        .pl-card-sub { font-size:11.5px; color:var(--text-muted); margin:2px 0 10px; }
+        .pl-card-live { position:relative; aspect-ratio:16/9; background:var(--video-bg, #000); border-radius:6px; overflow:hidden; margin-bottom:10px; }
+        .pl-card-live img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; opacity:0; }
+        .pl-card-live img.on { opacity:1; }
+        .pl-card-live-note { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:11px; letter-spacing:1px; text-transform:uppercase; color:rgba(255,255,255,.6); pointer-events:none; }
+        .pl-fold { border-top:1px solid var(--border-color); }
+        .pl-fold-head { display:flex; width:100%; align-items:center; justify-content:space-between; gap:8px; padding:10px 2px; background:transparent; border:0; color:var(--text-color); font-size:13px; font-weight:600; cursor:pointer; text-align:left; }
+        .pl-fold-head svg { transition:transform .15s; color:var(--text-muted); flex:none; }
+        .pl-fold.open .pl-fold-head svg { transform:rotate(180deg); }
+        .pl-fold-body { display:none; padding:2px 2px 14px; }
+        .pl-fold.open .pl-fold-body { display:block; }
+        .pl-form-tight { grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px 12px; }
+        .pl-form-tight .form-group { margin-bottom:8px; }
+        .pl-check { font-size:12.5px; color:var(--text-color); cursor:pointer; align-items:flex-start; flex-wrap:nowrap; }
+        .pl-check input { margin-top:2px; flex:none; }
+        .pl-lines-pic { position:relative; width:100%; aspect-ratio:4/3; background:var(--video-bg, #111); border:1px solid var(--border-color); border-radius:6px; overflow:hidden; margin:2px 0 10px; cursor:crosshair; touch-action:none; user-select:none; }
+        .pl-lines-pic img { position:absolute; inset:0; width:100%; height:100%; object-fit:fill; pointer-events:none; }
+        .pl-lines-pic canvas { position:absolute; inset:0; width:100%; height:100%; }
+        .pl-lines-note { position:absolute; left:8px; bottom:6px; font-size:11px; color:rgba(255,255,255,.75); background:rgba(0,0,0,.45); padding:2px 6px; border-radius:4px; }
+        .pl-link { background:none; border:0; padding:0; color:#9cc3ff; font-size:11px; text-decoration:underline; cursor:pointer; }
+        .pl-advanced summary { cursor:pointer; font-size:12.5px; font-weight:600; color:var(--text-color); padding:4px 0; }
+        .pl-add-card { border-style:dashed; }
+        .pl-setup-actions { display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center; }
+        .pl-unsaved { font-size:11px; font-weight:700; color:var(--warning-color); margin-left:8px; }
         .dashboard-grid.pl-grid-single { grid-template-columns:1fr; }
         .pl-inline-capture { position:relative; margin-bottom:12px; max-width:640px; }
         .pl-inline-capture[hidden] { display:none; }
@@ -149,7 +208,8 @@
         .pl-seg { display:inline-flex; border:1px solid var(--border-color); border-radius:6px; overflow:hidden; }
         .pl-seg button { background:transparent; border:0; padding:5px 11px; font-size:11px; font-weight:600; color:var(--text-muted); cursor:pointer; }
         .pl-seg button.active { background:var(--primary-color); color:#fff; }
-        @media (max-width:992px) { .pl-feed-row { grid-template-columns:1fr; } }
+        @media (max-width:992px) { .pl-feed-row { grid-template-columns:1fr; } .pl-strip, .pl-strip.many { grid-template-columns:repeat(2, minmax(0, 1fr)); } }
+        @media (max-width:520px) { .pl-cam-grid { grid-template-columns:1fr; } .pl-card { padding:12px; } }
         @media (max-width:700px) { .pl-line-select { margin-left:8px; } .pl-line-select > span { display:none; } .pl-stats { grid-template-columns:repeat(2, 1fr); } }
     `;
     document.head.appendChild(style);
@@ -157,7 +217,7 @@
     // ── Per-line scoping of the existing dashboard requests ───────────────────
 
     // Browser-side caches the dashboards keep; each line gets its own copy.
-    const PER_LINE_STORAGE = new Set(["plc_action_trigger_cards", "action_trigger_cfg"]);
+    const PER_LINE_STORAGE = new Set(["plc_action_trigger_cards"]);
     const storageKey = (key) => (PER_LINE_STORAGE.has(key) && state.lineId !== PRIMARY ? `${key}::${state.lineId}` : key);
     const nativeGet = Storage.prototype.getItem;
     const nativeSet = Storage.prototype.setItem;
@@ -353,8 +413,9 @@
         };
         let pending = false;
         try { pending = Boolean(_plcActionPendingChanges) || Boolean(_sendActionPendingChanges); } catch (_) { pending = false; }
-        if (pending) {
-            confirmAction("Unsaved card changes", "The PLC action or send cards of this line have changes that are not applied. Switch lines and discard them?", go);
+        if (pending || setup.dirty) {
+            const what = setup.dirty ? "The line setup (cameras and their settings)" : "The PLC action or send cards";
+            confirmAction("Unsaved changes", `${what} of this line ${setup.dirty ? "has" : "have"} changes that are not saved. Switch lines and discard them?`, () => { setup.dirty = false; go(); });
             const select = byId("plLineSelect");
             if (select) { select.value = state.lineId; if (select._refreshCustomSelect) select._refreshCustomSelect(); }
         } else {
@@ -674,104 +735,271 @@
         } catch (e) { toast(`${name}: ${e.message}`, "warning"); }
     }
 
-    // ── Line setup card on Line Logic ─────────────────────────────────────────
+    // ── Line setup: the line, then one card per camera ────────────────────────
 
-    function cameraBoxHtml(index, cam) {
-        const options = [`<option value="">— None —</option>`].concat(state.cameras.map((c) =>
-            `<option value="${esc(c.id)}" ${cam && cam.camera_id === c.id ? "selected" : ""}>${esc(c.name)} (${esc(String(c.type).toUpperCase())})</option>`));
-        // The role choice: "vision_qr" is a vision camera that also reads codes
-        // (saved as role "vision" with read_codes on).
-        const role = !cam ? "vision" : cam.role === "qr" ? "qr" : (cam.read_codes ? "vision_qr" : "vision");
-        const trigger = (cam && cam.qr_trigger) || "continuous";
-        const codes = role !== "vision";
-        const qrOnly = codes ? "" : "display:none";
-        const holdShown = codes && trigger === "continuous" ? "" : "display:none";
-        const delayShown = codes && trigger !== "continuous" ? "" : "display:none";
-        const triggerOption = (value, label) => `<option value="${value}" ${trigger === value ? "selected" : ""}>${label}</option>`;
-        const codeType = (cam && cam.code_type) || "all";
-        const codeTypes = state.codeTypes.some((t) => t.value === codeType)
-            ? state.codeTypes
-            : state.codeTypes.concat([{ value: codeType, label: codeType, kind: "saved" }]);
-        const KIND_PREFIX = { "2d": "2D · ", "1d": "1D · " };
-        const codeTypeOptions = codeTypes.map((t) =>
-            `<option value="${esc(t.value)}" ${t.value === codeType ? "selected" : ""}>${esc((KIND_PREFIX[t.kind] || "") + t.label)}</option>`).join("");
-        // What the camera does with each code, and the product list it checks against.
-        const action = (cam && cam.qr_action) || "report";
-        const noRead = (cam && cam.qr_no_read) || "ignore";
-        const actionOption = (value, label) => `<option value="${value}" ${action === value ? "selected" : ""}>${label}</option>`;
-        // A camera that reads codes for the first time starts on the first list.
-        const listId = cam && readsCodes(cam) ? (cam.product_list_id || "") : ((state.productLists[0] || {}).id || "");
-        const lists = state.productLists.some((l) => l.id === listId) || !listId
-            ? state.productLists
-            : state.productLists.concat([{ id: listId, name: "(deleted list)", count: 0 }]);
-        const listOptions = [`<option value="" ${listId ? "" : "selected"}>— None —</option>`].concat(lists.map((l) =>
-            `<option value="${esc(l.id)}" ${l.id === listId ? "selected" : ""}>${esc(l.name)} (${count(l.count)} code${l.count === 1 ? "" : "s"})</option>`)).join("");
-        // The model that runs on a vision camera; its two class lists are filled from that model (renderClassLists).
-        const modelId = cam && cam.role === "vision" ? (cam.model_id || "") : "";
+    // A camera's job on the line. "Code reader" is a QR / barcode reader; a
+    // vision job with "+ code reader" also reads codes (read_codes).
+    const JOBS = {
+        counting: { label: "Counting", short: "Counting", role: "vision", counting: true, codes: false },
+        station: { label: "Inspection station", short: "Station", role: "vision", counting: false, codes: false },
+        qr: { label: "Code reader", short: "Code reader", role: "qr", counting: false, codes: true },
+        counting_qr: { label: "Counting + code reader", short: "Counting + codes", role: "vision", counting: true, codes: true },
+        station_qr: { label: "Inspection station + code reader", short: "Station + codes", role: "vision", counting: false, codes: true },
+    };
+    const START_JOBS = ["counting", "station", "qr", "counting_qr"];
+    const jobOf = (cam) => (cam.role === "qr" ? "qr" : (cam.counting ? "counting" : "station") + (cam.read_codes ? "_qr" : ""));
+    const isVisionJob = (job) => JOBS[job] && JOBS[job].role === "vision";
+    const isCountingJob = (job) => Boolean(JOBS[job] && JOBS[job].counting);
+
+    // The flow direction as one choice, saved as orientation + direction with lines A < B.
+    const FLOWS = {
+        down: { label: "Top → bottom", orientation: "horizontal", direction: "forward" },
+        up: { label: "Bottom → top", orientation: "horizontal", direction: "backward" },
+        right: { label: "Left → right", orientation: "vertical", direction: "forward" },
+        left: { label: "Right → left", orientation: "vertical", direction: "backward" },
+    };
+    const flowOf = (orientation, direction) => (orientation === "vertical"
+        ? (direction === "backward" ? "left" : "right")
+        : (direction === "backward" ? "up" : "down"));
+
+    // Tracking settings a camera may change (line_config.TRACKING_LIMITS) and their
+    // defaults (CountingConfig): [label, min, max, step, default].
+    const TRACKING = {
+        min_hits: ["Min hits (frames to confirm a product)", 1, 10, 1, 2],
+        max_missed_frames: ["Missed frames before a product is dropped", 1, 120, 1, 15],
+        max_speed_pixels: ["Max speed (px per frame)", 10, 1000, 1, 120],
+        match_threshold: ["Match threshold", 0.1, 2, 0.05, 0.7],
+        position_tolerance: ["Position tolerance (px)", 20, 600, 1, 180],
+        track_high_thresh: ["High confidence", 0.05, 1, 0.05, 0.5],
+        track_low_thresh: ["Low confidence", 0.01, 0.9, 0.01, 0.15],
+    };
+    const DEFAULT_LINES = { line1_position: 0.35, line2_position: 0.65, orientation: "horizontal", direction: "forward" };
+
+    const FOLDS = [
+        ["camera", "Camera"],
+        ["job", "Job"],
+        ["model", "AI model and classes"],
+        ["counting", "Counting"],
+        ["codes", "Codes"],
+        ["image", "Image"],
+        ["video", "Video"],
+    ];
+    // Which folds a job shows.
+    const foldShown = (fold, job) => (fold === "model" || fold === "counting" ? isVisionJob(job) : fold === "codes" ? JOBS[job].codes : true);
+
+    const setup = {
+        lineId: null,
+        dirty: false,
+        cards: new Map(),     // card key -> { picks, cam (camera row), initialSettings, initialName, feed }
+        nextKey: 1,
+        focusCamera: null,    // open this camera's card once Line setup is drawn (Cameras page "Settings")
+    };
+
+    const cardsOnPage = () => [...document.querySelectorAll("#plCamGrid .pl-card:not(.pl-add-card)")];
+    const cardField = (card, name) => card.querySelector(`[data-f="${name}"]`);
+    const cardValue = (card, name) => (cardField(card, name) ? cardField(card, name).value : "");
+    const cardJob = (card) => cardValue(card, "job") || "counting";
+    const cameraRow = (id) => state.cameras.find((c) => c.id === id) || null;
+
+    function markDirty() {
+        if (setup.dirty) return;
+        setup.dirty = true;
+        const note = byId("plSetupDirty");
+        if (note) note.hidden = false;
+    }
+
+    // Which line other than this one owns each camera.
+    function cameraOwners() {
+        const owners = {};
+        state.lines.forEach((l) => {
+            if (l.id === state.lineId) return;
+            (l.cameras || []).forEach((c) => { owners[c.camera_id] = l.name; });
+        });
+        return owners;
+    }
+
+    function cameraConnected(id) {
+        const live = ((state.detail && state.detail.status && state.detail.status.cameras) || []).find((c) => c.camera_id === id);
+        if (live && live.connected) return true;
+        const row = cameraRow(id);
+        return Boolean(row && (row.connection_state === "connected" || (row.is_active && !row.connection_state)));
+    }
+
+    // The options of a camera select: cameras on another line or on another card are greyed out.
+    function deviceOptions(selected, card) {
+        const owners = cameraOwners();
+        const onCards = new Set(cardsOnPage().filter((c) => c !== card).map((c) => c.dataset.camera));
+        const options = state.cameras.map((c) => {
+            const taken = owners[c.id] ? `on ${owners[c.id]}` : onCards.has(c.id) ? "on another card" : "";
+            return `<option value="${esc(c.id)}" ${c.id === selected ? "selected" : ""} ${taken && c.id !== selected ? "disabled" : ""}>${esc(c.name)} (${esc(String(c.type || "").toUpperCase())})${taken ? ` · ${esc(taken)}` : ""}</option>`;
+        });
+        if (selected && !cameraRow(selected)) options.unshift(`<option value="${esc(selected)}" selected>${esc(selected)} (not found)</option>`);
+        return options.join("");
+    }
+
+    function modelOptions(modelId) {
         const models = !modelId || state.models.some((m) => m.id === modelId)
             ? state.models
             : state.models.concat([{ id: modelId, name: "(deleted model)", version: "", classes: [] }]);
-        const modelOptions = [`<option value="" ${modelId ? "" : "selected"}>— Choose a model —</option>`].concat(models.map((m) =>
+        return [`<option value="" ${modelId ? "" : "selected"}>— Choose a model —</option>`].concat(models.map((m) =>
             `<option value="${esc(m.id)}" ${m.id === modelId ? "selected" : ""}>${esc(m.name)} ${esc(m.version || "")}</option>`)).join("");
-        const visionOnly = role === "qr" ? "display:none" : "";
+    }
+
+    function codeTypeOptions(codeType) {
+        const types = state.codeTypes.some((t) => t.value === codeType)
+            ? state.codeTypes
+            : state.codeTypes.concat([{ value: codeType, label: codeType, kind: "saved" }]);
+        const KIND_PREFIX = { "2d": "2D · ", "1d": "1D · " };
+        return types.map((t) => `<option value="${esc(t.value)}" ${t.value === codeType ? "selected" : ""}>${esc((KIND_PREFIX[t.kind] || "") + t.label)}</option>`).join("");
+    }
+
+    function listOptions(listId) {
+        const lists = state.productLists.some((l) => l.id === listId) || !listId
+            ? state.productLists
+            : state.productLists.concat([{ id: listId, name: "(deleted list)", count: 0 }]);
+        return [`<option value="" ${listId ? "" : "selected"}>— None —</option>`].concat(lists.map((l) =>
+            `<option value="${esc(l.id)}" ${l.id === listId ? "selected" : ""}>${esc(l.name)} (${count(l.count)} code${l.count === 1 ? "" : "s"})</option>`)).join("");
+    }
+
+    const option = (value, label, current) => `<option value="${value}" ${current === value ? "selected" : ""}>${label}</option>`;
+    const numOrEmpty = (v) => (v === null || v === undefined || v === "" ? "" : v);
+
+    // What the folds remember being open, per camera, in this browser.
+    function openFolds(cameraId, fallback) {
+        try {
+            const saved = JSON.parse(localStorage.getItem(`pl_card_folds::${cameraId}`) || "null");
+            if (Array.isArray(saved)) return new Set(saved);
+        } catch (_) { /* not saved */ }
+        return new Set(fallback);
+    }
+    function rememberFolds(card) {
+        const open = [...card.querySelectorAll(".pl-fold.open")].map((f) => f.dataset.fold);
+        try { localStorage.setItem(`pl_card_folds::${card.dataset.camera}`, JSON.stringify(open)); } catch (_) { /* storage off */ }
+    }
+
+    function foldHtml(name, title, body, open) {
+        return `<section class="pl-fold${open ? " open" : ""}" data-fold="${name}">
+            <button type="button" class="pl-fold-head" aria-expanded="${open ? "true" : "false"}"><span>${title}</span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg></button>
+            <div class="pl-fold-body">${body}</div></section>`;
+    }
+
+    // One camera card. ``cam`` is the line's camera entry (or a new one), ``trigger`` the line's action_trigger.
+    function cameraCardHtml(key, cam, trigger, openSet) {
+        const job = jobOf(cam);
+        const row = cameraRow(cam.camera_id) || { name: cam.camera_id, type: "" };
+        const eff = (k) => (cam[k] !== undefined && cam[k] !== null && cam[k] !== "" ? cam[k] : (trigger[k] !== undefined && trigger[k] !== null && trigger[k] !== "" ? trigger[k] : DEFAULT_LINES[k]));
+        const orientation = eff("orientation");
+        const direction = eff("direction");
+        const lineTracking = trigger.tracking || {};
+        const tracking = cam.tracking || {};
+        const trigger1 = cam.qr_trigger || "continuous";
+        const codeType = cam.code_type || "all";
+        const action = cam.qr_action || "report";
+        const listId = readsCodes(cam) ? (cam.product_list_id || "") : ((state.productLists[0] || {}).id || "");
+        const station = cam.station || "own";
+        const readOnly = level() < 2;
+        const fold = (name, title, body) => foldHtml(name, title, body, openSet.has(name));
+
+        const cameraBody = `
+            <div class="form-group"><label class="form-label">Device</label><select class="form-input" data-f="device">${deviceOptions(cam.camera_id, null)}</select>
+                <div class="pl-note">Change the device this card uses. Cameras on another line are greyed out.</div></div>
+            <div class="form-group"><label class="form-label">Name</label><input type="text" class="form-input" data-f="name" maxlength="128" value="${esc(row.name || "")}">
+                <div class="pl-note">The camera's name everywhere (Cameras page, messages). Saved with the line setup.</div></div>
+            <div class="pl-inline"><button type="button" class="btn-action btn-sm btn-outline" data-act="connect">Connect</button><button type="button" class="btn-action btn-sm btn-outline" data-act="disconnect">Disconnect</button>
+                <span class="pl-note pl-conn-note" style="margin:0"></span></div>`;
+
+        const jobBody = `
+            <div class="form-group"><label class="form-label">What this camera does</label><select class="form-input" data-f="job">${Object.keys(JOBS).map((j) => option(j, JOBS[j].label, job)).join("")}</select>
+                <div class="pl-note pl-job-note"></div></div>
+            <div class="form-group pl-station" style="margin-bottom:0"><label class="form-label">Inspection station result</label>
+                <select class="form-input" data-f="station">${option("own", "Own station: counts and rejects on its own", station)}${option("join", "Joins the product result", station)}</select>
+                <div class="pl-note pl-station-note"></div></div>`;
+
+        const modelBody = `
+            <div class="form-group"><label class="form-label">Vision model</label><select class="form-input" data-f="model">${modelOptions(cam.model_id || "")}</select>
+                <div class="pl-model-state" data-f="model-state"></div>
+                <div class="pl-note">Cameras that pick the same model share one loaded copy. Models are uploaded on the AI models page.</div></div>
+            <div class="form-group"><label class="form-label">Products to count</label><div data-kind="expected"></div>
+                <div class="pl-note">The model's classes that count as good products.</div></div>
+            <div class="form-group"><label class="form-label">Defects to reject</label><div data-kind="defects"></div>
+                <div class="pl-note">A class can be in one list only. With nothing ticked in either list, every class the model finds counts as a product.</div></div>
+            <div class="form-group"><label class="form-label">Confidence threshold</label><input type="number" class="form-input" data-f="confidence" min="0.05" max="0.99" step="0.01" placeholder="The model's own" value="${esc(numOrEmpty(cam.confidence))}">
+                <div class="pl-note">Detections below this confidence are ignored (0.05 to 0.99). Empty: the model's own threshold.</div></div>
+            <label class="pl-inline pl-check"><input type="checkbox" data-f="name_based_defects" ${cam.name_based_defects !== false ? "checked" : ""}> Also reject classes whose name contains "defect", "scratch" or "broken"</label>
+            <div class="pl-note">Even when they are not ticked as defects. On for cameras set up before this switch existed.</div>`;
+
+        const trackingFields = Object.entries(TRACKING).map(([k, [label, min, max, step, def]]) =>
+            `<div class="form-group" style="margin:0"><label class="form-label">${label}</label><input type="number" class="form-input" data-track="${k}" min="${min}" max="${max}" step="${step}" placeholder="${esc(lineTracking[k] ?? def)}" value="${esc(numOrEmpty(tracking[k]))}"></div>`).join("");
+        const countingBody = `
+            <div class="pl-form-grid pl-form-tight">
+                <div class="form-group"><label class="form-label">Flow direction</label><select class="form-input" data-f="flow">${Object.keys(FLOWS).map((f) => option(f, FLOWS[f].label, flowOf(orientation, direction))).join("")}</select></div>
+                <div class="form-group"><label class="form-label">Count mode</label><select class="form-input" data-f="mode">${option("one", "A then B (the flow above)", direction === "both" ? "both" : "one")}${option("both", "Both ways", direction === "both" ? "both" : "one")}</select></div>
+            </div>
+            <div class="pl-lines-pic" data-f="lines-pic"><img alt="" hidden><canvas></canvas><span class="pl-lines-note">Drag line A or B. <button type="button" class="pl-link" data-act="picture">Take a picture</button></span></div>
+            <div class="pl-form-grid pl-form-tight">
+                <div class="form-group"><label class="form-label">Count line A</label><input type="number" class="form-input" data-f="line1" min="0" max="1" step="0.01" value="${esc(eff("line1_position"))}"></div>
+                <div class="form-group"><label class="form-label">Count line B</label><input type="number" class="form-input" data-f="line2" min="0" max="1" step="0.01" value="${esc(eff("line2_position"))}"></div>
+            </div>
+            <div class="pl-note pl-lines-hint"></div>
+            <details class="pl-advanced"><summary>Advanced tracking</summary>
+                <div class="pl-note" style="margin:6px 0 10px">Empty: the default, shown in grey.</div>
+                <div class="pl-form-grid pl-form-tight">${trackingFields}</div></details>`;
+
+        const codesBody = `
+            <div class="form-group"><label class="form-label">Code type</label><select class="form-input" data-f="code_type">${codeTypeOptions(codeType)}</select>
+                <div class="pl-note">Only codes of this type are read; any other code in the picture is ignored. 2D and 1D read every type of that kind.</div></div>
+            <div class="form-group"><label class="form-label">Read codes</label><select class="form-input" data-f="qr_trigger">
+                ${option("continuous", "Continuously, on every frame", trigger1)}${option("line1", "One picture when a product crosses wire line 1", trigger1)}${option("line2", "One picture when a product crosses wire line 2", trigger1)}</select>
+                <div class="pl-note">A picture is taken each time the counting camera sees a product cross the chosen wire line. It shows on the Line dashboard with every code outlined.</div></div>
+            <div class="form-group pl-trigger-delay"><label class="form-label">Picture delay after the crossing (ms)</label>
+                <input type="number" class="form-input" data-f="qr_delay" min="0" max="10000" step="10" value="${esc(cam.qr_trigger_delay_ms || 0)}">
+                <div class="pl-note">For a code camera further along the belt: how long the product takes to reach it. 0 = at once.</div></div>
+            <div class="form-group pl-hold"><label class="form-label">QR hold time (ms)</label>
+                <input type="number" class="form-input" data-f="qr_hold" min="100" max="60000" step="100" value="${esc(cam.qr_hold_ms || 1500)}">
+                <div class="pl-note">A code counts again only after it has been out of view this long.</div></div>
+            <div class="form-group"><label class="form-label">Action</label><select class="form-input" data-f="qr_action">
+                ${option("report", "Report only", action)}${option("accept_listed", "Accept only listed codes", action)}${option("reject_listed", "Reject listed codes", action)}</select>
+                <div class="pl-note pl-action-note"></div></div>
+            <div class="form-group"><label class="form-label">Product list</label><select class="form-input" data-f="qr_list">${listOptions(listId)}</select>
+                <div class="pl-note">The list this camera checks its codes against. The lists are on the Products page.</div></div>
+            <div class="form-group pl-no-read" style="margin-bottom:0"><label class="form-label">When no code is read</label><select class="form-input" data-f="qr_no_read">
+                ${option("reject", "Reject", cam.qr_no_read || "ignore")}${option("ignore", "Ignore", cam.qr_no_read || "ignore")}</select>
+                <div class="pl-note">Ignore: the product is good or bad according to the vision camera alone.</div></div>`;
+
         return `
-            <div class="pl-cam-box" data-index="${index}">
-                <h4>Camera ${index + 1}</h4>
-                <div class="form-group"><label class="form-label">Camera</label><select class="form-input" id="plCam${index}">${options.join("")}</select></div>
-                <div class="form-group"><label class="form-label">Role</label><select class="form-input pl-role" id="plRole${index}">
-                    <option value="vision" ${role === "vision" ? "selected" : ""}>Vision (counting and inspection)</option>
-                    <option value="qr" ${role === "qr" ? "selected" : ""}>QR code / barcode reader</option>
-                    <option value="vision_qr" ${role === "vision_qr" ? "selected" : ""}>Vision + QR code / barcode reader</option>
-                </select>
-                    <div class="pl-note pl-vision-qr-note" style="${role === "vision_qr" ? "" : "display:none"}">Counts and inspects with the AI model and reads codes on the same picture, for a line with one camera.</div></div>
-                <div class="form-group pl-vision-only" style="${visionOnly}"><label class="form-label">Vision model</label><select class="form-input pl-model" id="plCamModel${index}">${modelOptions}</select>
-                    <div class="pl-model-state" id="plModelState${index}"></div>
-                    <div class="pl-note">The model that runs on this camera. Cameras that pick the same model share one loaded copy. Models are uploaded on the AI models page.</div></div>
-                <div class="form-group pl-vision-only" style="${visionOnly}"><label class="form-label">Products to count</label>
-                    <div id="plExpected${index}" data-kind="expected"></div>
-                    <div class="pl-note">The model's classes that count as good products.</div></div>
-                <div class="form-group pl-vision-only" style="${visionOnly}"><label class="form-label">Defects to reject</label>
-                    <div id="plDefects${index}" data-kind="defects"></div>
-                    <div class="pl-note">The model's classes that reject the product. A class can be in one list only. With nothing ticked in either list, every class the model finds counts as a product.</div></div>
-                <div class="form-group pl-qr-only" style="${qrOnly}"><label class="form-label">Code type</label><select class="form-input" id="plCodeType${index}">${codeTypeOptions}</select>
-                    <div class="pl-note">Only codes of this type are read; any other code in the picture is ignored. 2D and 1D read every type of that kind.</div></div>
-                <div class="form-group pl-qr-only" style="${qrOnly}"><label class="form-label">Read codes</label><select class="form-input pl-trigger" id="plTrig${index}">
-                    ${triggerOption("continuous", "Continuously, on every frame")}
-                    ${triggerOption("line1", "One picture when a product crosses wire line 1")}
-                    ${triggerOption("line2", "One picture when a product crosses wire line 2")}
-                </select>
-                    <div class="pl-note">A picture is taken each time the counting camera sees a product cross the chosen wire line. It shows on the Line dashboard with every code outlined.</div></div>
-                <div class="form-group pl-qr-only" style="${qrOnly}"><label class="form-label">Action</label><select class="form-input pl-qr-action" id="plQrAction${index}">
-                    ${actionOption("report", "Report only")}
-                    ${actionOption("accept_listed", "Accept only listed codes")}
-                    ${actionOption("reject_listed", "Reject listed codes")}
-                </select>
-                    <div class="pl-note pl-action-note"></div></div>
-                <div class="form-group pl-qr-only" style="${qrOnly}"><label class="form-label">Product list</label><select class="form-input" id="plQrList${index}">${listOptions}</select>
-                    <div class="pl-note">The list this camera checks its codes against. The lists are on the Products page.</div></div>
-                <div class="form-group pl-no-read" style="display:none"><label class="form-label">When no code is read</label><select class="form-input" id="plQrNoRead${index}">
-                    <option value="reject" ${noRead === "reject" ? "selected" : ""}>Reject</option>
-                    <option value="ignore" ${noRead === "ignore" ? "selected" : ""}>Ignore</option>
-                </select>
-                    <div class="pl-note">Ignore: the product is good or bad according to the vision camera alone.</div></div>
-                <div class="form-group pl-trigger-delay" style="margin-bottom:0;${delayShown}"><label class="form-label">Picture delay after the crossing (ms)</label>
-                    <input type="number" class="form-input" id="plTrigDelay${index}" min="0" max="10000" step="10" value="${cam && cam.qr_trigger_delay_ms ? cam.qr_trigger_delay_ms : 0}">
-                    <div class="pl-note">For a QR camera further along the belt: how long the product takes to reach it. 0 = at once.</div></div>
-                <div class="form-group pl-hold" style="margin-bottom:0;${holdShown}"><label class="form-label">QR hold time (ms)</label>
-                    <input type="number" class="form-input" id="plHold${index}" min="100" max="60000" step="100" value="${cam && cam.qr_hold_ms ? cam.qr_hold_ms : 1500}">
-                    <div class="pl-note">A code counts again only after it has been out of view this long.</div>
+            <div class="card-panel pl-card" data-key="${key}" data-camera="${esc(cam.camera_id)}">
+                <div class="pl-card-head">
+                    <div class="pl-card-title">
+                        <span class="pl-dot pl-card-dot"></span>
+                        <span class="pl-card-name">${esc(row.name || cam.camera_id)}</span>
+                        <span class="pl-badge" data-f="badge">${esc(JOBS[job].short)}</span>
+                    </div>
+                    <div class="pl-card-tools">
+                        <button type="button" class="pl-icon-btn" data-act="up" title="Move up" aria-label="Move up"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg></button>
+                        <button type="button" class="pl-icon-btn" data-act="down" title="Move down" aria-label="Move down"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>
+                        <button type="button" class="pl-icon-btn danger restricted-l2" data-act="remove" title="Remove from the line" aria-label="Remove from the line" ${readOnly ? "disabled" : ""}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+                    </div>
+                </div>
+                <div class="pl-card-sub"></div>
+                <div class="pl-card-live"><img alt="Live picture"><span class="pl-card-live-note">No picture</span></div>
+                <div class="pl-folds">
+                    ${fold("camera", "Camera", cameraBody)}
+                    ${fold("job", "Job", jobBody)}
+                    ${fold("model", "AI model and classes", modelBody)}
+                    ${fold("counting", "Counting", countingBody)}
+                    ${fold("codes", "Codes", codesBody)}
+                    ${fold("image", "Image", `<div data-f="image-form"></div>`)}
+                    ${fold("video", "Video", `<div data-f="video-form"></div>`)}
                 </div>
             </div>`;
     }
 
-    // What is ticked in each camera box's two class lists: [{ savedModel, expected: [names], defects: [names] }].
-    // Set from the saved line when Line setup is drawn, and read back from the page when a box's model changes.
-    let setupPicks = [];
-    const CLASS_BOX = { expected: "plExpected", defects: "plDefects" };
+    // ── Class lists of a card (the model's own class names) ───────────────────
+
     const CLASS_FILTER_FROM = 12;  // a model with more classes than this gets a filter box
 
-    function pickedClasses(index, kind) {
-        const box = byId(`${CLASS_BOX[kind]}${index}`);
+    function pickedClasses(card, kind) {
+        const box = card.querySelector(`[data-kind="${kind}"]`);
         return box ? [...box.querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.value) : [];
     }
 
@@ -783,19 +1011,19 @@
         note.textContent = ticked.length ? `${ticked.length} of ${all.length} ticked: ${ticked.join(", ")}` : `None of ${all.length} ticked`;
     }
 
-    // The two class lists of a camera box, filled from the chosen model's own class names.
-    function renderClassLists(index) {
-        const picks = setupPicks[index];
-        const select = byId(`plCamModel${index}`);
-        if (!picks || !select) return;
+    function renderClassLists(card) {
+        const info = setup.cards.get(card.dataset.key);
+        const select = cardField(card, "model");
+        if (!info || !select) return;
+        const picks = info.picks;
         const modelId = select.value;
         const model = state.models.find((m) => m.id === modelId);
         const classes = model && Array.isArray(model.classes) ? model.classes.map(String) : [];
         const inModel = new Set(classes.map((c) => c.toLowerCase()));
-        Object.keys(CLASS_BOX).forEach((kind) => {
-            const box = byId(`${CLASS_BOX[kind]}${index}`);
+        ["expected", "defects"].forEach((kind) => {
+            const box = card.querySelector(`[data-kind="${kind}"]`);
             const ticked = new Set(picks[kind].map((c) => String(c).toLowerCase()));
-            // A saved name the model does not have (typed before the lists were picked) is shown so it can be unticked.
+            // A saved name the model does not have is shown so it can be unticked.
             const unknown = modelId && modelId === picks.savedModel ? picks[kind].filter((c) => !inModel.has(String(c).toLowerCase())) : [];
             const item = (name, checked, isUnknown) => `<label class="pl-class${isUnknown ? " unknown" : ""}" title="${esc(name)}${isUnknown ? ": not a class of this model, so it never counts" : ""}">
                 <input type="checkbox" value="${esc(name)}" ${checked ? "checked" : ""}><span>${esc(name)}${isUnknown ? " (not in this model)" : ""}</span></label>`;
@@ -807,7 +1035,6 @@
                 box.innerHTML = `<div class="pl-classes"><div class="pl-classes-empty">This model lists no class names.</div></div>`;
                 return;
             }
-            // Ticked classes first, then the rest in the model's order.
             const known = classes.filter((c) => ticked.has(c.toLowerCase())).concat(classes.filter((c) => !ticked.has(c.toLowerCase())));
             box.innerHTML = (classes.length > CLASS_FILTER_FROM
                 ? `<input type="search" class="form-input pl-class-filter" placeholder="Filter ${classes.length} classes…" aria-label="Filter classes">` : "")
@@ -817,17 +1044,13 @@
         });
     }
 
-    // Whether the model chosen in a camera box is in memory.
-    function renderModelState(index) {
-        const el = byId(`plModelState${index}`);
-        const select = byId(`plCamModel${index}`);
+    function renderModelState(card) {
+        const el = cardField(card, "model-state");
+        const select = cardField(card, "model");
         if (!el || !select) return;
         const dot = (color) => `<span class="pl-dot" style="background:${color}"></span>`;
-        const modelId = select.value;
-        const model = state.models.find((m) => m.id === modelId);
-        if (!byId(`plCam${index}`).value) {
-            el.textContent = "";  // no camera in this box yet
-        } else if (!modelId) {
+        const model = state.models.find((m) => m.id === select.value);
+        if (!select.value) {
             el.innerHTML = `<span style="color:var(--danger-color)">No model chosen: a vision camera cannot be saved without one.</span>`;
         } else if (!model) {
             el.innerHTML = `<span style="color:var(--danger-color)">${dot("var(--danger-color)")}This model no longer exists. Choose another one.</span>`;
@@ -840,12 +1063,12 @@
         }
     }
 
-    function onCameraModelChange(index) {
-        const picks = setupPicks[index];
-        if (!picks) return;
-        Object.keys(CLASS_BOX).forEach((kind) => { picks[kind] = pickedClasses(index, kind); });
-        renderClassLists(index);
-        renderModelState(index);
+    function onCameraModelChange(card) {
+        const info = setup.cards.get(card.dataset.key);
+        if (!info) return;
+        ["expected", "defects"].forEach((kind) => { info.picks[kind] = pickedClasses(card, kind); });
+        renderClassLists(card);
+        renderModelState(card);
     }
 
     const ACTION_NOTES = {
@@ -854,188 +1077,731 @@
         reject_listed: "A product whose code is in the product list is rejected. A product is good only when the vision camera found it good and its code is not in the list.",
     };
     const READER_ONLY_NOTE = " This line has no vision camera, so each code read counts as one product, good or reject. The same code counts again only after it has been out of view for the hold time: counting is reliable when products pass further apart than that. For exact counts, add a vision camera.";
+    const JOB_NOTES = {
+        counting: "Line totals come from this camera. Exactly one vision camera counts.",
+        counting_qr: "Counts and inspects with the AI model and reads codes on the same picture, for a line with one camera.",
+        station: "Counts and rejects on its own and fires only the PLC and send cards that name it.",
+        station_qr: "An inspection station that also reads codes on the same picture.",
+        qr: "Reads codes. With a vision camera on the line, Sync pairs each product with its code.",
+    };
 
-    // What the camera boxes say about the line as a whole.
-    function setupBoxes() {
-        return [0, 1].map((i) => ({
-            index: i,
-            camera: byId(`plCam${i}`) ? byId(`plCam${i}`).value : "",
-            role: byId(`plRole${i}`) ? byId(`plRole${i}`).value : "vision",
-            action: byId(`plQrAction${i}`) ? byId(`plQrAction${i}`).value : "report",
-        })).filter((b) => b.camera);
-    }
-    const setupHasVision = () => setupBoxes().some((b) => b.role !== "qr");
-    const setupChecksCodes = () => setupBoxes().some((b) => b.role !== "vision" && b.action !== "report");
+    const setupHasVision = () => cardsOnPage().some((c) => isVisionJob(cardJob(c)));
+    const setupChecksCodes = () => cardsOnPage().some((c) => JOBS[cardJob(c)].codes && cardValue(c, "qr_action") !== "report");
 
-    // Show only the fields that apply to each camera box's role and capture choice.
-    function syncCameraBox(box) {
-        const index = box.dataset.index;
-        const role = byId(`plRole${index}`).value;
-        const trigger = byId(`plTrig${index}`).value;
-        const action = byId(`plQrAction${index}`).value;
-        const codes = role !== "vision";
-        const checks = codes && action !== "report";
+    // Show the folds and fields that apply to a card's job and choices.
+    function syncCard(card, index) {
+        const job = cardJob(card);
+        const row = cameraRow(card.dataset.camera);
+        card.querySelectorAll(".pl-fold").forEach((f) => { f.hidden = !foldShown(f.dataset.fold, job); });
+        cardField(card, "badge").textContent = JOBS[job].short;
+        cardField(card, "badge").className = `pl-badge job-${job.replace("_qr", "")}`;
+        card.querySelector(".pl-card-sub").textContent = `Camera ${index + 1}${row ? ` · ${String(row.type || "").toUpperCase()}` : ""}`;
+        card.querySelector(".pl-job-note").textContent = JOB_NOTES[job] || "";
+        const stationShown = job === "station" || job === "station_qr";
+        card.querySelector(".pl-station").hidden = !stationShown;
+        card.querySelector(".pl-station-note").textContent = cardValue(card, "station") === "join"
+            ? "Joins the product result: comes with the next update. Until then this camera works as an own station."
+            : "Counts and rejects on its own, as a second camera always did.";
+        // Codes
+        const trigger = cardValue(card, "qr_trigger");
+        const action = cardValue(card, "qr_action");
+        const checks = JOBS[job].codes && action !== "report";
         const hasVision = setupHasVision();
-        box.querySelector(".pl-vision-qr-note").style.display = role === "vision_qr" ? "" : "none";
-        box.querySelectorAll(".pl-qr-only").forEach((el) => { el.style.display = codes ? "" : "none"; });
-        box.querySelectorAll(".pl-vision-only").forEach((el) => { el.style.display = role === "qr" ? "none" : ""; });
-        renderModelState(Number(index));
-        box.querySelector(".pl-trigger-delay").style.display = codes && trigger !== "continuous" ? "" : "none";
-        box.querySelector(".pl-hold").style.display = codes && trigger === "continuous" ? "" : "none";
-        // "No code was read" only exists where the line knows a product was
-        // there: it has a vision camera that counts the product.
-        box.querySelector(".pl-no-read").style.display = checks && hasVision ? "" : "none";
-        box.querySelector(".pl-action-note").textContent = (ACTION_NOTES[action] || "") + (checks && !hasVision ? READER_ONLY_NOTE : "");
+        card.querySelector(".pl-trigger-delay").hidden = trigger === "continuous";
+        card.querySelector(".pl-hold").hidden = trigger !== "continuous";
+        // "No code was read" only exists where the line knows a product was there.
+        card.querySelector(".pl-no-read").hidden = !(checks && hasVision);
+        card.querySelector(".pl-action-note").textContent = (ACTION_NOTES[action] || "") + (checks && !hasVision ? READER_ONLY_NOTE : "");
+        // Counting
+        const flow = FLOWS[cardValue(card, "flow")] || FLOWS.down;
+        const vertical = flow.orientation === "vertical";
+        const a = parseFloat(cardValue(card, "line1"));
+        const b = parseFloat(cardValue(card, "line2"));
+        card.querySelector(".pl-lines-hint").textContent = `${vertical ? "0 = left edge, 1 = right edge" : "0 = top edge, 1 = bottom edge"} of the picture.`
+            + (a >= b ? " Line A should come before line B (A smaller than B); the flow direction says which way products cross them." : "");
+        renderModelState(card);
+        updateConnection(card);
+        drawCountLines(card);
     }
 
-    // The fields that depend on both camera boxes: each box, and Sync.
     function syncLineSetup() {
-        document.querySelectorAll("#plLineSetup .pl-cam-box").forEach(syncCameraBox);
+        cardsOnPage().forEach(syncCard);
         const sync = byId("plSync");
-        if (!sync) return;
-        // A camera that checks codes beside a vision camera needs Sync: it is
-        // what pairs each product with its code.
-        const forced = setupChecksCodes() && setupHasVision();
-        if (forced) sync.checked = true;
-        sync.disabled = forced;
-        const note = byId("plSyncForced");
-        if (note) note.style.display = forced ? "" : "none";
+        if (sync) {
+            // A camera that checks codes beside a vision camera needs Sync: it pairs each product with its code.
+            const forced = setupChecksCodes() && setupHasVision();
+            if (forced) sync.checked = true;
+            sync.disabled = forced || level() < 2;
+            byId("plSyncForced").style.display = forced ? "" : "none";
+        }
+        const add = byId("plAddCard");
+        if (add) {
+            const full = cardsOnPage().length >= MAX_CAMERAS_PER_LINE;
+            add.querySelector(".pl-add-body").hidden = full;
+            add.querySelector(".pl-add-full").hidden = !full;
+            // The starting job offered: Counting until the line has a counting camera.
+            const jobSelect = add.querySelector('[data-f="add-job"]');
+            const wanted = cardsOnPage().some((c) => isCountingJob(cardJob(c))) ? "station" : "counting";
+            if (jobSelect.dataset.auto !== wanted) { jobSelect.dataset.auto = wanted; jobSelect.value = wanted; }
+            refreshAddDevices();
+        }
     }
 
-    async function renderLineSetup() {
-        const page = byId("tabActionTrigger");
-        if (!page) return;
-        let card = byId("plLineSetup");
-        if (!card) {
-            card = document.createElement("div");
-            card.id = "plLineSetup";
-            card.className = "card-panel";
-            page.insertBefore(card, page.firstChild);
-        }
-        card.innerHTML = `<div class="card-panel-header"><span class="card-panel-title">Line setup</span></div><div class="pl-note">Loading…</div>`;
+    function updateConnection(card) {
+        const id = card.dataset.camera;
+        const connected = cameraConnected(id);
+        const dot = card.querySelector(".pl-card-dot");
+        dot.style.background = connected ? "var(--success-color)" : "var(--danger-color)";
+        dot.title = connected ? "Connected" : "Not connected";
+        const note = card.querySelector(".pl-conn-note");
+        if (note) note.textContent = connected ? "Connected" : "Not connected";
+        const connect = card.querySelector('[data-act="connect"]');
+        const disconnect = card.querySelector('[data-act="disconnect"]');
+        if (connect) connect.disabled = connected || level() < 2;
+        if (disconnect) disconnect.disabled = !connected || level() < 2;
+    }
+
+    // ── Count lines drawn on the camera's picture ─────────────────────────────
+
+    function countLineGeometry(card) {
+        const flow = FLOWS[cardValue(card, "flow")] || FLOWS.down;
+        const both = cardValue(card, "mode") === "both";
+        const clamp01 = (v, d) => { const n = parseFloat(v); return Number.isFinite(n) ? Math.min(Math.max(n, 0), 1) : d; };
+        return { flow, both, a: clamp01(cardValue(card, "line1"), 0.35), b: clamp01(cardValue(card, "line2"), 0.65) };
+    }
+
+    function drawCountLines(card) {
+        const box = cardField(card, "lines-pic");
+        if (!box || box.closest(".pl-fold").hidden || !box.closest(".pl-fold").classList.contains("open")) return;
+        const canvas = box.querySelector("canvas");
+        const w = box.clientWidth;
+        const h = box.clientHeight;
+        if (!w || !h) return;
+        const ratio = window.devicePixelRatio || 1;
+        canvas.width = Math.round(w * ratio);
+        canvas.height = Math.round(h * ratio);
+        const ctx = canvas.getContext("2d");
+        ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+        const { flow, both, a, b } = countLineGeometry(card);
+        const vertical = flow.orientation === "vertical";
+        const styles = getComputedStyle(document.documentElement);
+        const colors = { a: styles.getPropertyValue("--primary-color").trim() || "#3b82f6", b: styles.getPropertyValue("--warning-color").trim() || "#f59e0b" };
+        [["A", a, colors.a], ["B", b, colors.b]].forEach(([label, pos, color]) => {
+            ctx.strokeStyle = color;
+            ctx.fillStyle = color;
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            if (vertical) { ctx.moveTo(pos * w, 0); ctx.lineTo(pos * w, h); } else { ctx.moveTo(0, pos * h); ctx.lineTo(w, pos * h); }
+            ctx.stroke();
+            ctx.font = "bold 13px sans-serif";
+            const x = vertical ? Math.min(pos * w + 6, w - 16) : 8;
+            const y = vertical ? 18 : Math.max(pos * h - 6, 14);
+            ctx.fillText(label, x, y);
+        });
+        // An arrow in the middle shows which way products go.
+        ctx.strokeStyle = "rgba(255,255,255,.85)";
+        ctx.lineWidth = 2.5;
+        const cx = w / 2;
+        const cy = h / 2;
+        const len = Math.min(w, h) * 0.18;
+        const forward = flow.direction === "forward";
+        const arrow = (dx, dy) => {
+            const [x1, y1, x2, y2] = [cx - dx * len, cy - dy * len, cx + dx * len, cy + dy * len];
+            ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+            const ang = Math.atan2(y2 - y1, x2 - x1);
+            ctx.beginPath();
+            ctx.moveTo(x2, y2); ctx.lineTo(x2 - 10 * Math.cos(ang - 0.5), y2 - 10 * Math.sin(ang - 0.5));
+            ctx.moveTo(x2, y2); ctx.lineTo(x2 - 10 * Math.cos(ang + 0.5), y2 - 10 * Math.sin(ang + 0.5));
+            ctx.stroke();
+        };
+        const sign = forward ? 1 : -1;
+        if (vertical) arrow(sign, 0); else arrow(0, sign);
+        if (both) { if (vertical) arrow(-sign, 0); else arrow(0, -sign); }
+    }
+
+    function bindCountLineDrag(card) {
+        const box = cardField(card, "lines-pic");
+        let dragging = null;
+        const posAt = (e) => {
+            const r = box.getBoundingClientRect();
+            const vertical = countLineGeometry(card).flow.orientation === "vertical";
+            const p = vertical ? (e.clientX - r.left) / r.width : (e.clientY - r.top) / r.height;
+            return Math.round(Math.min(Math.max(p, 0), 1) * 100) / 100;
+        };
+        box.addEventListener("pointerdown", (e) => {
+            if (e.target.closest("button")) return;
+            const p = posAt(e);
+            const { a, b } = countLineGeometry(card);
+            dragging = Math.abs(p - a) <= Math.abs(p - b) ? "line1" : "line2";
+            box.setPointerCapture(e.pointerId);
+            e.preventDefault();
+            cardField(card, dragging).value = p.toFixed(2);
+            markDirty();
+            syncCard(card, cardsOnPage().indexOf(card));
+        });
+        box.addEventListener("pointermove", (e) => {
+            if (!dragging) return;
+            cardField(card, dragging).value = posAt(e).toFixed(2);
+            syncCard(card, cardsOnPage().indexOf(card));
+        });
+        const end = () => { dragging = null; };
+        box.addEventListener("pointerup", end);
+        box.addEventListener("pointercancel", end);
+    }
+
+    // A still picture of the camera behind the count lines (the picture the model sees, after the ROI).
+    async function loadLinesPicture(card) {
+        const box = cardField(card, "lines-pic");
+        const img = box.querySelector("img");
+        const id = card.dataset.camera;
         try {
-            await Promise.all([loadDetail(), loadCamerasList(), loadModelsList(), loadCodeTypes(), loadProductLists().catch(() => [])]);
-        } catch (e) {
-            card.innerHTML = `<div class="card-panel-header"><span class="card-panel-title">Line setup</span></div><div class="pl-note">Could not load the line: ${esc(e.message)}</div>`;
+            const res = await fetch(`/api/v1/cameras/${encodeURIComponent(id)}/frame`, { cache: "no-store" });
+            if (!res.ok) throw new Error();
+            const url = URL.createObjectURL(await res.blob());
+            if (card.dataset.camera !== id) { URL.revokeObjectURL(url); return; }
+            if (img.dataset.blob) URL.revokeObjectURL(img.dataset.blob);
+            img.dataset.blob = url;
+            img.onload = () => {
+                box.style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`;
+                img.hidden = false;
+                drawCountLines(card);
+            };
+            img.src = url;
+        } catch (_) {
+            img.hidden = true;
+            box.style.aspectRatio = "";
+            drawCountLines(card);
+        }
+    }
+
+    // ── Live picture in each card's header ────────────────────────────────────
+
+    const CARD_FEED_MS = 1000;
+    const setupShown = () => isTab("tabActionTrigger") && !document.hidden;
+
+    function startCardFeed(card) {
+        const info = setup.cards.get(card.dataset.key);
+        if (!info || info.feed) return;
+        const feed = { controller: new AbortController(), url: null };
+        info.feed = feed;
+        const img = card.querySelector(".pl-card-live img");
+        const note = card.querySelector(".pl-card-live-note");
+        const live = () => info.feed === feed && card.isConnected && setupShown();
+        (async () => {
+            while (live()) {
+                const asked = performance.now();
+                try {
+                    const res = await fetch(`/api/v1/vision/annotated/camera/${encodeURIComponent(card.dataset.camera)}?max_width=320`, { cache: "no-store", signal: feed.controller.signal });
+                    if (res.ok) {
+                        const url = URL.createObjectURL(await res.blob());
+                        if (!live()) { URL.revokeObjectURL(url); break; }
+                        const previous = feed.url;
+                        feed.url = url;
+                        img.src = url;
+                        img.classList.add("on");
+                        note.textContent = "";
+                        if (previous) setTimeout(() => URL.revokeObjectURL(previous), 1000);
+                    } else {
+                        img.classList.remove("on");
+                        note.textContent = cameraConnected(card.dataset.camera) ? "No picture yet" : "Not connected";
+                    }
+                } catch (e) {
+                    if (e.name === "AbortError") break;
+                }
+                await sleep(Math.max(200, CARD_FEED_MS - (performance.now() - asked)));
+            }
+            if (info.feed === feed) info.feed = null;
+        })();
+    }
+
+    // The cards' connection dots and Connect buttons follow the cameras while the page is open.
+    async function refreshSetupStatus() {
+        if (!setupShown() || !byId("plCamGrid")) return;
+        await Promise.all([loadCamerasList(), loadDetail().catch(() => null)]);
+        cardsOnPage().forEach(updateConnection);
+        startCardFeeds();
+    }
+
+    function stopCardFeeds() {
+        setup.cards.forEach((info) => {
+            if (!info.feed) return;
+            info.feed.controller.abort();
+            info.feed = null;
+        });
+    }
+
+    function startCardFeeds() {
+        if (!setupShown()) return;
+        cardsOnPage().forEach(startCardFeed);
+    }
+
+    // ── Building the page ─────────────────────────────────────────────────────
+
+    // Add one card to the grid (before the Add camera card) and wire it up.
+    function addCard(cam, trigger, openSet) {
+        const grid = byId("plCamGrid");
+        const key = `k${setup.nextKey++}`;
+        const row = cameraRow(cam.camera_id);
+        setup.cards.set(key, {
+            picks: { savedModel: cam.model_id || "", expected: [...(cam.expected_classes || [])], defects: [...(cam.defect_classes || [])] },
+            cam: row,
+            initialName: row ? row.name : "",
+            initialSettings: null,
+            feed: null,
+            isNew: Boolean(cam.isNew),
+        });
+        grid.insertBefore(document.createRange().createContextualFragment(cameraCardHtml(key, cam, trigger, openSet)), byId("plAddCard"));
+        const card = grid.querySelector(`.pl-card[data-key="${key}"]`);
+        renderImageForms(card);
+        renderClassLists(card);
+        bindCard(card);
+        if (cam.isNew) rememberFolds(card);
+        // A Counting fold remembered open shows its picture at once.
+        if (card.querySelector('.pl-fold[data-fold="counting"]').classList.contains("open")) requestAnimationFrame(() => loadLinesPicture(card));
+        return card;
+    }
+
+    function renderImageForms(card) {
+        const info = setup.cards.get(card.dataset.key);
+        const row = cameraRow(card.dataset.camera);
+        const camForm = { id: card.dataset.camera, type: row ? row.type : "", settings: (row && row.settings) || {} };
+        const imageBox = cardField(card, "image-form");
+        if (!row) {
+            imageBox.innerHTML = `<div class="pl-note">This camera is not in the camera list.</div>`;
+            cardField(card, "video-form").innerHTML = "";
+            info.imageForm = null;
+            info.initialSettings = null;
             return;
         }
-        const d = state.detail;
-        const cams = d.cameras || [];
-        setupPicks = [0, 1].map((i) => {
-            const cam = cams[i] && cams[i].role === "vision" ? cams[i] : {};
-            return { savedModel: cam.model_id || "", expected: [...(cam.expected_classes || [])], defects: [...(cam.defect_classes || [])] };
+        info.imageForm = CameraSettingsForm.render(imageBox, camForm, ["image"]);
+        CameraSettingsForm.render(cardField(card, "video-form"), camForm, ["video"]);
+        info.initialSettings = JSON.stringify(CameraSettingsForm.read(card, row.type));
+        info.cam = row;
+        if (card.querySelector('.pl-fold[data-fold="image"]').classList.contains("open")) info.imageForm.loadPicture(() => card.isConnected);
+    }
+
+    function bindCard(card) {
+        card.addEventListener("click", (e) => {
+            const head = e.target.closest(".pl-fold-head");
+            if (head && card.contains(head)) {
+                const fold = head.closest(".pl-fold");
+                const open = !fold.classList.contains("open");
+                fold.classList.toggle("open", open);
+                head.setAttribute("aria-expanded", open ? "true" : "false");
+                rememberFolds(card);
+                if (open && fold.dataset.fold === "image") setup.cards.get(card.dataset.key)?.imageForm?.loadPicture(() => card.isConnected);
+                if (open && fold.dataset.fold === "counting") loadLinesPicture(card);
+                refreshSelects();
+                return;
+            }
+            const button = e.target.closest("[data-act]");
+            if (!button || !card.contains(button)) return;
+            const act = button.dataset.act;
+            if (act === "up" || act === "down") moveCard(card, act === "up" ? -1 : 1);
+            else if (act === "remove") removeCard(card);
+            else if (act === "connect" || act === "disconnect") connectCard(card, act);
+            else if (act === "picture") loadLinesPicture(card);
         });
-        const countingIdx = cams.findIndex((c) => c.role === "vision" && c.counting);
-        const readOnly = level() < 2;
-        card.innerHTML = `
-            <div class="card-panel-header">
-                <span class="card-panel-title">Line setup · ${esc(d.name)}</span>
-                <span>${statePill(d.status && d.status.state)}</span>
-            </div>
-            <div class="pl-form-grid">
-                <div class="form-group"><label class="form-label">Line name</label><input type="text" class="form-input" id="plName" maxlength="64" value="${esc(d.name)}"></div>
-                <div class="form-group"><label class="form-label">Minimum processed frames/s (0 = no alarm)</label><input type="number" class="form-input" id="plMinFps" min="0" max="240" step="1" value="${d.min_fps || 0}"></div>
-                <div class="form-group"><label class="form-label">Yield target (%)</label><input type="number" class="form-input" id="plYieldTarget" min="0" max="100" step="0.1" value="${d.yield_target || 0}">
-                    <div class="pl-note">The dashboard marks the yield as below target under this value. 0 = no target.</div></div>
-            </div>
-            <div class="pl-form-grid" style="margin-top:6px">${cameraBoxHtml(0, cams[0])}${cameraBoxHtml(1, cams[1])}</div>
-            <div class="pl-form-grid" style="margin-top:14px">
-                <div class="form-group"><label class="form-label">Counting camera (two vision cameras)</label><select class="form-input" id="plCounting">
-                    <option value="0" ${countingIdx !== 1 ? "selected" : ""}>Camera 1</option><option value="1" ${countingIdx === 1 ? "selected" : ""}>Camera 2</option></select>
-                    <div class="pl-note">Line totals come from this camera; the other counts on its own and fires only cards that name it.</div></div>
-                <div class="form-group"><label class="form-label">Sync products and codes</label>
-                    <label class="pl-inline" style="margin-top:6px"><input type="checkbox" id="plSync" ${d.sync && d.sync.enabled ? "checked" : ""}> Pair each counted product with its code</label>
-                    <div class="pl-note">For a vision camera and a QR reader looking at the same spot, or one vision camera that also reads codes. A picture taken on a wire line crossing pairs with the product that triggered it.</div>
-                    <div class="pl-note" id="plSyncForced" style="display:none"><b>On while a camera accepts or rejects by code:</b> the line waits for the code (at most the Sync window) and then gives the product one result.</div></div>
-                <div class="form-group"><label class="form-label">Sync window (ms)</label><input type="number" class="form-input" id="plSyncWindow" min="50" max="10000" step="50" value="${(d.sync && d.sync.window_ms) || 500}">
-                    <div class="pl-note">Products must pass further apart than this. A reject card's travel delay must be longer.</div></div>
-            </div>
-            <div class="pl-note" style="margin-bottom:10px">To send code reads or results to another system, add a card under Send results below (trigger: Code read, Known code, Unknown code or No code read).</div>
-            ${(d.warnings || []).map((w) => `<div class="pl-warn" style="margin:0 0 12px">${esc(w)}</div>`).join("")}
-            <div class="pl-inline">
-                <button class="btn-action btn-blue restricted-l2" id="plSaveSetup" ${readOnly ? "disabled" : ""}>Save line setup</button>
-                ${d.enabled
-                    ? `<button class="btn-action btn-outline restricted-l2" id="plStopLine" ${readOnly ? "disabled" : ""}>Stop line</button>`
-                    : `<button class="btn-action btn-blue restricted-l2" id="plStartLine" ${readOnly ? "disabled" : ""}>Start line</button>`}
-            </div>`;
-        // A choice in one camera box can change what the other box and Sync show.
-        card.querySelectorAll(".pl-cam-box select").forEach((sel) => sel.addEventListener("change", syncLineSetup));
-        card.querySelectorAll(".pl-cam-box").forEach((box) => {
-            const index = Number(box.dataset.index);
-            renderClassLists(index);
-            renderModelState(index);
-            byId(`plCamModel${index}`).addEventListener("change", () => onCameraModelChange(index));
-            box.addEventListener("change", (e) => {
-                const input = e.target;
-                if (!input.matches || !input.matches('.pl-class input[type="checkbox"]')) return;
-                const own = input.closest("[data-kind]");
+        card.addEventListener("change", (e) => {
+            const t = e.target;
+            if (t.matches('.pl-class input[type="checkbox"]')) {
+                const own = t.closest("[data-kind]");
                 // A class is a product or a defect, not both: ticking it here unticks it in the other list.
-                if (input.checked) {
-                    box.querySelectorAll("[data-kind]").forEach((other) => {
+                if (t.checked) {
+                    card.querySelectorAll("[data-kind]").forEach((other) => {
                         if (other === own) return;
                         other.querySelectorAll('input[type="checkbox"]').forEach((twin) => {
-                            if (twin.value.toLowerCase() === input.value.toLowerCase()) twin.checked = false;
+                            if (twin.value.toLowerCase() === t.value.toLowerCase()) twin.checked = false;
                         });
                         classCountNote(other);
                     });
                 }
                 classCountNote(own);
-            });
-            box.addEventListener("input", (e) => {
-                if (!e.target.classList || !e.target.classList.contains("pl-class-filter")) return;
-                const text = e.target.value.trim().toLowerCase();
-                e.target.parentNode.querySelectorAll(".pl-class").forEach((label) => {
+            }
+            const name = t.dataset.f;
+            if (name === "model") onCameraModelChange(card);
+            if (name === "job") onJobChange(card, t.value);
+            if (name === "device") onDeviceChange(card, t.value);
+            if (name === "name") card.querySelector(".pl-card-name").textContent = t.value.trim() || card.dataset.camera;
+            if (!t.classList.contains("pl-class-filter")) markDirty();
+            syncLineSetup();
+        });
+        card.addEventListener("input", (e) => {
+            const t = e.target;
+            if (t.classList.contains("pl-class-filter")) {
+                const text = t.value.trim().toLowerCase();
+                t.parentNode.querySelectorAll(".pl-class").forEach((label) => {
                     label.hidden = Boolean(text) && !label.querySelector("input").value.toLowerCase().includes(text);
                 });
-            });
+                return;
+            }
+            markDirty();
+            if (t.dataset.f === "line1" || t.dataset.f === "line2") syncCard(card, cardsOnPage().indexOf(card));
         });
-        syncLineSetup();
-        byId("plSaveSetup").addEventListener("click", saveLineSetup);
-        byId("plStartLine")?.addEventListener("click", async () => { await lineAction("start", state.lineId); renderLineSetup(); });
-        byId("plStopLine")?.addEventListener("click", async () => { await lineAction("stop", state.lineId); renderLineSetup(); });
+        bindCountLineDrag(card);
+    }
+
+    // Exactly one counting camera on a line with a vision camera.
+    function onJobChange(card, job) {
+        const others = cardsOnPage().filter((c) => c !== card);
+        if (isCountingJob(job)) {
+            others.filter((c) => isCountingJob(cardJob(c))).forEach((c) => {
+                const select = cardField(c, "job");
+                select.value = cardJob(c) === "counting_qr" ? "station_qr" : "station";
+                cardField(c, "station").value = "own";
+                if (select._updateCustomSelectUI) select._updateCustomSelectUI();
+                toast(`${c.querySelector(".pl-card-name").textContent} is now an own inspection station: a line has one counting camera.`, "info");
+            });
+        } else if (!others.concat([card]).some((c) => isCountingJob(cardJob(c)))) {
+            // The line's totals need a counting camera: the first vision camera takes it.
+            const first = cardsOnPage().find((c) => isVisionJob(cardJob(c)));
+            if (first) {
+                const select = cardField(first, "job");
+                select.value = cardJob(first) === "station_qr" ? "counting_qr" : "counting";
+                if (select._updateCustomSelectUI) select._updateCustomSelectUI();
+                if (first !== card) toast(`${first.querySelector(".pl-card-name").textContent} is now the counting camera.`, "info");
+                else toast("A line with a vision camera has one counting camera: this one stays the counting camera.", "info");
+            }
+        }
+        if (isVisionJob(cardJob(card))) renderClassLists(card);
+    }
+
+    function onDeviceChange(card, id) {
+        const info = setup.cards.get(card.dataset.key);
+        card.dataset.camera = id;
+        const row = cameraRow(id);
+        info.initialName = row ? row.name : "";
+        cardField(card, "name").value = row ? row.name : "";
+        card.querySelector(".pl-card-name").textContent = row ? row.name : id;
+        if (info.feed) { info.feed.controller.abort(); info.feed = null; }
+        renderImageForms(card);
+        if (card.querySelector('.pl-fold[data-fold="counting"]').classList.contains("open")) loadLinesPicture(card);
+        refreshDeviceSelects();
+        startCardFeed(card);
         refreshSelects();
     }
 
-    async function saveLineSetup() {
-        const cameras = [];
-        const counting = byId("plCounting").value;
-        [0, 1].forEach((i) => {
-            const id = byId(`plCam${i}`).value;
-            if (!id) return;
-            // "Vision + QR code / barcode reader" is a vision camera with read_codes on.
-            const picked = byId(`plRole${i}`).value;
-            const role = picked === "qr" ? "qr" : "vision";
-            const codes = picked !== "vision";
-            const entry = { camera_id: id, role, counting: role === "vision" && String(i) === counting, qr_hold_ms: parseInt(byId(`plHold${i}`).value, 10) || 1500 };
-            if (role === "vision") {
-                entry.model_id = byId(`plCamModel${i}`).value || null;
-                entry.expected_classes = pickedClasses(i, "expected");
-                entry.defect_classes = pickedClasses(i, "defects");
-            }
-            if (role === "vision" && codes) entry.read_codes = true;
-            if (codes) {
-                entry.qr_trigger = byId(`plTrig${i}`).value || "continuous";
-                entry.qr_trigger_delay_ms = Math.max(0, parseInt(byId(`plTrigDelay${i}`).value, 10) || 0);
-                entry.code_type = byId(`plCodeType${i}`).value || "all";
-                entry.qr_action = byId(`plQrAction${i}`).value || "report";
-                entry.product_list_id = byId(`plQrList${i}`).value || null;
-                entry.qr_no_read = byId(`plQrNoRead${i}`).value || "ignore";
-            }
-            cameras.push(entry);
+    function refreshDeviceSelects() {
+        cardsOnPage().forEach((card) => {
+            const select = cardField(card, "device");
+            select.innerHTML = deviceOptions(card.dataset.camera, card);
+            if (select._refreshCustomSelect) select._refreshCustomSelect();
         });
-        const noModel = cameras.find((c) => c.role === "vision" && !c.model_id);
-        if (noModel) {
-            toast(`Choose the vision model for ${cameraName(noModel.camera_id)}: a vision camera cannot be saved without one`, "warning");
+    }
+
+    function moveCard(card, step) {
+        const cards = cardsOnPage();
+        const index = cards.indexOf(card);
+        const target = cards[index + step];
+        if (!target) return;
+        const grid = byId("plCamGrid");
+        if (step < 0) grid.insertBefore(card, target); else grid.insertBefore(target, card);
+        markDirty();
+        syncLineSetup();
+        card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+
+    function removeCard(card) {
+        const name = card.querySelector(".pl-card-name").textContent;
+        confirmAction("Remove camera from the line", `Remove ${name} from this line? The camera stays on the Cameras page; its settings on this line are dropped when you save.`, () => {
+            const info = setup.cards.get(card.dataset.key);
+            if (info && info.feed) info.feed.controller.abort();
+            setup.cards.delete(card.dataset.key);
+            const wasCounting = isCountingJob(cardJob(card));
+            card.remove();
+            if (wasCounting) {
+                const first = cardsOnPage().find((c) => isVisionJob(cardJob(c)));
+                if (first) {
+                    cardField(first, "job").value = cardJob(first) === "station_qr" ? "counting_qr" : "counting";
+                    toast(`${first.querySelector(".pl-card-name").textContent} is now the counting camera.`, "info");
+                }
+            }
+            markDirty();
+            refreshDeviceSelects();
+            syncLineSetup();
+            refreshSelects();
+        });
+    }
+
+    async function connectCard(card, act) {
+        const id = card.dataset.camera;
+        const name = card.querySelector(".pl-card-name").textContent;
+        try {
+            await api(`/api/v1/cameras/${encodeURIComponent(id)}/${act}`, { method: "POST" });
+            toast(`${name} ${act === "connect" ? "connected" : "disconnected"}`, "success");
+        } catch (e) {
+            toast(`${name}: ${e.message}`, "warning");
+        }
+        await loadCamerasList();
+        try { await loadDetail(); } catch (_) { /* the dot uses the camera list */ }
+        cardsOnPage().forEach(updateConnection);
+        startCardFeed(card);
+    }
+
+    // ── The Add camera card ───────────────────────────────────────────────────
+
+    function addCardHtml() {
+        return `
+            <div class="card-panel pl-card pl-add-card restricted-l2" id="plAddCard">
+                <div class="pl-card-head"><div class="pl-card-title"><span class="pl-card-name">Add camera</span></div></div>
+                <div class="pl-add-full pl-note" hidden>A line can have at most ${MAX_CAMERAS_PER_LINE} cameras. Remove one to add another.</div>
+                <div class="pl-add-body">
+                    <div class="form-group"><label class="form-label">Camera</label><select class="form-input" data-f="add-device"></select>
+                        <div class="pl-note">Cameras on another line are greyed out.</div></div>
+                    <div class="pl-inline" style="margin-bottom:12px">
+                        <button type="button" class="btn-action btn-sm btn-outline" data-act="scan">Scan USB</button>
+                        <button type="button" class="btn-action btn-sm btn-outline" data-act="network">Add network camera</button>
+                    </div>
+                    <div class="pl-add-network" hidden>
+                        <div class="form-group"><label class="form-label">Name</label><input type="text" class="form-input" data-f="net-name" maxlength="64" placeholder="e.g. Infeed camera"></div>
+                        <div class="form-group"><label class="form-label">Stream URL</label><input type="text" class="form-input" data-f="net-url" placeholder="rtsp://user:pass@192.168.1.100:554/stream1"></div>
+                        <div class="pl-inline" style="margin-bottom:12px"><button type="button" class="btn-action btn-sm btn-blue" data-act="net-add">Add to the camera list</button></div>
+                    </div>
+                    <div class="form-group"><label class="form-label">Starting job</label><select class="form-input" data-f="add-job">${START_JOBS.map((j) => option(j, JOBS[j].label, "counting")).join("")}</select>
+                        <div class="pl-note">The first vision camera is the counting camera. Everything can be changed on the card.</div></div>
+                    <button type="button" class="btn-action btn-blue" data-act="add">Add camera</button>
+                </div>
+            </div>`;
+    }
+
+    function refreshAddDevices() {
+        const select = document.querySelector('#plAddCard [data-f="add-device"]');
+        if (!select) return;
+        const owners = cameraOwners();
+        const onCards = new Set(cardsOnPage().map((c) => c.dataset.camera));
+        const keep = select.value;
+        const free = state.cameras.filter((c) => !owners[c.id] && !onCards.has(c.id));
+        const html = (free.length ? "" : `<option value="">No free camera: scan or add one</option>`) + state.cameras.map((c) => {
+            const taken = owners[c.id] ? `on ${owners[c.id]}` : onCards.has(c.id) ? "on this line" : "";
+            return `<option value="${esc(c.id)}" ${taken ? "disabled" : ""} ${c.id === keep && !taken ? "selected" : ""}>${esc(c.name)} (${esc(String(c.type || "").toUpperCase())})${taken ? ` · ${esc(taken)}` : ""}</option>`;
+        }).join("");
+        if (select.dataset.html === html) return;
+        select.dataset.html = html;
+        select.innerHTML = html;
+        if (!select.value || select.selectedOptions[0]?.disabled) select.value = free.length ? free[0].id : "";
+        if (select._refreshCustomSelect) select._refreshCustomSelect();
+    }
+
+    function bindAddCard(trigger) {
+        const card = byId("plAddCard");
+        card.addEventListener("click", async (e) => {
+            const button = e.target.closest("[data-act]");
+            if (!button) return;
+            const act = button.dataset.act;
+            if (act === "network") {
+                const box = card.querySelector(".pl-add-network");
+                box.hidden = !box.hidden;
+            } else if (act === "scan") {
+                button.disabled = true;
+                try {
+                    const found = await api("/api/v1/cameras/discover/usb");
+                    await loadCamerasList();
+                    toast(found && found.length ? `Found ${found.length} USB camera(s): ${found.map((c) => c.name).join(", ")}` : "No new USB camera found", found && found.length ? "success" : "info");
+                    refreshDeviceSelects();
+                    refreshAddDevices();
+                } catch (err) { toast(`Scan failed: ${err.message}`, "warning"); }
+                button.disabled = false;
+            } else if (act === "net-add") {
+                const name = cardField(card, "net-name").value.trim();
+                const source = cardField(card, "net-url").value.trim();
+                if (!name || !source) { toast("Enter the camera's name and its stream URL (rtsp:// or http://)", "warning"); return; }
+                button.disabled = true;
+                try {
+                    // The same channel the Connections page makes for a network camera.
+                    const saved = await api("/api/v1/system/endpoints", { method: "POST", body: { name, description: "", enabled: true, protocol: "ipcam", source, transport: "tcp", resolution: "640x480", buffer_size: 1 } });
+                    await loadCamerasList();
+                    refreshDeviceSelects();
+                    refreshAddDevices();
+                    const select = cardField(card, "add-device");
+                    if (saved && saved.id && cameraRow(saved.id)) { select.value = saved.id; if (select._updateCustomSelectUI) select._updateCustomSelectUI(); }
+                    cardField(card, "net-name").value = "";
+                    cardField(card, "net-url").value = "";
+                    card.querySelector(".pl-add-network").hidden = true;
+                    toast(`Network camera '${name}' added to the camera list`, "success");
+                } catch (err) { toast(`Could not add the camera: ${err.message}`, "warning"); }
+                button.disabled = false;
+            } else if (act === "add") {
+                const id = cardField(card, "add-device").value;
+                if (!id) { toast("Choose a camera to add (or scan for one)", "warning"); return; }
+                let job = cardField(card, "add-job").value;
+                const hasCounting = cardsOnPage().some((c) => isCountingJob(cardJob(c)));
+                // The first vision camera added is the counting camera.
+                if (isVisionJob(job) && !hasCounting) job = job.endsWith("_qr") ? "counting_qr" : "counting";
+                const model = cardsOnPage().map((c) => cardValue(c, "model")).find(Boolean) || (state.models.length === 1 ? state.models[0].id : "");
+                const spec = JOBS[job];
+                const cam = {
+                    camera_id: id, role: spec.role, counting: false, read_codes: spec.role === "vision" && spec.codes,
+                    model_id: model, expected_classes: [], defect_classes: [], station: "own",
+                    // Cards added now do not reject classes by their name unless asked to.
+                    name_based_defects: false,
+                    line1_position: DEFAULT_LINES.line1_position, line2_position: DEFAULT_LINES.line2_position,
+                    orientation: DEFAULT_LINES.orientation, direction: DEFAULT_LINES.direction,
+                    isNew: true,
+                };
+                const added = addCard(cam, trigger, new Set(["camera", "job", spec.role === "vision" ? "model" : "codes"]));
+                cardField(added, "job").value = job;
+                if (isCountingJob(job)) onJobChange(added, job);
+                markDirty();
+                refreshDeviceSelects();
+                syncLineSetup();
+                startCardFeed(added);
+                refreshSelects();
+                added.scrollIntoView({ block: "nearest", behavior: "smooth" });
+            }
+        });
+    }
+
+    // ── Render ────────────────────────────────────────────────────────────────
+
+    async function renderLineSetup() {
+        const page = byId("tabActionTrigger");
+        if (!page) return;
+        // Coming back to the page with unsaved edits of the same line: keep them.
+        if (setup.dirty && setup.lineId === state.lineId && byId("plCamGrid")) {
+            startCardFeeds();
+            focusCard();
             return;
         }
+        let card = byId("plLineSetup");
+        if (!card) {
+            card = document.createElement("div");
+            card.id = "plLineSetup";
+            page.insertBefore(card, page.firstChild);
+        }
+        stopCardFeeds();
+        card.innerHTML = `<div class="card-panel"><div class="card-panel-header"><span class="card-panel-title">Line setup</span></div><div class="pl-note">Loading…</div></div>`;
+        try {
+            await Promise.all([loadDetail(), loadCamerasList(), loadModelsList(), loadCodeTypes(), loadProductLists().catch(() => [])]);
+        } catch (e) {
+            card.innerHTML = `<div class="card-panel"><div class="card-panel-header"><span class="card-panel-title">Line setup</span></div><div class="pl-note">Could not load the line: ${esc(e.message)}</div></div>`;
+            return;
+        }
+        const d = state.detail;
+        const trigger = d.action_trigger || {};
+        const readOnly = level() < 2;
+        setup.lineId = state.lineId;
+        setup.dirty = false;
+        setup.cards = new Map();
+        card.innerHTML = `
+            <div class="card-panel">
+                <div class="card-panel-header">
+                    <span class="card-panel-title">Line setup · ${esc(d.name)}</span>
+                    <span class="pl-inline">${statePill(d.status && d.status.state)}<span class="pl-unsaved" id="plSetupDirty" hidden>Unsaved changes</span></span>
+                </div>
+                <div class="pl-form-grid">
+                    <div class="form-group"><label class="form-label">Line name</label><input type="text" class="form-input" id="plName" maxlength="64" value="${esc(d.name)}"></div>
+                    <div class="form-group"><label class="form-label">Minimum processed frames/s (0 = no alarm)</label><input type="number" class="form-input" id="plMinFps" min="0" max="240" step="1" value="${d.min_fps || 0}"></div>
+                    <div class="form-group"><label class="form-label">Yield target (%)</label><input type="number" class="form-input" id="plYieldTarget" min="0" max="100" step="0.1" value="${d.yield_target || 0}">
+                        <div class="pl-note">The dashboard marks the yield as below target under this value. 0 = no target.</div></div>
+                    <div class="form-group"><label class="form-label">Sync products and codes</label>
+                        <label class="pl-inline pl-check" style="margin-top:6px"><input type="checkbox" id="plSync" ${d.sync && d.sync.enabled ? "checked" : ""}> Pair each counted product with its code</label>
+                        <div class="pl-note">For a vision camera and a code reader looking at the same spot, or one vision camera that also reads codes.</div>
+                        <div class="pl-note" id="plSyncForced" style="display:none"><b>On while a camera accepts or rejects by code:</b> the line waits for the code (at most the Sync window) and then gives the product one result.</div></div>
+                    <div class="form-group"><label class="form-label">Sync window (ms)</label><input type="number" class="form-input" id="plSyncWindow" min="50" max="10000" step="50" value="${(d.sync && d.sync.window_ms) || 500}">
+                        <div class="pl-note">Products must pass further apart than this. A reject card's travel delay must be longer.</div></div>
+                </div>
+                ${(d.warnings || []).map((w) => `<div class="pl-warn" style="margin:0 0 12px">${esc(w)}</div>`).join("")}
+                <div class="pl-setup-actions">
+                    <button class="btn-action btn-blue restricted-l2" id="plSaveSetup" ${readOnly ? "disabled" : ""}>Save line setup</button>
+                    ${d.enabled
+                        ? `<button class="btn-action btn-outline restricted-l2" id="plStopLine" ${readOnly ? "disabled" : ""}>Stop line</button>`
+                        : `<button class="btn-action btn-outline restricted-l2" id="plStartLine" ${readOnly ? "disabled" : ""}>Start line</button>`}
+                    <button class="btn-action btn-red restricted-l2" id="plResetCounts" ${readOnly ? "disabled" : ""}>Reset counts…</button>
+                    <span class="pl-note" style="margin:0">One Save for the line and every camera card. To send results to another system, add a card under Send results below.</span>
+                </div>
+            </div>
+            <div class="pl-cam-grid" id="plCamGrid">${addCardHtml()}</div>`;
+        bindAddCard(trigger);
+        (d.cameras || []).forEach((cam) => addCard(cam, trigger, openFolds(cam.camera_id, [])));
+        card.querySelector(".card-panel").addEventListener("input", markDirty);
+        card.querySelector(".card-panel").addEventListener("change", (e) => { markDirty(); if (e.target.id === "plSync") syncLineSetup(); });
+        syncLineSetup();
+        byId("plSaveSetup").addEventListener("click", saveLineSetup);
+        byId("plStartLine")?.addEventListener("click", () => runLine("start"));
+        byId("plStopLine")?.addEventListener("click", () => runLine("stop"));
+        byId("plResetCounts").addEventListener("click", () => { if (typeof confirmResetAllCounts === "function") confirmResetAllCounts(); });
+        if (typeof applyRoleRestrictions === "function") applyRoleRestrictions(card);
+        refreshSelects();
+        startCardFeeds();
+        focusCard();
+    }
+
+    async function runLine(act) {
+        const go = async () => { setup.dirty = false; await lineAction(act, state.lineId); renderLineSetup(); };
+        if (setup.dirty) confirmAction("Unsaved line setup", `The line setup has changes that are not saved. ${act === "start" ? "Start" : "Stop"} the line and discard them?`, go);
+        else go();
+    }
+
+    // The card the Cameras page asked for: open its Camera and Image folds and scroll to it.
+    function focusCard() {
+        const id = setup.focusCamera;
+        if (!id) return;
+        const card = cardsOnPage().find((c) => c.dataset.camera === id);
+        if (!card) return;
+        setup.focusCamera = null;
+        ["camera", "image"].forEach((name) => {
+            const fold = card.querySelector(`.pl-fold[data-fold="${name}"]`);
+            if (fold.classList.contains("open")) return;
+            fold.classList.add("open");
+            fold.querySelector(".pl-fold-head").setAttribute("aria-expanded", "true");
+        });
+        setup.cards.get(card.dataset.key)?.imageForm?.loadPicture(() => card.isConnected);
+        setTimeout(() => {
+            card.scrollIntoView({ block: "start", behavior: "smooth" });
+            card.classList.add("pl-flash");
+            setTimeout(() => card.classList.remove("pl-flash"), 1600);
+        }, 60);
+    }
+
+    // ── Save: the line, then the cameras whose image or video settings changed ─
+
+    function cardEntry(card) {
+        const job = cardJob(card);
+        const spec = JOBS[job];
+        const entry = { camera_id: card.dataset.camera, role: spec.role, counting: spec.counting, qr_hold_ms: parseInt(cardValue(card, "qr_hold"), 10) || 1500 };
+        if (spec.role === "vision") {
+            const flow = FLOWS[cardValue(card, "flow")] || FLOWS.down;
+            const num = (v) => (v === "" || v === null || v === undefined ? "" : Number(v));
+            const tracking = {};
+            card.querySelectorAll("[data-track]").forEach((input) => { if (input.value !== "") tracking[input.dataset.track] = Number(input.value); });
+            Object.assign(entry, {
+                model_id: cardValue(card, "model") || null,
+                expected_classes: pickedClasses(card, "expected"),
+                defect_classes: pickedClasses(card, "defects"),
+                // Sent empty to go back to the model's own threshold (a key left out keeps its saved value).
+                confidence: num(cardValue(card, "confidence")),
+                name_based_defects: Boolean(cardField(card, "name_based_defects").checked),
+                orientation: flow.orientation,
+                direction: cardValue(card, "mode") === "both" ? "both" : flow.direction,
+                line1_position: num(cardValue(card, "line1")),
+                line2_position: num(cardValue(card, "line2")),
+                tracking,
+            });
+            if (!spec.counting) entry.station = cardValue(card, "station") || "own";
+            if (spec.codes) entry.read_codes = true;
+        }
+        if (spec.codes) {
+            Object.assign(entry, {
+                qr_trigger: cardValue(card, "qr_trigger") || "continuous",
+                qr_trigger_delay_ms: Math.max(0, parseInt(cardValue(card, "qr_delay"), 10) || 0),
+                code_type: cardValue(card, "code_type") || "all",
+                qr_action: cardValue(card, "qr_action") || "report",
+                product_list_id: cardValue(card, "qr_list") || null,
+                qr_no_read: cardValue(card, "qr_no_read") || "ignore",
+            });
+        }
+        return entry;
+    }
+
+    async function saveLineSetup() {
+        const cards = cardsOnPage();
+        const cameras = cards.map(cardEntry);
+        const label = (i) => `Camera ${i + 1} (${cards[i].querySelector(".pl-card-name").textContent})`;
+        const noModel = cameras.findIndex((c) => c.role === "vision" && !c.model_id);
+        if (noModel >= 0) { toast(`${label(noModel)}: choose its vision model. A vision camera cannot be saved without one.`, "warning"); return; }
         const noList = cameras.findIndex((c) => c.qr_action && c.qr_action !== "report" && !c.product_list_id);
-        if (noList >= 0) {
-            toast(`Choose the product list for ${cameraName(cameras[noList].camera_id)}: its codes are checked against it`, "warning");
-            return;
-        }
-        // A single vision camera is always the counting camera.
-        const vision = cameras.filter((c) => c.role === "vision");
-        if (vision.length && !vision.some((c) => c.counting)) vision[0].counting = true;
+        if (noList >= 0) { toast(`${label(noList)}: choose the product list its codes are checked against.`, "warning"); return; }
         const body = {
             name: byId("plName").value.trim(),
             min_fps: parseFloat(byId("plMinFps").value) || 0,
@@ -1043,26 +1809,73 @@
             cameras,
             sync: { enabled: byId("plSync").checked, window_ms: parseInt(byId("plSyncWindow").value, 10) || 500 },
         };
+        const button = byId("plSaveSetup");
+        button.disabled = true;
+        let saved;
         try {
-            const saved = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}`, { method: "PUT", body });
-            toast(saved.warning || "Line setup saved", saved.warning ? "warning" : "success");
-            await loadLines();
-            renderLineSetup();
-            if (typeof checkActiveStream === "function") checkActiveStream();
-        } catch (e) { toast(`Could not save the line setup: ${e.message}`, "warning"); }
+            saved = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}`, { method: "PUT", body });
+        } catch (e) {
+            button.disabled = false;
+            toast(`Could not save the line setup: ${e.message}`, "warning");
+            return;
+        }
+        // Then each camera whose name, image or video settings changed.
+        const failed = [];
+        for (const card of cards) {
+            const info = setup.cards.get(card.dataset.key);
+            const row = cameraRow(card.dataset.camera);
+            if (!info || !row) continue;
+            const patch = {};
+            const settings = CameraSettingsForm.read(card, row.type);
+            if (info.initialSettings !== null && JSON.stringify(settings) !== info.initialSettings) patch.settings = settings;
+            const name = cardValue(card, "name").trim();
+            if (name && name !== row.name) patch.name = name;
+            if (!Object.keys(patch).length) continue;
+            try {
+                await api(`/api/v1/cameras/${encodeURIComponent(row.id)}`, { method: "PATCH", body: patch });
+            } catch (e) { failed.push(`${name || row.name}: ${e.message}`); }
+        }
+        setup.dirty = false;
+        if (failed.length) toast(`Line saved, but camera settings were not: ${failed.join("; ")}`, "warning");
+        else toast(saved.warning || "Line setup saved", saved.warning ? "warning" : "success");
+        await loadLines();
+        renderLineSetup();
+        if (typeof checkActiveStream === "function") checkActiveStream();
     }
 
-    // ── Line Dashboard: the line's feeds and QR reads ─────────────────────────
+    window.addEventListener("beforeunload", (e) => {
+        if (!setup.dirty) return;
+        e.preventDefault();
+        e.returnValue = "";
+    });
+
+    // Every camera's setting is on Line setup: Settings on the Cameras page opens
+    // the camera's card there, for a camera that belongs to a line.
+    const originalOpenCamSettings = window.openCamSettings;
+    if (typeof originalOpenCamSettings === "function") {
+        window.openCamSettings = function (id) {
+            const line = state.lines.find((l) => (l.cameras || []).some((c) => c.camera_id === id));
+            if (!line) return originalOpenCamSettings.apply(this, arguments);
+            setup.focusCamera = id;
+            if (line.id !== state.lineId) switchLine(line.id);
+            switchTab("tabActionTrigger");
+            return undefined;
+        };
+    }
+
+    // ── Line Dashboard: the main feed and the camera strip ────────────────────
 
     // Video is fetched only while it is on screen: the Line Dashboard is open
     // and the browser tab is visible.
     const dashboardShown = () => isTab("tabDashboard") && !document.hidden;
+    const lineStatusCameras = () => (state.detail && state.detail.status && state.detail.status.cameras) || [];
 
-    // The camera the main feed shows: the line's counting camera, else its
-    // first vision camera, else its first camera.
+    // The camera shown large: the one picked in the strip, else the line's
+    // counting camera, else its first vision camera, else its first camera.
     function lineFeedCamera() {
-        const cams = (state.detail && state.detail.status && state.detail.status.cameras) || [];
-        return cams.find((c) => c.role === "vision" && c.counting) || cams.find((c) => c.role === "vision") || cams[0] || null;
+        const cams = lineStatusCameras();
+        const picked = state.bigCamera[state.lineId];
+        return cams.find((c) => c.camera_id === picked) || cams.find((c) => c.role === "vision" && c.counting) || cams.find((c) => c.role === "vision") || cams[0] || null;
     }
 
     function pauseMainFeed() {
@@ -1070,72 +1883,65 @@
         try { _streamPaused = true; } catch (_) { /* dashboard without pause support */ }
     }
 
-    // ── A second MJPEG feed (the dashboard's own reader drives the main one) ──
+    // The strip shows every camera but the large one, as small pictures fetched
+    // one at a time (no MJPEG). The large camera alone has a stream. Together
+    // the tiles stay within STRIP_FPS_BUDGET pictures a second, well inside the
+    // server's per-client request limit (see TILE_MAX_FPS above).
+    const STRIP_TILE_MAX_FPS = 2;
+    const STRIP_FPS_BUDGET = 6;
+    const STRIP_WIDTH = 320;
+    const stripFeeds = new Map();  // camera id -> { img, controller, url }
 
-    const feeds = {};
-
-    function stopFeed(key) {
-        const feed = feeds[key];
-        if (!feed) return;
-        delete feeds[key];
-        feed.controller.abort();
-        feed.urls.forEach((u) => URL.revokeObjectURL(u));
+    function stripInterval() {
+        return 1000 / Math.min(STRIP_TILE_MAX_FPS, STRIP_FPS_BUDGET / Math.max(1, stripFeeds.size));
     }
 
-    function findHeaderEnd(bytes) {
-        for (let i = 0; i <= bytes.length - 4; i++) {
-            if (bytes[i] === 13 && bytes[i + 1] === 10 && bytes[i + 2] === 13 && bytes[i + 3] === 10) return i;
-        }
-        return -1;
-    }
-
-    async function openFeed(key, url, img, overlay) {
-        stopFeed(key);
-        const feed = { controller: new AbortController(), urls: new Set() };
-        feeds[key] = feed;
-        try {
-            const res = await fetch(url, { headers: { Accept: "multipart/x-mixed-replace" }, cache: "no-store", signal: feed.controller.signal });
-            if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
-            const reader = res.body.getReader();
-            let buf = new Uint8Array(0);
-            while (feeds[key] === feed) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                if (!value || !value.length) continue;
-                const joined = new Uint8Array(buf.length + value.length);
-                joined.set(buf);
-                joined.set(value, buf.length);
-                buf = joined;
-                for (;;) {
-                    const headerEnd = findHeaderEnd(buf);
-                    if (headerEnd < 0) { if (buf.length > 8192) throw new Error("Invalid stream"); break; }
-                    const match = /Content-Length:\s*(\d+)/i.exec(new TextDecoder("ascii").decode(buf.subarray(0, headerEnd)));
-                    if (!match) throw new Error("Frame without length");
-                    const start = headerEnd + 4;
-                    const end = start + Number(match[1]);
-                    if (buf.length < end + 2) break;
-                    const frameUrl = URL.createObjectURL(new Blob([buf.subarray(start, end)], { type: "image/jpeg" }));
-                    const previous = img.dataset.blob;
-                    img.src = frameUrl;
-                    img.dataset.blob = frameUrl;
-                    feed.urls.add(frameUrl);
-                    if (previous && previous !== frameUrl) { URL.revokeObjectURL(previous); feed.urls.delete(previous); }
-                    if (overlay) overlay.classList.remove("active");
-                    buf = buf.subarray(end + 2);
+    function startStripFeed(cameraId, img) {
+        const running = stripFeeds.get(cameraId);
+        if (running && running.img === img) return;
+        stopStripFeed(cameraId);
+        const feed = { img, controller: new AbortController(), url: null };
+        stripFeeds.set(cameraId, feed);
+        (async () => {
+            const live = () => stripFeeds.get(cameraId) === feed && img.isConnected && dashboardShown();
+            while (live()) {
+                const asked = performance.now();
+                let wait = 1500;
+                try {
+                    const res = await fetch(`/api/v1/vision/annotated/camera/${encodeURIComponent(cameraId)}?max_width=${STRIP_WIDTH}`, { cache: "no-store", signal: feed.controller.signal });
+                    if (res.ok) {
+                        const url = URL.createObjectURL(await res.blob());
+                        if (!live()) { URL.revokeObjectURL(url); break; }
+                        const previous = feed.url;
+                        feed.url = url;
+                        img.src = url;
+                        img.closest(".pl-strip-tile")?.querySelector(".no-video-overlay")?.classList.remove("active");
+                        if (previous) setTimeout(() => URL.revokeObjectURL(previous), 1000);
+                        wait = Math.max(0, stripInterval() - (performance.now() - asked));
+                    }
+                } catch (e) {
+                    if (e.name === "AbortError") break;
                 }
+                await sleep(wait);
             }
-        } catch (e) {
-            if (e.name !== "AbortError" && overlay) overlay.classList.add("active");
-        } finally {
-            // Ended by the server or a network fault: ensureSecondFeed() opens it again.
-            if (feeds[key] === feed) delete feeds[key];
-        }
+            if (stripFeeds.get(cameraId) === feed) stopStripFeed(cameraId);
+        })();
     }
 
-    // ── The feed row: main feed and the line's second camera, same size ───────
+    function stopStripFeed(cameraId) {
+        const feed = stripFeeds.get(cameraId);
+        if (!feed) return;
+        stripFeeds.delete(cameraId);
+        feed.controller.abort();
+        if (feed.url) setTimeout(() => URL.revokeObjectURL(feed.url), 1000);
+    }
 
-    // Moves the dashboard's live video card into a two-column row next to the
-    // second camera, or back into its grid when the line has one camera.
+    function stopStripFeeds() {
+        [...stripFeeds.keys()].forEach(stopStripFeed);
+    }
+
+    // Moves the dashboard's live video card into a row beside the camera strip,
+    // or back into its grid when the line has one camera.
     function ensureFeedRow(show) {
         const page = byId("tabDashboard");
         const main = byId("liveVideoCardPanel");
@@ -1147,6 +1953,7 @@
                 row = document.createElement("div");
                 row.id = "plFeedRow";
                 row.className = "pl-feed-row";
+                row.innerHTML = `<div class="pl-strip" id="plStrip" aria-label="The line's other cameras"></div>`;
                 grid.parentNode.insertBefore(row, grid);
             }
             if (main.parentNode !== row) row.insertBefore(main, row.firstChild);
@@ -1161,85 +1968,112 @@
         return null;
     }
 
-    function secondCamera() {
-        const cams = (state.detail && state.detail.status && state.detail.status.cameras) || [];
-        const main = lineFeedCamera();
-        return main ? cams.find((c) => c.camera_id !== main.camera_id) || null : null;
-    }
-
     const isTriggered = (cam) => Boolean(readsCodes(cam) && cam.qr_trigger && cam.qr_trigger !== "continuous");
 
+    // A camera that reads codes shows its live picture or the last picture taken for codes.
     function secondView(cam) {
         if (!readsCodes(cam)) return "live";
         return state.secondView[cam.camera_id] || (isTriggered(cam) ? "capture" : "live");
     }
 
+    const stripCameras = () => {
+        const big = lineFeedCamera();
+        return big ? lineStatusCameras().filter((c) => c.camera_id !== big.camera_id) : [];
+    };
+
+    function tileDetail(cam) {
+        const limited = Boolean(cam.code_type && cam.code_type !== "all");
+        if (cam.role === "qr") return `${isTriggered(cam) ? `One picture per product on wire line ${cam.qr_trigger === "line1" ? 1 : 2}` : "Reads codes continuously"}${limited ? ` · ${codeTypeLabel(cam.code_type)}` : ""}`;
+        const job = cam.counting ? "Counting" : cam.station === "join" ? "Joins the product result" : "Own station";
+        return `${job}${cam.read_codes ? " · reads codes" : ""}${cam.model_name ? ` · ${cam.model_name}` : ""}`;
+    }
+
+    function tileFigures(cam) {
+        if (!cam.counts) return "";
+        const c = cam.counts;
+        return `<span>Inspected <b>${count(c.total_inspected)}</b></span><span>Good <b style="color:var(--success-color)">${count(c.good_count)}</b></span><span>Rejected <b style="color:var(--danger-color)">${count(c.rejected_count)}</b></span>`;
+    }
+
     function renderFeedRow() {
-        const cam = secondCamera();
-        const view = secondView(cam);
-        const limited = Boolean(cam && cam.code_type && cam.code_type !== "all");
+        const cams = stripCameras();
+        const types = cams.filter((c) => c.code_type && c.code_type !== "all");
         // A single type's name comes from the server's list, asked for once when first needed.
-        if (limited && !state.codeTypes.some((t) => t.value === cam.code_type) && !state.codeTypesAsked) {
+        if (types.some((c) => !state.codeTypes.some((t) => t.value === c.code_type)) && !state.codeTypesAsked) {
             state.codeTypesAsked = true;
             loadCodeTypes().then(renderFeedRow);
         }
-        const signature = JSON.stringify([state.lineId, cam && [cam.camera_id, cam.name || cameraName(cam.camera_id), cam.role, cam.connected, cam.qr_trigger, cam.code_type], view, state.codeTypes.length]);
-        const row = byId("plFeedRow");
-        if (row && row.dataset.signature === signature) return;
-        stopFeed("second");
-        if (!cam) { ensureFeedRow(false); return; }
-        const holder = ensureFeedRow(true);
-        if (!holder) return;
-        holder.dataset.signature = signature;
-        byId("plSecondCard")?.remove();
-        const name = cam.name || cameraName(cam.camera_id);
-        const detail = readsCodes(cam)
-            ? `${roleLabel(cam)} · ${isTriggered(cam) ? `one picture per product on wire line ${cam.qr_trigger === "line1" ? 1 : 2}` : "reads codes continuously"}${limited ? ` · ${codeTypeLabel(cam.code_type)}` : ""}`
-            : "Vision";
-        const toggle = readsCodes(cam) ? `<div class="pl-seg" id="plSecondView">
-                <button data-view="capture" class="${view === "capture" ? "active" : ""}">Last picture</button>
-                <button data-view="live" class="${view === "live" ? "active" : ""}">Live</button></div>` : "";
-        const testBtn = readsCodes(cam) && level() >= 2 ? `<button class="btn-action btn-outline" id="plTestCapture" style="font-size:12px;padding:6px 12px">Test picture</button>` : "";
-        const card = document.createElement("div");
-        card.className = "card-panel";
-        card.id = "plSecondCard";
-        card.innerHTML = `
-            <div class="card-panel-header">
-                <span class="card-panel-title"><span>${esc(name)}</span><span style="font-size:11px;color:var(--text-muted);font-weight:500">${esc(detail)}</span></span>
-                <div class="pl-inline">${toggle}${testBtn}</div>
-            </div>
-            <div class="video-box">
-                <img class="video-img" id="plSecondImg" alt="${esc(name)}">
-                <div class="pl-feed-caption" id="plCaptureCaption" style="display:none"></div>
-                <div class="no-video-overlay active" id="plSecondOverlay">
-                    <div style="display:flex;flex-direction:column;align-items:center;gap:8px;opacity:.75">
-                        <div style="font-size:15px;font-weight:700;color:#fff;letter-spacing:2px" id="plSecondOverlayTitle">${cam.connected ? (view === "capture" ? "NO PICTURE YET" : "CONNECTING") : "NO SIGNAL"}</div>
-                        <div style="font-size:11px;color:rgba(255,255,255,.55)" id="plSecondOverlayNote">${cam.connected ? (view === "capture" ? "A picture appears when a product crosses the wire line" : "") : "This camera is not connected"}</div>
-                    </div>
+        const signature = JSON.stringify([state.lineId, cams.map((c) => [c.camera_id, c.name || cameraName(c.camera_id), c.role, c.counting, c.station, c.read_codes, c.connected, c.qr_trigger, c.code_type, secondView(c)]), state.codeTypes.length]);
+        if (!cams.length) { stopStripFeeds(); ensureFeedRow(false); return; }
+        const row = ensureFeedRow(true);
+        if (!row) return;
+        const strip = byId("plStrip");
+        // Live figures change all the time: update them in place.
+        cams.forEach((cam) => {
+            const figures = strip.querySelector(`.pl-strip-tile[data-camera="${CSS.escape(cam.camera_id)}"] .pl-strip-figures`);
+            if (figures) setPart(figures, tileFigures(cam));
+        });
+        if (row.dataset.signature === signature) { ensureStripFeeds(); return; }
+        row.dataset.signature = signature;
+        stopStripFeeds();
+        strip.classList.toggle("many", cams.length > 2);
+        const canTest = level() >= 2;
+        strip.innerHTML = cams.map((cam) => {
+            const name = cam.name || cameraName(cam.camera_id);
+            const view = secondView(cam);
+            const toggle = readsCodes(cam) ? `<div class="pl-seg" data-view-of="${esc(cam.camera_id)}">
+                    <button data-view="capture" class="${view === "capture" ? "active" : ""}">Last picture</button>
+                    <button data-view="live" class="${view === "live" ? "active" : ""}">Live</button></div>` : "";
+            const test = readsCodes(cam) && canTest ? `<button class="btn-action btn-outline pl-strip-test" data-test="${esc(cam.camera_id)}">Test picture</button>` : "";
+            return `<div class="card-panel pl-strip-tile" data-camera="${esc(cam.camera_id)}">
+                <div class="pl-strip-head">
+                    <span class="pl-dot" style="background:${cam.connected ? "var(--success-color)" : "var(--danger-color)"}"></span>
+                    <span class="pl-strip-name" title="${esc(name)}">${esc(name)}</span>
+                    <span class="pl-badge">${esc(roleLabel(cam, true))}</span>
                 </div>
+                <div class="pl-note pl-strip-detail">${esc(tileDetail(cam))}</div>
+                <button type="button" class="video-box pl-strip-pic" title="Show ${esc(name)} large" aria-label="Show ${esc(name)} large">
+                    <img class="video-img" alt="${esc(name)}">
+                    <div class="pl-feed-caption" style="display:none"></div>
+                    <div class="no-video-overlay active"><div class="pl-strip-overlay">${cam.connected ? (view === "capture" ? "No picture yet" : "Connecting") : "No signal"}</div></div>
+                </button>
+                <div class="pl-row pl-strip-figures">${tileFigures(cam)}</div>
+                ${toggle || test ? `<div class="pl-inline pl-strip-tools">${toggle}${test}</div>` : ""}
             </div>`;
-        holder.appendChild(card);
-        card.querySelectorAll("#plSecondView button").forEach((b) => b.addEventListener("click", () => {
-            state.secondView[cam.camera_id] = b.dataset.view;
-            renderFeedRow();
+        }).join("");
+        strip.querySelectorAll(".pl-strip-pic").forEach((pic) => pic.addEventListener("click", () => {
+            const id = pic.closest(".pl-strip-tile").dataset.camera;
+            state.bigCamera[state.lineId] = id;
+            refreshFeeds();
         }));
-        byId("plTestCapture")?.addEventListener("click", testCapture);
-        state.captureShown = null;
-        if (view === "capture") refreshLineExtras();
-        else ensureSecondFeed(true);
+        strip.querySelectorAll("[data-view-of] button").forEach((b) => b.addEventListener("click", () => {
+            state.secondView[b.parentNode.dataset.viewOf] = b.dataset.view;
+            renderFeedRow();
+            refreshLineExtras();
+        }));
+        strip.querySelectorAll("[data-test]").forEach((b) => b.addEventListener("click", testCapture));
+        state.captureShown = {};
+        ensureStripFeeds();
+        refreshLineExtras();
     }
 
-    function ensureSecondFeed(force) {
-        const cam = secondCamera();
-        if (!cam || !cam.connected || secondView(cam) !== "live" || !dashboardShown()) { stopFeed("second"); return; }
-        if (feeds.second) return;
-        const now = Date.now();
-        if (!force && now < state.feedRetryAt) return;
-        state.feedRetryAt = now + 3000;
-        const img = byId("plSecondImg");
-        if (!img) return;
-        byId("plCaptureCaption").style.display = "none";
-        openFeed("second", `/api/v1/vision/stream/camera/${encodeURIComponent(cam.camera_id)}?t=${now}`, img, byId("plSecondOverlay"));
+    // The large camera changed: the main feed follows (the dashboard's own reader), the strip is rebuilt.
+    function refreshFeeds() {
+        const main = lineFeedCamera();
+        if (main && main.connected && dashboardShown()) {
+            activeCamId = main.camera_id;
+            window.reloadStream();
+        }
+        window.dispatchEvent(new CustomEvent("pl:detail", { detail: state.detail }));
+        renderLineExtras();
+    }
+
+    function ensureStripFeeds() {
+        if (!dashboardShown()) { stopStripFeeds(); return; }
+        stripCameras().forEach((cam) => {
+            const img = document.querySelector(`#plStrip .pl-strip-tile[data-camera="${CSS.escape(cam.camera_id)}"] img`);
+            if (img && cam.connected && secondView(cam) === "live") startStripFeed(cam.camera_id, img);
+            else stopStripFeed(cam.camera_id);
+        });
     }
 
     const QR_RESULT = {
@@ -1255,15 +2089,23 @@
         no_code: "no code",
     };
 
-    const SECOND_CAPTURE = { img: "plSecondImg", caption: "plCaptureCaption", overlay: "plSecondOverlay", shown: "captureShown", blob: "capture" };
-    const INLINE_CAPTURE = { img: "plInlineImg", caption: "plInlineCaption", box: "plInlineCapture", shown: "inlineCaptureShown", blob: "inlineCapture" };
+    // Where a capture is shown: a strip tile of the camera that took it, or the
+    // reads panel when the large camera took it.
+    function tileCaptureTarget(cameraId) {
+        const tile = document.querySelector(`#plStrip .pl-strip-tile[data-camera="${CSS.escape(cameraId)}"]`);
+        if (!tile) return null;
+        return { img: tile.querySelector("img"), caption: tile.querySelector(".pl-feed-caption"), overlay: tile.querySelector(".no-video-overlay"), shown: `tile:${cameraId}`, blob: `tile:${cameraId}` };
+    }
+    const inlineCaptureTarget = () => (byId("plInlineImg")
+        ? { img: byId("plInlineImg"), caption: byId("plInlineCaption"), box: byId("plInlineCapture"), shown: "inline", blob: "inlineCapture" }
+        : null);
 
-    async function showCapture(capture, target = SECOND_CAPTURE) {
-        const img = byId(target.img);
-        const caption = byId(target.caption);
-        if (!img || !caption || !capture || capture.id === state[target.shown]) return;
-        state[target.shown] = capture.id;
-        if (target.box) byId(target.box).hidden = false;
+    async function showCapture(capture, target) {
+        if (!target || !target.img || !target.caption || !capture) return;
+        state.captureShown = state.captureShown || {};
+        if (state.captureShown[target.shown] === capture.id) return;
+        state.captureShown[target.shown] = capture.id;
+        if (target.box) target.box.hidden = false;
         const codes = capture.codes || [];
         const parts = [`<b>${capture.test ? "Test picture" : "Picture"} #${capture.id}</b>`, esc(new Date(capture.timestamp).toLocaleTimeString())];
         if (capture.wire_line) parts.push(`wire line ${capture.wire_line}`);
@@ -1276,8 +2118,8 @@
         } else {
             parts.push(`<b style="color:var(--warning-color)">${capture.status === "camera_offline" ? "Camera offline" : "No code read"}</b>`);
         }
-        caption.innerHTML = parts.map((p) => `<span>${p}</span>`).join("");
-        caption.style.display = "";
+        target.caption.innerHTML = parts.map((p) => `<span>${p}</span>`).join("");
+        target.caption.style.display = "";
         if (capture.status === "camera_offline") return;
         try {
             const res = await fetch(`/api/v1/lines/${encodeURIComponent(state.lineId)}/qr/capture?id=${capture.id}`, { cache: "no-store" });
@@ -1285,28 +2127,28 @@
             const url = URL.createObjectURL(await res.blob());
             const previous = state.blobUrls[target.blob];
             state.blobUrls[target.blob] = url;
-            img.src = url;
-            if (target.overlay) byId(target.overlay)?.classList.remove("active");
+            target.img.src = url;
+            if (target.overlay) target.overlay.classList.remove("active");
             if (previous) setTimeout(() => URL.revokeObjectURL(previous), 2000);
         } catch (_) { /* the next refresh tries again */ }
     }
 
-    async function testCapture() {
-        const button = byId("plTestCapture");
+    async function testCapture(e) {
+        const button = e && e.currentTarget;
         if (button) button.disabled = true;
         try {
             const capture = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}/qr/capture`, { method: "POST" });
-            const cam = secondCamera();
-            if (cam && readsCodes(cam) && capture.camera_id === cam.camera_id) {
-                state.secondView[cam.camera_id] = "capture";
+            const tile = stripCameras().find((c) => c.camera_id === capture.camera_id);
+            if (tile && readsCodes(tile)) {
+                state.secondView[tile.camera_id] = "capture";
                 renderFeedRow();
-                await showCapture(capture);
+                await showCapture(capture, tileCaptureTarget(tile.camera_id));
             } else {
-                await showCapture(capture, INLINE_CAPTURE);
+                await showCapture(capture, inlineCaptureTarget());
             }
             toast(capture.codes && capture.codes.length ? `Test picture: ${capture.codes.map((c) => c.code).join(", ")}` : "Test picture: no code found", capture.codes && capture.codes.length ? "success" : "warning");
-        } catch (e) {
-            toast(`Test picture failed: ${e.message}`, "warning");
+        } catch (err) {
+            toast(`Test picture failed: ${err.message}`, "warning");
         } finally {
             if (button) button.disabled = false;
         }
@@ -1322,14 +2164,14 @@
             box.id = "plLineExtras";
             page.appendChild(box);
         }
-        const cams = (state.detail && state.detail.status && state.detail.status.cameras) || [];
+        const cams = lineStatusCameras();
         const hasQr = cams.some(readsCodes);
         const reader = mainCodeReader();
         // Rebuild only when the cameras change, so the reads list does not blink.
         const signature = JSON.stringify([state.lineId, hasQr, reader && reader.camera_id]);
         if (box.dataset.signature === signature) return;
         box.dataset.signature = signature;
-        state.inlineCaptureShown = null;
+        if (state.captureShown) delete state.captureShown.inline;
         const testBtn = reader && level() >= 2 ? `<button class="btn-action btn-outline" id="plInlineTest" style="font-size:12px;padding:6px 12px">Test picture</button>` : "";
         box.innerHTML = hasQr
             ? `<div class="card-panel"><div class="card-panel-header"><span class="card-panel-title">Latest code reads</span>
@@ -1343,16 +2185,15 @@
         byId("plInlineTest")?.addEventListener("click", testCapture);
     }
 
-    // A camera that reads codes and has no card of its own: the main (counting) camera.
+    // The large camera, when it reads codes: its pictures show in the reads panel.
     function mainCodeReader() {
-        const cams = (state.detail && state.detail.status && state.detail.status.cameras) || [];
-        const second = secondCamera();
-        return cams.find((c) => readsCodes(c) && (!second || c.camera_id !== second.camera_id)) || null;
+        const big = lineFeedCamera();
+        return big && readsCodes(big) ? big : null;
     }
 
     async function refreshLineExtras() {
         if (!dashboardShown() || !state.detail) return;
-        ensureSecondFeed(false);
+        ensureStripFeeds();
         const body = byId("plQrBody");
         if (!body) return;
         try {
@@ -1369,15 +2210,17 @@
                 return `<tr><td class="pl-code">${esc(new Date(r.timestamp).toLocaleTimeString())}</td><td class="pl-code">${esc(r.code || "—")}</td>
                     <td><b style="color:${color}">${esc(label)}</b>${esc(paired)}</td><td>${esc(r.product_name || "—")}</td><td>${esc(r.class_name || "—")}</td><td>${verdict}</td></tr>`;
             }).join("") || `<tr><td colspan="6">No reads yet.</td></tr>`;
-            const cam = secondCamera();
             const capture = data.last_capture;
-            if (capture && cam && readsCodes(cam) && capture.camera_id === cam.camera_id && secondView(cam) === "capture") showCapture(capture);
-            const reader = mainCodeReader();
-            if (capture && reader && capture.camera_id === reader.camera_id) showCapture(capture, INLINE_CAPTURE);
+            if (capture) {
+                const tile = stripCameras().find((c) => c.camera_id === capture.camera_id);
+                if (tile && readsCodes(tile) && secondView(tile) === "capture") showCapture(capture, tileCaptureTarget(tile.camera_id));
+                const reader = mainCodeReader();
+                if (reader && capture.camera_id === reader.camera_id) showCapture(capture, inlineCaptureTarget());
+            }
         } catch (_) { /* next refresh retries */ }
     }
 
-    // The main feed shows the selected line's counting camera. Only the Line
+    // The main feed shows the selected line's large camera. Only the Line
     // Dashboard shows it, so on any other page (or a hidden browser tab) no
     // stream is opened; switching back or showing the tab resumes it.
     const originalReloadStream = window.reloadStream;
@@ -1430,16 +2273,19 @@
     document.addEventListener("visibilitychange", () => {
         if (document.hidden) {
             pauseMainFeed();
-            stopFeed("second");
+            stopStripFeeds();
             stopTileFeeds();
+            stopCardFeeds();
             return;
         }
         if (isTab("tabDashboard")) {
             if (activeCamId) window.reloadStream();
-            ensureSecondFeed(true);
+            ensureStripFeeds();
             refreshLineExtras();
         } else if (isTab("tabOverview")) {
             refreshOverview();
+        } else if (isTab("tabActionTrigger")) {
+            startCardFeeds();
         }
     });
 
@@ -1849,8 +2695,9 @@
             // No page but the Line Dashboard shows these feeds: close them, even
             // one that has not delivered its first frame yet.
             pauseMainFeed();
-            stopFeed("second");
+            stopStripFeeds();
         }
+        if (id !== "tabActionTrigger") stopCardFeeds();
         if (id !== "tabOverview") stopTileFeeds();
         if (id === "tabOverview") {
             loadCamerasList().then(refreshOverview);
@@ -1862,6 +2709,7 @@
             refreshProducts();
         } else if (id === "tabActionTrigger") {
             renderLineSetup();
+            state.timers.setup = setInterval(refreshSetupStatus, 5000);
         } else if (id === "tabDashboard") {
             loadDetail().then(() => { renderLineExtras(); refreshLineExtras(); window.checkActiveStream(true); }).catch(() => {});
             state.timers.extras = setInterval(refreshLineExtras, 1000);
@@ -1914,6 +2762,8 @@
         lineAction: (act, id) => lineAction(act, id || state.lineId),
         refreshDetail: () => loadDetail(),
         lineCameras: () => ((state.detail && state.detail.cameras) || []).map((c) => ({ ...c, name: cameraName(c.camera_id) })),
+        // The camera the Line dashboard shows large (picked in the camera strip, else the counting camera).
+        feedCameraId: () => (lineFeedCamera() || {}).camera_id || null,
         reload: loadLines,
     };
 

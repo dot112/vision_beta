@@ -200,8 +200,9 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │       ├── ring_buffer.py
 │       └── shared_memory.py
 ├── assets/
+│   ├── camera_settings.js     # a camera's image/video settings form (Line setup cards, Cameras dialog)
 │   ├── dashboard.css
-│   ├── production_lines.js
+│   ├── production_lines.js    # lines, Line setup camera cards, Line dashboard camera strip
 │   ├── zajel_logo.png
 │   ├── zajel_logo_small.png
 │   └── fonts/
@@ -215,7 +216,8 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │       ├── section-3-joined-cameras.md
 │       ├── section-4-product-records.md
 │       ├── section-5-plc-inputs.md
-│       └── session-prompts.md   # the first message for each section's session
+│       ├── session-prompts.md   # the first message for each section's session
+│       └── screenshots/         # dashboard screenshots a section took (section-2/: Line setup, Line dashboard)
 ├── docker/
 │   ├── mosquitto/
 │   │   ├── mosquitto.conf
