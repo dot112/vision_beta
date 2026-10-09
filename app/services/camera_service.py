@@ -210,6 +210,9 @@ class CameraService:
         previous_source = camera.source
         if data.name is not None:
             camera.name = data.name
+            # A connected camera keeps its driver; give it the new name too (messages read it).
+            if camera_id in app_state.cameras:
+                app_state.cameras[camera_id].name = data.name
         if data.source is not None:
             source = data.source
             if isinstance(source, str) and isinstance(camera.source, str):

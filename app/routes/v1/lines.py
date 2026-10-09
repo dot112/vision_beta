@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -65,7 +66,9 @@ async def _view(line_id: str, with_logic: bool) -> Dict[str, Any]:
     runtime = _manager().get(line_id)
     line["status"] = _manager().summary(runtime) if runtime else None
     if with_logic:
-        line["warnings"] = line_warnings(line, await _model_info(line))
+        line["warnings"] = [
+            await _name_cameras(warning, line.get("cameras")) for warning in line_warnings(line, await _model_info(line))
+        ]
     return line
 
 
@@ -173,14 +176,78 @@ async def _check_models(raw: Dict[str, Any]) -> None:
                 )
 
 
-async def _save(raw: Dict[str, Any]) -> Dict[str, Any]:
-    _check_code_types(raw)
-    _check_product_lists(raw)
-    await _check_models(raw)
+def _check_camera_count(raw: Dict[str, Any]) -> None:
+    """A line cannot have more cameras than the server connects at once (MAX_CONNECTED_CAMERAS)."""
+    from app.config import settings
+
+    cameras = raw.get("cameras")
+    limit = int(settings.MAX_CONNECTED_CAMERAS)
+    if isinstance(cameras, list) and len(cameras) > limit:
+        raise HTTPException(
+            status_code=422,
+            detail=f"This line has {len(cameras)} cameras, but this server connects at most {limit} cameras at once "
+                   f"(MAX_CONNECTED_CAMERAS). Remove a camera, or raise that setting.",
+        )
+
+
+_CAMERA_LABEL = re.compile(r"\bCamera (\d+)\b(?! \()")
+
+
+async def _camera_names(cameras: Any) -> Dict[str, str]:
+    """{camera_id: name} for a line's cameras, from the camera list (Cameras page)."""
+    from app.db.models.camera import Camera
+    from app.db.session import AsyncSessionLocal
+    from app.state.application_state import app_state
+
+    ids = [str(c.get("camera_id")) for c in cameras if isinstance(c, dict) and c.get("camera_id")] \
+        if isinstance(cameras, list) else []
+    names: Dict[str, str] = {}
+    if not ids:
+        return names
     try:
-        return _svc().save_line(raw)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        async with AsyncSessionLocal() as db:
+            for camera_id in ids:
+                row = await db.get(Camera, camera_id)
+                if row is not None and row.name:
+                    names[camera_id] = row.name
+    except Exception:
+        pass
+    for camera_id in ids:
+        driver_name = getattr(app_state.cameras.get(camera_id), "name", None)
+        if camera_id not in names and driver_name:
+            names[camera_id] = driver_name
+    return names
+
+
+async def _name_cameras(text: Optional[str], cameras: Any) -> Optional[str]:
+    """A message with each "Camera N" followed by that camera's name: "Camera 2 ('Packing left')"."""
+    if not text or not isinstance(cameras, list) or not _CAMERA_LABEL.search(text):
+        return text
+    names = await _camera_names(cameras)
+
+    def named(match: "re.Match[str]") -> str:
+        index = int(match.group(1)) - 1
+        cam = cameras[index] if 0 <= index < len(cameras) and isinstance(cameras[index], dict) else {}
+        name = names.get(str(cam.get("camera_id") or ""))
+        return f"{match.group(0)} ('{name}')" if name else match.group(0)
+
+    return _CAMERA_LABEL.sub(named, text)
+
+
+async def _save(raw: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        _check_camera_count(raw)
+        _check_code_types(raw)
+        _check_product_lists(raw)
+        await _check_models(raw)
+        try:
+            return _svc().save_line(raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except HTTPException as exc:
+        if isinstance(exc.detail, str) and "cameras" in raw:
+            exc.detail = await _name_cameras(exc.detail, raw.get("cameras"))
+        raise
 
 
 def _sync_forced(body: Dict[str, Any], saved: Dict[str, Any]) -> Optional[str]:
@@ -195,7 +262,10 @@ def _sync_forced(body: Dict[str, Any], saved: Dict[str, Any]) -> Optional[str]:
 async def _save_warning(body: Dict[str, Any], view: Dict[str, Any]) -> Optional[str]:
     """What the user is told after a save: the first of a model problem, Sync switched on, or a line warning."""
     about_models = model_warnings(view, await _model_info(view))
-    return next(iter(about_models), None) or _sync_forced(body, view) or next(iter(view.get("warnings") or []), None)
+    first = next(iter(about_models), None)
+    if first:
+        return await _name_cameras(first, view.get("cameras"))
+    return _sync_forced(body, view) or next(iter(view.get("warnings") or []), None)
 
 
 # ── Read ──────────────────────────────────────────────────────────────────────

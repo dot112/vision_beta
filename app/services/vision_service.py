@@ -762,7 +762,8 @@ class ContinuousVisionRunner:
                         success, mat, fid = driver.grab_raw_frame()
                     if success and mat is not None and (driver, fid) != last_submitted_fids.get(camera_id):
                         # Runs AI inference + counting tracker on the worker thread
-                        if worker.submit_frame_if_idle(mat, fid, copy=False):
+                        # With the camera's own confidence threshold, if it has one (else the model's).
+                        if worker.submit_frame_if_idle(mat, fid, conf_thresh=runtime.confidence_for(camera_id), copy=False):
                             last_submitted_fids[camera_id] = (driver, fid)
                 except Exception as ex:
                     _error_log.log(

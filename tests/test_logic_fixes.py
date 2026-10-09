@@ -107,12 +107,15 @@ def test_a_client_that_does_not_send_the_new_settings_leaves_them_as_saved():
     saved = normalize_line({"id": "line-x", "name": "X", "cameras": [{
         "camera_id": "c", "role": "vision", "model_id": "m", "direction": "both",
         "tracking": {"min_hits": 3}, "name_based_defects": False, "line1_position": 0.3,
-    }]})
+    }, {"camera_id": "d", "role": "vision", "model_id": "m", "confidence": 0.55, "station": "join"}]})
     # A dashboard written before these settings sends the camera without them.
-    again = normalize_line({"cameras": [{"camera_id": "c", "role": "vision", "model_id": "m"}]}, saved)
-    camera = again["cameras"][0]
+    again = normalize_line({"cameras": [{"camera_id": "c", "role": "vision", "model_id": "m"},
+                                        {"camera_id": "d", "role": "vision", "model_id": "m"}]}, saved)
+    camera, second = again["cameras"]
     assert (camera["direction"], camera["tracking"], camera["name_based_defects"], camera["line1_position"]) == (
         "both", {"min_hits": 3}, False, 0.3)
+    # The same for the camera card settings of Section 2.
+    assert (second["confidence"], second["station"]) == (0.55, "join")
 
 
 def test_version_8_keeps_the_name_rule_on_every_existing_vision_camera():

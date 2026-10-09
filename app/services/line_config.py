@@ -26,10 +26,17 @@ PRIMARY_LINE_ID = "line-1"
 #   6  each vision camera names its own model and its own class lists
 #   7  each send card on an MQTT channel names its own topic
 #   8  each vision camera holds its own counting settings (count lines, direction,
-#      tracking, whether defect names reject)
+#      tracking, whether defect names reject); the line's count lines are copied into it
 SCHEMA_VERSION = 8
-MAX_CAMERAS_PER_LINE = 2
+MAX_CAMERAS_PER_LINE = 8
 CAMERA_ROLES = ("vision", "qr")
+# What a vision camera that is not the counting camera does with its result:
+#   own   counts and rejects on its own and fires only the cards that name it
+#   join  its reject is merged into the counting camera's product (Section 3;
+#         until then it behaves like "own")
+STATIONS = ("own", "join")
+# The model confidence a vision camera may ask for instead of the model's own threshold.
+CONFIDENCE_LIMITS = (0.05, 0.99)
 QR_DISPATCH_MODES = ("off", "all", "known", "unknown")
 # When a QR reader decodes: every frame, or one picture each time a product
 # crosses wire line 1 or 2 of the line's counting camera.
@@ -116,7 +123,10 @@ TRACKING_KEYS = tuple(TRACKING_LIMITS)
 # a camera sent without one keeps what is saved.
 CAMERA_KEPT_KEYS = CAMERA_MODEL_KEYS + (
     "name_based_defects", "direction", "tracking", "line1_position", "line2_position", "orientation",
+    "confidence", "station",
 )
+# The count lines a vision camera copies from its line's action_trigger (version 8 step).
+COUNT_LINE_KEYS = ("line1_position", "line2_position", "orientation")
 # Once kept per line in action_trigger; an older client that still sends them is ignored.
 OLD_CLASS_KEYS = ("expected_classes", "defect_classes")
 MAX_CLASSES_PER_LIST = 200
@@ -316,7 +326,25 @@ def normalize_camera(raw: Any, index: int) -> Dict[str, Any]:
         # camera does what cameras always did: the name rule applies.
         if raw.get("name_based_defects") is not None:
             camera["name_based_defects"] = _bool(raw.get("name_based_defects"), f"{label} defects by name", True)
+        # The model confidence below which a detection is ignored; blank = the model's own.
+        confidence = raw.get("confidence")
+        if confidence not in (None, ""):
+            low, high = CONFIDENCE_LIMITS
+            camera["confidence"] = round(_number(confidence, f"{label} confidence threshold", low, low, high), 4)
+        station = raw.get("station")
+        if station not in (None, ""):
+            station = str(station).strip().lower()
+            if station not in STATIONS:
+                raise ValueError(f"{label} station must be 'own' (its own result) or 'join' (joins the product result)")
+            camera["station"] = station
     return camera
+
+
+def camera_station(camera: Dict[str, Any]) -> Optional[str]:
+    """'own' or 'join' for a vision camera that is not the counting camera, else None."""
+    if camera.get("role", "vision") != "vision" or camera.get("counting"):
+        return None
+    return camera.get("station") or "own"
 
 
 def _tracking(value: Any, label: str) -> Dict[str, Any]:
@@ -618,9 +646,16 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
     vision = [c for c in cameras if c["role"] == "vision"]
     counting = [c for c in vision if c["counting"]]
     if len(counting) > 1:
-        raise ValueError("Only one vision camera can be the counting camera")
+        names = " and ".join(f"Camera {cameras.index(c) + 1}" for c in counting[:2])
+        raise ValueError(
+            f"Only one vision camera can be the counting camera ({names} are both set to Counting). "
+            f"Set the other one to Inspection station."
+        )
     if vision and not counting:
         vision[0]["counting"] = True
+    for cam in vision:
+        if cam["counting"]:
+            cam.pop("station", None)  # the counting camera makes the product result
     if not vision and any(c.get("qr_trigger", "continuous") != "continuous" for c in cameras):
         raise ValueError("Capturing when a product crosses a wire line needs a vision camera on the line")
 
@@ -911,19 +946,47 @@ def _upgrade_to_v8(state: Dict[str, Any]) -> None:
     defect; that is now a switch per camera, on for every existing camera so
     it keeps rejecting what it rejected.
 
+    The count lines (and the direction and tracking settings) were the line's;
+    each vision camera that has none of its own gets the line's, so it counts
+    where it counted. The line keeps them too: Line 1's top-level
+    ``action_trigger`` is what version 1 and older API clients read.
+
     A TCP channel's delimiter and mode were saved but never used: every
     message went out as a client, ending in a newline. They are used now, so
     each existing channel is set to what it really did.
     """
     for line in state.get("lines") or []:
-        for camera in (line.get("cameras") or []) if isinstance(line, dict) else []:
+        if not isinstance(line, dict):
+            continue
+        holder = state if line.get("id") == PRIMARY_LINE_ID else line
+        trigger = holder.get("action_trigger") if isinstance(holder.get("action_trigger"), dict) else {}
+        for camera in line.get("cameras") or []:
             if isinstance(camera, dict) and camera.get("role", "vision") == "vision":
                 camera.setdefault("name_based_defects", True)
+                copy_count_lines(camera, trigger)
     for endpoint in state.get("communication_endpoints") or []:
         if isinstance(endpoint, dict) and str(endpoint.get("protocol", "")).lower() == "tcp":
             endpoint["delimiter"] = "\\n"
             endpoint["mode"] = "client"
             endpoint["keep_open"] = False
+
+
+def copy_count_lines(camera: Dict[str, Any], trigger: Dict[str, Any]) -> None:
+    """Give a vision camera the line's count lines, direction and tracking where it has none of its own.
+
+    A camera reads each of these settings from itself first and from its line
+    second (counting_config_from_dict), so this changes nothing it counts.
+    """
+    for key in COUNT_LINE_KEYS + ("direction",):
+        if camera.get(key) in (None, "") and trigger.get(key) not in (None, ""):
+            camera[key] = copy.deepcopy(trigger[key])
+    line_tracking = trigger.get("tracking")
+    if isinstance(line_tracking, dict):
+        own = camera.get("tracking") if isinstance(camera.get("tracking"), dict) else {}
+        merged = {k: v for k, v in line_tracking.items() if k in TRACKING_LIMITS and v not in (None, "")}
+        merged.update({k: v for k, v in own.items() if v not in (None, "")})
+        if merged:
+            camera["tracking"] = merged
 
 
 # (version reached, step). Append a step for every change to the settings' shape.
