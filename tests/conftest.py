@@ -49,6 +49,8 @@ class FakeInferenceEngine:
         self.class_name = class_name
         self.confidence = confidence
         self.calls = 0
+        # The confidence threshold each predict_mat call was given (None: the model's own).
+        self.conf_thresholds = []
 
     def _response(self, width: int, height: int):
         from app.schemas.vision import BoundingBox, DetectionItem, DetectionResponse
@@ -73,6 +75,7 @@ class FakeInferenceEngine:
         return self._response(64, 48)
 
     def predict_mat(self, mat, conf_threshold=None, nms_threshold=None):
+        self.conf_thresholds.append(conf_threshold)
         height, width = mat.shape[:2]
         return self._response(width, height)
 

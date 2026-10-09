@@ -25,6 +25,7 @@ from app.services.counting_service import CountingService, counting_service
 from app.services.line_config import (
     DEFAULT_SYNC_WINDOW_MS,
     PRIMARY_LINE_ID,
+    camera_station,
     code_checks,
     code_verdict,
     product_verdict,
@@ -260,6 +261,12 @@ class LineRuntime:
         """The product list a camera checks its codes against (None: no list, every code is unknown)."""
         entry = self.camera_entry(camera_id)
         return entry.get("product_list_id") if entry else None
+
+    def confidence_for(self, camera_id: Optional[str]) -> Optional[float]:
+        """The model confidence a vision camera of this line asks for (None: the model's own threshold)."""
+        entry = self.camera_entry(camera_id) if camera_id else None
+        value = entry.get("confidence") if entry and entry.get("role") == "vision" else None
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
     def model_id_for(self, camera_id: Optional[str]) -> Optional[str]:
         """The model a vision camera of this line runs (None: it has none, or it is not one)."""
@@ -1150,6 +1157,17 @@ class LineManager:
                 row["model_error"] = model_state["error"]
                 row["expected_classes"] = list(cam.get("expected_classes") or [])
                 row["defect_classes"] = list(cam.get("defect_classes") or [])
+                station = camera_station(cam)
+                aux = runtime.aux_counters.get(cam["camera_id"])
+                if station:
+                    # Own station or joined to the product result; such a camera counts on its own.
+                    row["station"] = station
+                if aux is not None:
+                    row["counts"] = {
+                        "total_inspected": aux.total_inspected,
+                        "good_count": aux.good_count,
+                        "rejected_count": aux.rejected_count,
+                    }
             if reads_codes(cam):
                 if row["role"] == "vision":
                     row["read_codes"] = True

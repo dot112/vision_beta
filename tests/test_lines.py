@@ -129,7 +129,8 @@ def test_v1_settings_upgrade_into_line1_and_stay_readable_by_v1(monkeypatch, tmp
     assert line1["cameras"] == [{
         "camera_id": "cam-usb-0", "role": "vision", "counting": True, "qr_hold_ms": 1500,
         "model_id": "model-A", "expected_classes": ["can"], "defect_classes": ["defect", "scratch", "broken"],
-        "name_based_defects": True,
+        # Since version 8 the camera holds the line's count lines too (copied, so it counts where it did).
+        "name_based_defects": True, "line1_position": 0.2, "line2_position": 0.8,
     }]
     assert "model_id" not in line1 and "active_model_id" not in on_disk
     # Version 1's "connect the camera on startup" is now the one switch for every line.
@@ -155,8 +156,8 @@ def test_fresh_install_takes_no_backup(monkeypatch, tmp_path):
 
 
 def test_line_validation():
-    with pytest.raises(ValueError, match="at most 2 cameras"):
-        normalize_line({"name": "A", "cameras": [{"camera_id": c} for c in "abc"]})
+    with pytest.raises(ValueError, match="at most 8 cameras"):
+        normalize_line({"name": "A", "cameras": [{"camera_id": c} for c in "abcdefghi"]})
     with pytest.raises(ValueError, match="Sync needs"):
         normalize_line({"name": "A", "cameras": [{"camera_id": "a"}], "sync": {"enabled": True}})
     with pytest.raises(ValueError, match="role"):
@@ -640,7 +641,7 @@ def test_the_runner_feeds_a_code_reading_vision_camera_to_both_workers(lines, mo
         def __init__(self):
             self.frames = 0
 
-        def submit_frame_if_idle(self, mat, fid, copy=True):
+        def submit_frame_if_idle(self, mat, fid, conf_thresh=None, copy=True):
             self.frames += 1
             return True
 
