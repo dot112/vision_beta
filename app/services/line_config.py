@@ -14,6 +14,7 @@ from __future__ import annotations
 import copy
 import re
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 PRIMARY_LINE_ID = "line-1"
@@ -96,6 +97,15 @@ _LINE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 
 # Fields a line entry may carry; anything else sent by a client is dropped.
 _LOGIC_KEYS = ("action_trigger", "plc_actions", "send_actions")
+
+# Kept by the server in a line's entry, never taken from a client: when the
+# line's counters were last reset (ISO UTC), and when single classes were. A
+# counter gets its totals back from the product records since then.
+COUNTS_RESET_KEYS = ("counts_reset_at", "counts_reset_classes")
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 # The kinds of channel a send card can send to (Connections).
 SEND_PROTOCOLS = ("mqtt", "tcp", "webhook")
@@ -777,6 +787,9 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
         # dashboards only compare the live yield against it.
         "yield_target": _number(merged.get("yield_target"), "Yield target", 0.0, 0.0, 100.0),
     }
+    for key in COUNTS_RESET_KEYS:
+        if key in base:
+            line[key] = copy.deepcopy(base[key])
     for key in _LOGIC_KEYS:
         if key in merged:
             line[key] = copy.deepcopy(merged[key])
@@ -1041,6 +1054,8 @@ def _upgrade_to_v8(state: Dict[str, Any]) -> None:
     A TCP channel's delimiter and mode were saved but never used: every
     message went out as a client, ending in a newline. They are used now, so
     each existing channel is set to what it really did.
+
+    Each line gets ``counts_reset_at``: its counters are kept from then on.
     """
     for line in state.get("lines") or []:
         if not isinstance(line, dict):
@@ -1051,6 +1066,13 @@ def _upgrade_to_v8(state: Dict[str, Any]) -> None:
             if isinstance(camera, dict) and camera.get("role", "vision") == "vision":
                 camera.setdefault("name_based_defects", True)
                 copy_count_lines(camera, trigger)
+    # The counters now come back after a restart from the product records
+    # since each line's last reset. Records start with this version, so the
+    # lines count from the upgrade.
+    upgraded_at = utc_now_iso()
+    for line in state.get("lines") or []:
+        if isinstance(line, dict):
+            line.setdefault("counts_reset_at", upgraded_at)
     for endpoint in state.get("communication_endpoints") or []:
         if isinstance(endpoint, dict) and str(endpoint.get("protocol", "")).lower() == "tcp":
             endpoint["delimiter"] = "\\n"

@@ -33,7 +33,7 @@ Make the software work on almost any production line:
 | 1 | Logic fixes (vision, messages, PLC outputs) | [section-1-logic-fixes.md](section-1-logic-fixes.md) | — | **Done** | `claude/tender-cerf-qzfcle` |
 | 2 | Camera cards on Line setup, up to 8 cameras | [section-2-camera-cards.md](section-2-camera-cards.md) | 1 | **Done** | `claude/magical-ritchie-r7rxvs` |
 | 3 | Several vision cameras: own station or joined result | [section-3-joined-cameras.md](section-3-joined-cameras.md) | 2 | **Done** | `claude/section-3-joined-cameras-mg2wnm` |
-| 4 | Product records in the database, Records page, CSV/XLSX export | [section-4-product-records.md](section-4-product-records.md) | 1 (3 only for the `stations` detail) | Not started | — |
+| 4 | Product records in the database, Records page, CSV/XLSX export | [section-4-product-records.md](section-4-product-records.md) | 1 (3 only for the `stations` detail) | **Done** | `claude/optimistic-carson-s5ko0o` |
 | 5 | PLC inputs, batch number, trigger inspection, reject confirmation | [section-5-plc-inputs.md](section-5-plc-inputs.md) | 2 and 4 | Not started | — |
 
 **Order:** run the sections one after another, 1 → 2 → 3 → 4 → 5. Each new session starts from the branch the previous section pushed, which is in the table above:
@@ -71,9 +71,10 @@ FastAPI server (`main.py`) plus one HTML dashboard (`dashboard.html`, plus `asse
 | PLC | `app/services/plc_dispatcher_service.py`, `app/hardware/plc/*`, `app/services/plc_failsafe_service.py` | PLC action cards → `PLCDriverFactory.get_driver(endpoint)` → `execute_operation`. Per-endpoint `asyncio.Lock` in `PLCDispatcherService._endpoint_locks`. |
 | Messages | `app/services/send_dispatcher_service.py` | Send cards → `deliver(endpoint, message, topic)` on the telemetry dispatcher thread (`counting_service._telemetry_dispatcher`). |
 | Lines API | `app/routes/v1/lines.py` | `PUT /lines/{id}` (`_save` → `SettingsPersistenceService.save_line`), `apply_line()`, `set_line_running()`, `/start`, `/stop`, `/clone`. |
+| Product records | `app/services/production_records_service.py`, `app/services/records_export.py`, `app/routes/v1/records.py` | `production_recorder.record()` / `record_event(payload, kind, counted)` queue one row per product or code read (never blocks); written in batches to `product_records`. Filters, summary, `restore_line_counts()` (counters after a restart, from each line's `counts_reset_at`), CSV/XLSX export. |
 | Alarms | `app/events/alarm_events.py` | `alarm_manager.raise_alarm/clear_alarm`, and `ALARM_CATALOG` (add new codes there). |
-| DB | `app/db/models/*`, `alembic/versions/*` | SQLite (async). Revision 0001 builds tables from the models, so **a new table must be added to `_LATER_TABLES` in `0001_initial_schema.py`** and created by its own revision (see 0004/0005). Also import the model in `alembic/env.py`. |
-| Dashboard | `dashboard.html`, `assets/production_lines.js`, `assets/camera_settings.js` | `production_lines.js` adds the line selector, the Plant overview, Lines and Products pages, Line setup (the line section and one card per camera, up to 8, with every camera setting; Section 2) and the Line dashboard's camera strip. `camera_settings.js` is a camera's image/video form (card Image and Video folds, and the Cameras page dialog). Its `window.fetch` wrapper adds `?line_id=` to `/api/v1/counting/`, `/api/v1/plc/actions` and `/api/v1/send/actions` calls while a line other than Line 1 is selected. |
+| DB | `app/db/models/*`, `alembic/versions/*` | SQLite (async). Revision 0001 builds tables from the models, so **a new table must be added to `_LATER_TABLES` in `0001_initial_schema.py`** and created by its own revision (see 0004/0005/0006). Also import the model in `alembic/env.py`. |
+| Dashboard | `dashboard.html`, `assets/production_lines.js`, `assets/camera_settings.js` | `production_lines.js` adds the line selector, the Plant overview, Lines, Products and Production records pages, Line setup (the line section and one card per camera, up to 8, with every camera setting; Section 2) and the Line dashboard's camera strip. `camera_settings.js` is a camera's image/video form (card Image and Video folds, and the Cameras page dialog). Its `window.fetch` wrapper adds `?line_id=` to `/api/v1/counting/`, `/api/v1/plc/actions` and `/api/v1/send/actions` calls while a line other than Line 1 is selected. |
 
 ## Rules for working in this repository
 
@@ -88,7 +89,7 @@ FastAPI server (`main.py`) plus one HTML dashboard (`dashboard.html`, plus `asse
 - **Set up and run the checks:**
   ```bash
   python3 -m venv /tmp/venv && /tmp/venv/bin/pip install -q -r requirements.txt -r requirements-dev.txt
-  /tmp/venv/bin/python -m pytest -q -p no:cacheprovider     # 749 pass after Section 3
+  /tmp/venv/bin/python -m pytest -q -p no:cacheprovider     # 780 pass after Section 4
   /tmp/venv/bin/ruff check .
   ```
   CI (`.github/workflows/ci.yml`) runs lint, the tests, and a Docker Compose start/stop check on every push.

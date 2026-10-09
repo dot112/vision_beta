@@ -20,6 +20,7 @@ Select the scope that matches the endpoints the client needs. The key owner must
 | --- | --- | --- | --- |
 | Monitoring | `monitor:read` | Level 1 Operator | `GET /api/v1/cameras`; `GET /api/v1/cameras/{camera_id}/status`; `GET /api/v1/vision/stream/camera/{camera_id}`; `GET /api/v1/vision/annotated/camera/{camera_id}`; `GET /api/v1/qr/annotated/camera/{camera_id}`; read routes under `/api/v1/counting/`, `/api/v1/telemetry/` (including `/telemetry/health` and `/telemetry/metrics`), and `/api/v1/plc/`; `GET /api/v1/mqtt/status`; `GET /api/v1/alarms` and `/api/v1/alarms/history` |
 | Inspection history | `inspection:read` | Level 1 Operator | `GET /api/v1/vision/detections` |
+| Production records | `records:read` | Level 1 Operator | `GET /api/v1/records`, `/api/v1/records/summary` and `/api/v1/records/export` (CSV / Excel) |
 | Run inspections | `inspection:trigger` | Level 2 Supervisor | Image and camera detection under `/api/v1/vision/`; QR decode and mobile scan under `/api/v1/qr/`; `/api/v1/control/trigger...` |
 | Reset production counts | `production:reset` | Level 2 Supervisor | `POST /api/v1/counting/reset` |
 | Read configuration | `configuration:read` | Level 1 Operator | `GET /api/v1/system/settings`; `GET /api/v1/system/endpoints`; `GET /api/v1/models`; `GET /api/v1/rules`; `GET /api/v1/actions`; `GET /api/v1/flows`; PLC action configuration reads; audit and change polling; `GET /api/v1/mqtt/certs` |

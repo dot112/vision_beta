@@ -397,6 +397,7 @@ class CountingService:
         fields: Optional[Dict[str, Any]] = None,
         plc_fields: Optional[Dict[str, Any]] = None,
         delay_from_crossing: bool = False,
+        record: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Count one product with its final result and send its one event.
 
@@ -405,6 +406,8 @@ class CountingService:
         ``fields`` / ``plc_fields`` add the paired code to the message and to
         the PLC event. ``delay_from_crossing`` makes a PLC card's travel delay
         run from the moment of the crossing, not from this call.
+        ``record`` sets columns of the product's record (product_records)
+        that the message does not carry.
         Returns (payload, plc_event).
         """
         from app.services.line_config import REASON_VISION
@@ -483,6 +486,10 @@ class CountingService:
             payload.update(fields)
         if plc_fields:
             plc_event.update(plc_fields)
+        if self.dispatch_telemetry:
+            # Own-station products are recorded too, but are not in the line totals.
+            from app.services.production_records_service import record_event
+            record_event(payload, "product", counted=self.camera_id is None, **(record or {}))
         self.dispatch_event(payload, plc_event, is_reject)
         return payload, plc_event
 
@@ -512,6 +519,26 @@ class CountingService:
             else:
                 self.good_count += 1
         return self._metrics()
+
+    def restore(self, totals: Dict[str, Any]) -> None:
+        """Take the totals kept from before a restart (production_records_service.counted_totals).
+
+        The per-class numbers decide; total_inspected, good_count and
+        rejected_count follow from them when left out.
+        """
+        counts = {str(k).strip().lower(): int(v) for k, v in (totals.get("counts_by_class") or {}).items() if int(v) > 0}
+        rejects = {str(k).strip().lower(): min(int(v), counts.get(str(k).strip().lower(), 0))
+                   for k, v in (totals.get("rejects_by_class") or {}).items() if int(v) > 0}
+        total = int(totals.get("total_inspected", sum(counts.values())))
+        rejected = int(totals.get("rejected_count", sum(rejects.values())))
+        with self._count_lock:
+            self.counts_by_class.clear()
+            self.counts_by_class.update(counts)
+            self.rejects_by_class.clear()
+            self.rejects_by_class.update({k: v for k, v in rejects.items() if v})
+            self.total_inspected = total
+            self.rejected_count = rejected
+            self.good_count = int(totals.get("good_count", total - rejected))
 
     def dispatch_event(self, payload: Dict[str, Any], plc_event: Dict[str, Any], is_defect: bool) -> None:
         """Send one product's event to the event bus, the line's PLC cards and its send cards."""

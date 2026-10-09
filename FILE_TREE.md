@@ -36,7 +36,8 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │       ├── 0002_scoped_api_keys.py
 │       ├── 0003_encrypted_api_key_secrets.py
 │       ├── 0004_products.py
-│       └── 0005_product_lists.py
+│       ├── 0005_product_lists.py
+│       └── 0006_product_records.py
 ├── app/
 │   ├── __init__.py
 │   ├── config.py
@@ -58,6 +59,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │       ├── flow.py
 │   │       ├── model.py
 │   │       ├── product.py
+│   │       ├── production_record.py   # product_records: every product and code read
 │   │       ├── rule.py
 │   │       └── user.py
 │   ├── engines/
@@ -128,6 +130,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │       ├── plc.py
 │   │       ├── products.py
 │   │       ├── qr.py
+│   │       ├── records.py             # production records: list, summary, CSV / Excel export
 │   │       ├── rules.py
 │   │       ├── send_actions.py
 │   │       ├── system.py
@@ -172,7 +175,9 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │   ├── plc_dispatcher_service.py
 │   │   ├── plc_failsafe_service.py
 │   │   ├── product_service.py
+│   │   ├── production_records_service.py   # recorder (queue + batch writer, retention), filters, summary, restored counters
 │   │   ├── qr_service.py
+│   │   ├── records_export.py   # CSV and .xlsx (zipfile + XML) files of the records
 │   │   ├── rule_service.py
 │   │   ├── send_dispatcher_service.py
 │   │   ├── settings_persistence_service.py
@@ -217,7 +222,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │       ├── section-4-product-records.md
 │       ├── section-5-plc-inputs.md
 │       ├── session-prompts.md   # the first message for each section's session
-│       └── screenshots/         # dashboard screenshots a section took (section-2/: Line setup, Line dashboard)
+│       └── screenshots/         # dashboard screenshots a section took (section-2/, section-3/: Line setup, Line dashboard; section-4/: Production records)
 ├── docker/
 │   ├── mosquitto/
 │   │   ├── mosquitto.conf
@@ -263,6 +268,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_plc_failsafe.py
     ├── test_plc_protocols.py
     ├── test_product_lists.py
+    ├── test_production_records.py
     ├── test_qr_trigger.py
     ├── test_reader_actions.py
     ├── test_request_load_protection.py

@@ -24,6 +24,7 @@ from app.services.line_config import (
     normalize_send_cards,
     require_camera_models,
     upgrade_state,
+    utc_now_iso,
 )
 from app.utils.logger import get_logger
 
@@ -618,6 +619,8 @@ class SettingsPersistenceService:
             line["send_actions"] = old.get("send_actions", [])
 
         if existing is None:
+            # A new line (or one made again under an old id) counts from now.
+            line["counts_reset_at"] = utc_now_iso()
             lines.append(line)
         else:
             lines[lines.index(next(ln for ln in lines if ln.get("id") == line["id"]))] = line
@@ -626,6 +629,29 @@ class SettingsPersistenceService:
         if send_cards is not None:
             cls.replace_line_send_actions(line["id"], send_cards)
         return cls.get_line(line["id"])
+
+    @classmethod
+    def mark_counts_reset(cls, line_id: str, classes: Optional[List[str]] = None) -> None:
+        """Note that a line's counters (or only some classes of them) were reset now, and save.
+
+        After a restart a counter is rebuilt from the product records since
+        then (production_records_service.restore_line_counts).
+        """
+        line = cls._find_line(line_id)
+        if line is None:
+            return
+        now = utc_now_iso()
+        if classes:
+            resets = line.get("counts_reset_classes") if isinstance(line.get("counts_reset_classes"), dict) else {}
+            for name in classes:
+                key = str(name).strip().lower()
+                if key:
+                    resets[key] = now
+            line["counts_reset_classes"] = resets
+        else:
+            line["counts_reset_at"] = now
+            line.pop("counts_reset_classes", None)
+        cls.save()
 
     @classmethod
     def delete_line(cls, line_id: str) -> bool:

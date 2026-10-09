@@ -134,6 +134,9 @@ def test_version_8_keeps_the_name_rule_on_every_existing_vision_camera():
     assert "name_based_defects" not in state["lines"][0]["cameras"][1]
     assert state["lines"][1]["cameras"][0]["name_based_defects"] is False  # an explicit choice is kept
     state["lines"][0]["cameras"][0].pop("name_based_defects")
+    # Every line also counts from the upgrade on (product records, Section 4).
+    for line in state["lines"]:
+        assert line.pop("counts_reset_at")
     assert state["lines"] == before["lines"]
 
 

@@ -8,6 +8,7 @@ from typing import Dict
 API_KEY_SCOPES: Dict[str, dict] = {
     "monitor:read": {"label": "Monitoring", "description": "Read live status, counts, tracks, camera status and system telemetry.", "min_clearance": 1},
     "inspection:read": {"label": "Inspection history", "description": "Read detection history and inspection results.", "min_clearance": 1},
+    "records:read": {"label": "Production records", "description": "Read and export the production records (every product and code read, with its result).", "min_clearance": 1},
     "inspection:trigger": {"label": "Run inspections", "description": "Trigger image, camera and QR inspections. May fire configured production actions.", "min_clearance": 2},
     "production:reset": {"label": "Reset production counts", "description": "Reset production counters; this changes recorded production totals.", "min_clearance": 2},
     "configuration:read": {"label": "Read configuration", "description": "Read settings, communication endpoints, models, rules, actions and flows.", "min_clearance": 1},
@@ -54,6 +55,8 @@ def required_api_key_scopes(method: str, path: str) -> set[str] | None:
         if path.endswith("/reset"):
             return {"production:reset"}
         return {"configuration:write"}
+    if path == "/api/v1/records" or path.startswith("/api/v1/records/"):
+        return {"records:read"} if method in {"GET", "HEAD"} else None
     if path.startswith("/api/v1/telemetry/"):
         return {"monitor:read"}
     if path == "/api/v1/alarms" or path.startswith("/api/v1/alarms/"):

@@ -62,6 +62,8 @@ class AlarmCode:
     FLOW_BOOTSTRAP_FAILED = "flow.bootstrap_failed"
     FLOW_ENDPOINT_UNRESOLVED = "flow.endpoint_unresolved"
     SEND_CHANNEL_DOWN = "send.channel_down"
+    RECORDS_DROPPED = "records.dropped"
+    RECORDS_WRITE_FAILED = "records.write_failed"
 
 
 # Every well-known alarm, for pick-lists such as a PLC action's "Alarm" trigger.
@@ -123,6 +125,12 @@ ALARM_CATALOG: List[Dict[str, str]] = [
     {"code": "flow.bootstrap_failed", "label": "Flows not loaded", "group": "Flows",
      "severity": "critical", "scope": "server",
      "description": "Flows could not be loaded at start, so no flows run."},
+    {"code": "records.dropped", "label": "Product records dropped", "group": "Records",
+     "severity": "warning", "scope": "server",
+     "description": "More product records waited to be written than the queue holds; the oldest were dropped."},
+    {"code": "records.write_failed", "label": "Product records not written", "group": "Records",
+     "severity": "critical", "scope": "server",
+     "description": "The product records could not be written to the database several times in a row; they are kept and retried."},
 ]
 
 

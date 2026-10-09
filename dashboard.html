@@ -1226,6 +1226,7 @@
             <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px 12px">
                 <label class="api-key-scope-option"><input type="checkbox" value="monitor:read" class="api-key-scope" /> <span><b>Monitoring</b><small>Live status, counts, tracks, camera status and telemetry</small></span></label>
                 <label class="api-key-scope-option"><input type="checkbox" value="inspection:read" class="api-key-scope" /> <span><b>Inspection history</b><small>Read detection logs and inspection results</small></span></label>
+                <label class="api-key-scope-option"><input type="checkbox" value="records:read" class="api-key-scope" /> <span><b>Production records</b><small>Read and export every product and code read with its result</small></span></label>
                 <label class="api-key-scope-option"><input type="checkbox" value="inspection:trigger" class="api-key-scope" /> <span><b>Run inspections</b><small>Trigger vision/QR inspection; may fire configured actions</small></span></label>
                 <label class="api-key-scope-option"><input type="checkbox" value="production:reset" class="api-key-scope" /> <span><b>Reset production counts</b><small>Reset recorded production counters and speed totals</small></span></label>
                 <label class="api-key-scope-option"><input type="checkbox" value="configuration:read" class="api-key-scope" /> <span><b>Read configuration</b><small>Read settings, endpoints, models, rules, actions and flows</small></span></label>
@@ -5906,6 +5907,7 @@ async function loadUsers() {
 const API_KEY_SCOPE_LABELS = {
     "monitor:read": "Monitoring",
     "inspection:read": "Inspection history",
+    "records:read": "Production records",
     "inspection:trigger": "Run inspections",
     "production:reset": "Reset production counts",
     "configuration:read": "Read configuration",
