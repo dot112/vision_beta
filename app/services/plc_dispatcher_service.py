@@ -366,8 +366,8 @@ class PLCDispatcherService:
         runtime = line_manager.get(str(event.get("line_id") or _card_line(card)))
         if runtime is None:
             return 0
-        camera_id = event.get("camera_id") or runtime.counting_camera_id()
-        entry = (runtime.camera_entry(camera_id) if camera_id else None) or runtime.camera_entry(runtime.counting_camera_id() or "")
+        camera_id = event.get("camera_id") or runtime.counting_camera_id
+        entry = (runtime.camera_entry(camera_id) if camera_id else None) or runtime.camera_entry(runtime.counting_camera_id or "")
         if not entry:
             return 0
         listed = [str(c).strip().lower() for c in (entry.get("expected_classes") or []) + (entry.get("defect_classes") or [])]
