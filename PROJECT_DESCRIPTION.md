@@ -11,6 +11,7 @@ It is intended to give operators a single place to monitor cameras and detection
 - **Vision:** Run object detection with YOLO-compatible ONNX models; run a model of its own on each vision camera; configure confidence and NMS thresholds.
 - **Camera input:** Support USB cameras and RTSP/IP cameras through camera drivers and services.
 - **Tracking and counting:** Track detections, report line crossings and class counts, and expose telemetry through the API/dashboard. Up to 8 cameras per production line; an extra vision camera inspects on its own or joins the counting camera's product result (matched by travel time), so a product inspected by several cameras gets one result.
+- **Production records:** Store every product and code read in the database, show them on a Records page with filters and totals, export any time range as CSV or Excel (.xlsx), and keep the line counters through a restart.
 - **QR/barcode inspection:** Decode QR and 1D/2D barcode data from uploaded images or camera frames.
 - **Rules, actions and flows:** Evaluate inspection rules and route events through action/flow engines. Configured actions can affect production equipment or integrations.
 - **Industrial communications:** Provide PLC and communications drivers/services, including S7, Modbus TCP, Ethernet/IP, OPC UA (anonymous/no-security connections), and generic TCP channels (a client with a connection per message or one kept open, or a server that devices connect to, each with its own message delimiter), plus MQTT and webhook-style integrations. Messages are JSON or text from a template, and a PLC write can carry a value of the product (result, counts, class, reject reason) followed by a strobe. Confirm each driver and target-device configuration against the deployment hardware.
@@ -31,7 +32,7 @@ The runtime state is partly process-local. `app/config.py` requires `WORKERS=1`,
 ## Important folders and files
 
 - `dashboard.html` — Main browser control and monitoring interface.
-- `assets/production_lines.js` — The dashboard's production line pages: line selector, Plant overview, Lines, Products, Line setup (the line and one card per camera, up to 8, holding every camera setting) and the Line dashboard's camera strip.
+- `assets/production_lines.js` — The dashboard's production line pages: line selector, Plant overview, Lines, Products, Production records, Line setup (the line and one card per camera, up to 8, holding every camera setting) and the Line dashboard's camera strip.
 - `assets/camera_settings.js` — A camera's image and video settings (resolution, rotation, ROI, USB/IP controls, stream size) as a form, used by the Line setup camera cards and the Cameras page Settings window.
 - `main.py` — FastAPI application, lifecycle setup, router registration and static/dashboard serving.
 - `app/routes/v1/` — REST and WebSocket route handlers.

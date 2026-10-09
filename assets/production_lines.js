@@ -5,7 +5,7 @@
  * colour variables of assets/dashboard.css. It adds:
  *   - a line selector in the header; Line dashboard and Line setup follow it
  *     and each browser remembers its choice;
- *   - the Plant overview, Lines and Products pages;
+ *   - the Plant overview, Lines, Products and Production records pages;
  *   - Line setup: the line's own settings, then one card per camera (up to
  *     8) holding every setting of that camera: device, job, model and
  *     classes, counting (flow, count lines drawn on its picture, tracking),
@@ -104,6 +104,23 @@
 
     const style = document.createElement("style");
     style.textContent = `
+        .rec-quick { margin-bottom:14px; flex-wrap:wrap; }
+        .rec-quick button { white-space:nowrap; }
+        .rec-filters { display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:4px 14px; }
+        .rec-filters .form-group { margin-bottom:10px; min-width:0; }
+        .rec-panels { display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:0 20px; }
+        .rec-bar-name { text-transform:none; }
+        #recTable td { vertical-align:top; }
+        @media (max-width: 760px) {
+            .rec-panels { grid-template-columns:1fr; }
+            .rec-filters { grid-template-columns:1fr 1fr; gap:0 10px; }
+            .rec-filters .rec-time { grid-column:1 / -1; }
+            #recTable tbody tr { display:grid; grid-template-columns:1fr 1fr; gap:2px 12px; }
+            #recTable td.rec-when { grid-column:1 / -1; font-weight:600; }
+            #recTable td { border-bottom:0; padding:3px 2px; }
+            #recTable td.rec-empty { display:none; }
+            #recTable td[colspan] { grid-column:1 / -1; }
+        }
         .pl-line-select { display:flex; align-items:center; gap:8px; margin-left:16px; font-size:12px; color:var(--text-muted); }
         .pl-line-select select { min-width:170px; padding:6px 10px; font-size:13px; }
         .pl-line-select .custom-select-wrap { min-width:170px; }
@@ -2153,6 +2170,7 @@
         code_not_in_list: "code not in list",
         code_in_reject_list: "code in reject list",
         no_code: "no code",
+        station_no_result: "joined camera saw nothing",
     };
 
     // Where a capture is shown: a strip tile of the camera that took it, or the
@@ -2700,11 +2718,346 @@
         }
     }
 
+    // ── Production records page ───────────────────────────────────────────────
+
+    const RECORDS_PAGE_SIZE = 50;
+    const records = {
+        offset: 0,
+        quick: "today",      // the quick range the From / To boxes follow (refreshed while shown), or "" once edited
+        lineId: null,        // null: the line picked in the header; "" = all lines
+        loading: false,
+        seq: 0,
+    };
+    const RECORD_RANGES = [
+        ["hour", "Last hour"],
+        ["shift", "This shift"],
+        ["today", "Today"],
+        ["yesterday", "Yesterday"],
+        ["week", "Last 7 days"],
+    ];
+
+    // A Date as the value of a datetime-local box (browser local time, to the minute).
+    function localBoxValue(d) {
+        const pad = (n) => String(n).padStart(2, "0");
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+
+    function quickRange(key) {
+        const now = new Date();
+        const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const hours = (h) => new Date(now.getTime() - h * 3600 * 1000);
+        if (key === "hour") return [hours(1), now];
+        if (key === "shift") return [hours(8), now];
+        if (key === "yesterday") return [new Date(midnight.getFullYear(), midnight.getMonth(), midnight.getDate() - 1), midnight];
+        if (key === "week") return [new Date(midnight.getFullYear(), midnight.getMonth(), midnight.getDate() - 6), now];
+        return [midnight, now];
+    }
+
+    function buildRecordsPage() {
+        ensurePage("tabRecords", "Production records", `
+            <div class="card-panel">
+                <div class="card-panel-header">
+                    <div>
+                        <span class="card-panel-title">Production records</span>
+                        <div class="card-panel-sub">Every product and code read the lines decided, for the time you choose. Times are in this browser's time zone.</div>
+                    </div>
+                    <div class="pl-inline">
+                        <button class="btn-action btn-outline" id="recExportCsv" type="button">Export CSV</button>
+                        <button class="btn-action btn-outline" id="recExportXlsx" type="button">Export Excel</button>
+                    </div>
+                </div>
+                <div class="rec-quick seg" role="group" aria-label="Time range">
+                    ${RECORD_RANGES.map(([key, label]) => `<button type="button" data-range="${key}">${label}</button>`).join("")}
+                </div>
+                <div class="rec-filters">
+                    <div class="form-group"><label class="form-label" for="recLine">Line</label><select id="recLine" class="form-input"></select></div>
+                    <div class="form-group rec-time"><label class="form-label" for="recFrom">From</label><input type="datetime-local" id="recFrom" class="form-input"></div>
+                    <div class="form-group rec-time"><label class="form-label" for="recTo">To</label><input type="datetime-local" id="recTo" class="form-input"></div>
+                    <div class="form-group"><label class="form-label" for="recResult">Result</label><select id="recResult" class="form-input">
+                        <option value="">Any</option><option value="good">Good</option><option value="reject">Rejected</option></select></div>
+                    <div class="form-group"><label class="form-label" for="recKind">Kind</label><select id="recKind" class="form-input">
+                        <option value="">All</option><option value="product">Products</option><option value="code">Code reads</option></select></div>
+                    <div class="form-group"><label class="form-label" for="recCamera">Camera</label><select id="recCamera" class="form-input"></select></div>
+                    <div class="form-group"><label class="form-label" for="recBatch">Batch</label><input type="text" id="recBatch" class="form-input" maxlength="64" placeholder="Any batch"></div>
+                    <div class="form-group"><label class="form-label" for="recCode">Code contains</label><input type="search" id="recCode" class="form-input" maxlength="512" placeholder="Any code"></div>
+                </div>
+                <div class="pl-note" id="recRangeNote"></div>
+            </div>
+            <div class="kpi-row">
+                <div class="kpi-card"><div class="kpi-title">Inspected</div><div class="kpi-val" id="recTotal">–</div><div class="kpi-sub">Products in the line totals</div></div>
+                <div class="kpi-card good"><div class="kpi-title">Good</div><div class="kpi-val" id="recGood">–</div><div class="kpi-sub" id="recGoodSub">&nbsp;</div></div>
+                <div class="kpi-card bad"><div class="kpi-title">Rejected</div><div class="kpi-val" id="recReject">–</div><div class="kpi-sub" id="recRejectSub">&nbsp;</div></div>
+                <div class="kpi-card"><div class="kpi-title">Yield</div><div class="kpi-val"><span id="recYield">–</span><span class="kpi-unit">%</span></div><div class="kpi-meter" id="recYieldMeter"><span></span></div></div>
+            </div>
+            <div class="rec-panels">
+                <div class="card-panel">
+                    <div class="card-panel-header"><span class="card-panel-title" id="recBucketTitle">Products per hour</span><span class="feed-meta num" id="recBucketNote"></span></div>
+                    <div class="bar-list" id="recBuckets"><div class="bar-empty">Loading…</div></div>
+                </div>
+                <div class="card-panel">
+                    <div class="card-panel-header"><span class="card-panel-title">Rejects by type</span><span class="feed-meta num" id="recRejectNote"></span></div>
+                    <div class="bar-list" id="recRejectBars"><div class="bar-empty">Loading…</div></div>
+                </div>
+            </div>
+            <div class="card-panel">
+                <div class="card-panel-header">
+                    <span class="card-panel-title">Records <span class="feed-meta num" id="recCount"></span></span>
+                    <div class="pl-inline">
+                        <button class="btn-action btn-outline" id="recPrev" type="button">Newer</button>
+                        <button class="btn-action btn-outline" id="recNext" type="button">Older</button>
+                    </div>
+                </div>
+                <div class="table-responsive"><table class="pl-table table-mobile-cards" id="recTable">
+                    <thead><tr><th>Time</th><th>Line</th><th>Camera</th><th>Result</th><th>Reason</th><th>Class</th><th>Code</th><th>Product</th><th>Batch</th></tr></thead>
+                    <tbody id="recBody"><tr><td colspan="9">Loading…</td></tr></tbody>
+                </table></div>
+            </div>`);
+        byId("tabRecords").querySelectorAll("[data-range]").forEach((b) => b.addEventListener("click", () => setRecordRange(b.dataset.range)));
+        ["recFrom", "recTo"].forEach((id) => byId(id).addEventListener("change", () => { records.quick = ""; markRecordRange(); reloadRecords(); }));
+        ["recResult", "recKind", "recCamera"].forEach((id) => byId(id).addEventListener("change", reloadRecords));
+        byId("recLine").addEventListener("change", (e) => { records.lineId = e.target.value; fillRecordCameras(); reloadRecords(); });
+        let timer = null;
+        ["recBatch", "recCode"].forEach((id) => byId(id).addEventListener("input", () => {
+            clearTimeout(timer);
+            timer = setTimeout(reloadRecords, 350);
+        }));
+        byId("recPrev").addEventListener("click", () => { records.offset = Math.max(0, records.offset - RECORDS_PAGE_SIZE); refreshRecords(); });
+        byId("recNext").addEventListener("click", () => { records.offset += RECORDS_PAGE_SIZE; refreshRecords(); });
+        byId("recExportCsv").addEventListener("click", () => exportRecords("csv"));
+        byId("recExportXlsx").addEventListener("click", () => exportRecords("xlsx"));
+        setRecordRange(records.quick, false);
+    }
+
+    function markRecordRange() {
+        byId("tabRecords").querySelectorAll("[data-range]").forEach((b) => {
+            const on = b.dataset.range === records.quick;
+            b.classList.toggle("on", on);
+            b.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+    }
+
+    function setRecordRange(key, reload = true) {
+        records.quick = key;
+        const [from, to] = quickRange(key);
+        byId("recFrom").value = localBoxValue(from);
+        byId("recTo").value = localBoxValue(to);
+        markRecordRange();
+        if (reload) reloadRecords();
+    }
+
+    const recordLineId = () => (records.lineId === null ? state.lineId : records.lineId);
+
+    function fillRecordLines() {
+        const select = byId("recLine");
+        const current = recordLineId();
+        const html = `<option value="">All lines</option>` + state.lines.map((l) => `<option value="${esc(l.id)}" ${l.id === current ? "selected" : ""}>${esc(l.name)}</option>`).join("");
+        if (select.dataset.options !== html) {
+            select.dataset.options = html;
+            select.innerHTML = html;
+            select.value = current;
+            if (select._refreshCustomSelect) select._refreshCustomSelect(); else refreshSelects();
+        }
+    }
+
+    function fillRecordCameras() {
+        const select = byId("recCamera");
+        const lineId = recordLineId();
+        const lines = lineId ? state.lines.filter((l) => l.id === lineId) : state.lines;
+        const ids = [...new Set(lines.flatMap((l) => (l.cameras || []).map((c) => c.camera_id)))];
+        const keep = select.value;
+        const html = `<option value="">Any camera</option>` + ids.map((id) => `<option value="${esc(id)}">${esc(cameraName(id))}</option>`).join("");
+        if (select.dataset.options !== html) {
+            select.dataset.options = html;
+            select.innerHTML = html;
+            select.value = ids.includes(keep) ? keep : "";
+            if (select._refreshCustomSelect) select._refreshCustomSelect(); else refreshSelects();
+        }
+    }
+
+    // The filters as query parameters, or null (with a note) when the range is not valid.
+    function recordQuery() {
+        const note = byId("recRangeNote");
+        let from;
+        let to;
+        if (records.quick) {
+            // A quick range moves with the clock while the page is open; one that ends now includes this second.
+            [from, to] = quickRange(records.quick);
+            byId("recFrom").value = localBoxValue(from);
+            byId("recTo").value = localBoxValue(to);
+            if (records.quick !== "yesterday") to = new Date(to.getTime() + 1000);
+        } else {
+            from = new Date(byId("recFrom").value);
+            to = new Date(byId("recTo").value);
+        }
+        if (isNaN(from) || isNaN(to)) { note.textContent = "Choose a From and a To time."; return null; }
+        if (to <= from) { note.textContent = "To must be after From."; return null; }
+        if (to - from > 366 * 24 * 3600 * 1000) { note.textContent = "Choose at most 366 days."; return null; }
+        note.textContent = "";
+        const params = new URLSearchParams({ start: from.toISOString(), end: to.toISOString() });
+        const lineId = recordLineId();
+        if (lineId) params.set("line_id", lineId);
+        [["recResult", "result"], ["recKind", "kind"], ["recCamera", "camera_id"], ["recBatch", "batch"], ["recCode", "code"]].forEach(([id, key]) => {
+            const value = byId(id).value.trim();
+            if (value) params.set(key, value);
+        });
+        return { params, hours: (to - from) / 3600000 };
+    }
+
+    function reloadRecords() {
+        records.offset = 0;
+        refreshRecords();
+    }
+
+    const recordTime = (iso) => new Date(iso).toLocaleString(undefined, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+    function recordResult(r) {
+        if (r.kind === "code") return `<span class="pl-pill" style="color:var(--text-muted);border-color:var(--border-color)">Code read</span>`;
+        return r.result === "reject"
+            ? `<span class="pl-pill" style="color:var(--danger-color);border-color:var(--danger-color)">Rejected</span>`
+            : `<span class="pl-pill" style="color:var(--success-color);border-color:var(--success-color)">Good</span>`;
+    }
+
+    function recordCode(r) {
+        if (r.code_status === "no_read") return `<span style="color:var(--warning-color)">No read</span>`;
+        if (!r.code) return "";
+        const [label, color] = QR_RESULT[r.code_status] || ["", "var(--text-muted)"];
+        return `<span class="pl-code">${esc(r.code)}</span>${label ? ` <span style="font-size:11.5px;color:${color}">${label}</span>` : ""}`;
+    }
+
+    function recordBars(rows, fillClass, emptyText) {
+        if (!rows.length) return `<div class="bar-empty">${emptyText}</div>`;
+        const max = Math.max(1, ...rows.map((r) => r[1]));
+        return rows.map(([name, n, title]) => `
+            <div class="bar-row" title="${esc(title || `${name}: ${count(n)}`)}">
+                <span class="bar-name rec-bar-name">${esc(name)}</span>
+                <span class="bar-track"><span class="bar-fill ${fillClass}" style="width:${(n / max) * 100}%"></span></span>
+                <span class="bar-val">${count(n)}</span>
+            </div>`).join("");
+    }
+
+    function renderRecordSummary(sum) {
+        const t = sum.totals;
+        byId("recTotal").textContent = count(t.total);
+        byId("recGood").textContent = count(t.good);
+        byId("recReject").textContent = count(t.reject);
+        byId("recYield").textContent = t.yield === null ? "–" : t.yield.toFixed(1);
+        byId("recGoodSub").textContent = t.total ? `${(t.good * 100 / t.total).toFixed(1)}% of inspected` : "No products in this range";
+        byId("recRejectSub").textContent = t.total ? `${(t.reject * 100 / t.total).toFixed(1)}% of inspected` : " ";
+        const meter = byId("recYieldMeter");
+        meter.querySelector("span").style.width = `${t.yield || 0}%`;
+        const target = (state.lines.find((l) => l.id === recordLineId()) || {}).yield_target || 0;
+        meter.classList.toggle("bad", Boolean(target) && t.yield !== null && t.yield < target);
+
+        const day = sum.bucket === "day";
+        byId("recBucketTitle").textContent = day ? "Products per day" : "Products per hour";
+        const fmt = day ? { weekday: "short", month: "short", day: "numeric" } : { hour: "2-digit", minute: "2-digit" };
+        const buckets = sum.buckets.map((b) => {
+            const label = new Date(b.start).toLocaleString(undefined, fmt);
+            return [label, b.total, `${label}: ${count(b.total)} products, ${count(b.good)} good, ${count(b.reject)} rejected`];
+        });
+        byId("recBuckets").innerHTML = recordBars(buckets.slice(-48), "", "No products in this range.");
+        byId("recBucketNote").textContent = buckets.length > 48 ? `last 48 of ${buckets.length}` : "";
+        const rejects = sum.by_class.filter((c) => c.reject > 0).map((c) => [c.class_name || "(none)", c.reject]).sort((a, b) => b[1] - a[1]);
+        byId("recRejectBars").innerHTML = recordBars(rejects, "bad", "No rejects in this range.");
+        byId("recRejectNote").textContent = t.reject ? `${count(t.reject)} total` : "";
+    }
+
+    function renderRecordRows(data) {
+        const body = byId("recBody");
+        const lineNameOf = (r) => r.line_name || lineName(r.line_id) || r.line_id || "";
+        // An empty cell is left out of a record's card on a phone.
+        const cell = (label, html, extra = "") => `<td data-label="${label}" class="${html ? "" : "rec-empty"} ${extra}">${html}</td>`;
+        body.innerHTML = data.rows.map((r) => `<tr>
+            ${cell("Time", esc(recordTime(r.recorded_at)), "num rec-when")}
+            ${cell("Line", esc(lineNameOf(r)))}
+            ${cell("Camera", `${esc(r.camera_name || cameraName(r.camera_id) || "")}${r.kind === "product" && !r.counted ? ` <span class="pl-note" style="display:inline">own station</span>` : ""}`)}
+            ${cell("Result", recordResult(r))}
+            ${cell("Reason", esc(r.reject_reason ? (REJECT_REASON[r.reject_reason] || r.reject_reason) : ""))}
+            ${cell("Class", esc(r.class_name || ""))}
+            ${cell("Code", recordCode(r))}
+            ${cell("Product", esc(r.product_name || ""))}
+            ${cell("Batch", esc(r.batch || ""))}
+        </tr>`).join("") || `<tr><td colspan="9">No records match. Products are recorded while a line runs; choose another time or filter.</td></tr>`;
+        const first = data.total ? records.offset + 1 : 0;
+        const last = records.offset + data.rows.length;
+        byId("recCount").textContent = data.total ? `${count(first)}–${count(last)} of ${count(data.total)}` : "";
+        byId("recPrev").disabled = records.offset === 0;
+        byId("recNext").disabled = last >= data.total;
+    }
+
+    async function refreshRecords() {
+        if (!byId("tabRecords")) return;
+        fillRecordLines();
+        fillRecordCameras();
+        const query = recordQuery();
+        if (!query) return;
+        const seq = ++records.seq;
+        const bucket = query.hours > 48 ? "day" : "hour";
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+        const sumParams = new URLSearchParams(query.params);
+        sumParams.set("bucket", bucket);
+        sumParams.set("tz", tz);
+        const rowParams = new URLSearchParams(query.params);
+        rowParams.set("limit", RECORDS_PAGE_SIZE);
+        rowParams.set("offset", records.offset);
+        try {
+            const [sum, rows] = await Promise.all([
+                api(`/api/v1/records/summary?${sumParams}`),
+                api(`/api/v1/records?${rowParams}`),
+            ]);
+            if (seq !== records.seq) return;  // a newer request is on its way
+            renderRecordSummary(sum);
+            renderRecordRows(rows);
+        } catch (e) {
+            if (seq !== records.seq) return;
+            byId("recRangeNote").textContent = `Could not load the records: ${e.message}`;
+        }
+    }
+
+    async function exportRecords(format) {
+        const query = recordQuery();
+        if (!query) return;
+        const params = new URLSearchParams(query.params);
+        params.set("format", format);
+        params.set("tz", Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+        const button = byId(format === "csv" ? "recExportCsv" : "recExportXlsx");
+        const label = button.textContent;
+        button.disabled = true;
+        button.textContent = "Preparing…";
+        try {
+            // fetch (not a plain link): the API needs the Authorization header the dashboard adds.
+            const res = await fetch(`/api/v1/records/export?${params}`);
+            if (!res.ok) {
+                let detail = `HTTP ${res.status}`;
+                try { detail = (await res.json()).detail || detail; } catch (_) { /* not JSON */ }
+                throw new Error(detail);
+            }
+            const disposition = res.headers.get("Content-Disposition") || "";
+            const name = (disposition.match(/filename="([^"]+)"/) || [])[1] || `records.${format}`;
+            const url = URL.createObjectURL(await res.blob());
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = name;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 10000);
+            const note = res.headers.get("X-Records-Timezone-Note");
+            toast(note ? `Exported ${name}. ${note}` : `Exported ${name}`, note ? "warning" : "success");
+        } catch (e) {
+            toast(`Export failed: ${e.message}`, "error");
+        } finally {
+            button.disabled = false;
+            button.textContent = label;
+        }
+    }
+
     // ── Menu and tab hooks ────────────────────────────────────────────────────
 
     const MENU_ICONS = {
         tabOverview: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
         tabLines: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/><circle cx="8" cy="6" r="1.5"/><circle cx="14" cy="12" r="1.5"/><circle cx="10" cy="18" r="1.5"/></svg>',
+        tabRecords: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><line x1="8" y1="9" x2="10" y2="9"/></svg>',
         tabProducts: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5v14M7 5v14M11 5v14M14 5v14M18 5v14M21 5v14"/></svg>',
     };
 
@@ -2717,12 +3070,13 @@
         return li;
     }
 
-    // Plant overview opens the "Run" group; Lines and Products open "Setup".
+    // Plant overview opens the "Run" group and Production records ends it; Lines and Products open "Setup".
     function buildMenu() {
         const dashItem = [...document.querySelectorAll(".menu-item")].find((m) => (m.getAttribute("onclick") || "").includes("'tabDashboard'"));
         const logicItem = [...document.querySelectorAll(".menu-item")].find((m) => (m.getAttribute("onclick") || "").includes("'tabActionTrigger'"));
         if (!dashItem || byId("plMenu_tabOverview")) return;
         dashItem.parentNode.insertBefore(menuItem("tabOverview", "Plant overview"), dashItem);
+        (logicItem || dashItem).insertAdjacentElement("afterend", menuItem("tabRecords", "Production records"));
         const after = byId("navGroupSetup") || logicItem || dashItem;
         const lines = menuItem("tabLines", "Lines");
         const products = menuItem("tabProducts", "Products");
@@ -2773,6 +3127,10 @@
             state.timers.lines = setInterval(() => { if (!document.activeElement || document.activeElement.id !== "plNewLineName") refreshLinesPage(); }, 5000);
         } else if (id === "tabProducts") {
             refreshProducts();
+        } else if (id === "tabRecords") {
+            loadCamerasList().then(refreshRecords);
+            // A quick range ("Today", "Last hour") follows the clock while the page is open.
+            state.timers.records = setInterval(() => { if (records.quick && records.quick !== "yesterday") refreshRecords(); }, 15000);
         } else if (id === "tabActionTrigger") {
             renderLineSetup();
             state.timers.setup = setInterval(refreshSetupStatus, 5000);
@@ -2792,6 +3150,7 @@
         buildOverviewPage();
         buildLinesPage();
         buildProductsPage();
+        buildRecordsPage();
         loadLines().then(() => {
             if (state.lineId !== PRIMARY) {
                 // The dashboard loaded Line 1's settings before the lines list came in.

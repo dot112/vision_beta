@@ -22,6 +22,7 @@ For scoped API key setup and the YOLO annotated stream endpoint, see [API_KEY_QU
 - **Live Stream Monitoring**: Real-time WebSockets with live annotated bounding boxes
 - **Database & Auth**: SQLAlchemy Async ORM with Alembic migrations & JWT authentication
 - **Sparkplug B**: each production line published as a device of a Sparkplug B edge node, for Ignition and other SCADA hosts, with optional start/stop and counter-reset commands
+- **Production records**: every product and code read stored in the database, a Records page with filters and totals, and CSV / Excel (.xlsx) export for any time range; line counters survive a restart
 - **Production Lines**: several independent lines on one server, each with up to eight cameras (vision or QR reader) set up as cards on Line setup, its own counters and PLC actions, sharing the PLC, MQTT, TCP and webhook channels
 
 ---
@@ -193,6 +194,27 @@ Calls written for the one active model of version 1 keep working, where that ser
 
 Nothing has run against real PLCs yet: start the first plant trial with one line on a spare PLC or a simulator.
 
+### Production records and export
+
+Every product a line decides (good or reject, with its reason, class, confidence and paired code) and every code read that is not part of a product is stored in the `product_records` table. Products seen by an *own station* camera are stored too but marked as not in the line totals (`counted` false). A joined camera's results are in its product's `details.stations`.
+
+- **Writing never slows the line down.** The cameras' threads only queue a row; a background task writes the queue once a second (or as soon as 500 rows wait) in one transaction. If the database cannot keep up, at most `RECORDS_QUEUE_LIMIT` rows (default 100000) wait; past that the oldest are dropped and the alarm **records.dropped** is raised. When writes fail three times in a row the alarm **records.write_failed** is raised; the rows are kept and retried every second. Rows still waiting at shutdown are written before the database closes.
+- **Retention.** Rows older than `RECORDS_RETENTION_DAYS` (default 90; 0 keeps them for ever) are deleted once an hour, 5000 at a time, so the database is never locked for long. Count about 400 bytes per row with its indexes: a line counting one product a second makes about 7.8 million rows (some 3 GB) in 90 days.
+- **Counters survive a restart.** Each line keeps `counts_reset_at` (when its counters were last reset) in its entry in `data/system_state.json`, Line 1 too. At startup each line's counters, and each own station's, are rebuilt from the records since then. **Reset counts** (the dashboard, `POST /api/v1/counting/reset` or a Sparkplug command) sets it to now; resetting single classes is kept too (`counts_reset_classes`). The upgrade to this version sets it to the upgrade time, so the counters start from 0 once and are kept from then on. Products per minute is not kept (it is a one-minute window).
+
+**Production records page** (sidebar, under *Run*; every signed-in user): pick the line (or *All lines*), **From** and **To** (in the browser's time zone) or a quick range (*Last hour*, *This shift* = last 8 hours, *Today*, *Yesterday*, *Last 7 days*; these follow the clock while the page is open), and filter by result, kind, camera, batch and code. The tiles show the line totals of the range, then products per hour (per day for ranges over 48 hours), rejects by type, and the records, 50 per page, newest first. **Export CSV** and **Export Excel** download the same range and filters.
+
+**API** (Operator level; API keys need the `records:read` scope). Every call takes `start` and `end` (ISO 8601 with a time zone, e.g. `2026-10-09T06:00:00Z`; `end` is not included; at most 366 days apart) and the filters `line_id` (empty = every line), `result` (`good` / `reject`), `kind` (`product` / `code`), `batch`, `code` (contains), `camera_id` and `counted`.
+
+| Call | Returns |
+| --- | --- |
+| `GET /api/v1/records?limit=100&offset=0` | `{total, rows}`, newest first; `limit` up to 1000. |
+| `GET /api/v1/records/summary?bucket=hour&tz=Europe/Berlin` | `totals` (`total`, `good`, `reject`, `yield`), `by_class`, `by_reject_reason`, `by_camera`, `codes` (rows per code status) and `buckets` per hour or day in `tz`. The totals count the line totals' products (`counted`) unless `camera_id` or `counted` is given. |
+| `GET /api/v1/records/export?format=csv&tz=Europe/Berlin` | A CSV file (UTF-8 with a byte order mark): the time in `tz` and in UTC, then every column. Text that a spreadsheet would run as a formula starts with `'`. Read and sent in chunks, so any range downloads without filling the server's memory. |
+| `GET /api/v1/records/export?format=xlsx&tz=…` | An Excel workbook: a **Records** sheet (times as Excel dates, numbers as numbers) and a **Summary** sheet (the summary above). An Excel sheet holds 1,048,575 rows: a larger range is refused with `413`; export it as CSV or choose a shorter range. |
+
+An unknown `tz` falls back to UTC; the response then says so in its `X-Records-Timezone-Note` header. The file name is `records_<line>_<from>_<to>.<csv|xlsx>`. Columns: `line_id`, `line_name`, `camera_id`, `camera_name`, `kind`, `counted`, `result`, `reject_reason`, `class_name`, `confidence`, `track_id`, `code`, `code_format`, `code_status` (`known` / `unknown` / `no_read`), `product_name`, `product_list_id`, `batch` (filled once the line has a batch number), `reject_camera_id`, `stations` (JSON) and `id`.
+
 ### Sparkplug B (Ignition and other SCADA hosts)
 
 Sparkplug B is the plant standard on top of MQTT: fixed topic names, binary payloads, and birth and death messages. A host such as Ignition (with the Cirrus Link MQTT Engine module) then finds the tags by itself and knows when the device behind them is offline. With it switched on for an MQTT channel, this server is an **edge node** on that channel's broker and every production line is one of its **devices**. Send cards on the same channel keep working; Sparkplug uses a connection of its own.
@@ -227,7 +249,7 @@ The node itself publishes `Node Control/Rebirth`, `Node Info/Software Version` a
 
 - Only changed tags are sent. `Last Product` therefore shows the latest product of an interval, not every product; a send card reports every one.
 - A line that is added, renamed or deleted is born or dies as a device; a renamed line is a new device. A class counted for the first time, or a camera added to a line, gives that line a new birth, because a tag has to be in the birth before data can be sent for it.
-- After an outage of the broker the node is born again with the current totals. Messages are not buffered while the broker is unreachable; the counters are totals, so nothing is lost from them. After a restart of the server the counters start again from where the server starts them, as on the dashboard.
+- After an outage of the broker the node is born again with the current totals. Messages are not buffered while the broker is unreachable; the counters are totals, so nothing is lost from them. After a restart of the server the counters carry on from where they were (see **Production records and export**), as on the dashboard.
 - A rebirth request from the host (`Node Control/Rebirth`) is always answered.
 - A server that is stopped or crashes is reported offline at once. One that loses power or its network is reported by the broker after about 20 seconds (the Sparkplug connection pings every 15).
 - Class names are published in lower case, as the counters count them: a class set as `Bottle` is the tag `Counts/Class/bottle`.

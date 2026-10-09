@@ -273,6 +273,10 @@ class ProductionRecorder:
                     await db.execute(insert(ProductRecord), batch)
                     await db.commit()
             except Exception as exc:
+                with self._lock:
+                    # Still dropped since the last write that went through.
+                    self._dropped += dropped
+                    self._drop_alarmed = self._drop_alarmed or bool(dropped)
                 self._keep(batch)
                 self.failures += 1
                 logger.warning("Could not write %d product record(s) (try %d): %s", len(batch), self.failures, exc)
@@ -381,8 +385,12 @@ class ProductionRecorder:
         self.running = False
         task, self._task = self._task, None
         if task is not None:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            if task.get_loop() is asyncio.get_running_loop():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            elif not task.get_loop().is_closed():
+                # Started by another app instance's loop (tests): stop it there.
+                task.get_loop().call_soon_threadsafe(task.cancel)
         for _ in range(3):
             if not self.waiting():
                 break
