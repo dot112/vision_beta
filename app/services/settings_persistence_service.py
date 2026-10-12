@@ -230,6 +230,9 @@ def counting_config_from_dict(cfg_data: Dict[str, Any], camera: Optional[Dict[st
         defect_classes=list(camera.get("defect_classes") or []),
         # A camera saved before this switch existed keeps the old name rule.
         name_based_defects=camera.get("name_based_defects", True) is not False,
+        # One picture per trigger instead of tracking, and what an empty picture counts as.
+        count_mode=camera.get("count_mode") or "track",
+        no_product=camera.get("no_product") or "ignore",
         **{key: tracking[key] for key in TRACKING_KEYS if tracking.get(key) not in (None, "")},
     )
 

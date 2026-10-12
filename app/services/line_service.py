@@ -26,6 +26,7 @@ from app.services.line_config import (
     CODE_REASONS,
     DEFAULT_SYNC_WINDOW_MS,
     PRIMARY_LINE_ID,
+    REASON_VISION,
     camera_station,
     code_checks,
     code_verdict,
@@ -371,6 +372,10 @@ class LineRuntime:
         self.plc_inputs: List[Dict[str, Any]] = []
         self.has_product_sensor = False
         self._sensor_seq = 0
+        # Cameras in trigger mode: the track number of the next triggered product, and one
+        # trigger at a time per camera (trigger_inspection).
+        self._trigger_seq = 0
+        self._trigger_locks: Dict[str, asyncio.Lock] = {}
         # The line's batch (work order) number, "" for none.
         self.batch = ""
         self.last_capture: Optional[Dict[str, Any]] = None
@@ -841,6 +846,12 @@ class LineRuntime:
             product.results() if product else None, product.missing() if product else None,
             crossing.get("camera_id"),
         )
+        if reason == REASON_VISION:
+            # What that camera's own picture said, when it said more than "a defect class"
+            # (a triggered picture in which nothing was found).
+            seen = crossing if reject_camera == crossing.get("camera_id") else \
+                (product.seen.get(reject_camera) if product else None)
+            reason = (seen or {}).get("reject_reason") or reason
         result = self._result(reject) if self.code_checks else None
         fields: Dict[str, Any] = {}
         plc_fields: Dict[str, Any] = {}

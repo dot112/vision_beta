@@ -298,6 +298,10 @@ class CountingService:
         """
         tracker_key = camera_id or "default"
         config = self.config
+        if config.count_mode == "trigger":
+            # One picture per trigger makes this camera's products (trigger_inspection):
+            # nothing is tracked, so nothing crosses a count line.
+            return []
         with self._tracker_lock:
             tracker = self._trackers.get(tracker_key)
             if tracker is None:
@@ -450,7 +454,8 @@ class CountingService:
         vision_reject = bool(crossing["is_defect"])
         is_reject = vision_reject if reject is None else bool(reject)
         if is_reject and reason is None and vision_reject:
-            reason = REASON_VISION
+            # A triggered picture in which nothing was found says so itself.
+            reason = crossing.get("reject_reason") or REASON_VISION
         if not is_reject:
             reason = None
         track_id = crossing["track_id"]

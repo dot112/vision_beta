@@ -410,6 +410,35 @@ async def read_plc_input(
     return await PLCInputService.read_now(card)
 
 
+# ── Trigger inspection ────────────────────────────────────────────────────────
+
+@router.post("/{line_id}/trigger", summary="One picture, one product, for the line's cameras in trigger mode (Level 2+ Supervisor)")
+async def trigger_line(line_id: str, body: Optional[Dict[str, Any]] = None,
+                       user: User = Depends(require_supervisor)) -> Dict[str, Any]:
+    """Trigger every vision camera of the line that has Count mode "One picture per trigger",
+    or only ``{"camera_id": "..."}``. Each makes one product from its next picture: it is
+    counted, recorded and sent, and fires the line's cards. Answers what each camera's own
+    picture said; 409 when the line is stopped or has no such camera."""
+    import asyncio
+
+    from app.services.trigger_inspection import trigger_camera, trigger_cameras
+
+    if _svc().get_line(line_id, with_logic=False) is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    runtime = _manager().get(line_id)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    wanted = str((body or {}).get("camera_id") or "").strip()
+    cameras = [wanted] if wanted else trigger_cameras(runtime)
+    if not cameras:
+        raise HTTPException(status_code=409, detail="This line has no vision camera with Count mode 'One picture per trigger'")
+    try:
+        results = await asyncio.gather(*(trigger_camera(runtime, camera_id) for camera_id in cameras))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"line_id": line_id, "results": list(results)}
+
+
 # ── Change ────────────────────────────────────────────────────────────────────
 
 @router.post("", status_code=201, summary="Create a production line (Level 2+ Supervisor)")

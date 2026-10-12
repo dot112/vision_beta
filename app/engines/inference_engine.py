@@ -755,19 +755,22 @@ class InferenceEngine:
                 rej_c = counting_service.rejected_count
                 ppm_val = counting_service.products_per_minute
 
-                # Count lines A and B (vertical lines when products move sideways).
+                # Count lines A and B (vertical lines when products move sideways). A camera
+                # in trigger mode has none: one picture per trigger makes its products.
+                tracking = getattr(cfg, "count_mode", "track") != "trigger"
                 since_count = time.time() - counting_service.last_count_at
-                _draw_count_lines(
-                    img,
-                    is_horizontal_movement(cfg.orientation),
-                    float(cfg.line1_position),
-                    float(cfg.line2_position),
-                    top=32,  # below the HUD bar
-                    flash=1.0 - since_count / COUNT_FLASH_SECONDS if since_count < COUNT_FLASH_SECONDS else 0.0,
-                )
+                if tracking:
+                    _draw_count_lines(
+                        img,
+                        is_horizontal_movement(cfg.orientation),
+                        float(cfg.line1_position),
+                        float(cfg.line2_position),
+                        top=32,  # below the HUD bar
+                        flash=1.0 - since_count / COUNT_FLASH_SECONDS if since_count < COUNT_FLASH_SECONDS else 0.0,
+                    )
 
                 # Target markers — only for CONFIRMED tracks (no trail, no ghost dots)
-                for obj in list(counting_service.get_tracker(camera_id).objects.values()):
+                for obj in list(counting_service.get_tracker(camera_id).objects.values()) if tracking else ():
                     if _allowed and obj.class_name.lower() not in _allowed:
                         continue
                     # Skip unconfirmed tracks to avoid ghost dots from newly-spawned tracks

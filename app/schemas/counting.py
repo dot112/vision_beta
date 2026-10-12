@@ -29,6 +29,14 @@ class CountingConfig(BaseModel):
         default=True,
         description="Also reject a class whose name contains 'defect', 'scratch' or 'broken' when it is not in defect_classes",
     )
+    count_mode: str = Field(
+        default="track",
+        description="'track' (moving products cross the count lines) or 'trigger' (one picture per trigger makes one product)",
+    )
+    no_product: str = Field(
+        default="ignore",
+        description="Trigger mode: a picture in which nothing is found is 'ignore' (no product), 'reject' or 'good'",
+    )
     # ── Conveyor Tracking & ByteTrack Parameters ──
     track_high_thresh: float = Field(
         default=0.50, ge=0.05, le=1.0, description="ByteTrack high-confidence threshold for stage 1 association"

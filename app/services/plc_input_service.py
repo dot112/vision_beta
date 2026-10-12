@@ -478,7 +478,7 @@ class PLCInputService:
             for _ in range(max(1, int(count))) if runtime is not None else ():
                 runtime.sensor_product()
         elif action == "capture":
-            cls._capture(card)
+            await cls._capture(card)
         elif action == "alarm":
             cls._alarm(card, truthy(new))
         elif action == "set_batch":
@@ -530,8 +530,9 @@ class PLCInputService:
         logger.info("PLC signal '%s': counters of line '%s' reset", card.get("name"), card.get("line_name"))
 
     @classmethod
-    def _capture(cls, card: Dict[str, Any]) -> None:
-        """One picture with the card's camera: a code reader that captures when a PLC signal asks."""
+    async def _capture(cls, card: Dict[str, Any]) -> None:
+        """One picture with the card's camera: a code reader that captures when a PLC signal
+        asks, or a vision camera in trigger mode, whose picture is one product."""
         from app.services.line_config import reads_codes
 
         runtime = cls._runtime(card)
@@ -539,10 +540,18 @@ class PLCInputService:
             return
         camera_id = card.get("camera_id") or ""
         entry = runtime.camera_entry(camera_id)
-        if entry is not None and reads_codes(entry):
+        if entry is None:
+            return
+        if reads_codes(entry) and entry.get("qr_trigger") == "signal":
             from app.services.qr_service import QRReaderPipeline
             delay = int(entry.get("qr_trigger_delay_ms") or 0) / 1000.0
             QRReaderPipeline.get_worker(camera_id).request_capture(delay=delay)
+        if entry.get("role", "vision") == "vision" and entry.get("count_mode") == "trigger":
+            from app.services.trigger_inspection import trigger_camera
+            # A camera that is not connected, or has no model, is said on the card (ValueError).
+            result = await trigger_camera(runtime, camera_id)
+            if result["status"] == "no_frame":
+                raise ValueError(f"No new picture came from camera '{camera_id}' in time; nothing was counted")
 
     @staticmethod
     def _alarm(card: Dict[str, Any], on: bool) -> None:

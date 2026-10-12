@@ -74,7 +74,10 @@ REASON_LISTED = "code_in_reject_list"
 REASON_NO_CODE = "no_code"
 # A joined vision camera saw nothing of the product within its match window, and is set to reject then.
 REASON_STATION_NO_RESULT = "station_no_result"
-REJECT_REASONS = (REASON_VISION, REASON_NOT_LISTED, REASON_LISTED, REASON_NO_CODE, REASON_STATION_NO_RESULT)
+# A camera in trigger mode found nothing in its picture, and is set to reject then.
+REASON_NOTHING_DETECTED = "nothing_detected"
+REJECT_REASONS = (REASON_VISION, REASON_NOT_LISTED, REASON_LISTED, REASON_NO_CODE, REASON_STATION_NO_RESULT,
+                  REASON_NOTHING_DETECTED)
 # The reasons that come from a product's code.
 CODE_REASONS = (REASON_NOT_LISTED, REASON_LISTED, REASON_NO_CODE)
 
@@ -84,7 +87,7 @@ PLC_VALUE_SOURCES = ("fixed", "result_code", "good_count", "reject_count", "tota
                      "class_index", "reject_reason_code", "batch")
 # A rejected product's reason as a number for the PLC (0: not rejected, 9: any other reason).
 REJECT_REASON_CODES = {REASON_VISION: 1, REASON_NOT_LISTED: 2, REASON_LISTED: 3, REASON_NO_CODE: 4,
-                       REASON_STATION_NO_RESULT: 5}
+                       REASON_STATION_NO_RESULT: 5, REASON_NOTHING_DETECTED: 6}
 OTHER_REJECT_REASON_CODE = 9
 # PLC card settings an older client does not know of: kept when it leaves them out.
 PLC_CARD_KEPT_KEYS = ("value_source", "strobe_address", "strobe_pulse_ms")
@@ -159,6 +162,13 @@ OLD_SEND_KEYS = (
 CAMERA_MODEL_KEYS = ("model_id", "expected_classes", "defect_classes")
 # Which way products cross the count lines: A then B, B then A, or either way.
 COUNT_DIRECTIONS = ("forward", "backward", "both")
+# How a vision camera makes its products:
+#   track    moving products cross its count lines (what every camera did before)
+#   trigger  one picture per trigger (a PLC signal or the API), for indexing machines,
+#            rotary tables and parts that stand still
+COUNT_MODES = ("track", "trigger")
+# What a triggered picture in which nothing was found counts as: no product, a reject or a good product.
+NO_PRODUCT = ("ignore", "reject", "good")
 # Tracking settings a vision camera may change: (lowest, highest, whole number).
 TRACKING_LIMITS = {
     "track_high_thresh": (0.05, 1.0, False),
@@ -174,7 +184,7 @@ TRACKING_KEYS = tuple(TRACKING_LIMITS)
 # a camera sent without one keeps what is saved.
 CAMERA_KEPT_KEYS = CAMERA_MODEL_KEYS + (
     "name_based_defects", "direction", "tracking", "line1_position", "line2_position", "orientation",
-    "confidence", "station",
+    "confidence", "station", "count_mode", "no_product",
 ) + JOIN_KEYS
 # The count lines a vision camera copies from its line's action_trigger (version 8 step).
 COUNT_LINE_KEYS = ("line1_position", "line2_position", "orientation")
@@ -425,6 +435,18 @@ def normalize_camera(raw: Any, index: int) -> Dict[str, Any]:
             camera["station"] = station
         if camera.get("station") == "join":
             camera.update(_join_settings(raw, label))
+        # One picture per trigger instead of tracking. Left out, a camera tracks, as before.
+        count_mode = raw.get("count_mode")
+        if count_mode not in (None, ""):
+            count_mode = str(count_mode).strip().lower()
+            if count_mode not in COUNT_MODES:
+                raise ValueError(f"{label} count mode must be 'track' (moving products) or 'trigger' (one picture per trigger)")
+            if count_mode == "trigger":
+                no_product = str(raw.get("no_product") or "ignore").strip().lower()
+                if no_product not in NO_PRODUCT:
+                    raise ValueError(f"{label}: when nothing is found must be 'ignore', 'reject' or 'good'")
+                camera["count_mode"] = "trigger"
+                camera["no_product"] = no_product
     return camera
 
 
@@ -804,10 +826,10 @@ def _check_signal_cameras(inputs: List[Dict[str, Any]], cameras: List[Dict[str, 
         if index is None:
             raise ValueError(f"{label} names a camera that is not on this line")
         cam = cameras[index]
-        if not (reads_codes(cam) and cam.get("qr_trigger") == "signal"):
+        if not (cam.get("count_mode") == "trigger" or (reads_codes(cam) and cam.get("qr_trigger") == "signal")):
             raise ValueError(
-                f"{label} takes a picture with Camera {index + 1}, so that camera must read codes and have its "
-                f"Capture set to 'When a PLC signal asks'"
+                f"{label} takes a picture with Camera {index + 1}, so that camera must be a vision camera with "
+                f"Count mode 'One picture per trigger', or read codes with its Capture set to 'When a PLC signal asks'"
             )
 
 
@@ -915,6 +937,13 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
                 cam.pop(key, None)
     if not vision and any(c.get("qr_trigger") in ("line1", "line2") for c in cameras):
         raise ValueError("Capturing when a product crosses a wire line needs a vision camera on the line")
+    if any(c["counting"] and c.get("count_mode") == "trigger" for c in vision) \
+            and any(c.get("qr_trigger") in ("line1", "line2") for c in cameras):
+        raise ValueError(
+            "A camera captures when a product crosses a wire line, but the counting camera is set to "
+            "'One picture per trigger' and tracks nothing across its lines. Set that camera's Capture to "
+            "'When a PLC signal asks' or to continuous."
+        )
 
     # PLC signal cards. A client that leaves them out keeps the saved ones.
     raw_inputs = raw.get("plc_inputs") if raw.get("plc_inputs") is not None else base.get("plc_inputs")

@@ -70,6 +70,9 @@ class _CameraInferenceWorker:
         self._latest_detections: List[Any] = []
         self._latest_inference_ms: float = 0.0
         self._processed_frame_id: int = 0
+        # Goes up by one with every frame the worker got through. A trigger waits
+        # on this, not on the frame id, which starts again when a camera reconnects.
+        self.result_seq: int = 0
 
         name = f"InferenceWorker-{camera_id[:8]}"
         self._thread = threading.Thread(
@@ -144,6 +147,7 @@ class _CameraInferenceWorker:
                         self._latest_detections = []
                         self._latest_inference_ms = 0.0
                         self._processed_frame_id = fid
+                        self.result_seq += 1
                     continue
                 det_response = engine.predict_mat(mat, conf_threshold=conf)
 
@@ -168,6 +172,7 @@ class _CameraInferenceWorker:
                     self._latest_detections = det_response.detections
                     self._latest_inference_ms = det_response.inference_time_ms
                     self._processed_frame_id = fid
+                    self.result_seq += 1
                     app_state.detection_count += det_response.total_detections
                     app_state.processed_frames += 1
             except Exception as exc:

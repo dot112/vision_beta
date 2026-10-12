@@ -121,6 +121,9 @@ def required_api_key_scopes(method: str, path: str) -> set[str] | None:
         if "/plc-inputs/" in path:
             # "Read now" reads any address of a PLC channel.
             return {"plc:configure"}
+        if path.endswith("/trigger") and method == "POST":
+            # One picture, one product: it is counted and fires the line's cards.
+            return {"inspection:trigger"}
         if path.endswith("/clone"):
             # A clone copies the line's PLC action cards.
             return {"configuration:write", "plc:configure"}
