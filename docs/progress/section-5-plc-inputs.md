@@ -6,7 +6,58 @@ Read [README.md](README.md) first: it has the goal, the owner's decisions, the p
 
 ## Status
 
-Not started.
+**In progress** on branch `claude/section-5-plc-inputs` (started from `main` after Section 4 was merged). The branch is local: it has not been pushed yet.
+
+The work follows the plan in [docs/superpowers/plans/2026-10-12-section-5-plc-inputs.md](../superpowers/plans/2026-10-12-section-5-plc-inputs.md): nine tasks, each with its tests first.
+
+| Task | What | State |
+|---|---|---|
+| 1 | `read()` for every PLC driver | **Done** (`504f4a9`) |
+| 2 | Signal cards in the line settings | **Done** (`e2e93a8`) |
+| 3 | The polling service | **Done** (`bdb629a`) |
+| 4 | What a signal does, and its API | **Done** (`adf6b9c`) |
+| 5 | Batch number | **Done** (`9df924a`) |
+| 6 | Trigger inspection | **Done** (`d6e33e6`) |
+| 7 | Reject confirmation | **Done** (`c45d4ca`) |
+| 8 | Dashboard | Not started |
+| 9 | End-to-end test, docs, final pass, push and CI | Not started |
+
+So the whole backend is done and tested; the dashboard and the docs are left. Until Task 8, the new settings can only be set through the API.
+
+**Tests:** 1000 pass on the Windows development machine with `bash .superpowers/sdd/2026-10-12-section-5-plc-inputs/pt.sh`, which leaves out 11 tests that fail there before this section too (8 need Linux's fast refused connections, 3 need the `tzdata` package). `ruff check .` is clean. The branch has not run on Linux CI yet.
+
+### To go on (Tasks 8 and 9)
+
+1. `git checkout claude/section-5-plc-inputs`. Read this file, the plan (its Global Constraints and decisions D1 to D16, then Tasks 8 and 9) and "Decisions made while building" below.
+2. The plan's progress ledger is in `.superpowers/sdd/2026-10-12-section-5-plc-inputs/progress.md` (not in git; it is on the development machine). It has every task's test run and decision. The same folder has `pt.sh` (the test run above) and `mutcheck.py` (breaks one piece of code on purpose and checks that a test notices).
+3. Do Task 8, then Task 9. Ask the owner before pushing.
+
+### What the backend gives the dashboard (for Task 8)
+
+- **Line** (`GET /api/v1/lines/{id}`): `plc_inputs` (the signal cards; missing on a line that never had one), `batch` (only while the line has one) and `status.batch` (text or `null`).
+- **Signal card:** `id` (`plcin_` + 8 hex digits; made by the server when left out), `name`, `enabled`, `plc_endpoint_id`, `address`, `data_type` (`auto`, `bool`, `int16`, `uint16`, `int32`, `real`, `string`, `counter`), `poll_ms` (50 to 10000, default 100), `edge` (`rising`, `falling`, `change`), `debounce_ms` (0 to 5000), `action`; `camera_id` for `capture`; `alarm_text` and `alarm_severity` (`info`, `warning`, `critical`) for `alarm`. `counter` is only for `product_sensor`, `string` only for `set_batch`.
+- **Actions:** `start_line`, `stop_line`, `run_level`, `reset_counters`, `product_sensor`, `capture`, `set_batch`, `confirm_card`, `alarm`. The edge is used by `start_line`, `stop_line`, `reset_counters`, `product_sensor` (not with `counter`), `capture` and `confirm_card`.
+- **Save:** `PUT /api/v1/lines/{id}` with `{"plc_inputs": [...]}`. A bad card is a 422 whose text names the card. At most 32 cards.
+- **Status:** `GET /api/v1/lines/{id}/plc-inputs/status` → `{"line_id", "running", "inputs": [{"id", "name", "enabled", "action", "value", "changed_at", "last_read_at", "read_count", "error"}]}`. The times are seconds since 1970; `running` is false when the server is not reading signals.
+- **Read now:** `POST /api/v1/lines/{id}/plc-inputs/{input_id}/read`, with `{"input": {…card…}}` for a card that is not saved yet → `{"ok", "value", "message"}`.
+- **Batch:** `PUT /api/v1/lines/{id}/batch` with `{"batch": "…"}` (Supervisor; `""` clears it; 64 characters at most) → `{"line_id", "batch"}`.
+- **Camera card:** a vision camera has `count_mode` (`track` / `trigger`; sent as `track` it is not saved) and, in trigger mode, `no_product` (`ignore` / `reject` / `good`). A code reader's `qr_trigger` has a fourth choice, `signal`.
+- **Trigger:** `POST /api/v1/lines/{id}/trigger` with an optional `{"camera_id"}` → `{"line_id", "results": [...]}`; 409 when the line is stopped or has no camera in trigger mode.
+- **PLC action card:** `confirm_input_id` (the id of a signal card with the action `confirm_card`; `""` for none) and `confirm_timeout_ms` (50 to 10000, default 1000). New statuses `confirmed` and `not_confirmed`; `last_result.confirmed` is true or false.
+- **Values to keep in step:** reject reason code **6** is `nothing_detected` (`PLC_VALUE_SOURCE_HINTS.reject_reason_code`); the sample message's batch is `"B-1001"` (`sample_payload` and the dashboard's `sendSampleMessage`); the PLC Test button writes batch `1`.
+- **Refused when a line is saved** (the dashboard should not offer them): a product sensor on a line with a vision camera; a `capture` signal whose camera is neither a reader on `signal` nor a vision camera in trigger mode; a reader on wire line 1 or 2 when the counting camera is in trigger mode; deleting (or changing the action of) a signal that a PLC action still names as its confirmation.
+
+### Decisions made while building (beyond the plan's D1 to D16)
+
+- **Product sensor cards count for the line whether switched on or not.** A line whose sensor card is switched off stays a sensor line: Sync keeps its setting and a code read is not a product of its own. It counts nothing until the card is on again.
+- **Two extras on signal cards:** a line warning for a reader set to `signal` that no switched-on `capture` card names; and a PLC channel a signal reads counts as used, so it is not deleted without a warning.
+- **The poller starts with the other PLC services** (`SettingsPersistenceService.restore_on_startup`) and stops first in the server's shutdown.
+- **`set_batch` also acts on the first read** (the plan excepted only `alarm`): the batch the PLC holds is the line's batch, also when it changed while the server was down.
+- **A read that also drops the PLC link** raises `plc.input_failed` only when it happens twice in a row; the reconnect then waits for the channel's reconnect interval.
+- **A start or stop from a signal runs one at a time per line.** A reset signal does nothing when nothing was counted since the last reset. A capture or sensor signal on a stopped line does nothing.
+- **A batch that is too long is refused, not cut** (a cut batch is a wrong batch in the records). So is a bit, or text with a control character. A signal card keeps the reason its last action failed until one succeeds, and shows it as its error.
+- **Trigger mode:** a trigger is refused while the camera's model is not loaded; two triggers at once on one camera take two pictures; the video of a camera in trigger mode shows no count lines; `/control/trigger` for such a camera writes no detection history row.
+- **Reject confirmation:** a fire whose card is deleted or switched off while it waits ends quietly, with no alarm.
 
 ## Goal (owner's decision: "Yes, add PLC inputs")
 

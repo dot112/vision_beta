@@ -34,7 +34,7 @@ Make the software work on almost any production line:
 | 2 | Camera cards on Line setup, up to 8 cameras | [section-2-camera-cards.md](section-2-camera-cards.md) | 1 | **Done** | `claude/magical-ritchie-r7rxvs` |
 | 3 | Several vision cameras: own station or joined result | [section-3-joined-cameras.md](section-3-joined-cameras.md) | 2 | **Done** | `claude/section-3-joined-cameras-mg2wnm` |
 | 4 | Product records in the database, Records page, CSV/XLSX export | [section-4-product-records.md](section-4-product-records.md) | 1 (3 only for the `stations` detail) | **Done** | `claude/optimistic-carson-s5ko0o` |
-| 5 | PLC inputs, batch number, trigger inspection, reject confirmation | [section-5-plc-inputs.md](section-5-plc-inputs.md) | 2 and 4 | Not started | — |
+| 5 | PLC inputs, batch number, trigger inspection, reject confirmation | [section-5-plc-inputs.md](section-5-plc-inputs.md) | 2 and 4 | **In progress**: the backend is done (tasks 1 to 7 of 9); the dashboard and the docs are left | `claude/section-5-plc-inputs` (local, not pushed) |
 
 **Order:** run the sections one after another, 1 → 2 → 3 → 4 → 5. Each new session starts from the branch the previous section pushed, which is in the table above:
 
