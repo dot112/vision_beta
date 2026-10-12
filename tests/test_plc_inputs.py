@@ -314,6 +314,7 @@ class ReadingDriver(FakeDriver):
         self.calls = []
         self.connects = 0
         self.unreadable = set()
+        self.unwritable = set()
         self.drops_on_read = False
         self.write_seconds = 0.0
 
@@ -333,6 +334,8 @@ class ReadingDriver(FakeDriver):
     async def _write(self, op, address, value):
         self.calls.append((op, address))
         await asyncio.sleep(self.write_seconds)
+        if address in self.unwritable:
+            return False, f"{address} is not writable"
         return await super()._write(op, address, value)
 
 

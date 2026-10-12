@@ -69,7 +69,7 @@ class PLCActionStatus(BaseModel):
     """Live execution status for a single PLC Action card."""
     card_id: str
     name: str
-    status: str                         # idle | queued | executing | sent | failed | timeout
+    status: str                         # idle | queued | executing | sent | confirmed | not_confirmed | failed | timeout
     last_result: Dict[str, Any] = Field(default_factory=dict)
     last_fired_at: Optional[float] = None
 

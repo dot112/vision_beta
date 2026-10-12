@@ -90,7 +90,12 @@ REJECT_REASON_CODES = {REASON_VISION: 1, REASON_NOT_LISTED: 2, REASON_LISTED: 3,
                        REASON_STATION_NO_RESULT: 5, REASON_NOTHING_DETECTED: 6}
 OTHER_REJECT_REASON_CODE = 9
 # PLC card settings an older client does not know of: kept when it leaves them out.
-PLC_CARD_KEPT_KEYS = ("value_source", "strobe_address", "strobe_pulse_ms")
+PLC_CARD_KEPT_KEYS = ("value_source", "strobe_address", "strobe_pulse_ms", "confirm_input_id", "confirm_timeout_ms")
+# Reject confirmation: a PLC card may name a signal card of its line with the action
+# "confirm_card" (confirm_input_id) and how long it waits for that signal's edge after
+# its output was sent (confirm_timeout_ms).
+CONFIRM_TIMEOUT_LIMITS_MS = (50, 10000)
+DEFAULT_CONFIRM_TIMEOUT_MS = 1000
 
 DEFAULT_SYNC_WINDOW_MS = 500
 DEFAULT_QR_HOLD_MS = 1500

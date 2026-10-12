@@ -437,11 +437,15 @@ class SettingsPersistenceService:
         if not isinstance(cards, list) or any(not isinstance(card, dict) for card in cards):
             raise ValueError("PLC action cards must be a list of objects")
 
-        from app.services.plc_failsafe_service import validate_safe_state, validate_write_value
+        from app.services.plc_failsafe_service import validate_confirmation, validate_safe_state, validate_write_value
         cards = keep_card_fields(cards, cls._state.get("plc_actions"), PLC_CARD_KEPT_KEYS)
         for card in cards:
             validate_safe_state(card)
             validate_write_value(card)
+            validate_confirmation(card)
+        # These are Line 1's cards; its PLC signal cards are in its own entry.
+        primary = next((ln for ln in cls._state.get("lines") or [] if ln.get("id") == PRIMARY_LINE_ID), None) or {}
+        cls._check_confirmation_links(cards, primary.get("plc_inputs"))
 
         saved_cards = copy.deepcopy(cards)
         cls._state["plc_actions"] = saved_cards
@@ -553,13 +557,41 @@ class SettingsPersistenceService:
             raise KeyError(line_id)
         if not isinstance(cards, list) or any(not isinstance(card, dict) for card in cards):
             raise ValueError("PLC action cards must be a list of objects")
-        from app.services.plc_failsafe_service import validate_safe_state, validate_write_value
+        from app.services.plc_failsafe_service import validate_confirmation, validate_safe_state, validate_write_value
         cards = keep_card_fields(cards, line.get("plc_actions"), PLC_CARD_KEPT_KEYS)
         for card in cards:
             validate_safe_state(card)
             validate_write_value(card)
+            validate_confirmation(card)
+        cls._check_confirmation_links(cards, line.get("plc_inputs"))
         line["plc_actions"] = [{k: v for k, v in c.items() if k != "line_id"} for c in copy.deepcopy(cards)]
         return copy.deepcopy(line["plc_actions"])
+
+    @staticmethod
+    def _check_confirmation_links(cards: Any, inputs: Any) -> None:
+        """A PLC card's confirmation signal is a signal card of the same line with the action "confirm_card".
+
+        Raises ValueError naming the PLC card. Run when a line's cards or its
+        signals are saved, so a signal an action still waits for cannot be
+        deleted or given another action.
+        """
+        signals = {card.get("id"): card for card in inputs or [] if isinstance(card, dict)}
+        for card in cards or []:
+            wanted = str(card.get("confirm_input_id") or "").strip() if isinstance(card, dict) else ""
+            if not wanted:
+                continue
+            name = card.get("name") or card.get("id")
+            signal = signals.get(wanted)
+            if signal is None:
+                raise ValueError(
+                    f"PLC action '{name}' is confirmed by a PLC signal that is not on this line. "
+                    f"Choose another confirmation signal for that action, or none, first."
+                )
+            if signal.get("action") != "confirm_card":
+                raise ValueError(
+                    f"PLC action '{name}' is confirmed by the PLC signal '{signal.get('name')}', so that signal's "
+                    f"action must stay 'Confirm a PLC action'. Choose another confirmation signal for the action first."
+                )
 
     @classmethod
     def get_all_plc_actions(cls) -> List[Dict[str, Any]]:
@@ -602,12 +634,20 @@ class SettingsPersistenceService:
             trigger = {k: v for k, v in trigger.items() if k not in OLD_SEND_KEYS and k not in OLD_CLASS_KEYS}
         cards = line.pop("plc_actions", None)
         if cards is not None:
-            from app.services.plc_failsafe_service import validate_safe_state, validate_write_value
+            from app.services.plc_failsafe_service import validate_confirmation, validate_safe_state, validate_write_value
             for card in cards:
                 if not isinstance(card, dict):
                     raise ValueError("PLC action cards must be a list of objects")
                 validate_safe_state(card)
                 validate_write_value(card)
+                validate_confirmation(card)
+        # The cards as they will be saved (what an older client left out is kept),
+        # against the signal cards as they will be saved: checked before anything changes.
+        saved_cards = cls.get_line_plc_actions(line["id"]) if existing is not None else []
+        cls._check_confirmation_links(
+            keep_card_fields(cards, saved_cards, PLC_CARD_KEPT_KEYS) if cards is not None else saved_cards,
+            line.get("plc_inputs"),
+        )
 
         if line["id"] == PRIMARY_LINE_ID:
             if isinstance(trigger, dict):

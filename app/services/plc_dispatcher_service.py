@@ -11,10 +11,11 @@ Runtime engine that:
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Deque, Dict, List, Optional, Set
 
 # When a card fires is decided in card_triggers, the same for PLC cards and
 # send cards. The names below are what this module called them before that.
@@ -33,7 +34,7 @@ from app.services.card_triggers import (  # noqa: F401  (re-exported)
     trigger_matches as _eval_condition,
 )
 from app.services.line_config import OTHER_REJECT_REASON_CODE, PRIMARY_LINE_ID, REJECT_REASON_CODES
-from app.services.plc_failsafe_service import PLCFailsafeService
+from app.services.plc_failsafe_service import PLCFailsafeService, confirm_timeout_ms
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -44,7 +45,7 @@ logger = get_logger(__name__)
 @dataclass
 class _CardState:
     card_id: str
-    status: str = "idle"                # idle|queued|executing|sent|failed|timeout
+    status: str = "idle"                # idle|queued|executing|sent|confirmed|not_confirmed|failed|timeout
     last_fired_at: float = 0.0          # epoch seconds
     # Insertion-ordered so the oldest IDs are evicted first (a set would drop an arbitrary one,
     # possibly the event just fired, and let once_per_event fire it twice).
@@ -103,6 +104,10 @@ class PLCDispatcherService:
     _line_tasks: Dict[str, Set[asyncio.Task]] = {}  # the same tasks, per line
     # Per line, so a busy line cannot crowd out the others.
     _max_dispatch_tasks = 256
+    # Reject confirmation: per card id, the fires whose output was sent and that wait
+    # for the card's confirmation signal, oldest first. A fire is done with True
+    # (the signal came) or False (the card was deleted or switched off meanwhile).
+    _confirm_waiters: Dict[str, Deque["asyncio.Future[bool]"]] = {}
 
     # ── Initialisation ────────────────────────────────────────────────────────
 
@@ -177,6 +182,10 @@ class PLCDispatcherService:
         from app.events.alarm_events import alarm_manager
         for cid in (before | {c.get("id") for c in fresh}) - live:
             if cid:
+                # Nothing waits for its confirmation any more either.
+                for waiter in cls._confirm_waiters.pop(cid, ()):
+                    if not waiter.done():
+                        waiter.set_result(False)
                 alarm_manager.clear_source(f"plc_card:{cid}", "action deleted or switched off")
         for card in cls._cards:
             cid = card.get("id", "")
@@ -264,6 +273,35 @@ class PLCDispatcherService:
             line_tasks.add(task)
             task.add_done_callback(cls._dispatch_tasks.discard)
             task.add_done_callback(line_tasks.discard)
+
+    @classmethod
+    def confirm_signal(cls, line_id: str, input_id: str) -> int:
+        """A confirmation signal of a line showed its edge: the oldest waiting fire of every
+        card of that line that names the signal is confirmed. Returns how many fires that was.
+        Called on the event loop (by the PLC signal poller)."""
+        confirmed = 0
+        for card in cls._cards:
+            if _card_line(card) != line_id or str(card.get("confirm_input_id") or "").strip() != input_id:
+                continue
+            waiters = cls._confirm_waiters.get(card.get("id", ""))
+            while waiters:
+                waiter = waiters.popleft()
+                if not waiter.done():
+                    waiter.set_result(True)
+                    confirmed += 1
+                    break
+        return confirmed
+
+    @classmethod
+    def _drop_waiter(cls, card_id: str, waiter: "asyncio.Future[bool]") -> None:
+        waiters = cls._confirm_waiters.get(card_id)
+        if waiters is not None:
+            try:
+                waiters.remove(waiter)
+            except ValueError:
+                pass
+            if not waiters:
+                cls._confirm_waiters.pop(card_id, None)
 
     @classmethod
     def watch_alarms(cls) -> None:
@@ -496,6 +534,15 @@ class PLCDispatcherService:
 
         state.status = "executing"
 
+        # ── Reject confirmation ───────────────────────────────────────────────
+        # The fire is put in line for its confirmation signal before the output is
+        # sent: a PLC that confirms during the pulse is not missed. The Test button
+        # does not wait: commissioning must not raise the alarm.
+        waiter: Optional["asyncio.Future[bool]"] = None
+        if str(card.get("confirm_input_id") or "").strip() and not event.get("manual"):
+            waiter = asyncio.get_running_loop().create_future()
+            cls._confirm_waiters.setdefault(cid, collections.deque()).append(waiter)
+
         # ── Execute with retry ────────────────────────────────────────────────
         # TOGGLE is non-idempotent: if the PLC applied it but its reply was lost,
         # retrying would toggle the output back to its original state.
@@ -609,6 +656,50 @@ class PLCDispatcherService:
             card.get("name", cid), state.status, msg,
         )
         cls._report_alarm(card, endpoint, state.status, msg)
+        cls._notify_status_change()
+        if waiter is not None:
+            if ok:
+                await cls._await_confirmation(card, state, waiter, endpoint)
+            else:
+                # Nothing was sent, so nothing can confirm it.
+                cls._drop_waiter(cid, waiter)
+
+    @classmethod
+    async def _await_confirmation(cls, card: dict, state: _CardState, waiter: "asyncio.Future[bool]",
+                                  endpoint: dict) -> None:
+        """Wait for the card's confirmation signal, from the moment its output (and its strobe) was sent."""
+        from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
+
+        cid = card.get("id", "")
+        name = card.get("name") or cid
+        wait_ms = confirm_timeout_ms(card)
+        try:
+            confirmed: Optional[bool] = await asyncio.wait_for(asyncio.shield(waiter), timeout=wait_ms / 1000.0)
+        except asyncio.TimeoutError:
+            confirmed = None
+        finally:
+            cls._drop_waiter(cid, waiter)
+        if confirmed is False:
+            return          # the card was deleted or switched off while it waited
+        source = f"plc_card:{cid}"
+        sent = str(state.last_result.get("message") or "")
+        if confirmed:
+            state.status = "confirmed"
+            state.last_result = {**state.last_result, "confirmed": True, "message": f"{sent}; confirmed by the PLC"}
+            alarm_manager.clear_alarm(AlarmCode.PLC_ACTION_NOT_CONFIRMED, source, "action confirmed")
+            logger.info("PLCDispatcher: card '%s' → confirmed", name)
+        else:
+            state.status = "not_confirmed"
+            state.last_result = {**state.last_result, "confirmed": False,
+                                 "message": f"{sent}; not confirmed by the PLC within {wait_ms} ms"}
+            alarm_manager.raise_alarm(
+                AlarmCode.PLC_ACTION_NOT_CONFIRMED, source,
+                f"PLC action '{name}' was sent, but its confirmation signal did not come within {wait_ms} ms",
+                AlarmSeverity.CRITICAL,
+                {"card_id": cid, "line_id": _card_line(card), "endpoint_id": endpoint.get("id"),
+                 "input_id": card.get("confirm_input_id")},
+            )
+            logger.warning("PLCDispatcher: card '%s' → not confirmed within %d ms", name, wait_ms)
         cls._notify_status_change()
 
     @staticmethod

@@ -481,6 +481,11 @@ class PLCInputService:
             await cls._capture(card)
         elif action == "alarm":
             cls._alarm(card, truthy(new))
+        elif action == "confirm_card":
+            # The PLC says the output really happened (a reject gate's sensor, for one): the
+            # oldest waiting fire of every PLC action that names this signal is confirmed.
+            from app.services.plc_dispatcher_service import PLCDispatcherService
+            PLCDispatcherService.confirm_signal(card["line_id"], card["id"])
         elif action == "set_batch":
             # The value the PLC holds is the line's batch number. One that cannot be a
             # batch (too long, a control character, a bit) is refused: the line keeps its own.

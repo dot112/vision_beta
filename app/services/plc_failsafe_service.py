@@ -91,6 +91,39 @@ def validate_write_value(card: dict) -> None:
             raise ValueError(f"{label}: the strobe pulse must be a whole number of 10 to 10000 ms")
 
 
+def validate_confirmation(card: dict) -> None:
+    """Raise ValueError when a card's confirmation signal or the time it waits for it is not valid.
+
+    Whether the signal exists on the card's line is checked where the line's
+    signal cards are known (SettingsPersistenceService._check_confirmation_links).
+    """
+    from app.services.line_config import CONFIRM_TIMEOUT_LIMITS_MS
+
+    label = f"PLC action card '{card.get('name') or card.get('id', '')}'"
+    signal = card.get("confirm_input_id")
+    if signal not in (None, "") and (not isinstance(signal, str) or len(signal.strip()) > 64):
+        raise ValueError(f"{label}: the confirmation signal is not valid")
+    timeout = card.get("confirm_timeout_ms")
+    if timeout not in (None, ""):
+        low, high = CONFIRM_TIMEOUT_LIMITS_MS
+        try:
+            whole = not isinstance(timeout, bool) and float(timeout) == int(float(timeout))
+        except (TypeError, ValueError, OverflowError):
+            whole = False
+        if not whole or not low <= int(float(timeout)) <= high:
+            raise ValueError(f"{label}: the time to wait for the confirmation must be a whole number of {low} to {high} ms")
+
+
+def confirm_timeout_ms(card: dict) -> int:
+    """How long a card waits for its confirmation signal after its output was sent."""
+    from app.services.line_config import DEFAULT_CONFIRM_TIMEOUT_MS
+
+    try:
+        return int(float(card.get("confirm_timeout_ms") or DEFAULT_CONFIRM_TIMEOUT_MS))
+    except (TypeError, ValueError):
+        return DEFAULT_CONFIRM_TIMEOUT_MS
+
+
 def safe_operation(card: dict) -> Optional[Tuple[str, float]]:
     """Return (operation, value) for a card's safe state, or None when disabled."""
     raw = str(card.get("safe_state", "none") or "none").strip().lower()
