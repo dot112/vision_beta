@@ -300,12 +300,12 @@ class PLCDispatcherService:
         Returns the execution result dict synchronously.
 
         A card that writes a value of the product writes example values:
-        a rejected product, counts of 1, class number 1.
+        a rejected product, counts of 1, class number 1, batch 1.
         """
         cid = card.get("id", "")
         state = cls._states.setdefault(cid, _CardState(card_id=cid))
         event = {"event_id": f"manual_{int(time.time())}", "manual": True, "result": "reject", "reject_reason": "vision_class",
-                 "good_count": 1, "reject_count": 1, "total_count": 1, "class_index": 1}
+                 "good_count": 1, "reject_count": 1, "total_count": 1, "class_index": 1, "batch": "1"}
         await cls._dispatch(card, state, event=event)
         return {**state.last_result, "status": state.status}
 
@@ -343,6 +343,10 @@ class PLCDispatcherService:
             return float(REJECT_REASON_CODES.get(event.get("reject_reason"), OTHER_REJECT_REASON_CODE))
         if source == "batch":
             batch = event.get("batch")
+            if batch in (None, ""):
+                # An event that is not a product (a line start, an alarm): the line's batch now.
+                from app.services.line_service import line_manager
+                batch = getattr(line_manager.get(_card_line(card)), "batch", "")
             if batch in (None, ""):
                 raise ValueError("the line has no batch number to write")
             try:

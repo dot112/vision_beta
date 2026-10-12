@@ -35,6 +35,8 @@ MESSAGE_FIELDS: Dict[str, Tuple[str, ...]] = {
     "timestamp": ("timestamp",),
     "line": ("line_id", "line_name"),
     "line_state": ("line_state",),
+    # The line's batch (work order) number; a line without one sends no such key.
+    "batch": ("batch",),
     "camera_id": ("camera_id",),
     "track_id": ("track_id",),
     "class_name": ("class_name",),
@@ -124,7 +126,6 @@ def template_values(payload: Dict[str, Any]) -> Dict[str, Any]:
         "total_inspected": metric("total_inspected"),
         "yield_percentage": metric("yield_percentage"),
         "products_per_minute": metric("products_per_minute"),
-        # Section 5 adds the line's batch number.
         "batch": pick("batch"),
         "alarm_code": pick("alarm_code"),
         "alarm_message": pick("alarm_message"),
@@ -420,6 +421,9 @@ class SendDispatcherService:
                     "counts": reading["counts"],
                     "metrics": reading["metrics"],
                 }
+                batch = getattr(runtime, "batch", "")
+                if batch:
+                    payload["batch"] = batch
         except Exception as exc:
             logger.debug("Could not add line totals to a message: %s", exc)
         return payload
@@ -460,7 +464,8 @@ def sample_payload(card: dict, line_name: str = "") -> Dict[str, Any]:
     trigger = str(card.get("trigger_type") or card.get("trigger") or "cross_line").lower()
     condition = str(card.get("condition") or "").lower()
     now = datetime.now(timezone.utc).isoformat()
-    line = {"line_id": card_line(card), "line_name": line_name or card_line(card), "line_state": "started"}
+    line = {"line_id": card_line(card), "line_name": line_name or card_line(card), "line_state": "started",
+            "batch": "B-1001"}
     totals = {
         "counts": {"bottle": 142, "defect": 3},
         "metrics": {"total_inspected": 145, "good_count": 142, "rejected_count": 3,

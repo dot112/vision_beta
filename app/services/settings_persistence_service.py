@@ -18,6 +18,7 @@ from app.services.line_config import (
     SEND_CARD_KEPT_KEYS,
     TRACKING_KEYS,
     check_camera_ownership,
+    clean_batch,
     endpoints_used_by_line,
     keep_card_fields,
     normalize_line,
@@ -652,6 +653,24 @@ class SettingsPersistenceService:
             line["counts_reset_at"] = now
             line.pop("counts_reset_classes", None)
         cls.save()
+
+    @classmethod
+    def set_line_batch(cls, line_id: str, batch: Any) -> str:
+        """Save a line's batch (work order) number, "" for none. Returns the text that was saved.
+
+        Raises KeyError for a line that does not exist and ValueError for a
+        batch that cannot be one (line_config.clean_batch).
+        """
+        line = cls._find_line(line_id)
+        if line is None:
+            raise KeyError(line_id)
+        text = clean_batch(batch)
+        if text:
+            line["batch"] = text
+        else:
+            line.pop("batch", None)
+        cls.save()
+        return text
 
     @classmethod
     def delete_line(cls, line_id: str) -> bool:

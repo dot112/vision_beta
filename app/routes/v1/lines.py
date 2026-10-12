@@ -492,6 +492,50 @@ async def set_line_running(line_id: str, running: bool, actor: Any) -> Dict[str,
     return view
 
 
+def set_line_batch(line_id: str, batch: Any, actor: Any) -> str:
+    """Set a line's batch (work order) number for whoever asked: a signed-in user, or a PLC signal.
+
+    Returns the batch as it was saved ("" clears it). Every product, code read,
+    message and record of the line carries it from now on. Raises 404 for a
+    line that does not exist and ValueError for a batch that cannot be one.
+    ``actor`` has a username, role and clearance_level, for the audit entry.
+    """
+    from app.services.line_config import clean_batch
+
+    svc = _svc()
+    line = svc.get_line(line_id, with_logic=False)
+    if line is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    batch = clean_batch(batch)
+    if batch == (line.get("batch") or ""):
+        return batch        # nothing changes, nothing to write down
+    svc.record_audit(
+        username=actor.username,
+        role=actor.role,
+        clearance_level=actor.clearance_level,
+        action="SET_BATCH",
+        category="PRODUCTION",
+        details=f"Batch of line '{line['name']}' set to '{batch}'" if batch else f"Batch of line '{line['name']}' cleared",
+        line_id=line_id,
+    )
+    svc.set_line_batch(line_id, batch)
+    runtime = _manager().get(line_id)
+    if runtime is not None:
+        runtime.set_batch(batch)
+    return batch
+
+
+@router.put("/{line_id}/batch", summary="Set the line's batch (work order) number (Level 2+ Supervisor)")
+async def put_line_batch(line_id: str, body: Dict[str, Any], user: User = Depends(require_supervisor)) -> Dict[str, Any]:
+    """``{"batch": "WO-2026-118"}``; an empty text clears it. At most 64 characters."""
+    if "batch" not in body:
+        raise HTTPException(status_code=422, detail="Send the batch number as {\"batch\": \"...\"}")
+    try:
+        return {"line_id": line_id, "batch": set_line_batch(line_id, body["batch"], user)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.post("/{line_id}/start", summary="Run one line without touching the others (Level 2+ Supervisor)")
 async def start_line(line_id: str, user: User = Depends(require_supervisor)) -> Dict[str, Any]:
     return await set_line_running(line_id, True, user)

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
@@ -115,9 +115,9 @@ class _InputState:
     last_read_at: Optional[float] = None
     read_count: int = 0
     failures: int = 0                        # reads that failed in a row
-    error: Optional[str] = None
+    error: Optional[str] = None              # why the last read failed
+    action_error: Optional[str] = None       # why the card's last action failed; kept until one succeeds
     counter_base: Optional[int] = None
-    extra: Dict[str, Any] = field(default_factory=dict)
 
 
 def _signature(card: Dict[str, Any]) -> Tuple[Any, ...]:
@@ -446,10 +446,15 @@ class PLCInputService:
         async def guarded() -> None:
             try:
                 await cls._act(card, old, new, count)
+                state.action_error = None
             except asyncio.CancelledError:
                 raise
+            except ValueError as exc:
+                # The value cannot be used (a batch that is too long, for one): said on the card.
+                state.action_error = str(exc)
+                logger.warning("PLC signal '%s' of line '%s': %s", card.get("name"), card.get("line_name"), exc)
             except Exception as exc:
-                state.error = f"Its action failed: {exc}"
+                state.action_error = f"Its action failed: {getattr(exc, 'detail', None) or exc}"
                 logger.exception("PLC signal '%s' of line '%s': the action '%s' failed",
                                  card.get("name"), card.get("line_name"), card.get("action"))
 
@@ -476,6 +481,11 @@ class PLCInputService:
             cls._capture(card)
         elif action == "alarm":
             cls._alarm(card, truthy(new))
+        elif action == "set_batch":
+            # The value the PLC holds is the line's batch number. One that cannot be a
+            # batch (too long, a control character, a bit) is refused: the line keeps its own.
+            from app.routes.v1.lines import set_line_batch
+            set_line_batch(card["line_id"], new, cls._actor(card))
 
     @staticmethod
     def _runtime(card: Dict[str, Any]) -> Any:
@@ -559,7 +569,7 @@ class PLCInputService:
                 continue
             state = cls._states.get((line_id, card["id"]))
             problem = cls._config_problem(card)
-            error = state.error if state is not None else None
+            error = (state.error or state.action_error) if state is not None else None
             if state is None and problem is not None and card.get("enabled", True) is True:
                 error = problem
             rows.append({

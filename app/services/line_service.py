@@ -371,6 +371,8 @@ class LineRuntime:
         self.plc_inputs: List[Dict[str, Any]] = []
         self.has_product_sensor = False
         self._sensor_seq = 0
+        # The line's batch (work order) number, "" for none.
+        self.batch = ""
         self.last_capture: Optional[Dict[str, Any]] = None
         self._capture_jpeg: Optional[bytes] = None
         self._capture_seq = 0
@@ -430,6 +432,7 @@ class LineRuntime:
 
         self.plc_inputs = copy.deepcopy(line.get("plc_inputs") or [])
         self.has_product_sensor = bool(product_sensors(line))
+        self.set_batch(str(line.get("batch") or ""))
 
         self.code_checks = code_checks(self.cameras)
         sync = line.get("sync") or {}
@@ -451,6 +454,19 @@ class LineRuntime:
         self.signal_readers = {
             c["camera_id"] for c in self.cameras if reads_codes(c) and c.get("qr_trigger") == "signal"
         }
+
+    def set_batch(self, batch: str) -> None:
+        """The line's batch number from now on, for its own products and its own stations'."""
+        self.batch = batch or ""
+        self.counter.batch = self.batch
+        for aux in self.aux_counters.values():
+            aux.batch = self.batch
+
+    def _with_batch(self, payload: Dict[str, Any], plc_event: Dict[str, Any]) -> None:
+        """Add the batch to a code event's message and PLC event, while the line has one."""
+        if self.batch:
+            payload["batch"] = self.batch
+            plc_event["batch"] = self.batch
 
     def _set_config(self, counter: CountingService, config: Any) -> None:
         """Give a counter its saved settings, when they changed since they were last given.
@@ -696,6 +712,7 @@ class LineRuntime:
             "qr_paired": None,
             "timestamp": time.time(),
         }
+        self._with_batch(payload, plc_event)
         self._record(payload, "code", counted=False, product_list_id=self.product_list_id(camera_id))
         self._publish(("qr_code",), payload, plc_event)
 
@@ -936,6 +953,7 @@ class LineRuntime:
             "qr_paired": paired,
             "timestamp": time.time(),
         }
+        self._with_batch(payload, plc_event)
         return payload, plc_event
 
     def _publish(self, topics: Tuple[str, ...], payload: Dict[str, Any], plc_event: Dict[str, Any]) -> None:
@@ -1533,6 +1551,7 @@ class LineManager:
             "processed_fps": runtime.processed_fps(),
             "min_fps": runtime.min_fps,
             "yield_target": runtime.yield_target,
+            "batch": runtime.batch or None,
             "has_qr": runtime.has_code_reader,
             "qr": qr_stats,
             "last_capture_id": last_capture_id,

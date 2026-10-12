@@ -12,6 +12,7 @@ service, the line manager and the API without import cycles.
 from __future__ import annotations
 
 import copy
+import math
 import re
 import uuid
 from datetime import datetime, timezone
@@ -103,10 +104,36 @@ _LOGIC_KEYS = ("action_trigger", "plc_actions", "send_actions")
 # line's counters were last reset (ISO UTC), and when single classes were. A
 # counter gets its totals back from the product records since then.
 COUNTS_RESET_KEYS = ("counts_reset_at", "counts_reset_classes")
+# The line's batch (work order) number is kept the same way: only the batch
+# endpoint, the dashboard field and a "set batch" PLC signal change it. It is as
+# long as the batch column of the product records.
+BATCH_MAX_LENGTH = 64
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def clean_batch(value: Any) -> str:
+    """A batch number as the text that is saved; "" for none. Raises ValueError.
+
+    A number read from a PLC is written as people write it (1001.0 is "1001").
+    A PLC string padded with NULs to its full length loses the padding.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise ValueError("The batch number must be text or a number")
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("The batch number must be text or a number")
+        value = int(value) if value.is_integer() else value
+    text = str(value).strip().rstrip("\x00").strip()
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        raise ValueError("The batch number contains a character that is not allowed (a line break or a control character)")
+    if len(text) > BATCH_MAX_LENGTH:
+        raise ValueError(f"The batch number must be {BATCH_MAX_LENGTH} characters or fewer")
+    return text
 
 # The kinds of channel a send card can send to (Connections).
 SEND_PROTOCOLS = ("mqtt", "tcp", "webhook")
@@ -942,6 +969,8 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
     for key in COUNTS_RESET_KEYS:
         if key in base:
             line[key] = copy.deepcopy(base[key])
+    if base.get("batch"):
+        line["batch"] = base["batch"]
     for key in _LOGIC_KEYS:
         if key in merged:
             line[key] = copy.deepcopy(merged[key])

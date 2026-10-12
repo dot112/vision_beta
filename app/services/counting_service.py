@@ -198,6 +198,9 @@ class CountingService:
         # each time a product crosses wire line 1 or 2, before it is counted:
         # a QR reader set to capture on a crossing takes its picture then.
         self.line_crossing_sink: Optional[Any] = None
+        # The line's batch (work order) number, "" for none: every product's message
+        # and PLC event carries it while the line has one.
+        self.batch: str = ""
         self.config = CountingConfig()
         self.tracker = WirelineTracker(
             track_high_thresh=self.config.track_high_thresh,
@@ -514,6 +517,9 @@ class CountingService:
             "crossed_at": crossing["crossed_at"],
             "delay_from_crossing": bool(delay_from_crossing),
         }
+        if self.batch:
+            payload["batch"] = self.batch
+            plc_event["batch"] = self.batch
         if fields:
             payload.update(fields)
         if plc_fields:
