@@ -4,8 +4,9 @@ from __future__ import annotations
 import asyncio
 import math
 import os
-from typing import Tuple
+from typing import Any, Tuple
 
+from app.hardware.plc._common import coerce_read
 from app.hardware.plc.base import PLCDriver
 from app.utils.logger import get_logger
 
@@ -218,6 +219,20 @@ class OPCUADriver(PLCDriver):
         except Exception as exc:
             await self._handle_failure(exc)
             return False, f"OPC UA toggle failed for {address}: {type(exc).__name__}: {exc}"
+
+    async def _read(self, address: str, data_type: str) -> Tuple[bool, Any, str]:
+        try:
+            value = await self._node(address).read_value()
+            if not isinstance(value, (bool, int, float, str)):
+                return False, None, (
+                    f"OPC UA node {address} holds {type(value).__name__}; "
+                    "only a Boolean, a number or a string can be read"
+                )
+            value = coerce_read(value, data_type)
+            return True, value, f"OPC UA read {value!s} from {address}"
+        except Exception as exc:
+            await self._handle_failure(exc)
+            return False, None, f"OPC UA read failed for {address}: {type(exc).__name__}: {exc}"
 
     async def pulse(self, address: str, duration_ms: int) -> Tuple[bool, str]:
         ok, message = await self.set(address)

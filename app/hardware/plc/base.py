@@ -3,12 +3,16 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import asyncio
-from typing import Tuple
+from typing import Any, Tuple
 
 from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# What read() can be asked to return. "auto" takes the type from the address:
+# its suffix (":DINT", ":REAL"), or what the protocol says the address holds.
+READ_DATA_TYPES = ("auto", "bool", "int16", "uint16", "int32", "real", "string")
 
 
 class PLCDriver(ABC):
@@ -135,6 +139,31 @@ class PLCDriver(ABC):
     async def toggle(self, address: str) -> Tuple[bool, str]:
         """Invert a readable/writable BOOL. Drivers opt in when their protocol supports it."""
         return False, f"TOGGLE is not supported by {type(self).__name__}"
+
+    # ── Reading ───────────────────────────────────────────────────────────────
+
+    async def read(self, address: str, data_type: str = "auto") -> Tuple[bool, Any, str]:
+        """
+        Read one value from the PLC. Returns (success, value, message): the
+        value is a bool for a bit, an int, a float for a REAL or text for a
+        string, and None when the read failed.
+
+        Runs under the same lock as execute_operation(), so a read never comes
+        between the two halves of a pulse.
+        """
+        wanted = str(data_type or "auto").strip().lower()
+        if wanted not in READ_DATA_TYPES:
+            return False, None, f"Unknown data type '{data_type}'; use one of: {', '.join(READ_DATA_TYPES)}"
+        async with self._operation_lock:
+            try:
+                return await self._read(str(address or "").strip(), wanted)
+            except ValueError as exc:
+                # A bad address or a type the address cannot hold: the link is fine.
+                return False, None, str(exc)
+
+    async def _read(self, address: str, data_type: str) -> Tuple[bool, Any, str]:
+        """One read, already under the lock. Drivers whose protocol can be read implement this."""
+        return False, None, f"Reading is not supported by {type(self).__name__}"
 
     # ── Convenience ───────────────────────────────────────────────────────────
 

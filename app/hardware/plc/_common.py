@@ -4,12 +4,15 @@ from __future__ import annotations
 import asyncio
 import math
 import struct
-from typing import Awaitable, Callable, List, Tuple
+from typing import Any, Awaitable, Callable, List, Tuple, Union
 
 Result = Tuple[bool, str]
 
 # 32-bit address suffixes shared by the MELSEC and FINS drivers ("D100:DINT").
 WIDE_TYPES = {"DINT": "<i", "UDINT": "<I", "DWORD": "<I", "REAL": "<f", "FLOAT": "<f"}
+
+# The data types read() can be asked for, as the address suffix that means the same.
+READ_SUFFIX = {"int16": "INT", "uint16": "UINT", "int32": "DINT", "real": "REAL"}
 
 
 async def pulse_with_reset(
@@ -81,3 +84,48 @@ def encode_words(value: float, data_type: str) -> List[int]:
                 raise ValueError(f"value {integer} does not fit a 16-bit word ({limits[0]}..{limits[1]})")
             packed = struct.pack("<H", integer & 0xFFFF)
     return [struct.unpack_from("<H", packed, offset)[0] for offset in range(0, len(packed), 2)]
+
+
+def word_type(suffix: str, data_type: str, protocol: str) -> str:
+    """The register type a read uses: the one asked for, else the address's own suffix, else one unsigned word."""
+    if data_type == "string":
+        raise ValueError(f"{protocol} registers hold numbers; a string cannot be read from them")
+    return READ_SUFFIX.get(data_type) or suffix or "UINT"
+
+
+def round_real(value: float) -> float:
+    """A 32-bit REAL as the number it stands for: 12.3, not 12.300000190734863."""
+    return float(f"{value:.7g}")
+
+
+def decode_words(words: List[int], data_type: str) -> Union[int, float]:
+    """The reverse of encode_words(): 16-bit words, low word first, as one value."""
+    packed = b"".join(struct.pack("<H", word & 0xFFFF) for word in words)
+    if data_type in WIDE_TYPES:
+        if len(packed) != 4:
+            raise ValueError(f"{data_type} needs two words")
+        value = struct.unpack(WIDE_TYPES[data_type], packed)[0]
+        return round_real(value) if data_type in ("REAL", "FLOAT") else int(value)
+    if len(packed) < 2:
+        raise ValueError("no word to decode")
+    return int(struct.unpack("<h" if data_type == "INT" else "<H", packed[:2])[0])
+
+
+def coerce_read(value: Any, data_type: str) -> Any:
+    """A value the PLC returned with its own type (a tag, a node), as the type that was asked for."""
+    if data_type == "auto":
+        return value
+    if data_type == "string":
+        if isinstance(value, str):
+            return value
+        raise ValueError(f"the value is {type(value).__name__}, not a string")
+    if isinstance(value, str):
+        raise ValueError(f"the value is a string, not {data_type}")
+    if data_type == "bool":
+        return bool(value)
+    if data_type == "real":
+        return float(value)
+    number = float(value)
+    if not number.is_integer():
+        raise ValueError(f"the value {value} is not a whole number; read it as real")
+    return int(number)

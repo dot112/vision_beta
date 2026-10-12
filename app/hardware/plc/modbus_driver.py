@@ -4,8 +4,9 @@ from __future__ import annotations
 import asyncio
 import math
 import struct
-from typing import List, Tuple
+from typing import Any, List, Tuple, Union
 
+from app.hardware.plc._common import round_real, word_type
 from app.hardware.plc.base import PLCDriver
 from app.utils.logger import get_logger
 
@@ -91,6 +92,58 @@ def _read_only_message(address: str) -> str:
         f"Modbus address '{address}' is a discrete input (1xxxx) or input register (3xxxx), "
         "which are read-only; use a coil (C..) or holding register (4xxxx / R..) for outputs"
     )
+
+
+def _parse_modbus_read_target(address: str) -> Tuple[str, int, str]:
+    """
+    Parse an address to read into (kind, index, data_type). kind is "coil",
+    "discrete" (discrete input), "holding" (holding register) or "input"
+    (input register); data_type is the address's own suffix, "" without one.
+
+    Everything _parse_modbus_target() takes can be read, plus the two ranges
+    that can only be read:
+      "10001" / "100001" / "DI0"  → discrete input 0
+      "30001" / "300001" / "IR0"  → input register 0
+      "30001:INT", "IR4:REAL"     → a typed input register
+    """
+    text = str(address or "").strip().upper()
+    base, _, suffix = (part.strip() for part in text.partition(":"))
+    if suffix and suffix not in _REGISTER_TYPES:
+        raise ValueError(f"Unknown Modbus data type '{suffix}'; use INT, UINT, DINT, UDINT or REAL")
+    if not base:
+        raise ValueError("Modbus address is empty")
+
+    kind = None
+    if base.startswith("DI"):
+        kind, index = "discrete", _modbus_int(base[2:], address)
+    elif base.startswith("IR"):
+        kind, index = "input", _modbus_int(base[2:], address)
+    elif base.isdigit() and base[0] in "13" and len(base) in (5, 6):
+        # 1xxxx / 3xxxx and their 6-digit forms are 1-based: 10001 is discrete input 0.
+        first = int(base[0]) * (10000 if len(base) == 5 else 100000) + 1
+        if int(base) >= first:
+            kind, index = ("discrete" if base[0] == "1" else "input"), int(base) - first
+    if kind is None:
+        written, index, _ = _parse_modbus_target(base)
+        kind = "holding" if written == "register" else "coil"
+
+    if not 0 <= index <= 0xFFFF:
+        raise ValueError(f"Modbus address '{address}' is outside 0..65535")
+    if suffix and kind in ("coil", "discrete"):
+        raise ValueError("Modbus data types can only be used with register addresses")
+    return kind, index, suffix
+
+
+def _decode_register_value(words: List[int], data_type: str, word_order: str) -> Union[int, float]:
+    """The reverse of _encode_register_value(): 16-bit registers as one number."""
+    count, fmt = _REGISTER_TYPES[data_type]
+    if len(words) != count:
+        raise ValueError(f"{data_type} needs {count} register(s), got {len(words)}")
+    ordered = list(words)
+    if count == 2 and word_order == "low_first":
+        ordered.reverse()
+    value = struct.unpack(fmt, b"".join(struct.pack(">H", word) for word in ordered))[0]
+    return round_real(value) if fmt[-1] == "f" else int(value)
 
 
 def _parse_modbus_address(address: str) -> Tuple[str, int]:
@@ -269,6 +322,31 @@ class ModbusTCPDriver(PLCDriver):
         # For coils, treat non-zero as True
         ok, err = await self._client.write_coil(idx, bool(value))
         return ok, f"WRITE coil {idx} = {bool(value)}" if ok else f"WRITE coil error: {err}"
+
+
+    async def _read(self, address: str, data_type: str) -> Tuple[bool, Any, str]:
+        kind, idx, suffix = _parse_modbus_read_target(address)
+        if kind in ("coil", "discrete"):
+            if data_type == "string":
+                raise ValueError("A Modbus bit cannot be read as a string")
+            label = "coil" if kind == "coil" else "discrete input"
+            reader = self._client.read_coils if kind == "coil" else self._client.read_discrete_inputs
+            ok, bits, err = await reader(idx, 1)
+            if not ok or not bits:
+                return False, None, f"READ {label} {idx} error: {err or 'no value returned'}"
+            return True, bool(bits[0]), f"READ {label} {idx} = {'ON' if bits[0] else 'OFF'}"
+
+        register_type = word_type(suffix, data_type, "Modbus")
+        label = "register" if kind == "holding" else "input register"
+        reader = self._client.read_registers if kind == "holding" else self._client.read_input_registers
+        count = _REGISTER_TYPES[register_type][0]
+        ok, words, err = await reader(idx, count)
+        if not ok or len(words) != count:
+            return False, None, f"READ {label} {idx} error: {err or 'no value returned'}"
+        value: Any = _decode_register_value(words, register_type, self.word_order)
+        if data_type == "bool":
+            value = value != 0
+        return True, value, f"READ {label} {idx} = {value} ({register_type})"
 
 
 class ModbusRTUDriver(ModbusTCPDriver):

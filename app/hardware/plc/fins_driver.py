@@ -4,9 +4,11 @@ from __future__ import annotations
 import asyncio
 import re
 import struct
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
-from app.hardware.plc._common import encode_words, pulse_with_reset, split_type_suffix
+from app.hardware.plc._common import (
+    WIDE_TYPES, decode_words, encode_words, pulse_with_reset, split_type_suffix, word_type,
+)
 from app.hardware.plc.base import PLCDriver
 from app.utils.logger import get_logger
 
@@ -208,6 +210,29 @@ class OmronFINSDriver(PLCDriver):
             return True, bool(data[0] & 0x01), "FINS read acknowledged"
         except Exception as exc:
             return False, None, str(exc)
+
+    async def _read(self, address: str, data_type: str) -> Tuple[bool, Any, str]:
+        parsed = _parse_fins_address(address)
+        if parsed["is_bit"]:
+            if data_type == "string":
+                raise ValueError("An Omron bit cannot be read as a string")
+            ok, bit, msg = await self.read_bit(address)
+            if not ok or bit is None:
+                return False, None, f"FINS READ {address} failed: {msg}"
+            return True, bit, f"FINS READ {address} = {'ON' if bit else 'OFF'}"
+        register_type = word_type(parsed["type"], data_type, "Omron")
+        count = 2 if register_type in WIDE_TYPES else 1
+        try:
+            data = await self._command(0x01, 0x01, self._memory_spec(parsed, count))
+        except Exception as exc:
+            return False, None, f"FINS READ {address} failed: {exc}"
+        if len(data) < count * 2:
+            return False, None, f"FINS READ {address} failed: the PLC returned too little data"
+        # Each word is big-endian on the wire; a 32-bit value has its low word first.
+        value: Any = decode_words([struct.unpack_from(">H", data, i * 2)[0] for i in range(count)], register_type)
+        if data_type == "bool":
+            value = value != 0
+        return True, value, f"FINS READ {address} = {value}"
 
     async def set(self, address: str) -> Tuple[bool, str]:
         ok, msg = await self._write_bit(address, True)
