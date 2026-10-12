@@ -162,13 +162,18 @@ def client():
     """App with its real lifespan (migrations, admin seed) but no background hardware."""
     from fastapi.testclient import TestClient
 
-    from app.services import camera_service, discovery_service, health_service, plc_failsafe_service, vision_service
+    from app.services import (
+        camera_service, discovery_service, health_service, plc_failsafe_service, plc_input_service, vision_service,
+    )
     import main
 
     patches = [
         # The fail-safe watchdog would keep ticking in the client's event-loop
         # thread and write to whatever fake PLC a later test sets up.
         (plc_failsafe_service.PLCFailsafeService, "start", classmethod(lambda cls: None)),
+        # The same for the PLC signal poller: it would read whatever PLC channel
+        # a later test saves a signal card for.
+        (plc_input_service.PLCInputService, "start", classmethod(lambda cls: None)),
         # Same for the health watchdog: it would raise camera and inference
         # alarms against whatever fakes later tests put in app_state.
         (health_service.HealthMonitor, "start", classmethod(lambda cls: None)),

@@ -321,6 +321,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.exception("Failed to stop camera stream workers cleanly")
 
     try:
+        # No more signals are read from the PLCs: nothing starts a line or counts a product from here on.
+        from app.services.plc_input_service import PLCInputService
+        await PLCInputService.stop()
+    except Exception:
+        logger.exception("Failed to stop reading PLC signals cleanly")
+    try:
         from app.services.plc_dispatcher_service import PLCDispatcherService
         await PLCDispatcherService.shutdown()
     except Exception:

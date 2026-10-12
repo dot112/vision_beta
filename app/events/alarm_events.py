@@ -55,6 +55,9 @@ class AlarmCode:
     PLC_DISCONNECT_ERROR = "plc.disconnect_error"
     PLC_ACTION_FAILED = "plc.action_failed"
     PLC_ACTION_TIMEOUT = "plc.action_timeout"
+    PLC_ACTION_NOT_CONFIRMED = "plc.action_not_confirmed"
+    PLC_INPUT_FAILED = "plc.input_failed"
+    PLC_INPUT_ALARM = "plc.input_alarm"
     FLOW_ACTION_FAILED = "flow.action_failed"
     FLOW_NODE_ERROR = "flow.node_error"
     FLOW_RUN_FAILED = "flow.run_failed"
@@ -89,6 +92,15 @@ ALARM_CATALOG: List[Dict[str, str]] = [
     {"code": "plc.action_timeout", "label": "PLC action timed out", "group": "PLC",
      "severity": "critical", "scope": "line",
      "description": "The PLC did not answer one of the line's PLC actions; whether the output fired is unknown."},
+    {"code": "plc.action_not_confirmed", "label": "PLC action not confirmed", "group": "PLC",
+     "severity": "critical", "scope": "line",
+     "description": "One of the line's PLC actions was sent, but its confirmation signal did not come in time."},
+    {"code": "plc.input_failed", "label": "PLC signal cannot be read", "group": "PLC",
+     "severity": "warning", "scope": "line",
+     "description": "One of the line's PLC signals could not be read from the PLC."},
+    {"code": "plc.input_alarm", "label": "Alarm from a PLC signal", "group": "PLC",
+     "severity": "warning", "scope": "line",
+     "description": "A PLC signal with the action 'Raise an alarm' is on. The signal card sets its text and severity."},
     {"code": "plc.connect_failed", "label": "PLC cannot connect", "group": "PLC",
      "severity": "critical", "scope": "server",
      "description": "The server cannot reach a PLC connection."},

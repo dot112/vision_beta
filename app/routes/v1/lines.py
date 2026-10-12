@@ -101,6 +101,9 @@ async def apply_line(line_id: Optional[str] = None) -> Dict[str, str]:
         exists = svc.get_line(line_id, with_logic=False) is not None
         PLCDispatcherService.set_cards(svc.get_line_plc_actions(line_id) if exists else [], line_id=line_id)
         SendDispatcherService.set_cards(svc.get_line_send_actions(line_id) if exists else [], line_id=line_id)
+    # The lines' PLC signal cards, read again whichever line changed.
+    from app.services.plc_input_service import PLCInputService
+    PLCInputService.reload()
     return await _manager().refresh_models()
 
 

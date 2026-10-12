@@ -1442,6 +1442,7 @@ class SettingsPersistenceService:
                 PLCDriverFactory.invalidate(ep_id)
             except Exception as exc:
                 logger.warning("Could not invalidate cached PLC driver for endpoint %s: %s", ep_id, exc)
+            cls._reload_plc_inputs()
         if proto == "mqtt" or previous_protocol == "mqtt":
             # Each MQTT channel has its own broker connection: connect it with what was
             # just saved, or close it when the channel was switched off.
@@ -1470,6 +1471,15 @@ class SettingsPersistenceService:
             except Exception:
                 logger.exception("Could not apply the saved address of IP camera %s", ep_id)
         return record
+
+    @staticmethod
+    def _reload_plc_inputs() -> None:
+        """A PLC channel was saved or removed: the signal cards that read it start again."""
+        try:
+            from app.services.plc_input_service import PLCInputService
+            PLCInputService.reload()
+        except Exception:
+            logger.exception("Could not reload the PLC signal cards")
 
     @classmethod
     def delete_endpoint(
@@ -1502,6 +1512,7 @@ class SettingsPersistenceService:
                     PLCDriverFactory.invalidate(endpoint_id)
                 except Exception as exc:
                     logger.warning("Could not invalidate cached PLC driver for endpoint %s: %s", endpoint_id, exc)
+                cls._reload_plc_inputs()
             if target and target.get("protocol") == "tcp":
                 from app.services.tcp_channels import TcpChannels
                 TcpChannels.drop(endpoint_id)
@@ -1764,6 +1775,9 @@ class SettingsPersistenceService:
             asyncio.create_task(PLCDispatcherService.autoconnect_drivers())
             from app.services.plc_failsafe_service import PLCFailsafeService
             PLCFailsafeService.start()
+            # The lines' PLC signal cards: read from here on.
+            from app.services.plc_input_service import PLCInputService
+            PLCInputService.start()
             logger.info("PLCDispatcherService initialised with %d card(s)", len(PLCDispatcherService._cards))
         except Exception as plc_err:
             logger.warning("PLC dispatcher startup error: %s", plc_err)
