@@ -118,6 +118,9 @@ def required_api_key_scopes(method: str, path: str) -> set[str] | None:
     if path == "/api/v1/lines" or path.startswith("/api/v1/lines/"):
         if method in {"GET", "HEAD"}:
             return {"monitor:read"}
+        if "/plc-inputs/" in path:
+            # "Read now" reads any address of a PLC channel.
+            return {"plc:configure"}
         if path.endswith("/clone"):
             # A clone copies the line's PLC action cards.
             return {"configuration:write", "plc:configure"}

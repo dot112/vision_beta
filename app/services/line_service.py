@@ -32,6 +32,7 @@ from app.services.line_config import (
     join_settings,
     joined_cameras,
     product_result,
+    product_sensors,
     reads_codes,
 )
 from app.utils.logger import get_logger
@@ -363,6 +364,13 @@ class LineRuntime:
         )
         # QR readers that take one picture per product: {camera_id: (wire line, delay s)}
         self.capture_triggers: Dict[str, Tuple[int, float]] = {}
+        # Code readers that take one picture each time a PLC signal asks.
+        self.signal_readers: set = set()
+        # The line's PLC signal cards. With a product sensor among them the line gets its
+        # products from the PLC, not from a vision camera.
+        self.plc_inputs: List[Dict[str, Any]] = []
+        self.has_product_sensor = False
+        self._sensor_seq = 0
         self.last_capture: Optional[Dict[str, Any]] = None
         self._capture_jpeg: Optional[bytes] = None
         self._capture_seq = 0
@@ -420,10 +428,15 @@ class LineRuntime:
         for cid, aux in self.aux_counters.items():
             aux.event_sink = self._joined_sink(cid) if self.assembly.station(cid) else None
 
+        self.plc_inputs = copy.deepcopy(line.get("plc_inputs") or [])
+        self.has_product_sensor = bool(product_sensors(line))
+
         self.code_checks = code_checks(self.cameras)
         sync = line.get("sync") or {}
         was_on = self.sync_enabled
-        self.sync_enabled = bool(sync.get("enabled")) and self.has_role("vision") and self.has_code_reader
+        # Sync pairs each product with its code: the products come from a vision camera or a PLC sensor.
+        self.sync_enabled = bool(sync.get("enabled")) and self.has_code_reader \
+            and (self.has_role("vision") or self.has_product_sensor)
         self.pairer.window = int(sync.get("window_ms") or DEFAULT_SYNC_WINDOW_MS) / 1000.0
         self.counter.event_sink = self._on_crossing if self.sync_enabled or self.assembly.stations else None
         if was_on and not self.sync_enabled:
@@ -435,6 +448,9 @@ class LineRuntime:
             if reads_codes(c) and c.get("qr_trigger") in ("line1", "line2")
         }
         self.counter.line_crossing_sink = self._on_wire_crossing if self.capture_triggers else None
+        self.signal_readers = {
+            c["camera_id"] for c in self.cameras if reads_codes(c) and c.get("qr_trigger") == "signal"
+        }
 
     def _set_config(self, counter: CountingService, config: Any) -> None:
         """Give a counter its saved settings, when they changed since they were last given.
@@ -447,8 +463,8 @@ class LineRuntime:
             counter.update_config(config)
 
     def qr_triggered(self, camera_id: str) -> bool:
-        """True when this QR reader decodes one picture per product instead of every frame."""
-        return camera_id in self.capture_triggers
+        """True when this QR reader decodes one picture per product (or per PLC signal) instead of every frame."""
+        return camera_id in self.capture_triggers or camera_id in self.signal_readers
 
     def has_role(self, role: str) -> bool:
         return any(c.get("role") == role for c in self.cameras)
@@ -689,9 +705,24 @@ class LineRuntime:
             self._schedule_expiry()
         elif read["camera_id"] in self.code_checks and not self.has_role("vision"):
             # No vision camera on the line: the code alone decides, and each read is one product.
+            # (A line with a PLC product sensor never comes here: a camera that checks codes
+            # switches its Sync on, so its reads are paired above.)
             self._emit_code_product(read)
         else:
             self._emit_qr(read, paired=None)
+
+    def sensor_product(self) -> None:
+        """A PLC sensor saw one product (a line without a vision camera). Called on the event loop.
+
+        It is counted, recorded and sent like a product a camera saw cross its
+        count line; with Sync on it waits for its code first. Its track number
+        is the line's own count of sensor products, so every product has its
+        own event id, also after the counters were reset.
+        """
+        if not self.enabled:
+            return
+        self._sensor_seq += 1
+        self.counter.emit_crossing(self.counter.make_crossing("product", track_id=self._sensor_seq))
 
     def _on_crossing(self, crossing: Dict[str, Any]) -> None:
         """Counter event sink while Sync is on (called from an inference thread).

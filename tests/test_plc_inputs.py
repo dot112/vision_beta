@@ -8,12 +8,16 @@ raise an alarm.
 from __future__ import annotations
 
 import asyncio
+import uuid
 
 import pytest
 
+import app.services.line_service as line_module
 from app.events.alarm_events import ALARM_CATALOG, AlarmCode, AlarmSeverity, alarm_line, alarm_manager
 from app.hardware.plc import factory as plc_factory
+from app.security.api_key_scopes import required_api_key_scopes
 from app.services import plc_input_service
+from app.services.card_triggers import alarm_event, card_fires, normalize_trigger
 from app.services.plc_dispatcher_service import PLCDispatcherService, _CardState, _normalize_card
 from app.services.plc_input_service import (
     COUNTER_MAX_STEP,
@@ -359,8 +363,28 @@ def acts(monkeypatch):
 
 def _line_with(*cards, name="Signals", **line):
     saved = _save(name=name, plc_inputs=list(cards), **line)
+    line_module.line_manager.apply_state()
     PLCInputService.reload()
     return saved
+
+
+def _runtime(line):
+    """The line's runtime, with every event its counter sends kept in ``sent`` as (payload, plc_event)."""
+    runtime = line_module.line_manager.get(line["id"])
+    runtime.sent = []
+    runtime.counter.dispatch_event = lambda payload, plc_event, is_defect: runtime.sent.append((payload, plc_event))
+    return runtime
+
+
+def _audit(line):
+    """(who, role, action) of the line's audit entries, oldest first."""
+    logs = SettingsPersistenceService.get_audit_logs(line_id=line["id"])
+    return [(entry["username"], entry["role"], entry["action"]) for entry in reversed(logs)]
+
+
+def _card(line, card_id):
+    """A card as the service holds it (with its line)."""
+    return next(card for card in PLCInputService._all if card["line_id"] == line["id"] and card["id"] == card_id)
 
 
 async def _pass(now=None):
@@ -803,3 +827,323 @@ def test_saving_a_line_through_the_api_gives_the_service_its_cards(client, admin
         client.delete(f"{API}/{line_id}", headers=admin_headers)
     PLCInputService.reload()
     assert PLCInputService.get_status(line_id) == []
+
+
+# ── What a signal does ────────────────────────────────────────────────────────
+
+WHO = "plc:Line PLC"     # the channel of tests.test_plc_failsafe is named "Line PLC"
+
+
+def _enabled(line):
+    return SettingsPersistenceService.get_line(line["id"], with_logic=False)["enabled"]
+
+
+def test_a_start_signal_starts_the_line_and_a_stop_signal_stops_it(signals):
+    line = _line_with(_signal("start_line"), _signal("stop_line", address="C2"), enabled=False)
+    seen = []
+
+    async def steps():
+        for start, stop in ((False, False), (True, False), (False, False), (True, False), (True, True)):
+            signals.values.update({"10001": start, "C2": stop})
+            await _pass()
+            seen.append(_enabled(line))
+
+    _run(steps)
+    assert seen == [False, True, True, True, False]
+    assert line_module.line_manager.get(line["id"]).enabled is False
+    # The second start signal found the line running: nothing to do, nothing to write down.
+    assert _audit(line) == [(WHO, "PLC", "START_LINE"), (WHO, "PLC", "STOP_LINE")]
+
+
+def test_run_level_follows_the_value(signals):
+    line = _line_with(_signal("run_level"), enabled=False)
+    seen = []
+
+    async def steps():
+        for value in (False, True, True, False):
+            signals.values["10001"] = value
+            await _pass()
+            seen.append(_enabled(line))
+
+    _run(steps)
+    assert seen == [False, True, True, False]
+    assert _audit(line) == [(WHO, "PLC", "START_LINE"), (WHO, "PLC", "STOP_LINE")]
+
+
+def test_a_reset_signal_resets_the_counters(signals):
+    line = _line_with(_signal("reset_counters"))
+    runtime = _runtime(line)
+
+    async def steps():
+        await _pass()
+        runtime.counter.count_product("box", reject=False)
+        runtime.counter.count_product("box", reject=True)
+        for value in (True, False, True):       # the second edge finds the counters at 0
+            signals.values["10001"] = value
+            await _pass()
+
+    _run(steps)
+    assert (runtime.counter.total_inspected, runtime.counter.good_count, runtime.counter.rejected_count) == (0, 0, 0)
+    assert _audit(line) == [(WHO, "PLC", "RESET_COUNTERS")]
+    assert SettingsPersistenceService.get_line(line["id"])["counts_reset_at"] != line["counts_reset_at"]
+
+
+def test_an_alarm_signal_raises_and_clears_its_alarm(signals):
+    line = _line_with(_signal("alarm", alarm_text="Guard door is open", alarm_severity="critical"))
+    other = _save(name="Other line")
+    signals.values["10001"] = True
+
+    async def one_pass():
+        await _pass()
+
+    _run(one_pass)
+    alarm = alarm_manager.get(AlarmCode.PLC_INPUT_ALARM, "plc_input:plcin_alarm")
+    assert alarm is not None and alarm.message == "Guard door is open" and alarm.severity == AlarmSeverity.CRITICAL
+    assert alarm.details["line_id"] == line["id"] and alarm.details["input_id"] == "plcin_alarm"
+    # An Alarm card of this line that picked the code reacts to it; another line's does not.
+    event = alarm_event(alarm.to_dict(), True, [a.to_dict() for a in alarm_manager.active()])
+    picked = {"trigger": "alarm", "condition": "raised", "alarm_codes": ["plc.input_alarm"]}
+    assert card_fires(normalize_trigger({**picked, "line_id": line["id"]}), event)
+    assert not card_fires(normalize_trigger({**picked, "line_id": other["id"]}), event)
+
+    signals.values["10001"] = False
+    _run(one_pass)
+    assert alarm_manager.get(AlarmCode.PLC_INPUT_ALARM, "plc_input:plcin_alarm") is None
+
+
+def test_a_sensor_product_is_counted_recorded_and_sent(signals, monkeypatch):
+    from app.services import production_records_service
+
+    recorded = []
+    monkeypatch.setattr(production_records_service, "record_event",
+                        lambda payload, kind, counted, **extra: recorded.append((payload, kind, counted)))
+    line = _line_with(_signal("product_sensor"))
+    runtime = _runtime(line)
+
+    async def steps():
+        for value in (False, True, False, True, False, True):
+            signals.values["10001"] = value
+            await _pass()
+
+    _run(steps)
+    assert (runtime.counter.total_inspected, runtime.counter.good_count, runtime.counter.rejected_count) == (3, 3, 0)
+    assert runtime.counter.counts_by_class == {"product": 3}
+    payloads, events = zip(*runtime.sent)
+    assert [event["event_type"] for event in events] == ["crossing"] * 3
+    assert [event["result"] for event in events] == ["good"] * 3
+    assert [event["detected_classes"] for event in events] == [["product"]] * 3
+    assert len({event["event_id"] for event in events}) == 3
+    assert [payload["track_id"] for payload in payloads] == [1, 2, 3]
+    assert all(payload["class_name"] == "product" and payload["line_id"] == line["id"] for payload in payloads)
+    # A card with no camera fires for it, as for the counting camera's products.
+    assert card_fires(normalize_trigger({"line_id": line["id"], "trigger": "cross_line", "condition": "good"}), events[0])
+    assert [(kind, counted) for _, kind, counted in recorded] == [("product", True)] * 3
+    assert [row[0] for row in recorded] == list(payloads)
+
+
+def test_a_counter_sensor_counts_the_increase(signals):
+    line = _line_with(_signal("product_sensor", address="R10", data_type="counter"))
+    runtime = _runtime(line)
+
+    async def steps():
+        await PLCInputService._act(_card(line, "plcin_product_sensor"), 10, 14, count=4)
+
+    _run(steps)
+    assert runtime.counter.total_inspected == 4 and len(runtime.sent) == 4
+
+
+def test_sensor_products_keep_new_event_ids_after_a_counter_reset(signals):
+    line = _line_with(_signal("product_sensor"))
+    runtime = _runtime(line)
+
+    async def steps():
+        runtime.sensor_product()
+        runtime.sensor_product()
+        runtime.reset()
+        runtime.sensor_product()
+
+    _run(steps)
+    # A "once per event" PLC card tells products apart by this id.
+    assert len({event["event_id"] for _, event in runtime.sent}) == 3
+    assert runtime.counter.total_inspected == 1
+
+
+def test_a_sensor_product_pairs_with_its_code_and_gets_one_result(signals):
+    reader = _reader(qr_action="accept_listed", qr_no_read="reject")
+    line = _line_with(_signal("product_sensor"), cameras=[reader], sync={"window_ms": 80})
+    runtime = _runtime(line)
+    assert runtime.sync_enabled and runtime.has_product_sensor
+
+    async def steps():
+        runtime.sensor_product()
+        await asyncio.sleep(0.02)
+        runtime.on_qr_read("qr", "LISTED", "QRCODE")
+        await asyncio.sleep(0.2)
+        runtime.sensor_product()            # no code follows this one
+        await asyncio.sleep(0.2)
+
+    _run(steps)
+    assert len(runtime.sent) == 2
+    (first, first_event), (second, second_event) = runtime.sent
+    assert (first["result"], first["qr_code"], first["reject_reason"]) == ("PASSED", "LISTED", None)
+    assert (second["result"], second["qr_status"], second["reject_reason"]) == ("REJECTED", "no_read", "no_code")
+    assert (first_event["result"], second_event["result"]) == ("good", "reject")
+    assert (runtime.counter.total_inspected, runtime.counter.good_count, runtime.counter.rejected_count) == (2, 1, 1)
+
+
+def test_a_code_read_is_not_a_product_of_its_own_on_a_sensor_line(signals):
+    line = _line_with(_signal("product_sensor"), cameras=[_reader()])       # the reader only reports
+    runtime = _runtime(line)
+
+    async def steps():
+        runtime.on_qr_read("qr", "LISTED", "QRCODE")
+        await asyncio.sleep(0.02)
+        runtime.sensor_product()
+
+    _run(steps)
+    assert runtime.counter.total_inspected == 1
+    assert [payload["event"] for payload, _ in runtime.sent] == ["WIRELINE_OBJECT_CROSSED"]
+
+
+def test_a_sensor_on_a_stopped_line_counts_nothing(signals):
+    line = _line_with(_signal("product_sensor"), enabled=False)
+    runtime = _runtime(line)
+
+    async def steps():
+        await PLCInputService._act(_card(line, "plcin_product_sensor"), False, True)
+
+    _run(steps)
+    assert runtime.counter.total_inspected == 0 and runtime.sent == []
+
+
+class _CaptureWorker:
+    def __init__(self):
+        self.captures = []
+
+    def request_capture(self, **request):
+        self.captures.append(request)
+
+
+def test_a_capture_signal_takes_one_picture_with_the_readers_delay(signals, monkeypatch):
+    from app.services.qr_service import QRReaderPipeline
+
+    workers = {}
+    monkeypatch.setattr(QRReaderPipeline, "get_worker",
+                        classmethod(lambda cls, camera_id: workers.setdefault(camera_id, _CaptureWorker())))
+    line = _line_with(_signal("capture", camera_id="qr"),
+                      cameras=[_reader(qr_trigger="signal", qr_trigger_delay_ms=250)])
+    runtime = _runtime(line)
+    # The reader does not decode every frame: it waits for the signal.
+    assert runtime.qr_triggered("qr") is True and runtime.signal_readers == {"qr"}
+
+    async def steps():
+        for value in (False, True, True, False):
+            signals.values["10001"] = value
+            await _pass()
+
+    _run(steps)
+    assert list(workers) == ["qr"] and len(workers["qr"].captures) == 1
+    assert workers["qr"].captures[0]["delay"] == 0.25 and not workers["qr"].captures[0].get("test")
+
+
+def test_a_capture_signal_on_a_stopped_line_takes_no_picture(signals, monkeypatch):
+    from app.services.qr_service import QRReaderPipeline
+
+    workers = {}
+    monkeypatch.setattr(QRReaderPipeline, "get_worker",
+                        classmethod(lambda cls, camera_id: workers.setdefault(camera_id, _CaptureWorker())))
+    line = _line_with(_signal("capture", camera_id="qr"), cameras=[_reader(qr_trigger="signal")], enabled=False)
+
+    async def steps():
+        await PLCInputService._act(_card(line, "plcin_capture"), False, True)
+
+    _run(steps)
+    assert workers == {}
+
+
+# ── The signal endpoints ──────────────────────────────────────────────────────
+
+@pytest.fixture
+def signal_line(client, admin_headers):
+    created = client.post(API, json={"name": f"Signals {uuid.uuid4().hex[:6]}", "plc_inputs": [_signal()]},
+                          headers=admin_headers)
+    assert created.status_code == 201, created.text
+    yield created.json()
+    client.delete(f"{API}/{created.json()['id']}", headers=admin_headers)
+
+
+@pytest.fixture
+def operator_headers(client, admin_headers):
+    name = f"op_{uuid.uuid4().hex[:8]}"
+    created = client.post("/api/v1/auth/users", headers=admin_headers, json={
+        "username": name, "password": "operator-password-123456", "full_name": "Line Operator",
+        "role": "operator", "clearance_level": 1})
+    assert created.status_code == 201, created.text
+    login = client.post("/api/v1/auth/login", json={"username": name, "password": "operator-password-123456"})
+    assert login.status_code == 200, login.text
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+
+def test_the_status_endpoint_and_read_now(client, admin_headers, operator_headers, signal_line):
+    line_id = signal_line["id"]
+    status = client.get(f"{API}/{line_id}/plc-inputs/status", headers=operator_headers)
+    assert status.status_code == 200, status.text
+    body = status.json()
+    assert body["line_id"] == line_id and body["running"] is False
+    assert [(row["id"], row["action"], row["value"], row["read_count"]) for row in body["inputs"]] == [
+        ("plcin_start_line", "start_line", None, 0)]
+    assert client.get(f"{API}/no-such-line/plc-inputs/status", headers=operator_headers).status_code == 404
+
+    read = f"{API}/{line_id}/plc-inputs/plcin_start_line/read"
+    assert client.post(read, headers=operator_headers).status_code == 403
+    saved = client.post(read, headers=admin_headers)
+    assert saved.status_code == 200, saved.text
+    # The card's channel does not exist on this server: the answer says so.
+    assert saved.json()["ok"] is False and saved.json()["value"] is None and "channel" in saved.json()["message"]
+    # A card that is not saved yet is read from the body.
+    draft = client.post(f"{API}/{line_id}/plc-inputs/new/read", headers=admin_headers,
+                        json={"input": _signal("stop_line", plc_endpoint_id="")})
+    assert draft.status_code == 200 and "Choose the PLC channel" in draft.json()["message"]
+    bad = client.post(f"{API}/{line_id}/plc-inputs/new/read", headers=admin_headers,
+                      json={"input": _signal("stop_line", name="Fast", poll_ms=1)})
+    assert bad.status_code == 422 and "Signal 'Fast'" in bad.json()["detail"]
+    assert client.post(f"{API}/{line_id}/plc-inputs/nope/read", headers=admin_headers).status_code == 404
+    assert client.post(f"{API}/no-such-line/plc-inputs/plcin_start_line/read", headers=admin_headers).status_code == 404
+
+
+def test_api_key_scopes_for_signals(client, admin_headers, signal_line):
+    line_id = signal_line["id"]
+    assert required_api_key_scopes("GET", "/api/v1/lines/line-1/plc-inputs/status") == {"monitor:read"}
+    assert required_api_key_scopes("POST", "/api/v1/lines/line-1/plc-inputs/plcin_1/read") == {"plc:configure"}
+    me = client.get("/api/v1/auth/me", headers=admin_headers).json()
+
+    def key(scopes):
+        created = client.post("/api/v1/auth/api-keys", headers=admin_headers, json={
+            "user_id": me["id"], "name": f"signals {uuid.uuid4().hex[:4]}", "scopes": scopes, "expires_in_days": 1})
+        assert created.status_code == 201, created.text
+        return {"X-API-Key": created.json()["api_key"]}
+
+    assert client.get(f"{API}/{line_id}/plc-inputs/status", headers=key(["monitor:read"])).status_code == 200
+    # Signal cards start and stop lines: saving them needs the PLC scope, like PLC action cards.
+    writer = key(["configuration:write"])
+    refused = client.put(f"{API}/{line_id}", headers=writer, json={"plc_inputs": []})
+    assert refused.status_code == 403 and "plc:configure" in refused.json()["detail"]
+    assert client.put(f"{API}/{line_id}", headers=writer, json={"yield_target": 90}).status_code == 200
+    both = key(["configuration:write", "plc:configure"])
+    assert client.put(f"{API}/{line_id}", headers=both, json={"plc_inputs": []}).status_code == 200
+    read = f"{API}/{line_id}/plc-inputs/new/read"
+    assert client.post(read, headers=writer, json={"input": _signal()}).status_code == 403
+    assert client.post(read, headers=both, json={"input": _signal()}).status_code == 200
+
+
+def test_saving_signal_cards_through_the_api(client, admin_headers, signal_line):
+    line_id = signal_line["id"]
+    cards = [_signal("start_line", poll_ms=200), _signal("alarm", address="C3", alarm_text="Guard door is open")]
+    saved = client.put(f"{API}/{line_id}", json={"plc_inputs": cards}, headers=admin_headers)
+    assert saved.status_code == 200, saved.text
+    assert [(card["id"], card["poll_ms"]) for card in saved.json()["plc_inputs"]] == [
+        ("plcin_start_line", 200), ("plcin_alarm", 100)]
+    assert client.get(f"{API}/{line_id}", headers=admin_headers).json()["plc_inputs"] == saved.json()["plc_inputs"]
+    bad = client.put(f"{API}/{line_id}", json={"plc_inputs": [_signal(name="Fast", poll_ms=1)]}, headers=admin_headers)
+    assert bad.status_code == 422 and "Signal 'Fast'" in bad.json()["detail"]
+    assert client.get(f"{API}/{line_id}", headers=admin_headers).json()["plc_inputs"] == saved.json()["plc_inputs"]

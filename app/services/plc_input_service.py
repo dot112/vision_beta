@@ -139,6 +139,7 @@ class PLCInputService:
     _tasks: Dict[str, "asyncio.Task[None]"] = {}         # channel id -> its polling task
     _actions: Set["asyncio.Task[None]"] = set()
     _connect_tried: Dict[str, float] = {}                # channel id -> when a connect last failed
+    _line_locks: Dict[str, asyncio.Lock] = {}            # line id -> one start or stop at a time
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -185,7 +186,7 @@ class PLCInputService:
                     pass        # its loop is closed already
         cls._running = False
         cls._all, cls._cards, cls._states, cls._tasks = [], {}, {}, {}
-        cls._actions, cls._connect_tried = set(), {}
+        cls._actions, cls._connect_tried, cls._line_locks = set(), {}, {}
 
     # ── Configuration ─────────────────────────────────────────────────────────
 
@@ -461,7 +462,91 @@ class PLCInputService:
     @classmethod
     async def _act(cls, card: Dict[str, Any], old: Any, new: Any, count: int = 1) -> None:
         """What the line does for one change of a card's value (``count``: products, for a PLC counter)."""
-        logger.debug("PLC signal '%s': %r -> %r (action %s)", card.get("name"), old, new, card.get("action"))
+        action = card.get("action")
+        logger.debug("PLC signal '%s': %r -> %r (action %s)", card.get("name"), old, new, action)
+        if action in ("start_line", "stop_line", "run_level"):
+            await cls._set_running(card, truthy(new) if action == "run_level" else action == "start_line")
+        elif action == "reset_counters":
+            cls._reset_counters(card)
+        elif action == "product_sensor":
+            runtime = cls._runtime(card)
+            for _ in range(max(1, int(count))) if runtime is not None else ():
+                runtime.sensor_product()
+        elif action == "capture":
+            cls._capture(card)
+        elif action == "alarm":
+            cls._alarm(card, truthy(new))
+
+    @staticmethod
+    def _runtime(card: Dict[str, Any]) -> Any:
+        import app.services.line_service as line_service
+        return line_service.line_manager.get(card["line_id"])
+
+    @classmethod
+    def _actor(cls, card: Dict[str, Any]) -> PLCActor:
+        """Who the audit log names for what a signal did: the PLC channel it came from."""
+        endpoint = cls._endpoint(card.get("plc_endpoint_id") or "") or {}
+        return PLCActor(username=f"plc:{endpoint.get('name') or card.get('plc_endpoint_id')}")
+
+    @classmethod
+    async def _set_running(cls, card: Dict[str, Any], running: bool) -> None:
+        """Start or stop the card's line, unless it is in that state already."""
+        from app.routes.v1.lines import set_line_running
+        from app.services.settings_persistence_service import SettingsPersistenceService
+
+        line_id = card["line_id"]
+        # One at a time per line: a start connects cameras, and a stop must not run into it.
+        async with cls._line_locks.setdefault(line_id, asyncio.Lock()):
+            line = SettingsPersistenceService.get_line(line_id, with_logic=False)
+            if line is None or bool(line.get("enabled")) == bool(running):
+                return
+            await set_line_running(line_id, bool(running), cls._actor(card))
+            logger.info("PLC signal '%s': line '%s' %s", card.get("name"), card.get("line_name"),
+                        "started" if running else "stopped")
+
+    @classmethod
+    def _reset_counters(cls, card: Dict[str, Any]) -> None:
+        from app.routes.v1.counting import reset_line_counters
+
+        runtime = cls._runtime(card)
+        if runtime is None:
+            return
+        with runtime._lock:
+            codes = any(runtime.qr_stats.values())
+        if runtime.counter.total_inspected == 0 and not codes \
+                and all(aux.total_inspected == 0 for aux in runtime.aux_counters.values()):
+            return      # nothing was counted since the last reset
+        reset_line_counters(runtime, cls._actor(card))
+        logger.info("PLC signal '%s': counters of line '%s' reset", card.get("name"), card.get("line_name"))
+
+    @classmethod
+    def _capture(cls, card: Dict[str, Any]) -> None:
+        """One picture with the card's camera: a code reader that captures when a PLC signal asks."""
+        from app.services.line_config import reads_codes
+
+        runtime = cls._runtime(card)
+        if runtime is None or not runtime.enabled:
+            return
+        camera_id = card.get("camera_id") or ""
+        entry = runtime.camera_entry(camera_id)
+        if entry is not None and reads_codes(entry):
+            from app.services.qr_service import QRReaderPipeline
+            delay = int(entry.get("qr_trigger_delay_ms") or 0) / 1000.0
+            QRReaderPipeline.get_worker(camera_id).request_capture(delay=delay)
+
+    @staticmethod
+    def _alarm(card: Dict[str, Any], on: bool) -> None:
+        """An alarm with the card's own text and severity while its value is on."""
+        if not on:
+            alarm_manager.clear_alarm(AlarmCode.PLC_INPUT_ALARM, _alarm_source(card), "the signal went off")
+            return
+        alarm_manager.raise_alarm(
+            AlarmCode.PLC_INPUT_ALARM, _alarm_source(card),
+            str(card.get("alarm_text") or card.get("name") or "PLC signal alarm"),
+            AlarmSeverity(card.get("alarm_severity") or "warning"),
+            {"line_id": card["line_id"], "input_id": card["id"], "endpoint_id": card.get("plc_endpoint_id"),
+             "address": card.get("address")},
+        )
 
     # ── Views ─────────────────────────────────────────────────────────────────
 

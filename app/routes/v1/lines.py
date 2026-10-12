@@ -369,6 +369,47 @@ async def test_qr_capture(line_id: str, user: User = Depends(require_supervisor)
     raise HTTPException(status_code=504, detail="The QR reader did not return a picture in time")
 
 
+# ── PLC signals (inputs) ──────────────────────────────────────────────────────
+
+@router.get("/{line_id}/plc-inputs/status", summary="What each of the line's PLC signals last read")
+async def plc_inputs_status(line_id: str, user: User = Depends(require_operator)) -> Dict[str, Any]:
+    """Per signal card: its value, when it last changed, how often it was read and its error.
+    ``running`` is false when the server is not reading PLC signals at all."""
+    from app.services.plc_input_service import PLCInputService
+
+    if _svc().get_line(line_id, with_logic=False) is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    return {"line_id": line_id, "running": PLCInputService.is_running(), "inputs": PLCInputService.get_status(line_id)}
+
+
+@router.post("/{line_id}/plc-inputs/{input_id}/read", summary="Read a PLC signal's address once, now (Level 2+ Supervisor)")
+async def read_plc_input(
+    line_id: str,
+    input_id: str,
+    body: Optional[Dict[str, Any]] = None,
+    user: User = Depends(require_supervisor),
+) -> Dict[str, Any]:
+    """The signal dialog's "Read now". A card that is not saved yet is sent as ``{"input": {...}}``.
+    Answers ``{"ok", "value", "message"}``; nothing the card would do is done."""
+    from app.services.line_config import normalize_plc_input
+    from app.services.plc_input_service import PLCInputService
+
+    line = _svc().get_line(line_id, with_logic=False)
+    if line is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    draft = (body or {}).get("input")
+    if isinstance(draft, dict):
+        try:
+            card = normalize_plc_input({**draft, "id": draft.get("id") or input_id})
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    else:
+        card = next((c for c in line.get("plc_inputs") or [] if c.get("id") == input_id), None)
+        if card is None:
+            raise HTTPException(status_code=404, detail=f"PLC signal '{input_id}' is not saved on this line")
+    return await PLCInputService.read_now(card)
+
+
 # ── Change ────────────────────────────────────────────────────────────────────
 
 @router.post("", status_code=201, summary="Create a production line (Level 2+ Supervisor)")

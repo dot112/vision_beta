@@ -111,12 +111,13 @@ async def get_current_user(
                 required_scopes.add("plc:configure")
 
         # A line's PLC cards are executable too: sending them needs plc:configure.
+        # So are its PLC signal cards, which start and stop the line.
         if request.url.path.rstrip("/").startswith("/api/v1/lines") and request.method in {"POST", "PUT", "PATCH"}:
             try:
                 body = await request.json()
             except Exception:
                 body = {}
-            if isinstance(body, dict) and "plc_actions" in body:
+            if isinstance(body, dict) and ("plc_actions" in body or "plc_inputs" in body):
                 required_scopes.add("plc:configure")
 
         endpoint_path = request.url.path.rstrip("/")

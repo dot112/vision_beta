@@ -338,16 +338,48 @@ class CountingService:
 
         now = time.time()
         for event in events:
-            crossing = self._crossing(event, camera_id, now)
-            sink = self.event_sink
-            if sink is not None:
-                try:
-                    sink(crossing)
-                    continue
-                except Exception as sink_err:
-                    logger.warning("Line %s sync hand-off failed, counting the product on its own: %s", self.line_id, sink_err)
-            self.finish_crossing(crossing)
+            self.emit_crossing(self._crossing(event, camera_id, now))
         return events
+
+    def emit_crossing(self, crossing: Dict[str, Any]) -> None:
+        """Hand a product that is not counted yet to the line (which decides its one
+        result first, when it has Sync or joined cameras), else count it at once."""
+        sink = self.event_sink
+        if sink is not None:
+            try:
+                sink(crossing)
+                return
+            except Exception as sink_err:
+                logger.warning("Line %s sync hand-off failed, counting the product on its own: %s", self.line_id, sink_err)
+        self.finish_crossing(crossing)
+
+    def make_crossing(
+        self,
+        class_name: str,
+        is_defect: bool = False,
+        track_id: Optional[int] = None,
+        confidence: float = 1.0,
+        bbox: Optional[Dict[str, Any]] = None,
+        camera_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """A product no tracker saw cross a count line (a PLC sensor saw it, or one
+        triggered picture did), as _crossing() describes one. Nothing is counted yet."""
+        return {
+            "track_id": track_id,
+            "class_name": class_name,
+            "is_defect": bool(is_defect),
+            "confidence": float(confidence),
+            "bbox": bbox,
+            "polygon": None,
+            "sc_x": 0.0,
+            "sc_y": 0.0,
+            "vel_x": 0.0,
+            "vel_y": 0.0,
+            "camera_id": camera_id or self.camera_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "time": time.time(),
+            "crossed_at": time.monotonic(),
+        }
 
     def _crossing(self, event: Tuple[Any, ...], camera_id: Optional[str], now: float) -> Dict[str, Any]:
         """What is known of a product when it crosses the count line. Nothing is counted yet."""
