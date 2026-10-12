@@ -48,9 +48,10 @@ JOIN_KEYS = ("join_offset_ms", "join_window_ms", "join_missing")
 # The model confidence a vision camera may ask for instead of the model's own threshold.
 CONFIDENCE_LIMITS = (0.05, 0.99)
 QR_DISPATCH_MODES = ("off", "all", "known", "unknown")
-# When a QR reader decodes: every frame, or one picture each time a product
-# crosses wire line 1 or 2 of the line's counting camera.
-QR_TRIGGERS = ("continuous", "line1", "line2")
+# When a QR reader decodes: every frame, one picture each time a product
+# crosses wire line 1 or 2 of the line's counting camera, or one picture each
+# time a PLC signal card with the action "capture" asks for it.
+QR_TRIGGERS = ("continuous", "line1", "line2", "signal")
 MAX_QR_TRIGGER_DELAY_MS = 10000
 # Which codes a reader looks for: every type, the 2D or the 1D types, or one
 # type by its key (QRCODE, DATAMATRIX, EAN13...). The types on offer depend on
@@ -330,7 +331,7 @@ def normalize_camera(raw: Any, index: int) -> Dict[str, Any]:
     if reads_codes(camera):
         trigger = str(raw.get("qr_trigger") or "continuous").strip().lower()
         if trigger not in QR_TRIGGERS:
-            raise ValueError(f"{label} capture must be 'continuous', 'line1' or 'line2'")
+            raise ValueError(f"{label} capture must be 'continuous', 'line1', 'line2' or 'signal'")
         camera["qr_trigger"] = trigger
         camera["qr_trigger_delay_ms"] = int(_number(
             raw.get("qr_trigger_delay_ms"), f"{label} capture delay", 0, 0, MAX_QR_TRIGGER_DELAY_MS,
@@ -651,6 +652,138 @@ def normalize_send_cards(raw: Any) -> List[Dict[str, Any]]:
     return cards
 
 
+# ── PLC signals (inputs) ──────────────────────────────────────────────────────
+# A signal card reads one PLC address every poll, and the line does something
+# when the value changes:
+#   start_line / stop_line  start or stop the line
+#   run_level               the line runs while the value is on
+#   reset_counters          reset the line's counters
+#   product_sensor          one product (a line without a vision camera); with the data
+#                           type "counter", the increase of a counter in the PLC is the
+#                           number of products
+#   capture                 one picture with the card's camera
+#   set_batch               the value becomes the line's batch number
+#   confirm_card            confirms the PLC action cards that name this card
+#   alarm                   an alarm while the value is on
+PLC_INPUT_ACTIONS = ("start_line", "stop_line", "run_level", "reset_counters", "product_sensor",
+                     "capture", "set_batch", "confirm_card", "alarm")
+# How the value is read (PLCDriver.read), plus "counter": a 16-bit counter in the PLC.
+PLC_INPUT_DATA_TYPES = ("auto", "bool", "int16", "uint16", "int32", "real", "string", "counter")
+# Which change of the value a card reacts to: off to on, on to off, or either.
+PLC_INPUT_EDGES = ("rising", "falling", "change")
+PLC_INPUT_POLL_LIMITS_MS = (50, 10000)
+DEFAULT_PLC_INPUT_POLL_MS = 100
+# A new value counts once it has lasted this long.
+PLC_INPUT_DEBOUNCE_LIMITS_MS = (0, 5000)
+PLC_INPUT_ALARM_SEVERITIES = ("info", "warning", "critical")
+MAX_PLC_INPUTS = 32
+
+
+def new_plc_input_id() -> str:
+    return f"plcin_{uuid.uuid4().hex[:8]}"
+
+
+def normalize_plc_input(raw: Any, index: int = 0) -> Dict[str, Any]:
+    """Validate one signal card: which PLC address is read, how, and what the line does with it."""
+    label = f"Signal {index + 1}"
+    if not isinstance(raw, dict):
+        raise ValueError(f"{label} must be an object")
+    card_id = str(raw.get("id") or "").strip() or new_plc_input_id()
+    if len(card_id) > 64 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]*", card_id):
+        raise ValueError(f"{label} has an id that is not valid")
+    name = str(raw.get("name") or "").strip() or f"Signal {index + 1}"
+    if len(name) > 128:
+        raise ValueError(f"{label}: the name must be 128 characters or fewer")
+    label = f"Signal '{name}'"
+    action = str(raw.get("action") or "").strip().lower()
+    if action not in PLC_INPUT_ACTIONS:
+        raise ValueError(f"{label}: '{action}' is not an action a signal can have")
+    endpoint_id = str(raw.get("plc_endpoint_id") or "").strip()
+    if len(endpoint_id) > 128:
+        raise ValueError(f"{label}: the PLC channel is not valid")
+    address = raw.get("address")
+    address = "" if address is None else address
+    if not isinstance(address, str) or len(address.strip()) > 128:
+        raise ValueError(f"{label}: the address must be text of at most 128 characters")
+    data_type = str(raw.get("data_type") or "auto").strip().lower()
+    if data_type not in PLC_INPUT_DATA_TYPES:
+        raise ValueError(f"{label}: '{data_type}' is not a data type; use one of {', '.join(PLC_INPUT_DATA_TYPES)}")
+    if data_type == "counter" and action != "product_sensor":
+        raise ValueError(f"{label}: the PLC counter type is only for a product sensor")
+    if data_type == "string" and action != "set_batch":
+        raise ValueError(f"{label}: a string can only be read to set the batch number")
+    edge = str(raw.get("edge") or "rising").strip().lower()
+    if edge not in PLC_INPUT_EDGES:
+        raise ValueError(f"{label}: the edge must be 'rising', 'falling' or 'change'")
+    low, high = PLC_INPUT_POLL_LIMITS_MS
+    poll_ms = int(_number(raw.get("poll_ms"), f"{label} poll time", DEFAULT_PLC_INPUT_POLL_MS, low, high))
+    low, high = PLC_INPUT_DEBOUNCE_LIMITS_MS
+    debounce_ms = int(_number(raw.get("debounce_ms"), f"{label} debounce time", 0, low, high))
+    card: Dict[str, Any] = {
+        "id": card_id,
+        "name": name,
+        "enabled": _bool(raw.get("enabled"), f"{label} on/off", True),
+        # A PLC channel from Connections; "" = not chosen yet.
+        "plc_endpoint_id": endpoint_id,
+        "address": address.strip(),
+        "data_type": data_type,
+        "poll_ms": poll_ms,
+        "edge": edge,
+        "debounce_ms": debounce_ms,
+        "action": action,
+    }
+    if action == "capture":
+        camera_id = str(raw.get("camera_id") or "").strip()
+        if not camera_id or len(camera_id) > 64:
+            raise ValueError(f"{label}: choose the camera that takes the picture")
+        card["camera_id"] = camera_id
+    if action == "alarm":
+        text = str(raw.get("alarm_text") or "").strip() or name
+        if len(text) > 200:
+            raise ValueError(f"{label}: the alarm text must be 200 characters or fewer")
+        severity = str(raw.get("alarm_severity") or "warning").strip().lower()
+        if severity not in PLC_INPUT_ALARM_SEVERITIES:
+            raise ValueError(f"{label}: the alarm severity must be 'info', 'warning' or 'critical'")
+        card["alarm_text"] = text
+        card["alarm_severity"] = severity
+    return card
+
+
+def normalize_plc_inputs(raw: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw, list):
+        raise ValueError("PLC signal cards must be a list")
+    if len(raw) > MAX_PLC_INPUTS:
+        raise ValueError(f"A line can have at most {MAX_PLC_INPUTS} PLC signal cards")
+    cards = [normalize_plc_input(card, index) for index, card in enumerate(raw)]
+    ids = [card["id"] for card in cards]
+    if len(set(ids)) != len(ids):
+        raise ValueError("Two PLC signal cards have the same id")
+    return cards
+
+
+def product_sensors(line: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """A line's product sensor cards. A line that has one (switched on or not) gets
+    its products from the PLC, so each code read is not a product of its own."""
+    return [card for card in line.get("plc_inputs") or [] if card.get("action") == "product_sensor"]
+
+
+def _check_signal_cameras(inputs: List[Dict[str, Any]], cameras: List[Dict[str, Any]]) -> None:
+    """A "capture" card names a camera of the line that takes one picture per signal."""
+    for card in inputs:
+        if card["action"] != "capture":
+            continue
+        label = f"Signal '{card['name']}'"
+        index = next((i for i, cam in enumerate(cameras) if cam["camera_id"] == card["camera_id"]), None)
+        if index is None:
+            raise ValueError(f"{label} names a camera that is not on this line")
+        cam = cameras[index]
+        if not (reads_codes(cam) and cam.get("qr_trigger") == "signal"):
+            raise ValueError(
+                f"{label} takes a picture with Camera {index + 1}, so that camera must read codes and have its "
+                f"Capture set to 'When a PLC signal asks'"
+            )
+
+
 def _fill_camera_models(cameras: List[Any], saved: List[Dict[str, Any]], line_model: Any) -> List[Any]:
     """Cameras sent by a client, with the settings a client left out (CAMERA_KEPT_KEYS).
 
@@ -753,8 +886,21 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
             cam.pop("station", None)
             for key in JOIN_KEYS:
                 cam.pop(key, None)
-    if not vision and any(c.get("qr_trigger", "continuous") != "continuous" for c in cameras):
+    if not vision and any(c.get("qr_trigger") in ("line1", "line2") for c in cameras):
         raise ValueError("Capturing when a product crosses a wire line needs a vision camera on the line")
+
+    # PLC signal cards. A client that leaves them out keeps the saved ones.
+    raw_inputs = raw.get("plc_inputs") if raw.get("plc_inputs") is not None else base.get("plc_inputs")
+    inputs = normalize_plc_inputs(raw_inputs) if raw_inputs is not None else None
+    sensors = [card for card in inputs or [] if card["action"] == "product_sensor"]
+    if vision and sensors:
+        raise ValueError(
+            f"Signal '{sensors[0]['name']}' is a product sensor, but this line has a vision camera, which counts "
+            f"the products. Use the action 'Take a picture' to trigger a camera instead."
+        )
+    _check_signal_cameras(inputs or [], cameras)
+    # Where the line's products come from: a vision camera, or a sensor on the PLC.
+    has_source = bool(vision) or bool(sensors)
 
     raw_sync = merged.get("sync") or {}
     if not isinstance(raw_sync, dict):
@@ -764,17 +910,21 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
         "window_ms": int(_number(raw_sync.get("window_ms"), "Sync window", DEFAULT_SYNC_WINDOW_MS, 50, 10000)),
     }
     checking = [c for c in cameras if code_check(c)]
-    if checking and vision:
-        # A product gets one result, from the vision camera and its code together:
-        # the line has to pair each product with its code, which is what Sync does.
+    if checking and has_source:
+        # A product gets one result, from the vision camera (or the sensor) and its
+        # code together: the line has to pair each product with its code, which is
+        # what Sync does.
         sync["enabled"] = True
-    if not vision:
-        # Without a vision camera the line only knows of a product when a code is
-        # read, so "no code was read" never happens.
+    if not has_source:
+        # Without a vision camera or a product sensor the line only knows of a
+        # product when a code is read, so "no code was read" never happens.
         for cam in checking:
             cam["qr_no_read"] = "ignore"
-    if sync["enabled"] and not (vision and any(reads_codes(c) for c in cameras)):
-        raise ValueError("Sync needs a vision camera and a camera that reads codes (a QR / barcode reader, or a Vision + QR / barcode camera)")
+    if sync["enabled"] and not (has_source and any(reads_codes(c) for c in cameras)):
+        raise ValueError(
+            "Sync needs a vision camera (or a PLC product sensor) and a camera that reads codes "
+            "(a QR / barcode reader, or a Vision + QR / barcode camera)"
+        )
 
     line: Dict[str, Any] = {
         "id": line_id,
@@ -787,6 +937,8 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
         # dashboards only compare the live yield against it.
         "yield_target": _number(merged.get("yield_target"), "Yield target", 0.0, 0.0, 100.0),
     }
+    if inputs is not None:
+        line["plc_inputs"] = inputs
     for key in COUNTS_RESET_KEYS:
         if key in base:
             line[key] = copy.deepcopy(base[key])
@@ -1215,6 +1367,14 @@ def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any
     """
     warnings: List[str] = model_warnings(line, models) if models is not None else []
     cameras = line.get("cameras") or []
+    capturing = {card.get("camera_id") for card in line.get("plc_inputs") or []
+                 if card.get("action") == "capture" and card.get("enabled", True) is True}
+    for index, cam in enumerate(cameras):
+        if reads_codes(cam) and cam.get("qr_trigger") == "signal" and cam.get("camera_id") not in capturing:
+            warnings.append(
+                f"Camera {index + 1} takes a picture when a PLC signal asks, but no signal card that is switched on "
+                f"has the action 'Take a picture' for it, so it reads no codes. Add one under PLC signals."
+            )
     checks = code_checks(cameras)
     joined = joined_cameras(cameras) if counting_camera(line) else []
     if not checks and not joined:
@@ -1290,6 +1450,10 @@ def endpoints_used_by_line(line: Dict[str, Any]) -> Dict[str, str]:
         endpoint = card.get("plc_endpoint_id")
         if endpoint:
             used.setdefault(str(endpoint), f"PLC card '{card.get('name') or card.get('id')}'")
+    for card in line.get("plc_inputs") or []:
+        endpoint = card.get("plc_endpoint_id")
+        if endpoint:
+            used.setdefault(str(endpoint), f"PLC signal '{card.get('name') or card.get('id')}'")
     for cam in line.get("cameras") or []:
         if cam.get("camera_id"):
             used.setdefault(str(cam["camera_id"]), "camera")
