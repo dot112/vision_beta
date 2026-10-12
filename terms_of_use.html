@@ -57,6 +57,15 @@
             border-left: 4px solid var(--accent);
             border-radius: 6px;
         }
+        h2 { scroll-margin-top: 16px; }
+        h3 { margin: 18px 0 4px; font-size: 16px; }
+        .part { margin: 44px 0 0; padding-top: 18px; border-top: 2px solid var(--border); font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+        .toc { margin: 20px 0; padding: 16px 20px; background: var(--page); border: 1px solid var(--border); border-radius: 10px; }
+        .toc strong { display: block; margin-bottom: 6px; }
+        .toc ol { margin: 0; padding-left: 22px; columns: 2 260px; }
+        .toc li { margin: 3px 0; break-inside: avoid; }
+        .warn { background: #fff1f0; border-left-color: #d32f2f; }
+        @media (prefers-color-scheme: dark) { .warn { background: #3a1f1f; border-left-color: #ff7b72; } }
         footer { margin-top: 32px; padding-top: 18px; border-top: 1px solid var(--border); }
     </style>
 </head>
@@ -64,51 +73,212 @@
 <main>
     <p class="back"><a href="/dashboard">← Back to sign in</a></p>
     <h1>Terms of Use</h1>
-    <p class="updated">Zagel Vision · Effective date: September 28, 2026</p>
+    <p class="updated">Zagel Vision · Effective date: October 12, 2026</p>
 
-    <p>These Terms of Use apply to Zagel Vision, including its dashboard, API, camera and video features, inspection and classification tools, communication integrations, and action or PLC controls (the “Software”). By signing in or otherwise using the Software, you agree to these terms. If you do not agree, do not use it.</p>
+    <p>Please read these Terms carefully. They explain how Zagel Vision may be used, what you and the Operator are responsible for, and the limits of what the Software promises, especially where it is connected to machines.</p>
 
-    <div class="notice"><strong>Industrial safety:</strong> Zagel Vision is an inspection and automation tool. It is not a safety-rated control system, emergency stop, machine guard, or substitute for a properly designed and maintained safety system.</div>
+    <div class="notice warn"><strong>Industrial safety:</strong> Zagel Vision is an inspection and automation tool. It is not a safety-rated control system, emergency stop, machine guard, or substitute for a properly designed and maintained safety system.</div>
 
-    <h2>1. Authorized use and accounts</h2>
-    <p>Use the Software only for systems and facilities you are authorized to access. You and your organization are responsible for following applicable laws, workplace rules, equipment instructions, and any software or hardware license terms that apply.</p>
-    <p>Keep account credentials private, use access levels appropriate to each person’s duties, and promptly remove access that is no longer needed. You are responsible for activity performed through your account and for the security of the computers and networks used to access the Software.</p>
+    <nav class="toc" aria-label="Contents"><strong>Contents</strong><ol>
+<li><a href="#s1">Agreement and definitions</a></li>
+<li><a href="#s2">Who may use the Software</a></li>
+<li><a href="#s3">Accounts, roles and credentials</a></li>
+<li><a href="#s4">Changes to these Terms</a></li>
+<li><a href="#s5">Industrial safety</a></li>
+<li><a href="#s6">PLC, machine and action control</a></li>
+<li><a href="#s7">Inspection results and AI output</a></li>
+<li><a href="#s8">Lines, cameras and joined results</a></li>
+<li><a href="#s9">Training, models and datasets</a></li>
+<li><a href="#s10">Cameras, images and personal information</a></li>
+<li><a href="#s11">Product records and traceability</a></li>
+<li><a href="#s12">Customer Data, retention and backup</a></li>
+<li><a href="#s13">Privacy and data protection</a></li>
+<li><a href="#s14">Network and integrations</a></li>
+<li><a href="#s15">Security responsibilities</a></li>
+<li><a href="#s16">Hardware and third-party components</a></li>
+<li><a href="#s17">License and intellectual property</a></li>
+<li><a href="#s18">Acceptable use</a></li>
+<li><a href="#s19">Feedback</a></li>
+<li><a href="#s20">Availability, maintenance and support</a></li>
+<li><a href="#s21">Warranty disclaimer</a></li>
+<li><a href="#s22">Limitation of liability</a></li>
+<li><a href="#s23">Responsibility and indemnity</a></li>
+<li><a href="#s24">Suspension and termination</a></li>
+<li><a href="#s25">Export controls and regulated industries</a></li>
+<li><a href="#s26">Force majeure</a></li>
+<li><a href="#s27">Governing law and disputes</a></li>
+<li><a href="#s28">General</a></li>
+<li><a href="#s29">Contact</a></li>
+    </ol></nav>
 
-    <h2>2. Cameras, images, and other data</h2>
-    <p>You are responsible for having the rights and permissions needed to connect cameras, process images or video, and collect or use information about people, products, or facilities. Provide any notices and obtain any consent required by the rules that apply to your site.</p>
-    <p>The Software may process live camera streams and may store configuration, operational events, audit records, or other information depending on how the instance is configured. You are responsible for deciding what data may be processed, who may access it, how long it is retained, and how it is backed up or deleted.</p>
+    <p class="part">Part A — Agreement and access</p>
+    <h2 id="s1">1. Agreement and definitions</h2>
+<p>These Terms of Use (the “Terms”) are an agreement between you and the operator of the Zagel Vision instance you use. By signing in, creating or using an API key, connecting a device, or otherwise using the Software, you agree to them. If you do not agree, do not use the Software.</p>
+<p>In these Terms:</p>
+<ul>
+<li>“<strong>Software</strong>” means Zagel Vision, including the dashboard, the server and its API, camera, video and streaming features, inspection, detection, classification, counting and code-reading tools, model training and management tools, production lines and product records, reports and exports, communication integrations (MQTT, Sparkplug B, webhooks and similar), and PLC, action and automation controls, together with updates and documentation.</li>
+<li>“<strong>Operator</strong>” means the person or organization that installs, hosts, configures and administers an instance of the Software and makes it available to users.</li>
+<li>“<strong>User</strong>” or “<strong>you</strong>” means anyone who accesses the Software, and the organization on whose behalf they act.</li>
+<li>“<strong>Project maintainers</strong>” means the authors and maintainers of the Software, who may be a different party from the Operator.</li>
+<li>“<strong>Customer Data</strong>” means everything entered into, captured by or produced in an instance: images and video, settings, models and datasets, product records, counts, scan results, events, alarms, audit records, exports and messages.</li>
+<li>“<strong>Connected Equipment</strong>” means cameras, PLCs, sensors, scanners, brokers, servers, machines and any other device or service connected to the Software.</li>
+</ul>
 
-    <h2>3. Inspection results and AI output</h2>
-    <p>Detection, classification, barcode, counting, and other inspection results can be inaccurate, incomplete, delayed, or unavailable. Performance depends on factors such as camera placement, lighting, product variation, training data, model choice, and configuration. Results are decision support and must be validated for your actual operating conditions.</p>
-    <p>Before relying on a model or rule in production, evaluate it with representative data, monitor its performance, and establish procedures for handling missed detections, false detections, system faults, and uncertain results.</p>
+    <h2 id="s2">2. Who may use the Software</h2>
+<p>You may use the Software only if you are authorized by the Operator and are legally able to enter into these Terms. If you accept on behalf of an organization, you confirm that you have authority to bind it.</p>
+<p>Use the Software only for systems, lines, facilities and data you are authorized to access, and only for lawful inspection, counting, quality-control, traceability and automation purposes.</p>
 
-    <h2>4. PLC and machine operation</h2>
-    <p>The Software can send configured commands to PLCs and other equipment, including commands initiated by automated actions or manual tests. Incorrect configuration, network faults, software errors, or unexpected equipment behavior could cause damage or injury.</p>
-    <ul>
-        <li>Have qualified personnel review and validate each connection, PLC address, operation, timing value, and action before enabling it.</li>
-        <li>Test changes in a safe commissioning environment and monitor the equipment when changes are introduced.</li>
-        <li>Maintain independent, appropriate machine guards, interlocks, emergency stops, and safety-rated controls. Do not rely on this Software to provide those protections.</li>
-        <li>Use the Software’s test controls only when the equipment and work area are in a safe condition for the commanded output.</li>
-    </ul>
-    <p>You are responsible for the risk assessment, commissioning, operation, maintenance, and safe configuration of the complete machine and control system.</p>
+    <h2 id="s3">3. Accounts, roles and credentials</h2>
+<ul>
+<li>Keep passwords, API keys, tokens and certificates private. Do not share one account between several people.</li>
+<li>Give each person only the access level their duties need, and remove access promptly when it is no longer needed.</li>
+<li>You are responsible for everything done through your account or key, including actions sent to machines, unless you reported the loss or misuse promptly.</li>
+<li>Tell the Operator immediately if you suspect that a credential has been exposed or an account misused.</li>
+<li>The Operator may suspend or limit accounts to protect people, equipment, data or the system.</li>
+</ul>
 
-    <h2>5. Network and integrations</h2>
-    <p>You are responsible for securing the network and devices connected to the Software, selecting appropriate authentication and encryption for your deployment, protecting communication credentials and certificates, and reviewing access to connected services. Do not expose an instance to an untrusted network unless it has been secured for that deployment.</p>
-    <p>Integrations such as cameras, PLCs, MQTT brokers, and webhooks depend on third-party devices and services. Their availability, behavior, and terms are outside the Software’s control.</p>
+    <h2 id="s4">4. Changes to these Terms</h2>
+<p>The Software and these Terms may change as the Software evolves. The Operator should present the current Terms to its users. Continued use after updated Terms are presented means acceptance, to the extent allowed by applicable law. Changes that are required by law or that protect safety or security may take effect immediately.</p>
 
-    <h2>6. Availability and changes</h2>
-    <p>The Software may be unavailable during maintenance, updates, hardware failures, network interruptions, or failures of connected services. Keep suitable backups of important configuration and data, and maintain operating procedures that do not depend on continuous availability of the Software.</p>
-    <p>Features and these terms may be changed as the Software evolves. The operator of your instance should make the current terms available to its users. Continued use after updated terms are presented means acceptance to the extent allowed by applicable law.</p>
+    <p class="part">Part B — Safety, machines and results</p>
+    <h2 id="s5">5. Industrial safety</h2>
+<div class="notice warn"><strong>Important:</strong> Zagel Vision is an inspection and automation tool. It is <strong>not</strong> a safety-rated control system, safety function, emergency stop, light curtain, machine guard, interlock or substitute for a properly designed, validated and maintained safety system.</div>
+<p>Never use the Software as the only means of protecting people, machinery, products or the environment. Safety functions must be provided by independent, appropriately rated hardware and controls that work even when this Software is stopped, disconnected, faulty or misconfigured.</p>
 
-    <h2>7. Warranty and liability</h2>
-    <p>To the extent permitted by applicable law, the Software is provided “as is” and “as available,” without a promise that it will be error-free, uninterrupted, or suitable for a particular process. You are responsible for deciding whether it is appropriate for your use and for verifying its operation in your environment.</p>
-    <p>To the extent permitted by applicable law, the project maintainers are not liable for indirect or consequential loss, including lost production, lost data, or equipment downtime, arising from use of or inability to use the Software. Nothing in these terms excludes liability or rights that cannot lawfully be excluded or limited.</p>
+    <h2 id="s6">6. PLC, machine and action control</h2>
+<p>The Software can send configured commands to PLCs and other equipment, including commands started by automatic actions, product results, alarms, remote messages or manual tests. It can also read signals from them, such as start and stop requests, sensor triggers, counter resets, batch numbers and reject confirmations. Incorrect configuration, network faults, delays, software errors or unexpected equipment behavior could cause damage or injury.</p>
+<ul>
+<li>Have qualified personnel review and validate each connection, address, operation, value, timing and action before enabling it.</li>
+<li>Commission and test changes in a safe environment, and watch the equipment when a change is first used in production.</li>
+<li>Keep independent machine guards, interlocks, emergency stops and safety-rated controls in place and tested.</li>
+<li>Use test and manual controls only when the machine and work area are in a safe condition for the commanded output.</li>
+<li>Plan for failure: define the safe state of every output when the Software, network or a camera fails, including any fail-safe or fallback behavior you configure.</li>
+<li>Do not enable remote start, stop, reset or reject commands from external systems unless you have assessed who can send them and what they can cause.</li>
+</ul>
+<p>You are responsible for the risk assessment, design, commissioning, operation, maintenance and safe configuration of the complete machine and control system, and for compliance with applicable machine-safety rules and standards.</p>
 
-    <h2>8. Questions and local requirements</h2>
-    <p>For account access, configuration, and deployment questions, contact the administrator responsible for your Zagel Vision instance. The operator is responsible for determining which notices, policies, and legal requirements apply at its site.</p>
+    <h2 id="s7">7. Inspection results and AI output</h2>
+<p>Detection, classification, tracking, counting, barcode or QR reading, product verdicts and other results can be inaccurate, incomplete, delayed or unavailable. Results depend on camera position, lighting, focus, speed, product variation, training data, model choice, thresholds and configuration. They are decision support and must be validated for your real operating conditions.</p>
+<ul>
+<li>Test each model and rule with representative data before relying on it in production, and again after any change to the product, lighting, camera, model or settings.</li>
+<li>Monitor performance continuously and set procedures for missed detections, false detections, uncertain results and faults.</li>
+<li>Keep a way to check or recover products that may have been missed, wrongly rejected or wrongly accepted.</li>
+<li>Do not use the Software as the sole basis for decisions that could cause serious harm, such as releasing food, medicine, medical or safety-critical products, unless you have independently validated the full process.</li>
+</ul>
+
+    <h2 id="s8">8. Lines, cameras and joined results</h2>
+<p>A production line can have several cameras. Cameras may work as independent stations or may join one product result, matched by travel time or sequence. Counting direction, tracking, trigger source, reject timing and matching rules are configured by you. Wrong settings can cause products to be counted twice, missed, matched to the wrong result or rejected incorrectly. You are responsible for choosing, testing and reviewing these settings for each line.</p>
+
+    <h2 id="s9">9. Training, models and datasets</h2>
+<p>You are responsible for the images and labels you use to train or evaluate models, for having the right to use them, and for the quality of the resulting models. Models you import, download or train may be subject to their own licenses, including restrictions on commercial use. The Software does not guarantee that any model is accurate, unbiased, safe or fit for your purpose.</p>
+
+    <p class="part">Part C — Data, records and privacy</p>
+    <h2 id="s10">10. Cameras, images and personal information</h2>
+<p>You are responsible for having the rights, permissions and notices needed to connect cameras, process images and video, and collect information about people, products or facilities. Where a camera can capture people, such as workers, visitors or vehicles, you must comply with applicable privacy, workplace-monitoring and surveillance rules, post required notices and obtain required consent. Aim and mask cameras so they capture only what is needed.</p>
+<p>The Software is not designed to identify people, and you must not use it for biometric identification, covert surveillance or any purpose that is unlawful.</p>
+
+    <h2 id="s11">11. Product records and traceability</h2>
+<p>The Software may store a record for each product or code read, including time, line, camera, result, reject reason, scanned code, batch number and station details. It can export records for a chosen period in CSV and Excel (.xlsx) formats. Records may be deleted automatically after a retention period set by the Operator, and rows can be lost if the system is overloaded, stopped or its database fails.</p>
+<p>Do not treat the records as the only copy of legally or contractually required quality or traceability evidence unless you have verified that retention, backup and integrity meet your obligations. Counters shown on screen may differ from stored records after restarts, resets or data loss.</p>
+
+    <h2 id="s12">12. Customer Data, retention and backup</h2>
+<ul>
+<li>As between you and the Project maintainers, you keep your rights in your Customer Data. You allow the Operator to process it as needed to run the Software for you.</li>
+<li>The Operator decides what is stored, who can see it, how long it is kept and how it is backed up, exported and deleted.</li>
+<li>Keep regular backups of settings, models, databases and exports, and test that you can restore them.</li>
+<li>Exports leave the Software's access controls. Protect them and share them only with people entitled to see them.</li>
+<li>Audit records of logins, setting changes and commands may be kept to support safety, security and accountability.</li>
+</ul>
+
+    <h2 id="s13">13. Privacy and data protection</h2>
+<p>Where the Software processes personal data, the Operator is responsible for determining its legal basis, giving notices, answering requests from individuals, limiting access and retention, and complying with applicable data-protection law (for example GDPR or CCPA). Where the Operator and a separate hosting or support provider both handle personal data, they should agree suitable data-processing terms. These Terms are not a privacy policy; the Operator should publish one where required.</p>
+<p>Unless the Operator tells you otherwise, the Software runs on infrastructure chosen by the Operator, and the Project maintainers do not receive your Customer Data through the Software.</p>
+
+    <p class="part">Part D — Networks, integrations and security</p>
+    <h2 id="s14">14. Network and integrations</h2>
+<p>The Software connects to cameras, PLCs, MQTT brokers, Sparkplug B hosts such as SCADA systems, webhooks, databases and other devices and services. Their availability, behavior, security and terms are outside the control of the Project maintainers.</p>
+<ul>
+<li>Choose suitable authentication and encryption for each connection, and protect passwords, tokens and certificates.</li>
+<li>Remember that messages you publish can be received by every client allowed on that broker or host. Do not send confidential data to channels you do not control.</li>
+<li>Commands received from remote systems can start, stop, reset or change lines. Enable them only for trusted hosts and test them first.</li>
+<li>If you use a bundled or local broker, you are responsible for its logins, network exposure, updates and encryption, including the fact that it may have no TLS by default.</li>
+<li>Keep the control network separate from untrusted networks and do not expose an instance to the internet unless it has been secured for that deployment.</li>
+</ul>
+
+    <h2 id="s15">15. Security responsibilities</h2>
+<ul>
+<li>Install updates and security fixes, and keep the operating system, container runtime, drivers and dependencies current.</li>
+<li>Restrict physical and network access to servers, cameras, PLCs and cabinets.</li>
+<li>Do not attempt to bypass access controls, probe systems you are not authorized to test, disrupt the Software or connected equipment, or introduce malicious code.</li>
+<li>Report suspected vulnerabilities responsibly to the Operator or the Project maintainers and give reasonable time to fix them before disclosure.</li>
+</ul>
+<p>No system is completely secure. The Operator should apply security practices suitable to the risk, such as those of IEC 62443 for industrial automation systems.</p>
+
+    <h2 id="s16">16. Hardware and third-party components</h2>
+<p>The Software relies on third-party hardware, firmware, drivers, operating systems, libraries, models and services, which have their own licenses and limits. You are responsible for complying with them and for the cost, support and warranty of equipment you buy. Open-source components remain under their own licenses, which prevail over these Terms for those components.</p>
+
+    <p class="part">Part E — Rights and acceptable use</p>
+    <h2 id="s17">17. License and intellectual property</h2>
+<p>The Software is made available under the license or agreement that applies to your deployment. Unless that license says otherwise, you receive a limited, non-exclusive, non-transferable right to use the Software for your own internal business operations, and all rights not expressly granted are reserved. Names, logos and documentation remain the property of their owners.</p>
+<p>Unless the applicable license or law allows it, you may not copy, sell, rent, sublicense, host for third parties, remove notices from, or reverse engineer the Software or its models, except where a mandatory law gives you that right. Your own Customer Data, settings, labels and trained models remain yours, subject to the rights of any third-party material they contain.</p>
+
+    <h2 id="s18">18. Acceptable use</h2>
+<p>You must not use the Software to:</p>
+<ul>
+<li>break any law, regulation, contract or third-party right;</li>
+<li>endanger people or property, or disable or work around safety systems;</li>
+<li>monitor, track or identify people without a lawful basis and any required notice or consent;</li>
+<li>send commands to equipment you are not authorized to operate;</li>
+<li>overload, scan, attack or interfere with the Software, its network or other users;</li>
+<li>upload unlawful, infringing or malicious content, or content you have no right to use;</li>
+<li>falsify records, counts, inspection results or audit information;</li>
+<li>use it in a way that is inconsistent with its documentation or intended purpose in a manner likely to cause harm.</li>
+</ul>
+
+    <h2 id="s19">19. Feedback</h2>
+<p>If you send suggestions or feedback about the Software, the Project maintainers may use them without obligation to you, unless a separate agreement says otherwise.</p>
+
+    <p class="part">Part F — Service, liability and legal terms</p>
+    <h2 id="s20">20. Availability, maintenance and support</h2>
+<p>The Software may be unavailable or interrupted by maintenance, updates, hardware failures, power or network loss, overload, or failures of connected services. Plan your operation so that it does not depend on the Software always being available, keep manual or fallback procedures, and keep backups. Unless a separate written agreement states otherwise, no support, uptime, response time or update is promised.</p>
+
+    <h2 id="s21">21. Warranty disclaimer</h2>
+<p>To the extent permitted by applicable law, the Software is provided “as is” and “as available”, without warranties of any kind, express or implied, including merchantability, fitness for a particular purpose, accuracy, non-infringement, or that it will be error-free, uninterrupted or secure. You are responsible for deciding whether it suits your process and for checking its operation in your environment.</p>
+
+    <h2 id="s22">22. Limitation of liability</h2>
+<p>To the extent permitted by applicable law, the Project maintainers and the Operator are not liable for indirect, incidental, special, consequential or punitive loss, or for loss of production, profit, revenue, data, goodwill, product, or equipment downtime, arising from the use of or inability to use the Software, even if told it was possible. Their total liability for any claim is limited, to the extent permitted by law, to the amount you paid for the Software in the twelve months before the claim, or to a small fixed amount if you paid nothing.</p>
+<p>Nothing in these Terms excludes or limits liability that cannot lawfully be excluded or limited, such as liability for death or personal injury caused by negligence, for fraud, or for rights that consumers have by law.</p>
+
+    <h2 id="s23">23. Responsibility and indemnity</h2>
+<p>To the extent permitted by applicable law, you will defend and compensate the Project maintainers and the Operator against claims, losses and costs that arise from your misuse of the Software, your breach of these Terms, your configuration or operation of machinery, your Customer Data, or your violation of law or third-party rights. This does not apply to the extent the loss was caused by their own wilful misconduct.</p>
+
+    <h2 id="s24">24. Suspension and termination</h2>
+<p>You may stop using the Software at any time. The Operator may suspend or end your access if you breach these Terms, if access creates a safety or security risk, or if the law requires it. Parts of these Terms that by their nature should continue, including those about data, liability, intellectual property and indemnity, continue after termination. Before access ends, export the data you need.</p>
+
+    <h2 id="s25">25. Export controls and regulated industries</h2>
+<p>You must follow export, sanctions and import rules that apply to the Software, models and hardware. If you use the Software in a regulated field, such as food, pharmaceuticals, medical devices, automotive, aerospace or hazardous areas, you are responsible for any validation, certification, record-keeping and approval that regulation requires. The Software is not certified for use in explosive atmospheres or as a medical device unless stated in writing.</p>
+
+    <h2 id="s26">26. Force majeure</h2>
+<p>Neither the Operator nor the Project maintainers are responsible for failure or delay caused by events outside their reasonable control, including natural disasters, power or network failure, labor disputes, war, government action, supplier failure and cyber attacks that could not reasonably be prevented.</p>
+
+    <h2 id="s27">27. Governing law and disputes</h2>
+<p>These Terms are governed by the laws of <strong>[jurisdiction to be completed by the Operator]</strong>, without regard to conflict-of-law rules, and the courts of <strong>[city / country]</strong> have exclusive jurisdiction, unless mandatory law or a separate written agreement says otherwise. The parties should first try to resolve a dispute in good faith by written notice and discussion.</p>
+
+    <h2 id="s28">28. General</h2>
+<ul>
+<li><strong>Entire agreement.</strong> These Terms and any written agreement or license for your deployment are the whole agreement on their subject. If they conflict, the signed agreement prevails.</li>
+<li><strong>Severability.</strong> If a provision is unenforceable, the rest stays in force and the provision is applied to the extent allowed.</li>
+<li><strong>No waiver.</strong> Not enforcing a right is not giving it up.</li>
+<li><strong>Assignment.</strong> You may not transfer your rights under these Terms without written consent. The Operator or Project maintainers may transfer theirs in a merger, sale or reorganization.</li>
+<li><strong>Language.</strong> If these Terms are translated, the English version prevails when there is a conflict, unless the law requires otherwise.</li>
+<li><strong>Notices.</strong> The Operator may give notice through the dashboard, by email to the address on your account, or in another reasonable way.</li>
+</ul>
+
+    <h2 id="s29">29. Contact</h2>
+<p>For account access, configuration, safety, privacy and deployment questions, contact the administrator responsible for your Zagel Vision instance: <strong>[Operator name, address and email to be completed]</strong>. The Operator is responsible for deciding which notices, policies and legal requirements apply at its site.</p>
 
     <footer>
-        <p class="updated">These terms are provided as a starting point for this project. The deploying organization should review and adapt them for its jurisdiction, deployment, and business arrangements.</p>
+        <p class="updated">These terms are provided as a starting point for this project. The deploying organization should have them reviewed by a qualified lawyer and adapt them for its jurisdiction, deployment, and business arrangements, and complete the bracketed items, before relying on them.</p>
     </footer>
 </main>
 </body>
