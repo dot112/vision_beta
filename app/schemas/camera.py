@@ -36,14 +36,17 @@ class IPSettings(BaseModel):
 
 
 class GigESettings(BaseModel):
-    serial_number: Optional[str] = Field(default=None, description="GigE Vision camera serial number")
-    ip_address: Optional[str] = Field(default=None, description="GigE Vision camera IP address")
-    width: int = Field(default=1920, description="Capture width")
-    height: int = Field(default=1080, description="Capture height")
-    fps: int = Field(default=30, description="Frames per second")
-    packet_size: int = Field(default=9000, description="Jumbo frame packet size")
-    exposure_time_us: Optional[float] = Field(default=10000.0, description="Exposure time in microseconds")
-    gain_db: Optional[float] = Field(default=0.0, description="Sensor gain in dB")
+    """The settings of an industrial camera (GigE Vision or USB3 Vision); its ``source`` is its serial number."""
+
+    trigger_mode: Literal["off", "hardware", "software"] = Field(
+        default="off", description="off: runs freely. hardware: a signal on the camera's own input takes each "
+                                   "picture. software: the server takes each picture.")
+    trigger_line: str = Field(default="Line0", max_length=32, description="Hardware trigger: the camera's input line")
+    trigger_edge: Literal["rising", "falling"] = Field(default="rising", description="Hardware trigger: the edge")
+    trigger_delay_us: float = Field(default=0, ge=0, le=10_000_000, description="Microseconds from the trigger to the exposure")
+    exposure_us: Optional[float] = Field(default=None, ge=10, le=10_000_000, description="Exposure time in microseconds; not set = the camera's own")
+    gain_db: Optional[float] = Field(default=None, ge=0, le=48, description="Gain in dB; not set = the camera's own")
+    strobe_line: str = Field(default="", max_length=32, description="An output line that is on while the sensor is exposed, for a light; empty = none")
 
 
 class CameraCreate(BaseModel):
@@ -86,6 +89,15 @@ class CameraStatusResponse(BaseModel):
     source: str
     properties: Dict[str, Any]
     last_error: Optional[str] = None
+
+
+class DiscoveredIndustrialCamera(BaseModel):
+    serial: str
+    model: str = ""
+    vendor: str = ""
+    interface: str = ""       # GigE or USB3
+    name: str = ""            # the name saved in the camera itself, if any
+    in_use: bool = False      # a saved camera already has this serial number
 
 
 class DiscoveredUSBCamera(BaseModel):

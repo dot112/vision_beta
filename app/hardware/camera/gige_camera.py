@@ -112,6 +112,56 @@ def _number(value: Any) -> Optional[float]:
         return None
 
 
+_LINE_NAME = re.compile(r"[A-Za-z0-9_]{1,32}")
+# Lowest and highest value of the number settings.
+SETTING_LIMITS = {"trigger_delay_us": (0, 10_000_000), "exposure_us": (10, 10_000_000), "gain_db": (0, 48)}
+
+
+def clean_camera_settings(settings: Dict[str, Any], camera_type: str,
+                          saved: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """``settings`` with the industrial camera's own settings checked and tidied; other keys are left as they are.
+
+    ``saved``: the camera's settings so far, for the check that looks at two settings together.
+    Raises ValueError that names the setting.
+    """
+    cleaned = dict(settings)
+    sent = [key for key in CAMERA_SETTING_KEYS if key in settings]
+    if not sent:
+        return cleaned
+    if camera_type != "gige":
+        raise ValueError(f"{sent[0]} is a setting of industrial cameras (GigE / USB3 Vision); "
+                         f"this is a {camera_type} camera")
+    for key, allowed in (("trigger_mode", TRIGGER_MODES), ("trigger_edge", tuple(TRIGGER_EDGES))):
+        if key in settings:
+            text = str(settings[key] or allowed[0]).strip().lower()
+            if text not in allowed:
+                raise ValueError(f"{key} must be one of: {', '.join(allowed)}")
+            cleaned[key] = text
+    for key in ("trigger_line", "strobe_line"):
+        if key in settings:
+            text = str(settings[key] or "").strip()
+            if text and not _LINE_NAME.fullmatch(text):
+                raise ValueError(f"{key} must be the name of one of the camera's lines, such as Line1 "
+                                 "(letters, digits and _, 32 at most)")
+            cleaned[key] = text
+    for key, (low, high) in SETTING_LIMITS.items():
+        if key in settings:
+            value = settings[key]
+            if value is None or value == "":
+                cleaned[key] = 0 if key == "trigger_delay_us" else None      # not set: the camera keeps its own
+                continue
+            number = _number(value)
+            if number is None or not low <= number <= high:
+                raise ValueError(f"{key} must be a number from {low} to {high}")
+            cleaned[key] = int(number) if number == int(number) else number
+    together = {**(saved or {}), **cleaned}
+    strobe = together.get("strobe_line")
+    if strobe and together.get("trigger_mode") == "hardware" \
+            and strobe == (together.get("trigger_line") or DEFAULT_TRIGGER_LINE):
+        raise ValueError("strobe_line cannot be the line the trigger comes in on (trigger_line)")
+    return cleaned
+
+
 class GigECamera(BaseCamera):
     """A GigE Vision or USB3 Vision camera."""
 

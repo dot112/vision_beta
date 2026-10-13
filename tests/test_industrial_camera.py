@@ -393,3 +393,124 @@ def test_the_cameras_own_inputs_are_listed(connected):
     props = cam.get_properties()
     assert props["trigger_inputs"] == ["Line0", "Line1"] and props["lines"] == ["Line0", "Line1", "Line2"]
     assert props["model"] == "X" and props["type"] == "gige"
+
+
+# ── The API: scan, add, settings ──────────────────────────────────────────────
+
+API = "/api/v1/cameras"
+SCANNED = [{"serial": "A1", "model": "X", "vendor": "V", "interface": "GigE"},
+           {"serial": "B2", "model": "Y", "vendor": "W", "interface": "USB3"}]
+
+
+@pytest.fixture
+def scanner(monkeypatch):
+    """The scan sees the two cameras of SCANNED."""
+    monkeypatch.setattr(genicam_backend, "default_backend", lambda: FakeBackend(devices=[dict(d) for d in SCANNED]))
+
+
+@pytest.fixture
+def camera_row(client, admin_headers):
+    """``camera_row(type="gige", source="A1", **settings)`` saves a camera and returns it; all are deleted afterwards."""
+    made = []
+
+    def make(type="gige", source="A1", **settings):
+        res = client.post(API, json={"name": f"Test {type} {len(made)}", "type": type, "source": source,
+                                     "settings": settings}, headers=admin_headers)
+        assert res.status_code == 201, res.text
+        made.append(res.json()["id"])
+        return res.json()
+
+    yield make
+    for camera_id in made:
+        client.delete(f"{API}/{camera_id}", headers=admin_headers)
+
+
+def test_the_scan_lists_industrial_cameras_and_marks_the_ones_in_use(client, admin_headers, scanner, camera_row):
+    camera_row(source="A1")
+    res = client.get(f"{API}/discover/gige", headers=admin_headers)
+    assert res.status_code == 200, res.text
+    rows = res.json()
+    assert [(r["serial"], r["model"], r["vendor"], r["interface"], r["in_use"]) for r in rows] == [
+        ("A1", "X", "V", "GigE", True), ("B2", "Y", "W", "USB3", False)]
+
+
+def test_the_scan_says_what_to_install_when_the_library_is_missing(client, admin_headers, monkeypatch):   # Review Focus 5
+    def missing():
+        raise GenICamUnavailable("Industrial cameras need the GenICam library: pip install -r requirements-industrial.txt")
+
+    monkeypatch.setattr(genicam_backend, "default_backend", missing)
+    res = client.get(f"{API}/discover/gige", headers=admin_headers)
+    assert res.status_code == 503 and "requirements-industrial.txt" in res.json()["detail"]
+
+
+def test_the_scan_needs_a_signed_in_user(client):
+    assert client.get(f"{API}/discover/gige").status_code == 401
+
+
+def test_an_industrial_camera_is_saved_with_its_trigger_settings(client, admin_headers, camera_row):
+    row = camera_row(source="A1", trigger_mode="Hardware", trigger_line="Line1", trigger_edge="falling",
+                     trigger_delay_us="250", exposure_us=800, gain_db="", strobe_line="Line2")
+    assert row["type"] == "gige" and row["source"] == "A1"
+    assert row["settings"] == {"trigger_mode": "hardware", "trigger_line": "Line1", "trigger_edge": "falling",
+                               "trigger_delay_us": 250, "exposure_us": 800, "gain_db": None, "strobe_line": "Line2"}
+
+
+@pytest.mark.parametrize("bad, field", [
+    ({"trigger_mode": "laser"}, "trigger_mode"),
+    ({"trigger_edge": "both"}, "trigger_edge"),
+    ({"trigger_delay_us": -1}, "trigger_delay_us"),
+    ({"trigger_delay_us": 10000001}, "trigger_delay_us"),
+    ({"trigger_delay_us": "soon"}, "trigger_delay_us"),
+    ({"exposure_us": 5}, "exposure_us"),
+    ({"gain_db": 99}, "gain_db"),
+    ({"trigger_line": "L" * 33}, "trigger_line"),
+    ({"trigger_line": "Line 1; drop"}, "trigger_line"),
+    ({"strobe_line": "Line1", "trigger_line": "Line1", "trigger_mode": "hardware"}, "strobe_line"),
+])
+def test_a_wrong_trigger_setting_is_refused_and_named(client, admin_headers, camera_row, bad, field):
+    row = camera_row(source="A1", trigger_mode="software")
+    res = client.patch(f"{API}/{row['id']}", json={"settings": bad}, headers=admin_headers)
+    assert res.status_code == 422 and field in res.json()["detail"], res.text
+    kept = client.get(f"{API}/{row['id']}", headers=admin_headers).json()["settings"]
+    assert kept == {"trigger_mode": "software"}
+    res = client.post(API, json={"name": "Bad", "type": "gige", "source": "Z9", "settings": bad}, headers=admin_headers)
+    assert res.status_code == 422 and field in res.json()["detail"]
+
+
+def test_a_trigger_setting_for_another_kind_of_camera_is_refused(client, admin_headers, camera_row):
+    row = camera_row(type="usb", source="7", width=640)
+    res = client.patch(f"{API}/{row['id']}", json={"settings": {"trigger_mode": "hardware"}}, headers=admin_headers)
+    assert res.status_code == 422 and "industrial" in res.json()["detail"]
+    assert client.patch(f"{API}/{row['id']}", json={"settings": {"rotation": 90}}, headers=admin_headers).status_code == 200
+
+
+def test_a_saved_setting_reaches_the_connected_camera_without_a_reconnect(client, admin_headers, camera_row, monkeypatch):
+    from app.state.application_state import app_state
+
+    row = camera_row(source="A1", trigger_mode="hardware")
+    backend = FakeBackend()
+    cam = GigECamera(row["id"], row["name"], "A1", settings=dict(row["settings"]), backend=backend)
+    assert cam.connect()
+    monkeypatch.setitem(app_state.cameras, row["id"], cam)
+    try:
+        res = client.patch(f"{API}/{row['id']}", json={"settings": {"trigger_delay_us": 500}}, headers=admin_headers)
+        assert res.status_code == 200 and res.json()["settings"]["trigger_delay_us"] == 500
+        assert _wait_until(lambda: ("set", "TriggerDelay", 500.0) in backend.calls)
+        assert backend.calls.count(("open", "A1")) == 1
+        status = client.get(f"{API}/{row['id']}/status", headers=admin_headers).json()
+        assert status["properties"]["trigger_mode"] == "hardware" and status["properties"]["trigger_inputs"] == ["Line0", "Line1"]
+    finally:
+        cam.disconnect()
+
+
+def test_a_line_warns_about_a_software_camera_nothing_triggers(client, admin_headers, camera_row):
+    row = camera_row(source="A1", trigger_mode="software")
+    res = client.post("/api/v1/lines", json={"name": "Reader line", "cameras": [{"camera_id": row["id"], "role": "qr"}]},
+                      headers=admin_headers)
+    assert res.status_code in (200, 201), res.text
+    line_id = res.json()["id"]
+    try:
+        warnings = client.get(f"/api/v1/lines/{line_id}", headers=admin_headers).json()["warnings"]
+        assert any("Software trigger" in w and "Read codes" in w for w in warnings), warnings
+    finally:
+        client.delete(f"/api/v1/lines/{line_id}", headers=admin_headers)

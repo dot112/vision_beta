@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.camera import Camera
 from app.hardware.camera.base import BaseCamera
-from app.hardware.camera.gige_camera import GigECamera
+from app.hardware.camera.gige_camera import GigECamera, clean_camera_settings
 from app.hardware.camera.ip_camera import IPCamera
 from app.hardware.camera.usb_camera import USBCamera
 from app.schemas.camera import (
@@ -187,12 +187,13 @@ class CameraService:
 
     @staticmethod
     async def create_camera(db: AsyncSession, data: CameraCreate) -> Camera:
+        """Raises ValueError that names the setting when an industrial camera's setting is wrong."""
         cam_type_val = data.type.value if hasattr(data.type, "value") else str(data.type)
         camera = Camera(
             name=data.name,
             type=cam_type_val,
             source=data.source,
-            settings=data.settings,
+            settings=clean_camera_settings(data.settings or {}, cam_type_val),
             is_active=False,
         )
         db.add(camera)
@@ -206,6 +207,9 @@ class CameraService:
         camera = await CameraService.get_camera_by_id(db, camera_id)
         if not camera:
             return None
+        # Checked before anything is changed. Raises ValueError that names the setting.
+        new_settings = None if data.settings is None else \
+            clean_camera_settings(data.settings, camera.type, saved=camera.settings)
 
         previous_source = camera.source
         if data.name is not None:
@@ -219,15 +223,15 @@ class CameraService:
                 from app.services.settings_persistence_service import _restore_redacted_url
                 source = _restore_redacted_url(source, camera.source)
             camera.source = source
-        if data.settings is not None:
+        if new_settings is not None:
             merged = dict(camera.settings or {})
-            merged.update(data.settings)
+            merged.update(new_settings)
             camera.settings = merged
 
             if camera_id in app_state.cameras:
                 driver: BaseCamera = app_state.cameras[camera_id]
                 try:
-                    driver.set_properties(data.settings)
+                    driver.set_properties(new_settings)
                 except Exception as prop_err:
                     logger.error("Failed to update dynamic properties on active driver %s: %s", camera_id, prop_err)
 
@@ -290,6 +294,21 @@ class CameraService:
             return True
 
         return False
+
+    @staticmethod
+    async def discover_industrial_cameras(db: AsyncSession) -> List[Dict[str, Any]]:
+        """The GigE Vision and USB3 Vision cameras the makers' producers see; nothing is saved.
+
+        ``in_use`` marks a camera whose serial number a saved camera already has.
+        Raises GenICamUnavailable (what to install) when the library or every producer file is missing.
+        """
+        from app.hardware.camera import genicam_backend
+
+        backend = genicam_backend.default_backend()
+        rows = await asyncio.to_thread(backend.list_devices)      # a network scan can take a second or two
+        result = await db.execute(select(Camera.source).where(Camera.type == "gige"))
+        used = {str(source) for source in result.scalars().all()}
+        return [{**row, "in_use": row.get("serial") in used} for row in rows]
 
     @staticmethod
     async def discover_hardware_cameras(db: AsyncSession) -> List[DiscoveredUSBCamera]:

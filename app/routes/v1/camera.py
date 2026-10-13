@@ -12,6 +12,7 @@ from app.schemas.camera import (
     CameraResponse,
     CameraStatusResponse,
     CameraUpdate,
+    DiscoveredIndustrialCamera,
     DiscoveredUSBCamera,
 )
 from app.services.camera_service import CameraService
@@ -44,6 +45,22 @@ async def discover_usb_cameras(db: AsyncSession = Depends(get_db)) -> List[Disco
     return await CameraService.discover_hardware_cameras(db)
 
 
+@router.get("/discover/gige", response_model=List[DiscoveredIndustrialCamera],
+            summary="Discover industrial cameras (GigE Vision, USB3 Vision)")
+async def discover_industrial_cameras(db: AsyncSession = Depends(get_db)) -> List[DiscoveredIndustrialCamera]:
+    """The industrial cameras on the network and the USB3 ports. Add one as a camera of type ``gige``
+    with its serial number as ``source``. 503 says what to install when the GenICam library or the
+    camera maker's producer file is missing."""
+    from app.hardware.camera.genicam_backend import GenICamUnavailable
+
+    try:
+        return await CameraService.discover_industrial_cameras(db)
+    except GenICamUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"The scan failed: {type(exc).__name__}: {exc}") from exc
+
+
 @router.get("", response_model=List[CameraResponse], summary="List configured cameras")
 async def list_cameras(db: AsyncSession = Depends(get_db)) -> List[CameraResponse]:
     return [_public_camera(camera) for camera in await CameraService.list_cameras(db)]
@@ -51,7 +68,10 @@ async def list_cameras(db: AsyncSession = Depends(get_db)) -> List[CameraRespons
 
 @router.post("", response_model=CameraResponse, status_code=status.HTTP_201_CREATED, summary="Create/Register Camera")
 async def create_camera(camera_in: CameraCreate, db: AsyncSession = Depends(get_db), _user=Depends(require_supervisor)) -> CameraResponse:
-    return _public_camera(await CameraService.create_camera(db, camera_in))
+    try:
+        return _public_camera(await CameraService.create_camera(db, camera_in))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/{camera_id}", response_model=CameraResponse, summary="Get camera details")
@@ -64,7 +84,10 @@ async def get_camera(camera_id: str, db: AsyncSession = Depends(get_db)) -> Came
 
 @router.put("/{camera_id}", response_model=CameraResponse, summary="Update camera settings")
 async def update_camera(camera_id: str, camera_in: CameraUpdate, db: AsyncSession = Depends(get_db), _user=Depends(require_supervisor)) -> CameraResponse:
-    updated = await CameraService.update_camera(db, camera_id, camera_in)
+    try:
+        updated = await CameraService.update_camera(db, camera_id, camera_in)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="Camera not found")
     return _public_camera(updated)
@@ -73,7 +96,10 @@ async def update_camera(camera_id: str, camera_in: CameraUpdate, db: AsyncSessio
 @router.patch("/{camera_id}", response_model=CameraResponse, summary="Patch camera settings (partial update)")
 async def patch_camera(camera_id: str, camera_in: CameraUpdate, db: AsyncSession = Depends(get_db), _user=Depends(require_supervisor)) -> CameraResponse:
     """Partial update — applies only supplied fields (resolution, ROI, rotation, flip, bandwidth params)."""
-    updated = await CameraService.update_camera(db, camera_id, camera_in)
+    try:
+        updated = await CameraService.update_camera(db, camera_id, camera_in)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="Camera not found")
     return _public_camera(updated)
