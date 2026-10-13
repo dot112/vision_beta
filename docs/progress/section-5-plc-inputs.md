@@ -211,3 +211,4 @@ Vision cameras get a **trigger mode** (one picture per trigger instead of tracki
 
 - The scratch tools of this section are on the development machine in `backup/scratch-tools/` (not in git): `shots_s5.py` takes the screenshots and runs the page checks with headless Chrome; the PLC simulator is `test codes/plc_simulator.py --port <free port>`.
 - After the push, check that GitHub Actions (lint, tests, Docker) are green: the tests have only run on Windows.
+- **The review of the whole branch was started and stopped before it finished** (2026-10-13, at the owner's request). No second pair of eyes has read this section's code: run a code review of `40a18f5..HEAD` before merging. The plan's "Review Focus" lists what to look at first.

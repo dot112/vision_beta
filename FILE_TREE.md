@@ -25,6 +25,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 ├── requirements-training.txt
 ├── requirements.txt
 ├── start_server.bat
+├── THIRD_PARTY_NOTICES.md
 ├── terms_of_use.html
 ├── .github/
 │   └── workflows/
@@ -227,8 +228,11 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │   ├── session-prompts.md   # the first message for each section's session
 │   │   └── screenshots/         # dashboard screenshots a section took (section-2/, section-3/: Line setup, Line dashboard; section-4/: Production records; section-5/: PLC signals, their dialog, the batch field)
 │   └── superpowers/
-│       └── plans/           # the step-by-step plan a section was built from
-│           └── 2026-10-12-section-5-plc-inputs.md
+│       ├── plans/           # the step-by-step plan a piece of work was built from
+│       │   ├── 2026-10-06-sparkplug-b.md
+│       │   └── 2026-10-12-section-5-plc-inputs.md
+│       └── specs/
+│           └── 2026-10-06-sparkplug-b-design.md
 ├── docker/
 │   ├── mosquitto/
 │   │   ├── mosquitto.conf
