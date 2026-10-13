@@ -81,6 +81,10 @@ class Settings(BaseSettings):
 
     # Cameras connected at the same time, across all production lines.
     MAX_CONNECTED_CAMERAS: int = 8
+    # Industrial cameras (GigE Vision, USB3 Vision): the folders or files of the camera makers'
+    # GenTL producers (.cti), separated like PATH. Empty = GENICAM_GENTL64_PATH, which the
+    # makers' SDKs set. "simulator" = stand-in cameras, to try the server without hardware.
+    GENTL_CTI_PATH: str = ""
 
     # ─── Health monitoring ───────────────────────────────────────────────────
     HEALTH_CHECK_INTERVAL_SECONDS: float = 2.0

@@ -103,6 +103,24 @@ class HealthService:
             entry["frame_id"] = frame_id
             entry["seconds_since_new_frame"] = round(age, 2)
 
+            # A camera in a trigger mode is silent between triggers, for hours if nothing
+            # passes. It is at fault only when it stops answering (its driver then reconnects).
+            if getattr(driver, "trigger_mode", "off") != "off":
+                entry["waiting_for_trigger"] = age > stale_after
+                if getattr(driver, "reconnecting", False):
+                    entry["status"] = DOWN
+                    entry["error"] = getattr(driver, "last_error", None) or "the camera is not answering"
+                    alarm_manager.raise_alarm(
+                        HealthAlarmCode.CAMERA_STALLED, source,
+                        f"Camera '{name}'{where} is not answering: {entry['error']}", AlarmSeverity.CRITICAL,
+                        {"frame_id": frame_id, **line_details},
+                    )
+                else:
+                    entry["status"] = OK
+                    alarm_manager.clear_alarm(HealthAlarmCode.CAMERA_STALLED, source, "camera answering")
+                cameras.append(entry)
+                continue
+
             if age > stale_after:
                 entry["status"] = DOWN
                 entry["error"] = f"no new frame for {age:.1f}s"
@@ -286,10 +304,15 @@ class HealthService:
 
     # ── Aggregate ─────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def flowing_cameras(cameras: Dict[str, Any]) -> List[str]:
+        """The ids of the cameras that are delivering frames (not one that waits for a trigger)."""
+        return [c["id"] for c in cameras["cameras"] if c["status"] == OK and not c.get("waiting_for_trigger")]
+
     def snapshot(self) -> Dict[str, Any]:
         """Run every check (updating alarms) and return the full health report."""
         cameras = self.check_cameras()
-        flowing = [c["id"] for c in cameras["cameras"] if c["status"] == OK]
+        flowing = self.flowing_cameras(cameras)
         components = {
             "database": self.check_database(),
             "cameras": cameras,

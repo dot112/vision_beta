@@ -154,6 +154,44 @@ def test_stalled_camera_raises_alarm_and_recovers(runtime):
     assert alarm_manager.get(HealthAlarmCode.CAMERA_STALLED, "camera:cam1") is None
 
 
+def test_a_camera_waiting_for_a_trigger_is_not_stalled(runtime):
+    # A triggered camera can be silent for hours: that is not a fault.
+    service, clock, _ = runtime
+    cam = FakeCamera()
+    cam.trigger_mode = "hardware"
+    app_state.cameras["cam1"] = cam
+    service.check_cameras()
+    clock.now += 3600
+
+    result = service.check_cameras()
+    assert result["status"] == "ok" and result["cameras"][0]["waiting_for_trigger"] is True
+    assert alarm_manager.get(HealthAlarmCode.CAMERA_STALLED, "camera:cam1") is None
+    # It delivers no frames, so it is not one of the cameras inference is expected on.
+    assert service.flowing_cameras(result) == []
+
+    cam.frame_id += 1
+    result = service.check_cameras()
+    assert result["cameras"][0]["waiting_for_trigger"] is False and service.flowing_cameras(result) == ["cam1"]
+
+
+def test_a_triggered_camera_that_stops_answering_is_a_fault(runtime):
+    service, clock, _ = runtime
+    cam = FakeCamera()
+    cam.trigger_mode = "software"
+    cam.reconnecting = True
+    cam.last_error = "Industrial camera 'Line cam' (A1) is not answering; reconnecting"
+    app_state.cameras["cam1"] = cam
+
+    result = service.check_cameras()
+    assert result["status"] == "down" and "not answering" in result["cameras"][0]["error"]
+    alarm = alarm_manager.get(HealthAlarmCode.CAMERA_STALLED, "camera:cam1")
+    assert alarm is not None and "not answering" in alarm.message
+
+    cam.reconnecting = False
+    assert service.check_cameras()["status"] == "ok"
+    assert alarm_manager.get(HealthAlarmCode.CAMERA_STALLED, "camera:cam1") is None
+
+
 def test_disconnected_camera_raises_alarm(runtime):
     service, _, _ = runtime
     app_state.cameras["cam1"] = FakeCamera(connected=False)
