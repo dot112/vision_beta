@@ -2252,6 +2252,8 @@
         row.dataset.signature = signature;
         stopStripFeeds();
         strip.classList.toggle("many", cams.length > 2);
+        // Up to two rows of them are made as tall as the main camera together (dashboard.css).
+        strip.classList.toggle("fit", cams.length <= 4);
         const canTest = level() >= 2;
         strip.innerHTML = cams.map((cam) => {
             const name = cam.name || cameraName(cam.camera_id);

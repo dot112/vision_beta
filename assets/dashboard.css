@@ -1431,13 +1431,15 @@ button.status-pill:hover { filter: brightness(1.08); }
 .pl-trigger-list { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 2px; }
 .pl-trigger-list label { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
 
-/* Line dashboard with several cameras: the main camera and the other cameras end on the same line.
-   The taller side sets the height; the main picture, or the other cameras' pictures, fill the rest. */
-@media (min-width: 993px) {
+/* Line dashboard with several cameras: the main camera keeps its own size, and the other cameras
+   are made smaller so that together they are as tall as it. The strip has the class "fit" while its
+   cameras fill at most two rows; with more, they keep their own size and the strip runs longer.
+   Only from 1200 px wide: on a narrower screen the fitted pictures would be too small to read. */
+@media (min-width: 1200px) {
     body .pl-feed-row { align-items: stretch; }
-    body .pl-feed-row > #liveVideoCardPanel { display: flex; flex-direction: column; }
-    body .pl-feed-row > #liveVideoCardPanel .video-box { flex: 1 1 auto; max-height: none; min-height: 0; }
-    body .pl-strip { align-content: stretch; grid-auto-rows: 1fr; }
-    body .pl-strip-tile { display: flex; flex-direction: column; }
-    body .pl-strip-tile .pl-strip-pic { flex: 1 1 auto; }
+    body .pl-feed-row > #liveVideoCardPanel { align-self: start; }
+    /* contain: size: the strip's own content does not set the row's height, the main camera does. */
+    body .pl-strip.fit { contain: size; align-content: stretch; grid-auto-rows: minmax(0, 1fr); }
+    body .pl-strip.fit .pl-strip-tile { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+    body .pl-strip.fit .pl-strip-pic { flex: 1 1 0; min-height: 0; aspect-ratio: auto; }
 }
