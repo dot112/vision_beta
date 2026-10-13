@@ -706,6 +706,31 @@
     </div>
 </div>
 
+<!-- ── PLC signal settings (assets/plc_signals.js) ───────────────────────── -->
+<div class="modal-backdrop" id="plcSignalSettingsModal">
+    <div class="modal-card action-trigger-modal-panel">
+        <div class="comm-modal-header">
+            <div>
+                <div style="font-size:15px;font-weight:700;color:var(--text-color);display:flex;align-items:center;gap:8px">
+                    <span id="plcSignalModalTitle">PLC signal</span>
+                </div>
+                <div style="font-size:12.5px;color:var(--text-muted);margin-top:2px">Which PLC address is read, how often, and what the line does with it</div>
+            </div>
+        </div>
+
+        <div id="plcSignalModalBody" class="comm-modal-body" style="display:flex;flex-direction:column;gap:16px">
+            <!-- Filled in for the signal that is being edited -->
+        </div>
+
+        <div class="comm-modal-footer">
+            <button type="button" class="btn-action btn-outline" onclick="PlcSignals.closeDialog()">Cancel</button>
+            <div class="comm-modal-footer-actions">
+                <button type="button" class="btn-action btn-blue" onclick="PlcSignals.saveDialog()">OK</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div id="loginScreen">
     <div class="login-card">
         <div class="login-brand">
@@ -831,6 +856,13 @@
         <div class="line-status-state">
             <span class="line-status-dot" aria-hidden="true"></span>
             <span class="line-status-word" id="lineStateWord">Loading</span>
+        </div>
+        <!-- The line's batch (work order) number: shown to everyone, set by a Supervisor -->
+        <div class="line-batch" id="lineBatch" hidden>
+            <label for="lineBatchInput">Batch</label>
+            <b id="lineBatchText"></b>
+            <input type="text" id="lineBatchInput" class="form-input" maxlength="64" placeholder="None" autocomplete="off" onkeydown="if(event.key==='Enter')setLineBatch()" hidden />
+            <button type="button" class="btn-action btn-sm btn-outline" id="lineBatchSet" onclick="setLineBatch()" title="Products counted from now on carry this batch number" hidden>Set</button>
         </div>
         <div class="line-status-meta" id="lineStatusMeta"></div>
         <div class="line-status-actions">
@@ -1001,6 +1033,32 @@
         </div>
         <div id="plcActionCardsContainer" class="plc-actions-grid">
             <!-- Dynamically populated PLC Action cards -->
+        </div>
+    </div>
+
+    <!-- Step 5: PLC signals (inputs), filled by assets/plc_signals.js -->
+    <div class="card-panel" id="plcSignalsCard">
+        <div class="card-panel-header">
+            <div>
+                <span class="card-panel-title">PLC signals (inputs)</span>
+                <div class="card-panel-sub">Let the PLC start and stop the line, count products, take pictures, set the batch and confirm rejects.</div>
+            </div>
+            <div class="card-actions">
+                <span id="plcSignalSaveState" class="feed-meta">Loading saved signals…</span>
+                <div class="seg" role="group" aria-label="Show PLC signals as">
+                    <button type="button" id="plcSignalViewCards" class="on" aria-pressed="true" onclick="PlcSignals.setView('cards')" title="Show as cards">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Cards
+                    </button>
+                    <button type="button" id="plcSignalViewList" aria-pressed="false" onclick="PlcSignals.setView('list')" title="Show as a list">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>List
+                    </button>
+                </div>
+                <button type="button" class="btn-action btn-outline restricted-l2" onclick="PlcSignals.add()">Add signal</button>
+                <button type="button" class="btn-action btn-blue restricted-l2" onclick="PlcSignals.apply()">Apply</button>
+            </div>
+        </div>
+        <div id="plcSignalCardsContainer" class="plc-actions-grid">
+            <!-- Filled in with the line's signal cards -->
         </div>
     </div>
 </div>
@@ -4096,7 +4154,7 @@ function toggleSendAlarmCode(cardId, code, checked) {
 function sendSampleMessage(card) {
     const kind = cardTriggerKind(card.trigger);
     const now = new Date().toISOString();
-    const line = { line_id: window.ProductionLines?.lineId || "line-1", line_name: window.ProductionLines?.lineName() || "Line 1", line_state: "started" };
+    const line = { line_id: window.ProductionLines?.lineId || "line-1", line_name: window.ProductionLines?.lineName() || "Line 1", line_state: "started", batch: "B-1001" };
     const totals = { counts: { bottle: 142, defect: 3 }, metrics: { total_inspected: 145, good_count: 142, rejected_count: 3, products_per_minute: 45.2, defect_ppm: 20689.66, yield_percentage: 97.93 } };
     if (kind === "line_state") {
         const running = card.condition !== "off";
@@ -4362,6 +4420,8 @@ function getProtocolDefForEndpoint(endpointId) {
 }
 
 let _plcActionPendingChanges = false;
+// What the server last did with each card (its status and result), by card id.
+let _plcActionRuntime = {};
 let _plcActionAppliedSignature = null;
 let _plcActionApplyInFlight = false;
 let _plcActionEditingDraft = null;
@@ -4427,6 +4487,7 @@ async function loadPlcActionCards() {
         if (res.ok) {
             const result = await res.json();
             if (Array.isArray(result)) {
+                setPlcActionRuntime(result);
                 serverCards = result.map(({ runtime_status, last_result, last_fired_at, ...card }) => card);
                 _plcActionAppliedSignature = plcActionSignature(serverCards);
             }
@@ -4470,6 +4531,38 @@ async function loadPlcActionCards() {
     updatePlcActionSaveState();
     renderPlcActionCards();
 }
+
+function setPlcActionRuntime(cards) {
+    _plcActionRuntime = Object.fromEntries(cards.map(c => [c.id, { status: c.runtime_status, result: c.last_result || {} }]));
+}
+
+// A card with a confirmation signal: whether the PLC confirmed its last fire.
+function plcConfirmTagHtml(card) {
+    if (!card.confirm_input_id) return "";
+    const live = _plcActionRuntime[card.id] || {};
+    const title = escapeHtml((live.result || {}).message || "");
+    if (live.status === "confirmed") return `<span class="tag ok" title="${title}">Confirmed</span>`;
+    if (live.status === "not_confirmed") return `<span class="tag bad" title="${title}">Not confirmed</span>`;
+    return `<span class="tag neutral" title="After each fire, this action waits for its confirmation signal">Waits for a signal</span>`;
+}
+
+// While Line setup is open, the cards that wait for a confirmation follow the server.
+async function refreshPlcActionRuntime() {
+    if (document.hidden || !currentAuthToken || !document.getElementById("tabActionTrigger")?.classList.contains("active")) return;
+    if (!_plcActionCards.some(c => c.confirm_input_id)) return;
+    try {
+        const res = await fetch("/api/v1/plc/actions", { cache: "no-store" });
+        if (!res.ok) return;
+        const cards = await res.json();
+        if (!Array.isArray(cards)) return;
+        setPlcActionRuntime(cards);
+        _plcActionCards.forEach(c => {
+            const tag = document.getElementById(`plcCardConfirm_${c.id}`);
+            if (tag) tag.innerHTML = plcConfirmTagHtml(c);
+        });
+    } catch (_) { /* the next tick tries again */ }
+}
+setInterval(refreshPlcActionRuntime, 2000);
 
 async function applyPlcActionCards() {
     if (_plcActionApplyInFlight) return false;
@@ -4728,7 +4821,7 @@ const PLC_VALUE_SOURCE_HINTS = {
     reject_count: "The line's reject count, with this product.",
     total_count: "Good + rejected, with this product.",
     class_index: "The product's class as a number: its place in the camera's \"Products to count\" list followed by \"Defects to reject\", from 1. 0 when it is in neither.",
-    reject_reason_code: "0 not rejected, 1 vision class, 2 code not in the list, 3 code in the reject list, 4 no code read, 5 a joined camera gave no result, 9 other.",
+    reject_reason_code: "0 not rejected, 1 vision class, 2 code not in the list, 3 code in the reject list, 4 no code read, 5 a joined camera gave no result, 6 nothing detected (a camera in trigger mode), 9 other.",
     batch: "The line's batch number. It must be a number; until a batch is set, the action fails and says why.",
 };
 
@@ -4805,7 +4898,7 @@ function renderPlcActionCards() {
                             <span class="slider"></span>
                         </label>
                     </td>
-                    <td data-label="Action"><b>${escapeHtml(c.name || 'PLC action')}</b><span class="cell-sub" id="plcCardStatus_${id}">${c.last_fired ? `Last: ${escapeHtml(c.last_fired)}` : 'Ready'}</span></td>
+                    <td data-label="Action"><b>${escapeHtml(c.name || 'PLC action')}</b><span class="cell-sub" id="plcCardStatus_${id}">${c.last_fired ? `Last: ${escapeHtml(c.last_fired)}` : 'Ready'}</span><span id="plcCardConfirm_${id}">${plcConfirmTagHtml(c)}</span></td>
                     <td data-label="PLC"><span class="cell-ellipsis" style="display:inline-block;max-width:180px;vertical-align:middle" title="${escapeHtml(targetEpName)}">${escapeHtml(targetEpName)}</span> <span class="badge ${badgeClass}">${escapeHtml(protoTitle)}</span></td>
                     <td data-label="When">${escapeHtml(triggerSummary)}<span class="cell-sub">${escapeHtml(condFull)}</span></td>
                     <td data-label="Address" class="cell-mono">${escapeHtml(c.target_address || 'Q0.0')}</td>
@@ -4859,6 +4952,7 @@ function renderPlcActionCards() {
 
                     <div class="plc-card-meta">
                         <span id="plcCardStatus_${escapeHtml(c.id)}">${c.last_fired ? `Last: ${escapeHtml(c.last_fired)}` : 'Ready'}</span>
+                        <span id="plcCardConfirm_${escapeHtml(c.id)}">${plcConfirmTagHtml(c)}</span>
                         <span id="plcCardCount_${escapeHtml(c.id)}">Fired: ${Number(c.fired_count) || 0}</span>
                     </div>
                 </div>
@@ -4956,6 +5050,15 @@ function refreshPlcModalBody(cardId) {
     if (curOp === "off") curOp = "reset";
     if (curOp === "write_value") curOp = "write";
     const valueSource = PLC_VALUE_SOURCES.some(v => v.id === card.value_source) ? card.value_source : "fixed";
+
+    // Confirmation: a PLC signal of this line with the action "Confirm a PLC action".
+    const confirmSignals = window.PlcSignals ? PlcSignals.confirmSignals() : [];
+    const confirmId = card.confirm_input_id || "";
+    let confirmOptions = `<option value="" ${confirmId ? '' : 'selected'}>None</option>`
+        + confirmSignals.map(s => `<option value="${escapeHtml(s.id)}" ${s.id === confirmId ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join("");
+    if (confirmId && !confirmSignals.some(s => s.id === confirmId)) {
+        confirmOptions += `<option value="${escapeHtml(confirmId)}" selected>(signal not found)</option>`;
+    }
 
     container.dataset.cardId = card.id;
     container.innerHTML = `
@@ -5077,7 +5180,7 @@ function refreshPlcModalBody(cardId) {
                     <input type="number" id="plcWriteValueInput" class="form-input" value="${escapeHtml(card.write_value ?? 1)}" oninput="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'write_value', parseFloat(this.value)||0); renderPlcActionCards()" />
                 </div>` : ''}
             </div>
-            ${PLC_VALUE_SOURCE_HINTS[valueSource] ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px">${escapeHtml(PLC_VALUE_SOURCE_HINTS[valueSource])} The value is taken when the action fires; the Test button writes example values (a rejected product, counts of 1, class 1).</div>` : ''}
+            ${PLC_VALUE_SOURCE_HINTS[valueSource] ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px">${escapeHtml(PLC_VALUE_SOURCE_HINTS[valueSource])} The value is taken when the action fires; the Test button writes example values (a rejected product, counts of 1, class 1, batch 1).</div>` : ''}
             <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px;margin-top:12px">
                 <div class="form-group" style="margin:0">
                     <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcStrobeInput">Then pulse strobe address:</label>
@@ -5115,6 +5218,28 @@ function refreshPlcModalBody(cardId) {
                 </select>
             </div>
             <div></div>
+        </div>
+
+        <!-- 10. Confirmation: a PLC signal that says the action really happened -->
+        <div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <div class="form-group" style="margin:0">
+                    <label class="form-label" style="font-size:11px;font-weight:600" for="plcConfirmSignalInput">Confirmation signal:</label>
+                    <select id="plcConfirmSignalInput" class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'confirm_input_id', this.value); refreshPlcModalBody(document.getElementById('plcModalBodyContainer').dataset.cardId); renderPlcActionCards()">
+                        ${confirmOptions}
+                    </select>
+                </div>
+                ${confirmId ? `
+                <div class="form-group" style="margin:0">
+                    <label class="form-label" style="font-size:11px;font-weight:600" for="plcConfirmTimeoutInput">Confirm within (ms):</label>
+                    <input type="number" id="plcConfirmTimeoutInput" class="form-input" min="50" max="10000" step="50" value="${escapeHtml(card.confirm_timeout_ms ?? 1000)}" oninput="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'confirm_timeout_ms', Math.min(10000, Math.max(50, parseInt(this.value) || 1000)))" />
+                </div>` : '<div></div>'}
+            </div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:4px">${confirmId
+                ? "After the action is sent, the line waits this long (50 to 10000 ms) for the signal. If it does not come, the action shows <b>Not confirmed</b> and a critical alarm stays on until a later fire is confirmed. Fires that wait at the same time are confirmed in the order they were sent. The Test button does not wait for the signal."
+                : (confirmSignals.length
+                    ? "Pick a PLC signal that tells the action really happened, for example a sensor that sees the rejected product leave the belt."
+                    : "To check that the action really happened, add a signal with the action <b>Confirm a PLC action</b> under PLC signals, then pick it here.")}</div>
         </div>
     `;
 }
@@ -6327,8 +6452,11 @@ function renderLineStatus(detail) {
     if (st.state === "idle") meta.push(`<span>None of this line's cameras is connected yet.</span>`);
     const offline = cams.filter(c => !c.connected).map(c => escapeHtml(lineCamName(c)));
     if (st.state === "fault" && offline.length) meta.push(`<span class="bad">Not connected: <b class="bad">${offline.join(", ")}</b></span>`);
-    meta.push(`<span>Model <b>${escapeHtml(st.model_name || "none")}</b></span>`);
-    if (st.state === "running" || st.state === "fault") {
+    // A line that runs without a camera gets its products from a PLC product sensor.
+    const sensorOnly = st.state === "running" && !cams.length;
+    if (sensorOnly) meta.push(`<span>Products come from a <b>PLC product sensor</b>. This line has no camera.</span>`);
+    else meta.push(`<span>Model <b>${escapeHtml(st.model_name || "none")}</b></span>`);
+    if (!sensorOnly && (st.state === "running" || st.state === "fault")) {
         const fps = Number(st.processed_fps || 0);
         const min = Number(st.min_fps || 0);
         const slow = min > 0 && fps < min;
@@ -6341,6 +6469,7 @@ function renderLineStatus(detail) {
 
     _lineStoppedForPill = st.state === "stopped";
     renderAlarmPill(Number(st.active_alarms || 0));
+    renderLineBatch(detail);
 
     const runBtn = document.getElementById("lineRunBtn");
     if (runBtn) {
@@ -6363,6 +6492,59 @@ function renderLineStatus(detail) {
         ? "No camera is assigned to this line. Assign one under Line setup."
         : (!cam.connected ? `${lineCamName(cam)} is not connected.` : "Waiting for the first picture…"));
 }
+
+/* ─── Line Dashboard: the line's batch (work order) number ───────────────── */
+// Everyone sees the batch; a Supervisor sets it here. A PLC signal can set it too,
+// so the field follows the server unless it is being typed in.
+const _lineBatch = { lineId: null, shown: null };
+
+function renderLineBatch(detail) {
+    const box = document.getElementById("lineBatch");
+    const input = document.getElementById("lineBatchInput");
+    const text = document.getElementById("lineBatchText");
+    if (!box || !input || !text) return;
+    const batch = String(detail.batch ?? (detail.status || {}).batch ?? "");
+    const editable = canConfigure();
+    box.hidden = false;
+    text.hidden = editable;
+    input.hidden = !editable;
+    document.getElementById("lineBatchSet").hidden = !editable;
+    text.textContent = batch || "none";
+    const otherLine = _lineBatch.lineId !== detail.id;
+    if (otherLine || (batch !== _lineBatch.shown && document.activeElement !== input)) {
+        input.value = batch;
+        _lineBatch.lineId = detail.id;
+        _lineBatch.shown = batch;
+    }
+}
+
+async function setLineBatch() {
+    const pl = window.ProductionLines;
+    const input = document.getElementById("lineBatchInput");
+    const button = document.getElementById("lineBatchSet");
+    if (!pl || !input || !canConfigure()) return;
+    button.disabled = true;
+    try {
+        const res = await fetch(`/api/v1/lines/${encodeURIComponent(pl.lineId)}/batch`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ batch: input.value.trim() })
+        });
+        let body = {};
+        try { body = await res.json(); } catch {}
+        if (!res.ok) throw new Error(typeof body.detail === "string" ? body.detail : `HTTP ${res.status}`);
+        input.value = body.batch;
+        _lineBatch.shown = body.batch;
+        input.blur();
+        showToast(body.batch ? `Batch set to ${body.batch}. Products counted from now on carry it.` : "Batch cleared.", "success");
+        pl.refreshDetail().catch(() => {});
+    } catch (e) {
+        showToast(`The batch was not set: ${e?.message || e}`, "warning");
+    } finally {
+        button.disabled = false;
+    }
+}
+
 window.addEventListener("pl:detail", (e) => {
     renderLineStatus(e.detail);
     if (_alarmPanel.lineId !== alarmPanelLineId()) refreshAlarmPanel();
@@ -6727,6 +6909,7 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
 })();
 </script>
 <script src="/assets/camera_settings.js?v=2.3.0"></script>
+<script src="/assets/plc_signals.js?v=2.3.0"></script>
 <script src="/assets/production_lines.js?v=2.3.0"></script>
 <script>
 /* ─── Cameras: Connect / Disconnect / Settings / Delete on every row ────────

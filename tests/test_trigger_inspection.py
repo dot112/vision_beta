@@ -134,7 +134,7 @@ def test_count_mode_is_kept_when_a_client_leaves_it_out(lines):  # noqa: F811
 
 def test_a_reader_cannot_wait_for_a_wire_line_of_a_camera_that_does_not_track(lines):  # noqa: F811
     reader = {"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_trigger": "line1"}
-    with pytest.raises(ValueError, match="One picture per trigger"):
+    with pytest.raises(ValueError, match="One picture per trigger.*Read codes to 'When a PLC signal asks'"):
         SettingsPersistenceService.save_line({"name": "Indexing", "cameras": [
             {"model_id": "model-test", **_trigger_cam()}, reader]})
 

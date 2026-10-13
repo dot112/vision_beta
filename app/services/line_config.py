@@ -834,7 +834,7 @@ def _check_signal_cameras(inputs: List[Dict[str, Any]], cameras: List[Dict[str, 
         if not (cam.get("count_mode") == "trigger" or (reads_codes(cam) and cam.get("qr_trigger") == "signal")):
             raise ValueError(
                 f"{label} takes a picture with Camera {index + 1}, so that camera must be a vision camera with "
-                f"Count mode 'One picture per trigger', or read codes with its Capture set to 'When a PLC signal asks'"
+                f"Count mode 'One picture per trigger', or read codes with Read codes set to 'When a PLC signal asks'"
             )
 
 
@@ -946,8 +946,8 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
             and any(c.get("qr_trigger") in ("line1", "line2") for c in cameras):
         raise ValueError(
             "A camera captures when a product crosses a wire line, but the counting camera is set to "
-            "'One picture per trigger' and tracks nothing across its lines. Set that camera's Capture to "
-            "'When a PLC signal asks' or to continuous."
+            "'One picture per trigger' and tracks nothing across its lines. Set the capturing camera's "
+            "Read codes to 'When a PLC signal asks' or to continuous."
         )
 
     # PLC signal cards. A client that leaves them out keeps the saved ones.

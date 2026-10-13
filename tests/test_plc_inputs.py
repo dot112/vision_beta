@@ -183,7 +183,8 @@ def test_a_capture_signal_needs_a_reader_set_to_capture_on_a_signal(lines):  # n
     capture = _signal("capture", camera_id="qr")
     with pytest.raises(ValueError, match="not on this line"):
         _save(name="No camera", plc_inputs=[capture])
-    with pytest.raises(ValueError, match="When a PLC signal asks"):
+    # The message names the select as the camera card does: "Read codes".
+    with pytest.raises(ValueError, match="Read codes set to 'When a PLC signal asks'"):
         _save(name="Continuous", cameras=[_reader()], plc_inputs=[capture])
     with pytest.raises(ValueError, match="Camera 1"):
         _save(name="Vision", cameras=[_vision("qr")], plc_inputs=[capture])
@@ -969,6 +970,19 @@ def test_sensor_products_keep_new_event_ids_after_a_counter_reset(signals):
     # A "once per event" PLC card tells products apart by this id.
     assert len({event["event_id"] for _, event in runtime.sent}) == 3
     assert runtime.counter.total_inspected == 1
+
+
+def test_a_line_fed_by_a_product_sensor_alone_is_running(signals):
+    """No camera, but its products come from the PLC: the dashboards must not call it "No camera"."""
+    runtime = _runtime(_line_with(_signal("product_sensor"), name="Sensor only"))
+    assert runtime.cameras == [] and runtime.state({}, []) == "running"
+    # Switched off, the sensor counts nothing, and nothing else feeds the line.
+    off = _runtime(_line_with(_signal("product_sensor", enabled=False), name="Sensor off"))
+    assert off.state({}, []) == "no_camera"
+    # Another signal is no product source.
+    assert _runtime(_line_with(_signal("start_line"), name="Start only")).state({}, []) == "no_camera"
+    stopped = _runtime(_line_with(_signal("product_sensor"), name="Sensor stopped", enabled=False))
+    assert stopped.state({}, []) == "stopped"
 
 
 def test_a_sensor_product_pairs_with_its_code_and_gets_one_result(signals):

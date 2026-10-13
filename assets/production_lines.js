@@ -337,6 +337,7 @@
         if (typeof loadServerSettings === "function") loadServerSettings();
         if (typeof loadPlcActionCards === "function") loadPlcActionCards();
         if (typeof loadSendActionCards === "function") loadSendActionCards();
+        if (window.PlcSignals) window.PlcSignals.load(state.lineId);
         if (typeof fetchStats === "function") fetchStats();
         if (typeof checkActiveStream === "function") checkActiveStream();
     }
@@ -344,10 +345,15 @@
     async function loadDetail() {
         state.detail = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}`);
         state.trigger = state.detail.action_trigger || {};
+        const warnings = byId("plSetupWarnings");
+        if (warnings) warnings.innerHTML = warningsHtml(state.detail);
         // Lets a dashboard show the line's state without fetching it again.
         window.dispatchEvent(new CustomEvent("pl:detail", { detail: state.detail }));
         return state.detail;
     }
+
+    // What the server warns about in the line's setup, shown under the line's own settings.
+    const warningsHtml = (line) => (line.warnings || []).map((w) => `<div class="pl-warn" style="margin:0 0 12px">${esc(w)}</div>`).join("");
 
     async function loadCamerasList() {
         try { state.cameras = await api("/api/v1/cameras"); } catch (_) { state.cameras = []; }
@@ -433,8 +439,9 @@
         };
         let pending = false;
         try { pending = Boolean(_plcActionPendingChanges) || Boolean(_sendActionPendingChanges); } catch (_) { pending = false; }
+        if (window.PlcSignals && window.PlcSignals.hasPending()) pending = true;
         if (pending || setup.dirty) {
-            const what = setup.dirty ? "The line setup (cameras and their settings)" : "The PLC action or send cards";
+            const what = setup.dirty ? "The line setup (cameras and their settings)" : "The PLC action, PLC signal or send cards";
             confirmAction("Unsaved changes", `${what} of this line ${setup.dirty ? "has" : "have"} changes that are not saved. Switch lines and discard them?`, () => { setup.dirty = false; go(); });
             const select = byId("plLineSelect");
             if (select) { select.value = state.lineId; if (select._refreshCustomSelect) select._refreshCustomSelect(); }
@@ -475,7 +482,7 @@
     function tileBodyHtml(row) {
         const cams = row.cameras.length
             ? row.cameras.map((c) => `<span><span class="pl-dot" style="background:${c.connected ? "var(--success-color)" : "var(--danger-color)"}"></span>${esc(c.name || cameraName(c.camera_id))} · ${roleLabel(c, true)}</span>`).join("")
-            : `<span>No camera assigned</span>`;
+            : `<span>${row.state === "running" ? "Products from a PLC product sensor" : "No camera assigned"}</span>`;
         const qr = row.has_qr
             ? `<div class="pl-row"><span>Codes read <b>${row.qr.codes_read}</b></span><span>Unknown <b style="color:var(--danger-color)">${row.qr.unknown}</b></span><span>No read <b style="color:var(--warning-color)">${row.qr.no_reads}</b></span></div>`
             : "";
@@ -917,6 +924,8 @@
         const action = cam.qr_action || "report";
         const listId = readsCodes(cam) ? (cam.product_list_id || "") : ((state.productLists[0] || {}).id || "");
         const station = cam.station || "own";
+        const countMode = cam.count_mode === "trigger" ? "trigger" : "track";
+        const noProduct = cam.no_product || "ignore";
         const readOnly = level() < 2;
         const fold = (name, title, body) => foldHtml(name, title, body, openSet.has(name));
 
@@ -966,27 +975,34 @@
         const trackingFields = Object.entries(TRACKING).map(([k, [label, min, max, step, def]]) =>
             `<div class="form-group" style="margin:0"><label class="form-label">${label}</label><input type="number" class="form-input" data-track="${k}" min="${min}" max="${max}" step="${step}" placeholder="${esc(lineTracking[k] ?? def)}" value="${esc(numOrEmpty(tracking[k]))}"></div>`).join("");
         const countingBody = `
-            <div class="pl-form-grid pl-form-tight">
-                <div class="form-group"><label class="form-label">Flow direction</label><select class="form-input" data-f="flow">${Object.keys(FLOWS).map((f) => option(f, FLOWS[f].label, flowOf(orientation, direction))).join("")}</select></div>
-                <div class="form-group"><label class="form-label">Count mode</label><select class="form-input" data-f="mode">${option("one", "A then B (the flow above)", direction === "both" ? "both" : "one")}${option("both", "Both ways", direction === "both" ? "both" : "one")}</select></div>
-            </div>
-            <div class="pl-lines-pic" data-f="lines-pic"><img alt="" hidden><canvas></canvas><span class="pl-lines-note">Drag line A or B. <button type="button" class="pl-link" data-act="picture">Take a picture</button></span></div>
-            <div class="pl-form-grid pl-form-tight">
-                <div class="form-group"><label class="form-label">Count line A</label><input type="number" class="form-input" data-f="line1" min="0" max="1" step="0.01" value="${esc(eff("line1_position"))}"></div>
-                <div class="form-group"><label class="form-label">Count line B</label><input type="number" class="form-input" data-f="line2" min="0" max="1" step="0.01" value="${esc(eff("line2_position"))}"></div>
-            </div>
-            <div class="pl-note pl-lines-hint"></div>
-            <details class="pl-advanced"><summary>Advanced tracking</summary>
-                <div class="pl-note" style="margin:6px 0 10px">Empty: the default, shown in grey.</div>
-                <div class="pl-form-grid pl-form-tight">${trackingFields}</div></details>`;
+            <div class="form-group"><label class="form-label">Count mode</label><select class="form-input" data-f="count_mode">${option("track", "Moving products cross count lines", countMode)}${option("trigger", "One picture per trigger", countMode)}</select>
+                <div class="pl-note pl-count-mode-note"></div></div>
+            <div class="form-group pl-no-product"><label class="form-label">When nothing is found</label><select class="form-input" data-f="no_product">${option("ignore", "Ignore: no product is counted", noProduct)}${option("reject", "Reject: counted as a rejected product", noProduct)}${option("good", "Good: counted as a good product", noProduct)}</select>
+                <div class="pl-note">What a trigger gives when its picture shows none of this camera's classes. A reject then has the reason "nothing detected".</div></div>
+            <div class="pl-track-fields">
+                <div class="pl-form-grid pl-form-tight">
+                    <div class="form-group"><label class="form-label">Flow direction</label><select class="form-input" data-f="flow">${Object.keys(FLOWS).map((f) => option(f, FLOWS[f].label, flowOf(orientation, direction))).join("")}</select></div>
+                    <div class="form-group"><label class="form-label">Count crossings</label><select class="form-input" data-f="mode">${option("one", "A then B (the flow above)", direction === "both" ? "both" : "one")}${option("both", "Both ways", direction === "both" ? "both" : "one")}</select></div>
+                </div>
+                <div class="pl-lines-pic" data-f="lines-pic"><img alt="" hidden><canvas></canvas><span class="pl-lines-note">Drag line A or B. <button type="button" class="pl-link" data-act="picture">Take a picture</button></span></div>
+                <div class="pl-form-grid pl-form-tight">
+                    <div class="form-group"><label class="form-label">Count line A</label><input type="number" class="form-input" data-f="line1" min="0" max="1" step="0.01" value="${esc(eff("line1_position"))}"></div>
+                    <div class="form-group"><label class="form-label">Count line B</label><input type="number" class="form-input" data-f="line2" min="0" max="1" step="0.01" value="${esc(eff("line2_position"))}"></div>
+                </div>
+                <div class="pl-note pl-lines-hint"></div>
+                <details class="pl-advanced"><summary>Advanced tracking</summary>
+                    <div class="pl-note" style="margin:6px 0 10px">Empty: the default, shown in grey.</div>
+                    <div class="pl-form-grid pl-form-tight">${trackingFields}</div></details>
+            </div>`;
 
         const codesBody = `
             <div class="form-group"><label class="form-label">Code type</label><select class="form-input" data-f="code_type">${codeTypeOptions(codeType)}</select>
                 <div class="pl-note">Only codes of this type are read; any other code in the picture is ignored. 2D and 1D read every type of that kind.</div></div>
             <div class="form-group"><label class="form-label">Read codes</label><select class="form-input" data-f="qr_trigger">
-                ${option("continuous", "Continuously, on every frame", trigger1)}${option("line1", "One picture when a product crosses wire line 1", trigger1)}${option("line2", "One picture when a product crosses wire line 2", trigger1)}</select>
-                <div class="pl-note">A picture is taken each time the counting camera sees a product cross the chosen wire line. It shows on the Line dashboard with every code outlined.</div></div>
-            <div class="form-group pl-trigger-delay"><label class="form-label">Picture delay after the crossing (ms)</label>
+                ${option("continuous", "Continuously, on every frame", trigger1)}${option("line1", "One picture when a product crosses wire line 1", trigger1)}${option("line2", "One picture when a product crosses wire line 2", trigger1)}${option("signal", "When a PLC signal asks", trigger1)}</select>
+                <div class="pl-note pl-trigger-note"></div>
+                <div class="pl-warn pl-trigger-warn" hidden>The counting camera takes one picture per trigger and tracks nothing across its count lines, so no product crosses a wire line. Choose "When a PLC signal asks" or "Continuously".</div></div>
+            <div class="form-group pl-trigger-delay"><label class="form-label pl-trigger-delay-label">Picture delay after the crossing (ms)</label>
                 <input type="number" class="form-input" data-f="qr_delay" min="0" max="10000" step="10" value="${esc(cam.qr_trigger_delay_ms || 0)}">
                 <div class="pl-note">For a code camera further along the belt: how long the product takes to reach it. 0 = at once.</div></div>
             <div class="form-group pl-hold"><label class="form-label">QR hold time (ms)</label>
@@ -1146,11 +1162,31 @@
         const checks = JOBS[job].codes && action !== "report";
         const hasVision = setupHasVision();
         card.querySelector(".pl-trigger-delay").hidden = trigger === "continuous";
+        card.querySelector(".pl-trigger-delay-label").textContent = `Picture delay after the ${trigger === "signal" ? "signal" : "crossing"} (ms)`;
+        card.querySelector(".pl-trigger-note").textContent = trigger === "signal"
+            ? "A picture is taken each time a PLC signal with the action \"Take a picture\" names this camera (add it under PLC signals below). It shows on the Line dashboard with every code outlined."
+            : "A picture is taken each time the counting camera sees a product cross the chosen wire line. It shows on the Line dashboard with every code outlined.";
+        // A counting camera in trigger mode tracks nothing, so no product crosses a wire line.
+        const noCrossings = cardsOnPage().some((c) => isCountingJob(cardJob(c)) && cardValue(c, "count_mode") === "trigger");
+        const triggerSelect = cardField(card, "qr_trigger");
+        let optionsChanged = false;
+        [...triggerSelect.options].forEach((o) => {
+            const off = noCrossings && (o.value === "line1" || o.value === "line2") && o.value !== trigger;
+            if (o.disabled !== off) { o.disabled = off; optionsChanged = true; }
+        });
+        if (optionsChanged && triggerSelect._refreshCustomSelect) triggerSelect._refreshCustomSelect();
+        card.querySelector(".pl-trigger-warn").hidden = !(JOBS[job].codes && noCrossings && (trigger === "line1" || trigger === "line2"));
         card.querySelector(".pl-hold").hidden = trigger !== "continuous";
         // "No code was read" only exists where the line knows a product was there.
         card.querySelector(".pl-no-read").hidden = !(checks && hasVision);
         card.querySelector(".pl-action-note").textContent = (ACTION_NOTES[action] || "") + (checks && !hasVision ? READER_ONLY_NOTE : "");
-        // Counting
+        // Counting: products tracked across the count lines, or one picture per trigger
+        const triggerMode = cardValue(card, "count_mode") === "trigger";
+        card.querySelector(".pl-no-product").hidden = !triggerMode;
+        card.querySelector(".pl-track-fields").hidden = triggerMode;
+        card.querySelector(".pl-count-mode-note").textContent = triggerMode
+            ? "For parts that stand still (an indexing machine, a rotary table). Each trigger takes one picture and makes one product of it: rejected when a defect class is found, good when a product class is found. A trigger is a PLC signal with the action \"Take a picture\" (PLC signals below) or the API (POST /api/v1/lines/{id}/trigger)."
+            : "Products move through the picture and are counted when they cross the count lines.";
         const flow = FLOWS[cardValue(card, "flow")] || FLOWS.down;
         const vertical = flow.orientation === "vertical";
         const a = parseFloat(cardValue(card, "line1"));
@@ -1485,6 +1521,8 @@
             if (name === "job") onJobChange(card, t.value);
             if (name === "device") onDeviceChange(card, t.value);
             if (name === "name") card.querySelector(".pl-card-name").textContent = t.value.trim() || card.dataset.camera;
+            // Back to tracking: the count lines are drawn on a picture again.
+            if (name === "count_mode" && t.value === "track") setTimeout(() => loadLinesPicture(card), 0);
             if (!t.classList.contains("pl-class-filter")) markDirty();
             syncLineSetup();
         });
@@ -1763,7 +1801,7 @@
                     <div class="form-group"><label class="form-label">Sync window (ms)</label><input type="number" class="form-input" id="plSyncWindow" min="50" max="10000" step="50" value="${(d.sync && d.sync.window_ms) || 500}">
                         <div class="pl-note">Products must pass further apart than this. A reject card's travel delay must be longer.</div></div>
                 </div>
-                ${(d.warnings || []).map((w) => `<div class="pl-warn" style="margin:0 0 12px">${esc(w)}</div>`).join("")}
+                <div id="plSetupWarnings">${warningsHtml(d)}</div>
                 <div class="pl-setup-actions">
                     <button class="btn-action btn-blue restricted-l2" id="plSaveSetup" ${readOnly ? "disabled" : ""}>Save line setup</button>
                     ${d.enabled
@@ -1839,7 +1877,10 @@
                 line1_position: num(cardValue(card, "line1")),
                 line2_position: num(cardValue(card, "line2")),
                 tracking,
+                // "track" is sent too: a key that is left out keeps its saved value.
+                count_mode: cardValue(card, "count_mode") === "trigger" ? "trigger" : "track",
             });
+            if (entry.count_mode === "trigger") entry.no_product = cardValue(card, "no_product") || "ignore";
             if (!spec.counting) entry.station = cardValue(card, "station") || "own";
             if (entry.station === "join") {
                 Object.assign(entry, {
@@ -2171,6 +2212,7 @@
         code_in_reject_list: "code in reject list",
         no_code: "no code",
         station_no_result: "joined camera saw nothing",
+        nothing_detected: "nothing detected",
     };
 
     // Where a capture is shown: a strip tile of the camera that took it, or the
@@ -3158,6 +3200,7 @@
                 if (typeof loadPlcActionCards === "function") loadPlcActionCards();
                 if (typeof checkActiveStream === "function") checkActiveStream();
             }
+            if (window.PlcSignals) window.PlcSignals.load(state.lineId);
             const tab = activeTabId();
             if (tab) enterTab(tab);
         }).catch(() => { /* not signed in yet; retried after login */ });
@@ -3171,6 +3214,7 @@
             applyRoleVisibility();
             loadLines().then(() => {
                 if (typeof checkActiveStream === "function") checkActiveStream();
+                if (window.PlcSignals) window.PlcSignals.load(state.lineId);
                 // The page shown after sign-in did not come through switchTab.
                 const tab = activeTabId();
                 if (tab) enterTab(tab);

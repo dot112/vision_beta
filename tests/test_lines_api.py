@@ -236,3 +236,52 @@ def test_line_dashboard_has_the_alarms_panel(client):
     # It asks for this line's alarms plus the ones every line shares, and acknowledges through the API.
     assert "include_all_lines=true" in page
     assert "/acknowledge" in page
+
+
+def test_dashboard_loads_the_plc_signals_script(client):
+    page = client.get("/dashboard")
+    assert page.status_code == 200
+    assert 'id="plcSignalCardsContainer"' in page.text and 'id="plcSignalSettingsModal"' in page.text
+    # Before production_lines.js, which loads the signals of the line it selects.
+    assert page.text.index('<script src="/assets/plc_signals.js') < page.text.index('<script src="/assets/production_lines.js')
+    script = client.get("/assets/plc_signals.js")
+    assert script.status_code == 200 and "window.PlcSignals" in script.text
+    assert script.headers["cache-control"] == "no-cache"
+    assert "PlcSignals.load" in client.get("/assets/production_lines.js").text
+
+
+def test_dashboard_offers_every_choice_the_server_takes(client):
+    """The dashboard's lists are typed by hand: a choice the server takes must be in them."""
+    from app.services import line_config
+
+    signals = client.get("/assets/plc_signals.js").text
+    for value in (*line_config.PLC_INPUT_ACTIONS, *line_config.PLC_INPUT_DATA_TYPES,
+                  *line_config.PLC_INPUT_EDGES, *line_config.PLC_INPUT_ALARM_SEVERITIES):
+        assert f'"{value}"' in signals, value
+    low, high = line_config.PLC_INPUT_POLL_LIMITS_MS
+    assert f'min="{low}" max="{high}"' in signals
+    low, high = line_config.PLC_INPUT_DEBOUNCE_LIMITS_MS
+    assert f'min="{low}" max="{high}"' in signals
+    cards = client.get("/assets/production_lines.js").text
+    for value in (*line_config.COUNT_MODES, *line_config.NO_PRODUCT, *line_config.QR_TRIGGERS):
+        assert f'"{value}"' in cards, value
+    assert 'data-f="count_mode"' in cards and 'data-f="no_product"' in cards
+    assert f"{line_config.REASON_NOTHING_DETECTED}:" in cards
+
+
+def test_dashboard_examples_and_limits_match_the_server(client):
+    from app.services import line_config
+    from app.services.send_dispatcher_service import sample_payload
+
+    page = client.get("/dashboard").text
+    assert f'batch: "{sample_payload({})["batch"]}"' in page
+    code = line_config.REJECT_REASON_CODES[line_config.REASON_NOTHING_DETECTED]
+    assert f"{code} nothing detected" in page
+    # A PLC action's confirmation signal and how long it waits for it.
+    assert "PlcSignals.confirmSignals()" in page and "'confirm_input_id'" in page
+    low, high = line_config.CONFIRM_TIMEOUT_LIMITS_MS
+    assert f'id="plcConfirmTimeoutInput" class="form-input" min="{low}" max="{high}"' in page
+    assert f"confirm_timeout_ms ?? {line_config.DEFAULT_CONFIRM_TIMEOUT_MS}" in page
+    # The batch field of the Line dashboard.
+    assert 'id="lineBatchInput"' in page and f'maxlength="{line_config.BATCH_MAX_LENGTH}"' in page
+    assert "/batch`" in page

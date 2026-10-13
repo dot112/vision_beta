@@ -567,13 +567,16 @@ class LineRuntime:
         'no_camera' no camera is assigned (and none feeds Line 1 by default);
         'idle'      none of its cameras is connected yet;
         'fault'     a camera lost its link, or only some of its cameras are connected;
-        'running'   every camera is connected.
+        'running'   every camera is connected, or the line has no camera and
+                    gets its products from a PLC product sensor that is switched on.
         """
         if not self.enabled:
             return "stopped"
         ids = [c["camera_id"] for c in self.cameras] or fallback_cameras
         if not ids:
-            return "no_camera"
+            sensor = any(card.get("action") == "product_sensor" and card.get("enabled", True) is True
+                         for card in self.plc_inputs)
+            return "running" if sensor else "no_camera"
         present = [i for i in ids if i in cameras]
         connected = [i for i in present if getattr(cameras.get(i), "is_connected", False)]
         if len(connected) < len(present):
