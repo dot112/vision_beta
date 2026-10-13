@@ -285,3 +285,19 @@ def test_dashboard_examples_and_limits_match_the_server(client):
     # The batch field of the Line dashboard.
     assert 'id="lineBatchInput"' in page and f'maxlength="{line_config.BATCH_MAX_LENGTH}"' in page
     assert "/batch`" in page
+
+
+def test_dashboard_offers_the_industrial_camera_settings(client):
+    """The camera form's lists and limits are typed by hand: they must be the server's."""
+    import re
+
+    from app.hardware.camera import gige_camera
+
+    form = client.get("/assets/camera_settings.js").text
+    for value in (*gige_camera.TRIGGER_MODES, *gige_camera.TRIGGER_EDGES, *gige_camera.CAMERA_SETTING_KEYS):
+        assert f'"{value}"' in form, value
+    for key, (low, high) in gige_camera.SETTING_LIMITS.items():
+        assert re.search(rf'field\("{key}"[^\n]*min="{low}" max="{high}"', form), key
+    assert f'placeholder="{gige_camera.DEFAULT_TRIGGER_LINE}"' in form
+    cards = client.get("/assets/production_lines.js").text
+    assert "/api/v1/cameras/discover/gige" in cards and 'type: "gige"' in cards

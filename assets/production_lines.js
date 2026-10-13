@@ -827,6 +827,16 @@
     const cardValue = (card, name) => (cardField(card, name) ? cardField(card, name).value : "");
     const cardJob = (card) => cardValue(card, "job") || "counting";
     const cameraRow = (id) => state.cameras.find((c) => c.id === id) || null;
+    const CAMERA_TYPES = { usb: "USB", ip: "IP", gige: "Industrial" };
+    const typeLabel = (type) => CAMERA_TYPES[type] || String(type || "").toUpperCase();
+    // An industrial camera's Trigger as its card shows it now (saved with Apply), else as saved: off, hardware or software.
+    function cameraTrigger(card) {
+        const row = cameraRow(card.dataset.camera);
+        if (!row || row.type !== "gige") return "off";
+        const shown = card.querySelector('[data-cs="trigger_mode"]');
+        const mode = shown ? shown.value : (row.settings || {}).trigger_mode;
+        return mode === "hardware" || mode === "software" ? mode : "off";
+    }
 
     function markDirty() {
         if (setup.dirty) return;
@@ -858,7 +868,7 @@
         const onCards = new Set(cardsOnPage().filter((c) => c !== card).map((c) => c.dataset.camera));
         const options = state.cameras.map((c) => {
             const taken = owners[c.id] ? `on ${owners[c.id]}` : onCards.has(c.id) ? "on another card" : "";
-            return `<option value="${esc(c.id)}" ${c.id === selected ? "selected" : ""} ${taken && c.id !== selected ? "disabled" : ""}>${esc(c.name)} (${esc(String(c.type || "").toUpperCase())})${taken ? ` · ${esc(taken)}` : ""}</option>`;
+            return `<option value="${esc(c.id)}" ${c.id === selected ? "selected" : ""} ${taken && c.id !== selected ? "disabled" : ""}>${esc(c.name)} (${esc(typeLabel(c.type))})${taken ? ` · ${esc(taken)}` : ""}</option>`;
         });
         if (selected && !cameraRow(selected)) options.unshift(`<option value="${esc(selected)}" selected>${esc(selected)} (not found)</option>`);
         return options.join("");
@@ -1146,7 +1156,7 @@
         card.querySelectorAll(".pl-fold").forEach((f) => { f.hidden = !foldShown(f.dataset.fold, job); });
         cardField(card, "badge").textContent = JOBS[job].short;
         cardField(card, "badge").className = `pl-badge job-${job.replace("_qr", "")}`;
-        card.querySelector(".pl-card-sub").textContent = `Camera ${index + 1}${row ? ` · ${String(row.type || "").toUpperCase()}` : ""}`;
+        card.querySelector(".pl-card-sub").textContent = `Camera ${index + 1}${row ? ` · ${typeLabel(row.type)}` : ""}`;
         card.querySelector(".pl-job-note").textContent = JOB_NOTES[job] || "";
         const stationShown = job === "station" || job === "station_qr";
         card.querySelector(".pl-station").hidden = !stationShown;
@@ -1187,6 +1197,32 @@
         card.querySelector(".pl-count-mode-note").textContent = triggerMode
             ? "For parts that stand still (an indexing machine, a rotary table). Each trigger takes one picture and makes one product of it: rejected when a defect class is found, good when a product class is found. A trigger is a PLC signal with the action \"Take a picture\" (PLC signals below) or the API (POST /api/v1/lines/{id}/trigger)."
             : "Products move through the picture and are counted when they cross the count lines.";
+        // An industrial camera's Trigger (Image fold) decides when a picture is taken; these two say what it means.
+        const camTrigger = cameraTrigger(card);
+        if (camTrigger !== "off") {
+            const countNote = card.querySelector(".pl-count-mode-note");
+            countNote.textContent += " " + (triggerMode
+                ? (camTrigger === "hardware"
+                    ? "This camera is on Hardware trigger: every picture it takes is one product, and no PLC signal is needed."
+                    : "This camera is on Software trigger: a PLC signal with the action \"Take a picture\", or the API, makes the server trigger it, and that picture is the product.")
+                : (camTrigger === "hardware"
+                    ? "This camera is on Hardware trigger and is used like a video here, so its trigger has to come fast and steadily (an encoder or a clock). The newest picture is inspected; pictures in between can be skipped."
+                    : "This camera is on Software trigger: it takes a picture only when the server asks, so it cannot count moving products. Choose \"One picture per trigger\", or set its Trigger to Off or Hardware."));
+            const readNote = card.querySelector(".pl-trigger-note");
+            if (trigger === "signal") {
+                readNote.textContent = camTrigger === "hardware"
+                    ? "This camera is on Hardware trigger: every picture it takes is read once, and no PLC signal is needed. It shows on the Line dashboard with every code outlined."
+                    : "Each PLC signal with the action \"Take a picture\" that names this camera makes the server trigger it, and that picture is read (again, up to 3 pictures, while no code reads). It shows on the Line dashboard with every code outlined.";
+            } else if (trigger === "continuous") {
+                readNote.textContent = camTrigger === "hardware"
+                    ? "This camera is on Hardware trigger and is used like a video here: a code that stays in view counts once. For one read per triggered picture choose \"When a PLC signal asks\"."
+                    : "This camera is on Software trigger: it takes a picture only when the server asks, so nothing is read continuously. Choose \"When a PLC signal asks\" or a wire line.";
+            } else {
+                readNote.textContent += camTrigger === "hardware"
+                    ? " This camera is on Hardware trigger: the crossing cannot take a picture, so the camera's newest picture is read."
+                    : " This camera is on Software trigger: the crossing makes the server trigger it.";
+            }
+        }
         const flow = FLOWS[cardValue(card, "flow")] || FLOWS.down;
         const vertical = flow.orientation === "vertical";
         const a = parseFloat(cardValue(card, "line1"));
@@ -1651,8 +1687,10 @@
                         <div class="pl-note">Cameras on another line are greyed out.</div></div>
                     <div class="pl-inline" style="margin-bottom:12px">
                         <button type="button" class="btn-action btn-sm btn-outline" data-act="scan">Scan USB</button>
+                        <button type="button" class="btn-action btn-sm btn-outline" data-act="scan-industrial">Scan industrial cameras</button>
                         <button type="button" class="btn-action btn-sm btn-outline" data-act="network">Add network camera</button>
                     </div>
+                    <div class="pl-add-industrial" style="margin-bottom:12px" hidden></div>
                     <div class="pl-add-network" hidden>
                         <div class="form-group"><label class="form-label">Name</label><input type="text" class="form-input" data-f="net-name" maxlength="64" placeholder="e.g. Infeed camera"></div>
                         <div class="form-group"><label class="form-label">Stream URL</label><input type="text" class="form-input" data-f="net-url" placeholder="rtsp://user:pass@192.168.1.100:554/stream1"></div>
@@ -1674,7 +1712,7 @@
         const free = state.cameras.filter((c) => !owners[c.id] && !onCards.has(c.id));
         const html = (free.length ? "" : `<option value="">No free camera: scan or add one</option>`) + state.cameras.map((c) => {
             const taken = owners[c.id] ? `on ${owners[c.id]}` : onCards.has(c.id) ? "on this line" : "";
-            return `<option value="${esc(c.id)}" ${taken ? "disabled" : ""} ${c.id === keep && !taken ? "selected" : ""}>${esc(c.name)} (${esc(String(c.type || "").toUpperCase())})${taken ? ` · ${esc(taken)}` : ""}</option>`;
+            return `<option value="${esc(c.id)}" ${taken ? "disabled" : ""} ${c.id === keep && !taken ? "selected" : ""}>${esc(c.name)} (${esc(typeLabel(c.type))})${taken ? ` · ${esc(taken)}` : ""}</option>`;
         }).join("");
         if (select.dataset.html === html) return;
         select.dataset.html = html;
@@ -1702,6 +1740,34 @@
                     refreshAddDevices();
                 } catch (err) { toast(`Scan failed: ${err.message}`, "warning"); }
                 button.disabled = false;
+            } else if (act === "scan-industrial") {
+                const box = card.querySelector(".pl-add-industrial");
+                button.disabled = true;
+                box.hidden = false;
+                box.innerHTML = `<div class="pl-note">Looking for cameras on the network and the USB3 ports…</div>`;
+                try {
+                    const found = await api("/api/v1/cameras/discover/gige");
+                    box.innerHTML = found && found.length ? found.map((c) => `
+                        <div class="pl-inline" style="justify-content:space-between;gap:10px;margin-bottom:8px">
+                            <span style="min-width:0;overflow-wrap:anywhere"><strong>${esc(c.model || "Camera")}</strong> · ${esc(c.serial)}${c.interface ? ` · ${esc(c.interface)}` : ""}${c.vendor ? ` · ${esc(c.vendor)}` : ""}</span>
+                            <button type="button" class="btn-action btn-sm btn-blue" data-act="industrial-add" data-serial="${esc(c.serial)}" data-model="${esc(c.model || "Camera")}" ${c.in_use ? "disabled" : ""}>${c.in_use ? "In the camera list" : "Add to the camera list"}</button>
+                        </div>`).join("")
+                        : `<div class="pl-note">No industrial camera was found. Is it powered, on the same network as the server, and not open in another program?</div>`;
+                } catch (err) { box.innerHTML = `<div class="pl-warn" style="margin:0">${esc(err.message)}</div>`; }
+                button.disabled = false;
+            } else if (act === "industrial-add") {
+                button.disabled = true;
+                try {
+                    // An industrial camera is found again by its serial number.
+                    const saved = await api("/api/v1/cameras", { method: "POST", body: { name: `${button.dataset.model} ${button.dataset.serial}`, type: "gige", source: button.dataset.serial, settings: {} } });
+                    await loadCamerasList();
+                    refreshDeviceSelects();
+                    refreshAddDevices();
+                    const select = cardField(card, "add-device");
+                    if (saved && saved.id && cameraRow(saved.id)) { select.value = saved.id; if (select._updateCustomSelectUI) select._updateCustomSelectUI(); }
+                    button.textContent = "In the camera list";
+                    toast(`Industrial camera '${saved.name}' added to the camera list. Set its Trigger on its card, under Image.`, "success");
+                } catch (err) { button.disabled = false; toast(`Could not add the camera: ${err.message}`, "warning"); }
             } else if (act === "net-add") {
                 const name = cardField(card, "net-name").value.trim();
                 const source = cardField(card, "net-url").value.trim();

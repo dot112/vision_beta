@@ -1,8 +1,9 @@
 /*
  * A camera's image and video settings as a form that renders into any container:
  * resolution and FPS, rotation and flips, the ROI (with drag-to-draw on the
- * whole picture), the USB image controls or the IP transport and buffer, and
- * the stream's maximum width and JPEG quality.
+ * whole picture), the USB image controls or the IP transport and buffer, an
+ * industrial camera's trigger, exposure, gain and strobe output, and the
+ * stream's maximum width and JPEG quality.
  *
  * Used by the camera cards on Line setup (assets/production_lines.js) and by
  * the Settings dialog on the Cameras page for a camera that belongs to no line.
@@ -19,6 +20,98 @@
         return `<div class="form-group" style="margin:0"><label class="form-label">${label}</label>${input.replace("<input", `<input data-cs="${name}"`).replace("<select", `<select data-cs="${name}"`)}</div>`;
     }
 
+    // An industrial camera (GigE Vision, USB3 Vision): how each picture is taken, and its exposure.
+    const TRIGGER_NOTES = {
+        off: "The camera sends pictures all the time, like a network camera.",
+        hardware: "Wire the sensor or the PLC output to the camera's own input: the signal to the input pin, the signal's 0 V to the camera's I/O ground (check the voltage range in the camera's manual). The camera takes one picture per edge. With Count mode \"One picture per trigger\" every picture is one product, and with Read codes \"When a PLC signal asks\" every picture is read once. No PLC signal card is needed.",
+        software: "No extra wire. The server sends the camera its trigger command when a PLC signal with the action \"Take a picture\", a wire-line crossing (Read codes) or the API asks. It is late by the PLC's read time and the network, so it suits parts that stand still.",
+    };
+
+    function industrialHtml(cam) {
+        const s = cam.settings || {};
+        const mode = ["hardware", "software"].includes(s.trigger_mode) ? s.trigger_mode : "off";
+        const edge = s.trigger_edge === "falling" ? "falling" : "rising";
+        const opt = (value, label, current) => `<option value="${value}" ${current === value ? "selected" : ""}>${label}</option>`;
+        const lists = `cs-lines-${esc(cam.id)}`;
+        return `
+        <div class="cam-settings-section">Trigger (industrial camera)</div>
+        ${field("trigger_mode", "Trigger", `<select class="form-input">${opt("off", "Off: runs freely", mode)}${opt("hardware", "Hardware: the camera's own input", mode)}${opt("software", "Software: the server triggers it", mode)}</select>`)}
+        <div class="form-hint cs-trigger-note" style="margin:6px 0 10px"></div>
+        <div class="cam-settings-row cs-hardware-only">
+            ${field("trigger_line", "Trigger input", `<input type="text" class="form-input" maxlength="32" placeholder="Line0" list="${lists}-in" value="${esc(s.trigger_line || "")}">`)}
+            ${field("trigger_edge", "Edge", `<select class="form-input">${opt("rising", "Rising", edge)}${opt("falling", "Falling", edge)}</select>`)}
+        </div>
+        <div class="cam-settings-row cs-triggered-only">
+            ${field("trigger_delay_us", "Trigger delay (µs)", `<input type="number" class="form-input" min="0" max="10000000" placeholder="0" value="${esc(s.trigger_delay_us || "")}">`)}
+            <div class="form-hint" style="align-self:end;padding-bottom:8px">From the trigger to the exposure.</div>
+        </div>
+        <div class="cam-settings-row">
+            ${field("exposure_us", "Exposure (µs)", `<input type="number" class="form-input" min="10" max="10000000" placeholder="the camera's own" value="${esc(s.exposure_us ?? "")}">`)}
+            ${field("gain_db", "Gain (dB)", `<input type="number" class="form-input" min="0" max="48" step="0.1" placeholder="the camera's own" value="${esc(s.gain_db ?? "")}">`)}
+        </div>
+        <div class="cam-settings-row">
+            ${field("strobe_line", "Strobe output", `<input type="text" class="form-input" maxlength="32" placeholder="none" list="${lists}-out" value="${esc(s.strobe_line || "")}">`)}
+            <div class="form-hint" style="align-self:end;padding-bottom:8px">A camera line that is on while the sensor is exposed, for a light. Empty = none.</div>
+        </div>
+        <datalist id="${lists}-in"></datalist><datalist id="${lists}-out"></datalist>
+        <div class="form-hint cs-camera-state" style="margin:4px 0 10px">Connect the camera to see its inputs and its last picture.</div>
+        <div class="pl-warn cs-camera-problems" style="margin:0 0 12px" hidden></div>`;
+    }
+
+    function syncIndustrial(root) {
+        const select = get(root, "trigger_mode");
+        if (!select) return;
+        const mode = select.value;
+        root.querySelector(".cs-trigger-note").textContent = TRIGGER_NOTES[mode] || "";
+        root.querySelector(".cs-hardware-only").hidden = mode !== "hardware";
+        root.querySelector(".cs-triggered-only").hidden = mode === "off";
+    }
+
+    // What the connected camera says of itself: its inputs, its last picture, the settings it refused.
+    async function loadIndustrial(root, cameraId) {
+        const state = root.querySelector(".cs-camera-state");
+        if (!state) return;
+        let p = null;
+        try {
+            const res = await fetch(`/api/v1/cameras/${encodeURIComponent(cameraId)}/status`, { cache: "no-store" });
+            if (res.ok) p = (await res.json()).properties || null;
+        } catch (_) { /* shown as not connected */ }
+        if (!root.isConnected) return;
+        const problems = root.querySelector(".cs-camera-problems");
+        if (!p || !p.connected) {
+            state.textContent = "Connect the camera to see its inputs and its last picture.";
+            problems.hidden = true;
+            return;
+        }
+        const fill = (suffix, names) => {
+            const list = root.querySelector(`datalist[id$="${suffix}"]`);
+            if (list) list.innerHTML = (names || []).map((n) => `<option value="${esc(n)}"></option>`).join("");
+        };
+        fill("-in", p.trigger_inputs);
+        fill("-out", p.lines);
+        const label = { off: "Off (runs freely)", hardware: "Hardware", software: "Software" }[p.trigger_mode] || p.trigger_mode;
+        const last = p.last_picture_at
+            ? `last picture at ${new Date(p.last_picture_at * 1000).toLocaleTimeString()} (${p.pictures} so far)`
+            : (p.trigger_mode === "off" ? "no picture yet" : "waiting for a trigger");
+        const lost = p.dropped_frames ? ` · ${p.dropped_frames} picture(s) lost in a burst` : "";
+        const inputs = (p.trigger_inputs || []).length ? ` · inputs: ${p.trigger_inputs.join(", ")}` : "";
+        state.textContent = `${[p.vendor, p.model].filter(Boolean).join(" ") || "Camera"}${p.interface ? ` (${p.interface})` : ""} · trigger now: ${label} · ${last}${lost}${inputs}`;
+        const said = [...(p.setting_problems || []), ...(p.picture_error ? [p.picture_error] : [])];
+        problems.hidden = !said.length;
+        problems.innerHTML = said.length ? `The camera did not take every setting:<br>${said.map((t) => `• ${esc(t)}`).join("<br>")}` : "";
+    }
+
+    function bindIndustrial(root, cameraId) {
+        if (!get(root, "trigger_mode")) return;
+        get(root, "trigger_mode").addEventListener("change", () => syncIndustrial(root));
+        syncIndustrial(root);
+        loadIndustrial(root, cameraId);
+        const timer = setInterval(() => {
+            if (!root.isConnected) { clearInterval(timer); return; }
+            if (!document.hidden && root.offsetParent !== null) loadIndustrial(root, cameraId);
+        }, 3000);
+    }
+
     // The image part: what the camera captures and what goes to the model.
     function imageHtml(cam) {
         const s = cam.settings || {};
@@ -26,8 +119,10 @@
         const rotOption = (value, label) => `<option value="${value}" ${rotation === value ? "selected" : ""}>${label}</option>`;
         const usb = cam.type === "usb";
         const ip = cam.type === "ip";
-        return `
+        const industrial = cam.type === "gige";
+        return `${industrial ? industrialHtml(cam) : ""}
         <div class="cam-settings-section">Resolution</div>
+        ${industrial ? `<div class="form-hint" style="margin:-4px 0 10px">Empty = the camera's own size. A size here scales the picture in the server; FPS does not apply to this camera.</div>` : ""}
         <div class="cam-settings-row triple">
             ${field("width", "Width (px)", `<input type="number" class="form-input" placeholder="640" min="80" max="3840" value="${esc(s.width || "")}">`)}
             ${field("height", "Height (px)", `<input type="number" class="form-input" placeholder="480" min="60" max="2160" value="${esc(s.height || "")}">`)}
@@ -197,7 +292,7 @@
      */
     function render(container, cam, parts = ["image", "video"]) {
         container.innerHTML = parts.map((part) => (part === "image" ? imageHtml(cam) : videoHtml(cam, parts.length > 1))).join("");
-        if (parts.includes("image")) bindROI(container);
+        if (parts.includes("image")) { bindROI(container); bindIndustrial(container, cam.id); }
         return { loadPicture: (stillWanted) => loadPicture(container, cam.id, stillWanted) };
     }
 
@@ -233,6 +328,20 @@
                     buffer_size: parseInt(value("buffer_size"), 10) || 1,
                 });
             }
+        }
+        if (type === "gige" && get(root, "trigger_mode")) {
+            const text = (name) => String(value(name) ?? "").trim();
+            // An empty number is sent as "": the camera then keeps its own exposure or gain.
+            const number = (name) => (text(name) === "" ? "" : Number(text(name)));
+            Object.assign(settings, {
+                trigger_mode: value("trigger_mode"),
+                trigger_line: text("trigger_line"),
+                trigger_edge: value("trigger_edge"),
+                trigger_delay_us: number("trigger_delay_us") || 0,
+                exposure_us: number("exposure_us"),
+                gain_db: number("gain_db"),
+                strobe_line: text("strobe_line"),
+            });
         }
         if (get(root, "stream_max_width")) {
             settings.stream_jpeg_quality = parseInt(value("stream_jpeg_quality"), 10) || 65;
