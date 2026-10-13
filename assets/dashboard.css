@@ -1425,3 +1425,8 @@ button.status-pill:hover { filter: brightness(1.08); }
     .line-batch { width: 100%; }
     .line-batch .form-input { flex: 1; width: auto; min-width: 0; }
 }
+
+/* Line setup, camera card: the triggers ("Take a picture" inputs) that take the camera's picture */
+.pl-triggers { margin-top: 10px; }
+.pl-trigger-list { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 2px; }
+.pl-trigger-list label { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }

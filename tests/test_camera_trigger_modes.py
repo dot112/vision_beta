@@ -424,7 +424,7 @@ def _warned(cameras, modes, plc_inputs=()):
 
 def test_a_hardware_code_reader_needs_no_signal_card():
     reader = {"camera_id": "cam", "role": "qr", "qr_trigger": "signal"}
-    assert any("no signal card" in w for w in _warned([reader], {}))                # a free running camera does
+    assert any("an input asks" in w for w in _warned([reader], {}))                # a free running camera does
     assert _warned([reader], {"cam": "hardware"}) == []
 
 

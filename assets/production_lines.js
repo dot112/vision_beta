@@ -441,7 +441,7 @@
         try { pending = Boolean(_plcActionPendingChanges) || Boolean(_sendActionPendingChanges); } catch (_) { pending = false; }
         if (window.PlcSignals && window.PlcSignals.hasPending()) pending = true;
         if (pending || setup.dirty) {
-            const what = setup.dirty ? "The line setup (cameras and their settings)" : "The PLC action, PLC signal or send cards";
+            const what = setup.dirty ? "The line setup (cameras and their settings)" : "The output action, input or send cards";
             confirmAction("Unsaved changes", `${what} of this line ${setup.dirty ? "has" : "have"} changes that are not saved. Switch lines and discard them?`, () => { setup.dirty = false; go(); });
             const select = byId("plLineSelect");
             if (select) { select.value = state.lineId; if (select._refreshCustomSelect) select._refreshCustomSelect(); }
@@ -748,7 +748,7 @@
                 await api(`/api/v1/lines/${encodeURIComponent(id)}/clone`, { method: "POST", body: { name: newName.trim() } });
                 toast("Line copied", "success");
             } else if (act === "delete") {
-                confirmAction("Delete production line", `Delete ${name}? Its logic and PLC action cards are removed; its cameras stay connected but unassigned.`, async () => {
+                confirmAction("Delete production line", `Delete ${name}? Its logic and output actions are removed; its cameras stay connected but unassigned.`, async () => {
                     try {
                         await api(`/api/v1/lines/${encodeURIComponent(id)}`, { method: "DELETE" });
                         if (id === state.lineId) switchLine(PRIMARY);
@@ -986,7 +986,8 @@
             `<div class="form-group" style="margin:0"><label class="form-label">${label}</label><input type="number" class="form-input" data-track="${k}" min="${min}" max="${max}" step="${step}" placeholder="${esc(lineTracking[k] ?? def)}" value="${esc(numOrEmpty(tracking[k]))}"></div>`).join("");
         const countingBody = `
             <div class="form-group"><label class="form-label">Count mode</label><select class="form-input" data-f="count_mode">${option("track", "Moving products cross count lines", countMode)}${option("trigger", "One picture per trigger", countMode)}</select>
-                <div class="pl-note pl-count-mode-note"></div></div>
+                <div class="pl-note pl-count-mode-note"></div>
+                <div class="pl-triggers" data-for="count" hidden></div></div>
             <div class="form-group pl-no-product"><label class="form-label">When nothing is found</label><select class="form-input" data-f="no_product">${option("ignore", "Ignore: no product is counted", noProduct)}${option("reject", "Reject: counted as a rejected product", noProduct)}${option("good", "Good: counted as a good product", noProduct)}</select>
                 <div class="pl-note">What a trigger gives when its picture shows none of this camera's classes. A reject then has the reason "nothing detected".</div></div>
             <div class="pl-track-fields">
@@ -1009,9 +1010,10 @@
             <div class="form-group"><label class="form-label">Code type</label><select class="form-input" data-f="code_type">${codeTypeOptions(codeType)}</select>
                 <div class="pl-note">Only codes of this type are read; any other code in the picture is ignored. 2D and 1D read every type of that kind.</div></div>
             <div class="form-group"><label class="form-label">Read codes</label><select class="form-input" data-f="qr_trigger">
-                ${option("continuous", "Continuously, on every frame", trigger1)}${option("line1", "One picture when a product crosses wire line 1", trigger1)}${option("line2", "One picture when a product crosses wire line 2", trigger1)}${option("signal", "When a PLC signal asks", trigger1)}</select>
+                ${option("continuous", "Continuously, on every frame", trigger1)}${option("line1", "One picture when a product crosses wire line 1", trigger1)}${option("line2", "One picture when a product crosses wire line 2", trigger1)}${option("signal", "When an input asks", trigger1)}</select>
                 <div class="pl-note pl-trigger-note"></div>
-                <div class="pl-warn pl-trigger-warn" hidden>The counting camera takes one picture per trigger and tracks nothing across its count lines, so no product crosses a wire line. Choose "When a PLC signal asks" or "Continuously".</div></div>
+                <div class="pl-triggers" data-for="codes" hidden></div>
+                <div class="pl-warn pl-trigger-warn" hidden>The counting camera takes one picture per trigger and tracks nothing across its count lines, so no product crosses a wire line. Choose "When an input asks" or "Continuously".</div></div>
             <div class="form-group pl-trigger-delay"><label class="form-label pl-trigger-delay-label">Picture delay after the crossing (ms)</label>
                 <input type="number" class="form-input" data-f="qr_delay" min="0" max="10000" step="10" value="${esc(cam.qr_trigger_delay_ms || 0)}">
                 <div class="pl-note">For a code camera further along the belt: how long the product takes to reach it. 0 = at once.</div></div>
@@ -1174,7 +1176,7 @@
         card.querySelector(".pl-trigger-delay").hidden = trigger === "continuous";
         card.querySelector(".pl-trigger-delay-label").textContent = `Picture delay after the ${trigger === "signal" ? "signal" : "crossing"} (ms)`;
         card.querySelector(".pl-trigger-note").textContent = trigger === "signal"
-            ? "A picture is taken each time a PLC signal with the action \"Take a picture\" names this camera (add it under PLC signals below). It shows on the Line dashboard with every code outlined."
+            ? "A picture is taken each time an input with the action \"Take a picture\" names this camera (add it under Inputs below). It shows on the Line dashboard with every code outlined."
             : "A picture is taken each time the counting camera sees a product cross the chosen wire line. It shows on the Line dashboard with every code outlined.";
         // A counting camera in trigger mode tracks nothing, so no product crosses a wire line.
         const noCrossings = cardsOnPage().some((c) => isCountingJob(cardJob(c)) && cardValue(c, "count_mode") === "trigger");
@@ -1194,33 +1196,31 @@
         const triggerMode = cardValue(card, "count_mode") === "trigger";
         card.querySelector(".pl-no-product").hidden = !triggerMode;
         card.querySelector(".pl-track-fields").hidden = triggerMode;
-        card.querySelector(".pl-count-mode-note").textContent = triggerMode
-            ? "For parts that stand still (an indexing machine, a rotary table). Each trigger takes one picture and makes one product of it: rejected when a defect class is found, good when a product class is found. A trigger is a PLC signal with the action \"Take a picture\" (PLC signals below) or the API (POST /api/v1/lines/{id}/trigger)."
-            : "Products move through the picture and are counted when they cross the count lines.";
-        // An industrial camera's Trigger (Image fold) decides when a picture is taken; these two say what it means.
         const camTrigger = cameraTrigger(card);
+        const COUNT_NOTES = {
+            track: { off: "Counts products as they cross the count lines.",
+                     hardware: "Counts products as they cross the count lines. The camera's trigger must come fast and steadily.",
+                     software: "A camera on Software trigger cannot count moving products. Choose One picture per trigger." },
+            trigger: { off: "One picture per trigger; each picture is one product.",
+                       hardware: "Each picture the camera takes is one product. No input is needed.",
+                       software: "One picture per trigger; each picture is one product." },
+        };
+        card.querySelector(".pl-count-mode-note").textContent = COUNT_NOTES[triggerMode ? "trigger" : "track"][camTrigger];
+        renderTriggers(card, triggerMode && isVisionJob(job), Boolean(JOBS[job].codes) && trigger === "signal", camTrigger);
         if (camTrigger !== "off") {
-            const countNote = card.querySelector(".pl-count-mode-note");
-            countNote.textContent += " " + (triggerMode
-                ? (camTrigger === "hardware"
-                    ? "This camera is on Hardware trigger: every picture it takes is one product, and no PLC signal is needed."
-                    : "This camera is on Software trigger: a PLC signal with the action \"Take a picture\", or the API, makes the server trigger it, and that picture is the product.")
-                : (camTrigger === "hardware"
-                    ? "This camera is on Hardware trigger and is used like a video here, so its trigger has to come fast and steadily (an encoder or a clock). The newest picture is inspected; pictures in between can be skipped."
-                    : "This camera is on Software trigger: it takes a picture only when the server asks, so it cannot count moving products. Choose \"One picture per trigger\", or set its Trigger to Off or Hardware."));
             const readNote = card.querySelector(".pl-trigger-note");
             if (trigger === "signal") {
                 readNote.textContent = camTrigger === "hardware"
-                    ? "This camera is on Hardware trigger: every picture it takes is read once, and no PLC signal is needed. It shows on the Line dashboard with every code outlined."
-                    : "Each PLC signal with the action \"Take a picture\" that names this camera makes the server trigger it, and that picture is read (again, up to 3 pictures, while no code reads). It shows on the Line dashboard with every code outlined.";
+                    ? "Every picture the camera takes is read once. No input is needed."
+                    : "Each ticked trigger makes the server trigger the camera, and that picture is read.";
             } else if (trigger === "continuous") {
                 readNote.textContent = camTrigger === "hardware"
-                    ? "This camera is on Hardware trigger and is used like a video here: a code that stays in view counts once. For one read per triggered picture choose \"When a PLC signal asks\"."
-                    : "This camera is on Software trigger: it takes a picture only when the server asks, so nothing is read continuously. Choose \"When a PLC signal asks\" or a wire line.";
+                    ? "Used like a video: a code that stays in view counts once."
+                    : "A camera on Software trigger reads nothing continuously. Choose \"When an input asks\" or a wire line.";
             } else {
                 readNote.textContent += camTrigger === "hardware"
-                    ? " This camera is on Hardware trigger: the crossing cannot take a picture, so the camera's newest picture is read."
-                    : " This camera is on Software trigger: the crossing makes the server trigger it.";
+                    ? " The camera's newest picture is read."
+                    : " The crossing makes the server trigger the camera.";
             }
         }
         const flow = FLOWS[cardValue(card, "flow")] || FLOWS.down;
@@ -1253,7 +1253,7 @@
         const box = card.querySelector(".pl-join-late");
         box.hidden = !late.length;
         box.textContent = late.length
-            ? `Fires late: ${late.map((c) => `PLC action '${c.name || c.id}' (${parseInt(c.delay_ms ?? c.travel_delay_ms, 10) || 0} ms)`).join(", ")} ${late.length === 1 ? "has a travel delay" : "have travel delays"} shorter than ${latest} ms. Make ${late.length === 1 ? "it" : "them"} longer on the PLC page.`
+            ? `Fires late: ${late.map((c) => `Output action '${c.name || c.id}' (${parseInt(c.delay_ms ?? c.travel_delay_ms, 10) || 0} ms)`).join(", ")} ${late.length === 1 ? "has a travel delay" : "have travel delays"} shorter than ${latest} ms. Make ${late.length === 1 ? "it" : "them"} longer on the PLC page.`
             : "";
     }
 
@@ -1483,6 +1483,9 @@
             initialSettings: null,
             feed: null,
             isNew: Boolean(cam.isNew),
+            // The trigger numbers ticked on this card (see renderTriggers).
+            triggers: new Set((cam.triggers || []).map(Number)),
+            namedMerged: false,
         });
         grid.insertBefore(document.createRange().createContextualFragment(cameraCardHtml(key, cam, trigger, openSet)), byId("plAddCard"));
         const card = grid.querySelector(`.pl-card[data-key="${key}"]`);
@@ -1538,6 +1541,12 @@
         });
         card.addEventListener("change", (e) => {
             const t = e.target;
+            if (t.dataset.trigger) {
+                const ticked = cardTriggers(card);
+                const number = Number(t.dataset.trigger);
+                if (t.checked) ticked.add(number); else ticked.delete(number);
+                card.querySelectorAll(".pl-triggers").forEach((box) => { box.dataset.html = ""; });
+            }
             if (t.matches('.pl-class input[type="checkbox"]')) {
                 const own = t.closest("[data-kind]");
                 // A class is a product or a defect, not both: ticking it here unticks it in the other list.
@@ -1818,6 +1827,40 @@
         });
     }
 
+    // ── Triggers: which "Take a picture" inputs take this camera's picture ────
+
+    function cardTriggers(card) {
+        const info = setup.cards.get(card.dataset.key);
+        return info ? info.triggers : new Set();
+    }
+
+    // The tick boxes under Count mode and under Read codes: two views of the camera's one list.
+    function renderTriggers(card, forCount, forCodes, camTrigger) {
+        const info = setup.cards.get(card.dataset.key);
+        if (!info) return;
+        const inputs = window.PlcSignals && PlcSignals.triggers ? PlcSignals.triggers() : [];
+        // An input saved before cameras chose their triggers names its camera itself: shown ticked, once.
+        if (!info.namedMerged && inputs.length) {
+            inputs.forEach((t) => { if (t.cameras.includes(card.dataset.camera)) info.triggers.add(t.no); });
+            info.namedMerged = true;
+        }
+        const known = new Set(inputs.map((t) => t.no));
+        const rows = inputs.map((t) => ({ no: t.no, label: `Trigger ${t.no}${t.name ? ` · ${t.name}` : ""}${t.enabled ? "" : " (switched off)"}` }));
+        [...info.triggers].filter((n) => !known.has(n)).forEach((n) => rows.push({ no: n, label: `Trigger ${n} (no input has this number)` }));
+        rows.sort((a, b) => a.no - b.no);
+        const html = `<label class="form-label">Triggers that take its picture</label>` + (rows.length
+            ? `<div class="pl-trigger-list">${rows.map((r) => `<label><input type="checkbox" data-trigger="${r.no}" ${info.triggers.has(r.no) ? "checked" : ""}> ${esc(r.label)}</label>`).join("")}</div>`
+            : `<div class="pl-note">No trigger yet. Add an input with the action "Take a picture" under Inputs below.</div>`);
+        card.querySelectorAll(".pl-triggers").forEach((box) => {
+            // A camera on Hardware trigger takes its own pictures: no input is needed.
+            box.hidden = !(box.dataset.for === "count" ? forCount : forCodes) || camTrigger === "hardware";
+            if (box.dataset.html !== html) { box.dataset.html = html; box.innerHTML = html; }
+        });
+    }
+
+    // The inputs changed (assets/plc_signals.js): the cards list the line's triggers again.
+    document.addEventListener("pl:inputs", () => { if (byId("plCamGrid")) syncLineSetup(); });
+
     // ── Render ────────────────────────────────────────────────────────────────
 
     async function renderLineSetup() {
@@ -1967,6 +2010,9 @@
                 qr_no_read: cardValue(card, "qr_no_read") || "ignore",
             });
         }
+        // The triggers ticked on the card, while the camera takes one picture per trigger.
+        const onTrigger = entry.count_mode === "trigger" || (spec.codes && entry.qr_trigger === "signal");
+        entry.triggers = onTrigger ? [...cardTriggers(card)].sort((a, b) => a - b) : [];
         return entry;
     }
 

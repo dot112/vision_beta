@@ -512,6 +512,9 @@ class CountingService:
             "line_name": self.line_name,
             "camera_id": crossing["camera_id"],
         }
+        # The number of the "Take a picture" input that asked for this product's picture, when one did.
+        if crossing.get("trigger_no") is not None:
+            payload["trigger_no"] = crossing["trigger_no"]
         plc_event = {
             "event_id": f"{track_id}_{current_total}",
             "event_type": "crossing",

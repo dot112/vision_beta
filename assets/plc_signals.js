@@ -39,10 +39,10 @@
           note: "One picture with the camera below: a code reader reads its codes, a vision camera inspects one product." },
         { id: "set_batch", label: "Set the batch number", edge: false,
           note: "The value becomes the line's batch number, at the first read and each time it changes. At most 64 characters." },
-        { id: "confirm_card", label: "Confirm a PLC action", edge: true,
-          note: "Tells the line that a PLC action really happened, for example a sensor that sees the rejected product leave the belt." },
+        { id: "confirm_card", label: "Confirm an output action", edge: true,
+          note: "Tells the line that an output action really happened, for example a sensor that sees the rejected product leave the belt." },
         { id: "alarm", label: "Raise an alarm", edge: false,
-          note: "An alarm is active while the value is on and clears when it goes off. PLC actions and send cards with the Alarm trigger can react to it." },
+          note: "An alarm is active while the value is on and clears when it goes off. Output actions and send cards with the Alarm trigger can react to it." },
     ];
     const actionOf = (id) => ACTIONS.find((a) => a.id === id) || ACTIONS[0];
 
@@ -95,7 +95,7 @@
         loadError: "",
         inFlight: false,
         status: {},                // card id -> the server's status row
-        running: true,             // false: the server is not reading PLC signals at all
+        running: true,             // false: the server is not reading inputs at all
         statusBusy: false,
         timer: null,
         draft: null,               // the card open in the dialog
@@ -184,7 +184,12 @@
             debounce_ms: clamp(card.debounce_ms, 0, 5000, 0),
             action: action.id,
         };
-        if (action.id === "capture") out.camera_id = card.camera_id || "";
+        if (action.id === "capture") {
+            out.trigger_no = clamp(card.trigger_no, 1, MAX_TRIGGER_NO, nextTriggerNo(card.id));
+            // A card saved before cameras chose their triggers still names its camera; the server turns that into a tick.
+            const named = [...new Set([...(card.camera_ids || []), card.camera_id].filter(Boolean))];
+            if (named.length) out.camera_ids = named;
+        }
         if (action.id === "alarm") {
             out.alarm_text = String(card.alarm_text || "").trim();
             out.alarm_severity = card.alarm_severity || "warning";
@@ -194,11 +199,50 @@
     const signature = (cards) => JSON.stringify(cards.map(cleanCard));
     const hasPending = () => (state.applied === null ? state.cards.length > 0 : signature(state.cards) !== state.applied);
 
-    // ── Load, apply ───────────────────────────────────────────────────────────
+    // ── Trigger numbers ────────────────────────────────────────────
+    // A "Take a picture" input has a trigger number. A camera ticks, on its own card, the
+    // triggers that take its picture (assets/production_lines.js reads them with triggers()).
+
+    const MAX_TRIGGER_NO = 99;
+    const takesPictures = (card) => card.action === "capture";
+
+    function nextTriggerNo(exceptId) {
+        const used = new Set(state.cards.filter((c) => c.id !== exceptId && takesPictures(c)).map((c) => Number(c.trigger_no)));
+        let number = 1;
+        while (used.has(number)) number += 1;
+        return number;
+    }
+
+    // An input saved before trigger numbers existed gets one here, as the server gives it on the next save.
+    function numberTriggers(cards) {
+        cards.filter(takesPictures).forEach((card) => {
+            if (!(Number(card.trigger_no) >= 1)) card.trigger_no = nextTriggerNo(card.id);
+        });
+    }
+
+    // The line's triggers as edited on this page: [{no, name, enabled, cameras}]. ``cameras``: the
+    // camera ids an older save still names on the input itself.
+    function triggers() {
+        return state.cards.filter(takesPictures).map((card) => ({
+            no: Number(card.trigger_no), name: card.name || "", enabled: card.enabled !== false,
+            cameras: [...new Set([...(card.camera_ids || []), card.camera_id].filter(Boolean))],
+        })).filter((t) => t.no >= 1).sort((a, b) => a.no - b.no);
+    }
+
+    // The names of the line's cameras (as saved) that have this trigger ticked.
+    function camerasOn(card) {
+        const number = Number(card.trigger_no);
+        const named = new Set([...(card.camera_ids || []), card.camera_id].filter(Boolean));
+        return state.cameras.filter((cam) => (cam.triggers || []).includes(number) || named.has(cam.camera_id))
+            .map((cam) => cameraName(cam.camera_id));
+    }
+
+    // ── Load, apply ────────────────────────────────────────────────
 
     function setFromServer(line) {
         const cards = Array.isArray(line.plc_inputs) ? line.plc_inputs : [];
         state.cards = cards.map((card) => ({ ...card }));
+        numberTriggers(state.cards);
         state.applied = signature(state.cards);
         state.savedActions = new Map(cards.map((card) => [card.id, card.action]));
         state.cameras = Array.isArray(line.cameras) ? line.cameras : [];
@@ -229,7 +273,7 @@
     async function apply() {
         if (state.inFlight) return false;
         if (!signedIn() || !supervisor()) {
-            toast("Sign in with a supervisor account to apply PLC signals.", "warning");
+            toast("Sign in with a supervisor account to apply inputs.", "warning");
             return false;
         }
         const wanted = state.lineId || selectedLine();
@@ -244,7 +288,7 @@
             const working = state.cards;
             setFromServer(line);
             if (edited) state.cards = working;
-            toast(line.warning || (edited ? "PLC signals applied; newer edits are still unsaved." : "PLC signals applied to the server."),
+            toast(line.warning || (edited ? "Inputs applied; newer edits are still unsaved." : "Inputs applied to the server."),
                 line.warning ? "warning" : "success");
             render();
             refreshStatus();
@@ -252,7 +296,7 @@
             if (window.ProductionLines && window.ProductionLines.refreshDetail) window.ProductionLines.refreshDetail().catch(() => {});
             return true;
         } catch (e) {
-            toast(`PLC signals were not applied: ${e.message}`, "warning");
+            toast(`Inputs were not applied: ${e.message}`, "warning");
             return false;
         } finally {
             state.inFlight = false;
@@ -306,7 +350,7 @@
         return {
             channelName: channel ? (channel.name || "PLC") : "No channel chosen",
             protocol: channel ? protocolLabel(channel) : "NONE",
-            does: actionOf(card.action).label + (card.action === "capture" && card.camera_id ? ` · ${cameraName(card.camera_id)}` : ""),
+            does: actionOf(card.action).label + (takesPictures(card) && card.trigger_no ? ` · Trigger ${card.trigger_no}` : ""),
             when: whenText(card),
             address: card.address || "—",
             every: `${clamp(card.poll_ms, 50, 10000, DEFAULT_POLL_MS)} ms`,
@@ -324,7 +368,7 @@
     // The three chips of a card: last value, last change, error.
     function chipsHtml(card) {
         if (!state.savedActions.has(card.id)) return `<span class="tag neutral">Not applied yet</span>`;
-        if (!state.running) return `<span class="tag warn">The server is not reading PLC signals</span>`;
+        if (!state.running) return `<span class="tag warn">The server is not reading inputs</span>`;
         const row = state.status[card.id];
         if (!row) return `<span class="tag neutral">Waiting for the first read…</span>`;
         if (!row.enabled) return `<span class="tag neutral">Switched off</span>`;
@@ -387,7 +431,7 @@
         if (state.loadError) {
             container.innerHTML = `
                 <div class="empty-state">
-                    <b>Could not load the PLC signals</b>
+                    <b>Could not load the inputs</b>
                     <p>${esc(state.loadError)}</p>
                     <button type="button" class="btn-action btn-outline" onclick="PlcSignals.load()">Try again</button>
                 </div>`;
@@ -396,9 +440,9 @@
         if (!state.cards.length) {
             container.innerHTML = `
                 <div class="empty-state">
-                    <b>No PLC signals yet</b>
+                    <b>No inputs yet</b>
                     <p>A signal reads a PLC address and acts on the line, for example a start button, a product sensor or the batch number the PLC holds.</p>
-                    <button type="button" class="btn-action btn-blue restricted-l2" onclick="PlcSignals.add()">Add signal</button>
+                    <button type="button" class="btn-action btn-blue restricted-l2" onclick="PlcSignals.add()">Add input</button>
                 </div>`;
             if (typeof applyRoleRestrictions === "function") applyRoleRestrictions(container);
             return;
@@ -421,8 +465,8 @@
                 return `
                     <tr class="${card.enabled === false ? "is-off" : ""}" id="plcSig_${id}" data-signal-id="${id}">
                         <td data-label="On" class="col-switch">${switchHtml(card)}</td>
-                        <td data-label="Signal"><b>${esc(card.name || "PLC signal")}</b><span class="cell-sub">${esc(s.does)}</span></td>
-                        <td data-label="PLC"><span class="cell-ellipsis" style="display:inline-block;max-width:180px;vertical-align:middle" title="${esc(s.channelName)}">${esc(s.channelName)}</span> <span class="badge ${channelOf(card) ? "badge-plc" : "badge-outline"}">${esc(s.protocol)}</span></td>
+                        <td data-label="Signal"><b>${esc(card.name || "Input")}</b><span class="cell-sub">${esc(s.does)}</span></td>
+                        <td data-label="Controller"><span class="cell-ellipsis" style="display:inline-block;max-width:180px;vertical-align:middle" title="${esc(s.channelName)}">${esc(s.channelName)}</span> <span class="badge ${channelOf(card) ? "badge-plc" : "badge-outline"}">${esc(s.protocol)}</span></td>
                         <td data-label="Address" class="cell-mono">${esc(s.address)}</td>
                         <td data-label="When">${esc(s.when)}<span class="cell-sub">every ${esc(s.every)}</span></td>
                         <td data-label="Now"><div class="sig-chips" id="plcSigChips_${id}"></div></td>
@@ -431,7 +475,7 @@
             }).join("");
             container.innerHTML = `
                 <div class="table-responsive"><table class="table-compact table-mobile-cards plc-list-table">
-                    <thead><tr><th class="col-switch">On</th><th>Signal</th><th>PLC</th><th>Address</th><th>When</th><th>Now</th><th class="col-actions"><span class="sr-only">Actions</span></th></tr></thead>
+                    <thead><tr><th class="col-switch">On</th><th>Input</th><th>Controller</th><th>Address</th><th>When</th><th>Now</th><th class="col-actions"><span class="sr-only">Actions</span></th></tr></thead>
                     <tbody>${rows}</tbody>
                 </table></div>`;
         } else {
@@ -442,7 +486,7 @@
                     <div class="dispatch-card plc-action-card${card.enabled === false ? " is-off" : ""}" id="plcSig_${id}" data-signal-id="${id}">
                         <div>
                             <div class="plc-card-head">
-                                <b class="plc-card-name" title="${esc(card.name || "PLC signal")}">${esc(card.name || "PLC signal")}</b>
+                                <b class="plc-card-name" title="${esc(card.name || "Input")}">${esc(card.name || "Input")}</b>
                                 <div class="row-actions">${switchHtml(card)}${deleteHtml}</div>
                             </div>
                             <div class="plc-target">
@@ -464,11 +508,13 @@
         }
         paintStatus();
         if (typeof applyRoleRestrictions === "function") applyRoleRestrictions(container);
+        // The camera cards list the line's triggers: tell them the inputs changed.
+        document.dispatchEvent(new CustomEvent("pl:inputs"));
     }
 
     function add() {
-        if (state.loadError) { toast("The PLC signals of this line could not be loaded. Try again first.", "warning"); return; }
-        if (state.cards.length >= MAX_SIGNALS) { toast(`A line can have at most ${MAX_SIGNALS} PLC signal cards.`, "warning"); return; }
+        if (state.loadError) { toast("The inputs of this line could not be loaded. Try again first.", "warning"); return; }
+        if (state.cards.length >= MAX_SIGNALS) { toast(`A line can have at most ${MAX_SIGNALS} inputs.`, "warning"); return; }
         const channels = plcChannels();
         const channel = channels.find((c) => !unreadable(c)) || channels[0];
         const card = {
@@ -497,7 +543,7 @@
         if (!card) return;
         const named = confirmedNames(id);
         if (named) {
-            toast(`'${card.name}' confirms the PLC action ${named}. Choose another confirmation signal there first.`, "warning");
+            toast(`'${card.name}' confirms the output action ${named}. Choose another confirmation signal there first.`, "warning");
             return;
         }
         state.cards = state.cards.filter((c) => c.id !== id);
@@ -532,9 +578,16 @@
     function saveDialog() {
         const draft = state.draft;
         if (!draft) { closeDialog(); return; }
-        if (draft.action === "capture" && !draft.camera_id) {
-            toast("Choose the camera that takes the picture.", "warning");
-            return;
+        if (takesPictures(draft)) {
+            const number = Number(draft.trigger_no);
+            if (!Number.isInteger(number) || number < 1 || number > MAX_TRIGGER_NO) {
+                toast(`The trigger number must be a whole number from 1 to ${MAX_TRIGGER_NO}.`, "warning");
+                return;
+            }
+            if (state.cards.some((c) => c.id !== draft.id && takesPictures(c) && Number(c.trigger_no) === number)) {
+                toast(`Trigger ${number} is another input's number. Give this one its own.`, "warning");
+                return;
+            }
         }
         const index = state.cards.findIndex((c) => c.id === draft.id);
         if (index >= 0) state.cards[index] = { ...draft, ...cleanCard(draft) };
@@ -550,14 +603,12 @@
         if (prop === "action") {
             const type = DATA_TYPES.find((t) => t.id === draft.data_type);
             if (type && type.only && type.only !== value) draft.data_type = "auto";
-            if (value === "capture" && !state.cameras.some((cam) => cam.camera_id === draft.camera_id && takesSignal(cam))) {
-                draft.camera_id = (state.cameras.find(takesSignal) || {}).camera_id || "";
-            }
+            if (value === "capture" && !(Number(draft.trigger_no) >= 1)) draft.trigger_no = nextTriggerNo(draft.id);
             if (value === "alarm" && !draft.alarm_severity) draft.alarm_severity = "warning";
         }
         if (prop === "name") {
             const title = byId("plcSignalModalTitle");
-            if (title) title.textContent = value || "PLC signal";
+            if (title) title.textContent = value || "Input";
         }
         if (redraw) refreshDialog();
     }
@@ -567,7 +618,7 @@
         const draft = state.draft;
         if (!body || !draft) return;
         const title = byId("plcSignalModalTitle");
-        if (title) title.textContent = draft.name || "PLC signal";
+        if (title) title.textContent = draft.name || "Input";
 
         const action = actionOf(draft.action);
         const channels = plcChannels();
@@ -576,7 +627,7 @@
         const visionLine = lineHasVision();
         const option = (value, label, current, extra = "") => `<option value="${esc(value)}" ${value === current ? "selected" : ""} ${extra}>${esc(label)}</option>`;
 
-        let channelOptions = option("", "— Choose a PLC channel —", draft.plc_endpoint_id || "");
+        let channelOptions = option("", "— Choose a controller —", draft.plc_endpoint_id || "");
         channels.forEach((c) => {
             const dead = unreadable(c);
             channelOptions += option(c.id, `${c.name || "PLC"} [${protocolLabel(c)} - ${c.host}:${c.port}]${dead ? " · cannot be read" : ""}`,
@@ -593,21 +644,14 @@
             .map((t) => option(t.id, t.label, draft.data_type || "auto")).join("");
         const usesEdge = action.edge && draft.data_type !== "counter";
 
-        const eligible = state.cameras.filter(takesSignal);
-        let cameraOptions = option("", "— Choose a camera —", draft.camera_id || "");
-        eligible.forEach((cam) => {
-            cameraOptions += option(cam.camera_id, `${cameraName(cam.camera_id)} (${cam.count_mode === "trigger" ? "vision camera, one picture per trigger" : "reads codes"})`, draft.camera_id);
-        });
-        if (draft.camera_id && !eligible.some((cam) => cam.camera_id === draft.camera_id)) {
-            cameraOptions += option(draft.camera_id, `${cameraName(draft.camera_id)} (does not take a picture on a signal)`, draft.camera_id);
-        }
+        const usedBy = takesPictures(draft) ? camerasOn(draft) : [];
 
         const protocol = (channel && PROTOCOLS[protocolKey(channel)]) || null;
 
         body.innerHTML = `
             <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px">
                 <div class="form-group" style="flex:1;margin:0">
-                    <label class="form-label" for="plcSigName">Signal name</label>
+                    <label class="form-label" for="plcSigName">Input name</label>
                     <input type="text" id="plcSigName" class="form-input" maxlength="128" value="${esc(draft.name)}" oninput="PlcSignals.set('name', this.value)" />
                 </div>
                 <div>
@@ -620,10 +664,10 @@
             </div>
 
             <div class="form-group" style="margin:0">
-                <label class="form-label" for="plcSigChannel">PLC channel${channel ? ` <span style="font-weight:600;color:var(--primary-color)">· ${esc(protocolLabel(channel))}</span>` : ""}</label>
+                <label class="form-label" for="plcSigChannel">Controller${channel ? ` <span style="font-weight:600;color:var(--primary-color)">· ${esc(protocolLabel(channel))}</span>` : ""}</label>
                 <select id="plcSigChannel" class="form-input" onchange="PlcSignals.set('plc_endpoint_id', this.value, true)">${channelOptions}</select>
                 ${unreadable(channel) ? `<div class="sig-note warn">This channel is Generic TCP and cannot be read. Choose another channel.</div>` : ""}
-                <div class="sig-note">${channels.length ? "" : "No PLC channel yet: add one under Connections. "}A Generic TCP channel cannot be read: it only sends.</div>
+                <div class="sig-note">${channels.length ? "" : "No controller yet: add one under Connections. "}A Generic TCP channel cannot be read: it only sends.</div>
             </div>
 
             <div class="form-group" style="margin:0">
@@ -632,7 +676,7 @@
                 <div class="sig-note">${esc(action.note)}</div>
                 ${action.id === "confirm_card" ? `<div class="sig-note">${named
                     ? `<b>Confirms:</b> ${esc(named)}. To change what this signal does or delete it, first choose another confirmation signal in ${actionsNaming(draft.id).length === 1 ? "that action" : "those actions"}.`
-                    : "No PLC action names this signal yet. Pick it as the <b>Confirmation signal</b> in a PLC action's settings."}</div>` : ""}
+                    : "No output action names this signal yet. Pick it as the <b>Confirmation signal</b> in an output action's settings."}</div>` : ""}
                 ${action.id === "product_sensor" && visionLine ? `<div class="sig-note warn">This line has a vision camera, which counts the products. A product sensor is only for a line without one; use Take a picture to trigger a camera.</div>` : ""}
             </div>
 
@@ -670,11 +714,11 @@
 
             ${action.id === "capture" ? `
             <div class="form-group" style="margin:0">
-                <label class="form-label" for="plcSigCamera">Camera</label>
-                <select id="plcSigCamera" class="form-input" onchange="PlcSignals.set('camera_id', this.value)">${cameraOptions}</select>
-                <div class="sig-note${eligible.length ? "" : " warn"}">${eligible.length
-                    ? "Cameras of this line that take a picture on a signal."
-                    : "No camera of this line takes a picture on a signal."} On its camera card, set a vision camera's Count mode to <b>One picture per trigger</b>, or a code reader's Read codes to <b>When a PLC signal asks</b>, and save the line setup.</div>
+                <label class="form-label" for="plcSigTrigger">Trigger number</label>
+                <input type="number" id="plcSigTrigger" class="form-input" min="1" max="99" step="1" value="${esc(draft.trigger_no || "")}" oninput="PlcSignals.set('trigger_no', parseInt(this.value, 10) || '')">
+                <div class="sig-note${usedBy.length ? "" : " warn"}">${usedBy.length
+                    ? `Takes a picture with: ${esc(usedBy.join(", "))}.`
+                    : "No camera uses this trigger yet."} A camera chooses its triggers on its own card: under <b>Counting</b> (Count mode <b>One picture per trigger</b>) or <b>Read codes</b> (<b>When an input asks</b>).</div>
             </div>` : ""}
 
             ${action.id === "alarm" ? `
@@ -708,7 +752,7 @@
                 out.className = `sig-read-result ${ok === null ? "" : ok ? "ok" : "bad"}`;
                 out.textContent = text;
             } else if (ok !== null) {
-                toast(`${card.name || "PLC signal"}: ${text}`, ok ? "success" : "warning");
+                toast(`${card.name || "Input"}: ${text}`, ok ? "success" : "warning");
             }
         };
         show("Reading…", null);
@@ -737,6 +781,7 @@
         openDialog,
         readNow,
         confirmSignals,
+        triggers,
         hasPending,
         setView,
         setEnabled,

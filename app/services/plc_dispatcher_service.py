@@ -694,7 +694,7 @@ class PLCDispatcherService:
                                  "message": f"{sent}; not confirmed by the PLC within {wait_ms} ms"}
             alarm_manager.raise_alarm(
                 AlarmCode.PLC_ACTION_NOT_CONFIRMED, source,
-                f"PLC action '{name}' was sent, but its confirmation signal did not come within {wait_ms} ms",
+                f"Output action '{name}' was sent, but its confirmation input did not come within {wait_ms} ms",
                 AlarmSeverity.CRITICAL,
                 {"card_id": cid, "line_id": _card_line(card), "endpoint_id": endpoint.get("id"),
                  "input_id": card.get("confirm_input_id")},
@@ -720,13 +720,13 @@ class PLCDispatcherService:
             # Actuation state is unknown: the reject gate may or may not have fired.
             alarm_manager.raise_alarm(
                 AlarmCode.PLC_ACTION_TIMEOUT, source,
-                f"PLC action '{name}' timed out; actuation state is unknown: {msg}",
+                f"Output action '{name}' timed out; actuation state is unknown: {msg}",
                 AlarmSeverity.CRITICAL, details,
             )
         elif status == "failed":
             alarm_manager.raise_alarm(
                 AlarmCode.PLC_ACTION_FAILED, source,
-                f"PLC action '{name}' failed: {msg}",
+                f"Output action '{name}' failed: {msg}",
                 AlarmSeverity.CRITICAL, details,
             )
         else:

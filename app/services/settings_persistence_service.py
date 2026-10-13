@@ -584,13 +584,13 @@ class SettingsPersistenceService:
             signal = signals.get(wanted)
             if signal is None:
                 raise ValueError(
-                    f"PLC action '{name}' is confirmed by a PLC signal that is not on this line. "
+                    f"Output action '{name}' is confirmed by an input that is not on this line. "
                     f"Choose another confirmation signal for that action, or none, first."
                 )
             if signal.get("action") != "confirm_card":
                 raise ValueError(
-                    f"PLC action '{name}' is confirmed by the PLC signal '{signal.get('name')}', so that signal's "
-                    f"action must stay 'Confirm a PLC action'. Choose another confirmation signal for the action first."
+                    f"Output action '{name}' is confirmed by the input '{signal.get('name')}', so that input's "
+                    f"action must stay 'Confirm an output action'. Choose another confirmation input for the action first."
                 )
 
     @classmethod

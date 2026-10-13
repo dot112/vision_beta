@@ -445,16 +445,29 @@ async def trigger_line(line_id: str, body: Optional[Dict[str, Any]] = None,
     """Trigger every vision camera of the line that has Count mode "One picture per trigger",
     or only ``{"camera_id": "..."}``. Each makes one product from its next picture: it is
     counted, recorded and sent, and fires the line's cards. Answers what each camera's own
-    picture said; 409 when the line is stopped or has no such camera."""
+    picture said; 409 when the line is stopped or has no such camera.
+
+    ``{"trigger_no": N}`` fires the line's "Take a picture" input with that trigger number
+    instead, as its signal would: every camera that has the trigger ticked takes a picture,
+    code readers included. 404 when the line has no such input switched on."""
     import asyncio
 
-    from app.services.trigger_inspection import trigger_camera, trigger_cameras
+    from app.services.trigger_inspection import trigger_camera, trigger_cameras, trigger_input
 
     if _svc().get_line(line_id, with_logic=False) is None:
         raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
     runtime = _manager().get(line_id)
     if runtime is None:
         raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    number = (body or {}).get("trigger_no")
+    if number not in (None, ""):
+        try:
+            return {"line_id": line_id, "trigger_no": int(number), "results": await trigger_input(runtime, int(number))}
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="This line has no 'Take a picture' input with the trigger "
+                                                        f"number {number} switched on") from exc
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     wanted = str((body or {}).get("camera_id") or "").strip()
     cameras = [wanted] if wanted else trigger_cameras(runtime)
     if not cameras:

@@ -23,8 +23,8 @@
     // An industrial camera (GigE Vision, USB3 Vision): how each picture is taken, and its exposure.
     const TRIGGER_NOTES = {
         off: "The camera sends pictures all the time, like a network camera.",
-        hardware: "Wire the sensor or the PLC output to the camera's own input: the signal to the input pin, the signal's 0 V to the camera's I/O ground (check the voltage range in the camera's manual). The camera takes one picture per edge. With Count mode \"One picture per trigger\" every picture is one product, and with Read codes \"When a PLC signal asks\" every picture is read once. No PLC signal card is needed.",
-        software: "No extra wire. The server sends the camera its trigger command when a PLC signal with the action \"Take a picture\", a wire-line crossing (Read codes) or the API asks. It is late by the PLC's read time and the network, so it suits parts that stand still.",
+        hardware: "Wire the sensor or the PLC output to the camera's own input: the signal to the input pin, the signal's 0 V to the camera's I/O ground (check the voltage range in the camera's manual). The camera takes one picture per edge. With Count mode \"One picture per trigger\" every picture is one product, and with Read codes \"When an input asks\" every picture is read once. No input is needed.",
+        software: "No extra wire. The server sends the camera its trigger command when an input with the action \"Take a picture\", a wire-line crossing (Read codes) or the API asks. It is late by the PLC's read time and the network, so it suits parts that stand still.",
     };
 
     function industrialHtml(cam) {

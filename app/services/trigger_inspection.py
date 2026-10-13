@@ -76,16 +76,19 @@ def inspection_verdict(detections: List[Any], config: Any) -> Optional[Dict[str,
 
 
 def product_from_result(runtime: Any, camera_id: str, detections: List[Any],
-                        arrived_at: Optional[float] = None) -> Dict[str, Any]:
+                        arrived_at: Optional[float] = None, trigger_no: Optional[int] = None) -> Dict[str, Any]:
     """Make the product one picture of a camera in trigger mode shows, from what its model found.
 
     ``arrived_at``: the clock time the picture arrived; it becomes the product's time.
+    ``trigger_no``: the number of the input that asked for the picture; the product's message carries it.
     Returns ``status`` "inspected" (a product was made) or "nothing" (nothing was found
     and that is ignored), with ``result``, ``class_name``, ``reject_reason``, ``track_id``
     and ``detections`` (how many). Safe to call from a camera's inference thread.
     """
     answer: Dict[str, Any] = {"status": "nothing", "result": None, "class_name": None, "reject_reason": None,
                               "track_id": None, "detections": len(detections)}
+    if trigger_no is not None:
+        answer["trigger_no"] = trigger_no
     counter = runtime.counter_for(camera_id)
     verdict = inspection_verdict(detections, counter.config)
     if verdict is None:
@@ -99,6 +102,8 @@ def product_from_result(runtime: Any, camera_id: str, detections: List[Any],
     )
     if verdict["reject_reason"]:
         crossing["reject_reason"] = verdict["reject_reason"]
+    if trigger_no is not None:
+        crossing["trigger_no"] = trigger_no
     counter.emit_crossing(crossing)
     answer.update({
         "status": "inspected",
@@ -152,8 +157,26 @@ def trigger_cameras(runtime: Any) -> List[str]:
     ]
 
 
+async def trigger_input(runtime: Any, trigger_no: int) -> List[Dict[str, Any]]:
+    """Fire the line's "Take a picture" input with this trigger number, as its signal would.
+
+    Returns what each camera that ticked the trigger did. Raises LookupError when the line has
+    no such input switched on, and ValueError with the reasons when a camera could not take its
+    picture or no camera uses the trigger.
+    """
+    from app.services.plc_input_service import PLCInputService
+
+    card = next((c for c in runtime.plc_inputs if c.get("action") == "capture" and c.get("enabled", True) is True
+                 and c.get("trigger_no") == trigger_no), None)
+    if card is None:
+        raise LookupError(trigger_no)
+    if not runtime.enabled:
+        raise ValueError(f"Line '{runtime.name}' is stopped; start it to inspect")
+    return await PLCInputService._capture({**card, "line_id": runtime.id, "line_name": runtime.name})
+
+
 async def trigger_camera(runtime: Any, camera_id: str, timeout: Optional[float] = None,
-                         with_detections: bool = False) -> Dict[str, Any]:
+                         with_detections: bool = False, trigger_no: Optional[int] = None) -> Dict[str, Any]:
     """Make one product from the next picture of a camera in trigger mode.
 
     Returns what the camera's own picture said: ``status`` is ``"inspected"``
@@ -223,5 +246,5 @@ async def trigger_camera(runtime: Any, camera_id: str, timeout: Optional[float] 
         })
         if with_detections:
             answer["detection_items"] = [d.model_dump() if hasattr(d, "model_dump") else d for d in detections]
-        answer.update(product_from_result(runtime, camera_id, detections, arrived_at))
+        answer.update(product_from_result(runtime, camera_id, detections, arrived_at, trigger_no))
         return answer

@@ -106,7 +106,7 @@ def test_a_card_must_name_a_confirm_signal_of_its_own_line(gate):
     with pytest.raises(ValueError, match="'Reject gate'.*not on this line"):
         _cards(line, _gate(confirm_input_id="plcin_gone"))
     SettingsPersistenceService.save_line({"id": line["id"], "plc_inputs": [_signal("confirm_card"), _signal("start_line")]})
-    with pytest.raises(ValueError, match="'Reject gate'.*Confirm a PLC action"):
+    with pytest.raises(ValueError, match="'Reject gate'.*Confirm an output action"):
         _cards(line, _gate(confirm_input_id="plcin_start_line"))
     # The same when the line is saved as a whole, cards and signals together.
     with pytest.raises(ValueError, match="not on this line"):

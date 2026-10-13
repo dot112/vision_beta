@@ -134,7 +134,7 @@ def test_count_mode_is_kept_when_a_client_leaves_it_out(lines):  # noqa: F811
 
 def test_a_reader_cannot_wait_for_a_wire_line_of_a_camera_that_does_not_track(lines):  # noqa: F811
     reader = {"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_trigger": "line1"}
-    with pytest.raises(ValueError, match="One picture per trigger.*Read codes to 'When a PLC signal asks'"):
+    with pytest.raises(ValueError, match="One picture per trigger.*Read codes to 'When an input asks'"):
         SettingsPersistenceService.save_line({"name": "Indexing", "cameras": [
             {"model_id": "model-test", **_trigger_cam()}, reader]})
 
@@ -146,11 +146,11 @@ def test_a_capture_signal_can_name_a_vision_camera_in_trigger_mode_only(lines): 
             {"camera_id": "vis", "model_id": "model-test"}], "plc_inputs": [capture]})
     line = SettingsPersistenceService.save_line({"name": "Indexing", "cameras": [
         {"model_id": "model-test", **_trigger_cam()}], "plc_inputs": [capture]})
-    assert line["plc_inputs"][0]["camera_id"] == "vis"
-    # Back to tracking while a signal still triggers it is refused too.
-    with pytest.raises(ValueError, match="Camera 1"):
-        SettingsPersistenceService.save_line({"id": line["id"], "cameras": [
-            {"camera_id": "vis", "model_id": "model-test", "count_mode": "track"}]})
+    assert line["cameras"][0]["triggers"] == [1] and "camera_id" not in line["plc_inputs"][0]
+    # Back to tracking unticks the trigger on the camera; the input stays.
+    line = SettingsPersistenceService.save_line({"id": line["id"], "cameras": [
+        {"camera_id": "vis", "model_id": "model-test", "count_mode": "track"}]})
+    assert "triggers" not in line["cameras"][0] and line["plc_inputs"][0]["trigger_no"] == 1
 
 
 # ── The tracker in trigger mode ───────────────────────────────────────────────

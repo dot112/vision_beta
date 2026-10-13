@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Zagel Vision — Line control</title>
     <link rel="preload" href="/assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="stylesheet" href="/assets/dashboard.css?v=3.1.1">
+    <link rel="stylesheet" href="/assets/dashboard.css?v=3.2.0">
     <script>
         // Apply the saved theme before the first paint (no dark-to-light flash).
         try { document.documentElement.setAttribute("data-theme", localStorage.getItem("theme") === "light" ? "light" : "dark"); } catch (_) {}
@@ -63,7 +63,7 @@
             <!-- Protocol Selector -->
             <div class="comm-proto-selector">
                 <button type="button" class="proto-btn active" id="protoBtnPlc" onclick="selectCommProto('plc')">
-                    <span>PLC Controller</span>
+                    <span>Controller</span>
                 </button>
                 <button type="button" class="proto-btn" id="protoBtnTcp" onclick="selectCommProto('tcp')">
                     <span>TCP Socket</span>
@@ -404,7 +404,7 @@
                 
                 <div class="cam-settings-row">
                     <div class="form-group" style="margin:0">
-                        <label class="form-label">PLC Protocol *</label>
+                        <label class="form-label">Controller protocol *</label>
                         <select id="plcProtocolTypeInput" class="form-input" onchange="onPlcProtocolTypeChange(this.value)">
                             <option value="modbus_tcp">Modbus TCP (Universal / Port 502)</option>
                             <option value="modbus_rtu">Modbus RTU (RS-485 Serial / RTU over TCP)</option>
@@ -416,7 +416,7 @@
                         </select>
                     </div>
                     <div class="form-group" style="margin:0">
-                        <label class="form-label">PLC IP Address</label>
+                        <label class="form-label">Controller IP address</label>
                         <div style="display:flex;gap:7px;align-items:stretch">
                             <input type="text" id="plcHostInput" class="form-input" placeholder="192.168.1.10" value="192.168.1.10" style="flex:1;min-width:0" />
                             <button type="button" id="plcOpcuaScanBtn" class="btn-action btn-outline" onclick="openOpcuaScanModal()" style="display:none;white-space:nowrap;padding:7px 10px" title="Find OPC UA servers on a private subnet">Scan UA</button>
@@ -647,7 +647,7 @@
         </div>
         <div id="opcuaScanStatus" role="status" aria-live="polite" style="font-size:12px;color:var(--text-muted);margin:2px 0 10px">Scan results will appear here.</div>
         <div id="opcuaScanResults" style="overflow-y:auto;min-height:100px;display:flex;flex-direction:column;gap:9px;padding:1px 4px 4px 1px"></div>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:10px">OPC UA None / Mode 1 endpoints with anonymous login can be selected. Secure endpoints need client certificates; username-only endpoints and discovery-only servers cannot be used as PLC channels.</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:10px">OPC UA None / Mode 1 endpoints with anonymous login can be selected. Secure endpoints need client certificates; username-only endpoints and discovery-only servers cannot be used as controllers.</div>
     </div>
 </div>
 
@@ -685,7 +685,7 @@
         <div class="comm-modal-header">
             <div>
                 <div style="font-size:15px;font-weight:700;color:var(--text-color);display:flex;align-items:center;gap:8px">
-                    <span id="plcModalActionTitle">PLC Action Configuration</span>
+                    <span id="plcModalActionTitle">Output action</span>
                 </div>
                 <div style="font-size:12.5px;color:var(--text-muted);margin-top:2px">Configure trigger logic, protocol addressing, execution timing, and hardware interlocks</div>
             </div>
@@ -712,7 +712,7 @@
         <div class="comm-modal-header">
             <div>
                 <div style="font-size:15px;font-weight:700;color:var(--text-color);display:flex;align-items:center;gap:8px">
-                    <span id="plcSignalModalTitle">PLC signal</span>
+                    <span id="plcSignalModalTitle">Input</span>
                 </div>
                 <div style="font-size:12.5px;color:var(--text-muted);margin-top:2px">Which PLC address is read, how often, and what the line does with it</div>
             </div>
@@ -1014,12 +1014,12 @@
     <div class="card-panel">
         <div class="card-panel-header">
             <div>
-                <span class="card-panel-title">PLC actions</span>
+                <span class="card-panel-title">Output actions</span>
                 <div class="card-panel-sub">Drive reject gates, tower lights, coils and registers from inspection events.</div>
             </div>
             <div class="card-actions">
                 <span id="plcActionSaveState" class="feed-meta">Loading saved actions…</span>
-                <div class="seg" role="group" aria-label="Show PLC actions as">
+                <div class="seg" role="group" aria-label="Show output actions as">
                     <button type="button" id="plcViewCards" class="on" aria-pressed="true" onclick="setPlcActionsView('cards')" title="Show as cards">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Cards
                     </button>
@@ -1040,12 +1040,12 @@
     <div class="card-panel" id="plcSignalsCard">
         <div class="card-panel-header">
             <div>
-                <span class="card-panel-title">PLC signals (inputs)</span>
+                <span class="card-panel-title">Inputs</span>
                 <div class="card-panel-sub">Let the PLC start and stop the line, count products, take pictures, set the batch and confirm rejects.</div>
             </div>
             <div class="card-actions">
                 <span id="plcSignalSaveState" class="feed-meta">Loading saved signals…</span>
-                <div class="seg" role="group" aria-label="Show PLC signals as">
+                <div class="seg" role="group" aria-label="Show inputs as">
                     <button type="button" id="plcSignalViewCards" class="on" aria-pressed="true" onclick="PlcSignals.setView('cards')" title="Show as cards">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Cards
                     </button>
@@ -1053,7 +1053,7 @@
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>List
                     </button>
                 </div>
-                <button type="button" class="btn-action btn-outline restricted-l2" onclick="PlcSignals.add()">Add signal</button>
+                <button type="button" class="btn-action btn-outline restricted-l2" onclick="PlcSignals.add()">Add input</button>
                 <button type="button" class="btn-action btn-blue restricted-l2" onclick="PlcSignals.apply()">Apply</button>
             </div>
         </div>
@@ -1189,7 +1189,7 @@
         <div class="card-panel-header">
             <div>
                 <span class="card-panel-title">Connections</span>
-                <div class="card-panel-sub">PLCs, MQTT brokers, TCP sockets, network cameras and webhooks the server talks to.</div>
+                <div class="card-panel-sub">Controllers (PLCs), MQTT brokers, TCP sockets, network cameras and webhooks the server talks to.</div>
             </div>
             <div class="card-actions">
                 <button class="btn-action btn-blue restricted-l2" onclick="openAddCommModal()">Add connection</button>
@@ -1199,7 +1199,7 @@
         <!-- Protocol Filter Pills -->
         <div class="comm-filter-bar" role="group" aria-label="Show">
             <button class="filter-pill active" onclick="filterCommsGrid('all', this)">All</button>
-            <button class="filter-pill" onclick="filterCommsGrid('plc', this)">PLC</button>
+            <button class="filter-pill" onclick="filterCommsGrid('plc', this)">Controllers</button>
             <button class="filter-pill" onclick="filterCommsGrid('tcp', this)">TCP</button>
             <button class="filter-pill" onclick="filterCommsGrid('mqtt', this)">MQTT</button>
             <button class="filter-pill" onclick="filterCommsGrid('ipcam', this)">Network cameras</button>
@@ -2555,7 +2555,7 @@ function renderCommsGrid() {
         : allCommsEndpoints.filter(e => (e.protocol || "").toLowerCase() === currentFilterProto.toLowerCase());
 
     if (!filtered.length) {
-        const kind = { plc: "PLC", tcp: "TCP", mqtt: "MQTT", ipcam: "network camera", webhook: "webhook" }[currentFilterProto];
+        const kind = { plc: "controller", tcp: "TCP", mqtt: "MQTT", ipcam: "network camera", webhook: "webhook" }[currentFilterProto];
         grid.innerHTML = `
             <div class="empty-state" style="grid-column:1/-1">
                 <b>${kind ? `No ${kind} connections yet` : "No connections yet"}</b>
@@ -2605,7 +2605,7 @@ function renderCommsGrid() {
                 fins: "Omron FINS"
             };
             badgeClass = "badge-plc";
-            badgeLabel = plcNames[ep.plc_protocol] || "PLC Controller";
+            badgeLabel = plcNames[ep.plc_protocol] || "Controller";
             detailText = `${ep.host || "192.168.1.10"}:${ep.port || 502}`;
             if (ep.plc_protocol === "s7") detailText += ` [Rack:${ep.s7_rack ?? 0} Slot:${ep.s7_slot ?? 1}]`;
             else if (ep.plc_protocol === "modbus_tcp") detailText += ` [Unit:${ep.modbus_unit_id ?? 1}]`;
@@ -3320,7 +3320,7 @@ async function saveCommEndpoint() {
         if (rtuSerial && !document.getElementById("plcRtuSerialPort").value.trim()) {
             return showModal("Serial Port Required", "Please enter the serial port the RS-485 adapter is on, for example COM3 or /dev/ttyUSB0.");
         }
-        if (!host && !rtuSerial) return showModal("PLC Host Required", "Please enter a valid IP address or hostname for the PLC.");
+        if (!host && !rtuSerial) return showModal("Controller host required", "Please enter a valid IP address or hostname for the controller.");
         payload.host = rtuSerial ? "" : host;
         payload.port = port;
         payload.plc_protocol = plcProtocol;
@@ -4462,14 +4462,14 @@ function updatePlcActionSaveState() {
 async function loadPlcActionCards() {
     let stored = null;
     try { stored = localStorage.getItem("plc_action_trigger_cards"); }
-    catch (e) { console.warn("Could not read PLC action cards from browser storage", e); }
+    catch (e) { console.warn("Could not read output actions from browser storage", e); }
     let localCards = null;
     if (stored !== null) {
         try {
             const parsed = JSON.parse(stored);
             if (Array.isArray(parsed)) localCards = parsed;
         } catch (e) {
-            console.warn("Stored PLC action cards are invalid; loading saved server cards", e);
+            console.warn("Stored output actions are invalid; loading saved server cards", e);
         }
     }
 
@@ -4492,10 +4492,10 @@ async function loadPlcActionCards() {
                 _plcActionAppliedSignature = plcActionSignature(serverCards);
             }
         } else {
-            console.warn(`Could not load PLC action cards from server (HTTP ${res.status})`);
+            console.warn(`Could not load output actions from server (HTTP ${res.status})`);
         }
     } catch (e) {
-        console.warn("Could not load PLC action cards from server", e);
+        console.warn("Could not load output actions from server", e);
     }
 
     if (serverCards !== null) {
@@ -4567,7 +4567,7 @@ setInterval(refreshPlcActionRuntime, 2000);
 async function applyPlcActionCards() {
     if (_plcActionApplyInFlight) return false;
     if (!currentAuthToken) {
-        showToast("Sign in with a supervisor account to apply PLC action settings.", "warning");
+        showToast("Sign in with a supervisor account to apply output action settings.", "warning");
         return false;
     }
     _plcActionApplyInFlight = true;
@@ -4589,13 +4589,13 @@ async function applyPlcActionCards() {
         _plcActionPendingChanges = signature !== plcActionSignature(_plcActionCards);
         showToast(
             _plcActionPendingChanges
-                ? "PLC actions applied; newer edits are still unsaved."
-                : "PLC action settings applied to the server.",
+                ? "Output actions applied; newer edits are still unsaved."
+                : "Output action settings applied to the server.",
             "success"
         );
         return true;
     } catch (e) {
-        showToast(`PLC action settings were not applied: ${e?.message || e}`, "warning");
+        showToast(`Output action settings were not applied: ${e?.message || e}`, "warning");
         return false;
     } finally {
         _plcActionApplyInFlight = false;
@@ -4608,7 +4608,7 @@ function savePlcActionCards(markDirty = true) {
     try {
         localStorage.setItem("plc_action_trigger_cards", JSON.stringify(_plcActionCards));
     } catch (e) {
-        console.warn("Could not save PLC action cards:", e);
+        console.warn("Could not save output actions:", e);
     }
     if (markDirty) {
         _plcActionPendingChanges = _plcActionAppliedSignature === null
@@ -4707,7 +4707,7 @@ async function testPlcActionCard(cardId) {
             if (stEl) stEl.innerText = `Test Failed: ${msg}`;
         }
     } catch (err) {
-        const msg = err?.message || "Could not contact the PLC action API";
+        const msg = err?.message || "Could not contact the output action API";
         if (stEl) stEl.innerText = `Test Failed: ${msg}`;
     }
 }
@@ -4875,7 +4875,7 @@ function renderPlcActionCards() {
     if (!_plcActionCards.length) {
         container.innerHTML = `
             <div class="empty-state">
-                <b>No PLC actions yet</b>
+                <b>No output actions yet</b>
                 <p>An action writes to a PLC address when something happens on the line, for example a reject pulse when a defect crosses count line B.</p>
                 <button type="button" class="btn-action btn-blue restricted-l2" onclick="addPlcActionCard()">Add action</button>
             </div>
@@ -4898,8 +4898,8 @@ function renderPlcActionCards() {
                             <span class="slider"></span>
                         </label>
                     </td>
-                    <td data-label="Action"><b>${escapeHtml(c.name || 'PLC action')}</b><span class="cell-sub" id="plcCardStatus_${id}">${c.last_fired ? `Last: ${escapeHtml(c.last_fired)}` : 'Ready'}</span><span id="plcCardConfirm_${id}">${plcConfirmTagHtml(c)}</span></td>
-                    <td data-label="PLC"><span class="cell-ellipsis" style="display:inline-block;max-width:180px;vertical-align:middle" title="${escapeHtml(targetEpName)}">${escapeHtml(targetEpName)}</span> <span class="badge ${badgeClass}">${escapeHtml(protoTitle)}</span></td>
+                    <td data-label="Action"><b>${escapeHtml(c.name || 'Output action')}</b><span class="cell-sub" id="plcCardStatus_${id}">${c.last_fired ? `Last: ${escapeHtml(c.last_fired)}` : 'Ready'}</span><span id="plcCardConfirm_${id}">${plcConfirmTagHtml(c)}</span></td>
+                    <td data-label="Controller"><span class="cell-ellipsis" style="display:inline-block;max-width:180px;vertical-align:middle" title="${escapeHtml(targetEpName)}">${escapeHtml(targetEpName)}</span> <span class="badge ${badgeClass}">${escapeHtml(protoTitle)}</span></td>
                     <td data-label="When">${escapeHtml(triggerSummary)}<span class="cell-sub">${escapeHtml(condFull)}</span></td>
                     <td data-label="Address" class="cell-mono">${escapeHtml(c.target_address || 'Q0.0')}</td>
                     <td data-label="Output" style="color:var(--primary-color);font-weight:600">${escapeHtml(actionSummary)}</td>
@@ -4913,7 +4913,7 @@ function renderPlcActionCards() {
         }).join("");
         container.innerHTML = `
             <div class="table-responsive"><table class="table-compact table-mobile-cards plc-list-table">
-                <thead><tr><th class="col-switch">On</th><th>Action</th><th>PLC</th><th>When</th><th>Address</th><th>Output</th><th>Fired</th><th class="col-actions"><span class="sr-only">Actions</span></th></tr></thead>
+                <thead><tr><th class="col-switch">On</th><th>Action</th><th>Controller</th><th>When</th><th>Address</th><th>Output</th><th>Fired</th><th class="col-actions"><span class="sr-only">Actions</span></th></tr></thead>
                 <tbody>${rows}</tbody>
             </table></div>`;
         if (typeof updateUserUI === "function") updateUserUI();
@@ -4927,7 +4927,7 @@ function renderPlcActionCards() {
             <div class="dispatch-card plc-action-card${c.enabled === false ? " is-off" : ""}" id="plcCard_${escapeHtml(c.id)}" data-action-id="${escapeHtml(c.id)}">
                 <div>
                     <div class="plc-card-head">
-                        <b class="plc-card-name" title="${escapeHtml(c.name || 'PLC action')}">${escapeHtml(c.name || 'PLC action')}</b>
+                        <b class="plc-card-name" title="${escapeHtml(c.name || 'Output action')}">${escapeHtml(c.name || 'Output action')}</b>
                         <div class="row-actions">
                             <label class="switch" title="${c.enabled !== false ? "On: fires on its trigger" : "Off: never fires"}">
                                 <input type="checkbox" aria-label="Action on" ${c.enabled !== false ? 'checked' : ''} onchange="updatePlcCardProp(this.closest('[data-action-id]').dataset.actionId, 'enabled', this.checked); renderPlcActionCards()" />
@@ -4976,7 +4976,7 @@ function openPlcActionSettingsModal(cardId) {
     _plcActionEditingDraft = JSON.parse(JSON.stringify(card));
 
     const titleEl = document.getElementById("plcModalActionTitle");
-    if (titleEl) titleEl.innerText = card.name || "PLC Action Configuration";
+    if (titleEl) titleEl.innerText = card.name || "Output action";
 
     refreshPlcModalBody(cardId);
 
@@ -5238,8 +5238,8 @@ function refreshPlcModalBody(cardId) {
             <div style="font-size:10px;color:var(--text-muted);margin-top:4px">${confirmId
                 ? "After the action is sent, the line waits this long (50 to 10000 ms) for the signal. If it does not come, the action shows <b>Not confirmed</b> and a critical alarm stays on until a later fire is confirmed. Fires that wait at the same time are confirmed in the order they were sent. The Test button does not wait for the signal."
                 : (confirmSignals.length
-                    ? "Pick a PLC signal that tells the action really happened, for example a sensor that sees the rejected product leave the belt."
-                    : "To check that the action really happened, add a signal with the action <b>Confirm a PLC action</b> under PLC signals, then pick it here.")}</div>
+                    ? "Pick an input that tells the action really happened, for example a sensor that sees the rejected product leave the belt."
+                    : "To check that the action really happened, add a signal with the action <b>Confirm an output action</b> under Inputs, then pick it here.")}</div>
         </div>
     `;
 }
@@ -6769,7 +6769,7 @@ function toggleLineRunning() {
         if (typeof window.checkActiveStream === "function") window.checkActiveStream();
     };
     if (d.enabled) {
-        showModal(`Stop ${d.name}?`, "Counting, sent results and PLC actions for this line stop until you start it again.", true,
+        showModal(`Stop ${d.name}?`, "Counting, sent results and output actions for this line stop until you start it again.", true,
             async () => { await pl.lineAction("stop"); after(); }, { confirmText: "Stop line", danger: true });
     } else {
         pl.lineAction("start").then(after);
@@ -6908,9 +6908,9 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
     setInterval(tick, 1000);
 })();
 </script>
-<script src="/assets/camera_settings.js?v=2.4.0"></script>
-<script src="/assets/plc_signals.js?v=2.3.0"></script>
-<script src="/assets/production_lines.js?v=2.4.0"></script>
+<script src="/assets/camera_settings.js?v=2.5.0"></script>
+<script src="/assets/plc_signals.js?v=2.5.0"></script>
+<script src="/assets/production_lines.js?v=2.5.0"></script>
 <script>
 /* ─── Cameras: Connect / Disconnect / Settings / Delete on every row ────────
    Runs after assets/production_lines.js has added its Line and Role columns. */

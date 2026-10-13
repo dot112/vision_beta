@@ -452,6 +452,14 @@ def normalize_camera(raw: Any, index: int) -> Dict[str, Any]:
                     raise ValueError(f"{label}: when nothing is found must be 'ignore', 'reject' or 'good'")
                 camera["count_mode"] = "trigger"
                 camera["no_product"] = no_product
+    # The triggers ("Take a picture" inputs, by their number) that take this camera's picture.
+    sent = raw.get("triggers")
+    if sent not in (None, "", []) and (camera.get("count_mode") == "trigger"
+                                        or (reads_codes(camera) and camera.get("qr_trigger") == "signal")):
+        numbers = [_trigger_number(value) for value in sent] if isinstance(sent, list) else [None]
+        if None in numbers:
+            raise ValueError(f"{label}: its triggers must be a list of trigger numbers from 1 to {MAX_TRIGGER_NO}")
+        camera["triggers"] = sorted(set(numbers))
     return camera
 
 
@@ -731,6 +739,39 @@ DEFAULT_PLC_INPUT_POLL_MS = 100
 PLC_INPUT_DEBOUNCE_LIMITS_MS = (0, 5000)
 PLC_INPUT_ALARM_SEVERITIES = ("info", "warning", "critical")
 MAX_PLC_INPUTS = 32
+# A "Take a picture" input has a trigger number. A camera that takes one picture per trigger
+# lists the numbers that take its picture (``triggers``): one or more.
+MAX_TRIGGER_NO = 99
+
+
+def _trigger_number(value: Any) -> Optional[int]:
+    """A trigger number (1 to MAX_TRIGGER_NO) from what a client sent; None when it is not one."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(number) if number == int(number) and 1 <= number <= MAX_TRIGGER_NO else None
+
+
+def capture_cameras(card: Dict[str, Any]) -> List[str]:
+    """The cameras a "Take a picture" input names itself (``camera_id`` or ``camera_ids``).
+
+    Only a card saved before cameras chose their triggers, or sent by an older client, has any.
+    """
+    ids = card.get("camera_ids")
+    named = [str(camera_id).strip() for camera_id in ids] if isinstance(ids, list) else []
+    named.append(str(card.get("camera_id") or "").strip())
+    return list(dict.fromkeys(camera_id for camera_id in named if camera_id))
+
+
+def triggered_cameras(cameras: List[Dict[str, Any]], card: Dict[str, Any]) -> List[str]:
+    """The ids of the cameras a "Take a picture" input takes a picture with, in card order:
+    those that ticked its trigger number, then any the card names itself (capture_cameras)."""
+    number = card.get("trigger_no")
+    found = [cam.get("camera_id") for cam in cameras if number is not None and number in (cam.get("triggers") or [])]
+    return found + [camera_id for camera_id in capture_cameras(card) if camera_id not in found]
 
 
 def new_plc_input_id() -> str:
@@ -739,7 +780,7 @@ def new_plc_input_id() -> str:
 
 def normalize_plc_input(raw: Any, index: int = 0) -> Dict[str, Any]:
     """Validate one signal card: which PLC address is read, how, and what the line does with it."""
-    label = f"Signal {index + 1}"
+    label = f"Input {index + 1}"
     if not isinstance(raw, dict):
         raise ValueError(f"{label} must be an object")
     card_id = str(raw.get("id") or "").strip() or new_plc_input_id()
@@ -787,10 +828,18 @@ def normalize_plc_input(raw: Any, index: int = 0) -> Dict[str, Any]:
         "action": action,
     }
     if action == "capture":
-        camera_id = str(raw.get("camera_id") or "").strip()
-        if not camera_id or len(camera_id) > 64:
-            raise ValueError(f"{label}: choose the camera that takes the picture")
-        card["camera_id"] = camera_id
+        # The trigger's number. None: the list of inputs gives it the next free one (normalize_plc_inputs).
+        number = raw.get("trigger_no")
+        card["trigger_no"] = None if number in (None, "") else _trigger_number(number)
+        if number not in (None, "") and card["trigger_no"] is None:
+            raise ValueError(f"{label}: the trigger number must be a whole number from 1 to {MAX_TRIGGER_NO}")
+        # Cameras choose their triggers on their own cards. A card that still names a camera
+        # (an older client, an older save) is turned into a tick on that camera when the line is saved.
+        named = capture_cameras(raw)
+        if any(len(camera_id) > 64 for camera_id in named):
+            raise ValueError(f"{label}: a camera id is too long")
+        if named:
+            card["camera_ids"] = named
     if action == "alarm":
         text = str(raw.get("alarm_text") or "").strip() or name
         if len(text) > 200:
@@ -805,13 +854,23 @@ def normalize_plc_input(raw: Any, index: int = 0) -> Dict[str, Any]:
 
 def normalize_plc_inputs(raw: Any) -> List[Dict[str, Any]]:
     if not isinstance(raw, list):
-        raise ValueError("PLC signal cards must be a list")
+        raise ValueError("Inputs must be a list")
     if len(raw) > MAX_PLC_INPUTS:
-        raise ValueError(f"A line can have at most {MAX_PLC_INPUTS} PLC signal cards")
+        raise ValueError(f"A line can have at most {MAX_PLC_INPUTS} inputs")
     cards = [normalize_plc_input(card, index) for index, card in enumerate(raw)]
     ids = [card["id"] for card in cards]
     if len(set(ids)) != len(ids):
-        raise ValueError("Two PLC signal cards have the same id")
+        raise ValueError("Two inputs have the same id")
+    # Each "Take a picture" input has its own trigger number; one without gets the next free number.
+    taking = [card for card in cards if card["action"] == "capture"]
+    used = [card["trigger_no"] for card in taking if card["trigger_no"] is not None]
+    for number in used:
+        if used.count(number) > 1:
+            raise ValueError(f"Two inputs have the trigger number {number}; give each 'Take a picture' input its own")
+    for card in taking:
+        if card["trigger_no"] is None:
+            card["trigger_no"] = next(n for n in range(1, MAX_PLC_INPUTS + MAX_TRIGGER_NO) if n not in used)
+            used.append(card["trigger_no"])
     return cards
 
 
@@ -821,21 +880,43 @@ def product_sensors(line: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [card for card in line.get("plc_inputs") or [] if card.get("action") == "product_sensor"]
 
 
+def takes_a_picture_on_a_trigger(camera: Dict[str, Any]) -> bool:
+    """A vision camera with Count mode "One picture per trigger", or a camera that reads codes "When an input asks"."""
+    return camera.get("count_mode") == "trigger" or (reads_codes(camera) and camera.get("qr_trigger") == "signal")
+
+
 def _check_signal_cameras(inputs: List[Dict[str, Any]], cameras: List[Dict[str, Any]]) -> None:
-    """A "capture" card names a camera of the line that takes one picture per signal."""
+    """A "capture" card that names a camera itself: the camera gets a tick for the card's trigger
+    number instead, and the card names none. The camera must be one of the line that takes one
+    picture per trigger."""
     for card in inputs:
         if card["action"] != "capture":
             continue
-        label = f"Signal '{card['name']}'"
-        index = next((i for i, cam in enumerate(cameras) if cam["camera_id"] == card["camera_id"]), None)
-        if index is None:
-            raise ValueError(f"{label} names a camera that is not on this line")
-        cam = cameras[index]
-        if not (cam.get("count_mode") == "trigger" or (reads_codes(cam) and cam.get("qr_trigger") == "signal")):
-            raise ValueError(
-                f"{label} takes a picture with Camera {index + 1}, so that camera must be a vision camera with "
-                f"Count mode 'One picture per trigger', or read codes with Read codes set to 'When a PLC signal asks'"
-            )
+        label = f"Input '{card['name']}'"
+        for camera_id in card.pop("camera_ids", []):
+            index = next((i for i, cam in enumerate(cameras) if cam["camera_id"] == camera_id), None)
+            if index is None:
+                raise ValueError(f"{label} names a camera that is not on this line")
+            cam = cameras[index]
+            if not takes_a_picture_on_a_trigger(cam):
+                raise ValueError(
+                    f"{label} takes a picture with Camera {index + 1}, so that camera must be a vision camera with "
+                    f"Count mode 'One picture per trigger', or read codes with Read codes set to 'When an input asks'"
+                )
+            cam["triggers"] = sorted({*(cam.get("triggers") or []), card["trigger_no"]})
+
+
+def _keep_camera_triggers(cameras: List[Any], saved: List[Dict[str, Any]]) -> List[Any]:
+    """Cameras sent by a client, each with its saved ``triggers`` when the client left them out."""
+    by_id = {c.get("camera_id"): c for c in saved if isinstance(c, dict)}
+    filled = []
+    for cam in cameras:
+        if isinstance(cam, dict) and "triggers" not in cam:
+            kept = by_id.get(str(cam.get("camera_id") or "").strip()) or {}
+            if kept.get("triggers"):
+                cam = {**cam, "triggers": kept["triggers"]}
+        filled.append(cam)
+    return filled
 
 
 def _fill_camera_models(cameras: List[Any], saved: List[Dict[str, Any]], line_model: Any) -> List[Any]:
@@ -906,6 +987,7 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
         raise ValueError(f"A line can have at most {MAX_CAMERAS_PER_LINE} cameras")
     if "cameras" in raw:
         raw_cameras = _fill_camera_models(raw_cameras, base.get("cameras") or [], raw.get("model_id"))
+        raw_cameras = _keep_camera_triggers(raw_cameras, base.get("cameras") or [])
     elif raw.get("model_id") not in (None, ""):
         # Such a client changes "the line's model": every vision camera of the line runs it.
         raw_cameras = [
@@ -947,7 +1029,7 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
         raise ValueError(
             "A camera captures when a product crosses a wire line, but the counting camera is set to "
             "'One picture per trigger' and tracks nothing across its lines. Set the capturing camera's "
-            "Read codes to 'When a PLC signal asks' or to continuous."
+            "Read codes to 'When an input asks' or to continuous."
         )
 
     # PLC signal cards. A client that leaves them out keeps the saved ones.
@@ -956,7 +1038,7 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
     sensors = [card for card in inputs or [] if card["action"] == "product_sensor"]
     if vision and sensors:
         raise ValueError(
-            f"Signal '{sensors[0]['name']}' is a product sensor, but this line has a vision camera, which counts "
+            f"Input '{sensors[0]['name']}' is a product sensor, but this line has a vision camera, which counts "
             f"the products. Use the action 'Take a picture' to trigger a camera instead."
         )
     _check_signal_cameras(inputs or [], cameras)
@@ -1434,17 +1516,26 @@ def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any
     modes = trigger_modes or {}
     warnings: List[str] = model_warnings(line, models) if models is not None else []
     cameras = line.get("cameras") or []
-    capturing = {card.get("camera_id") for card in line.get("plc_inputs") or []
-                 if card.get("action") == "capture" and card.get("enabled", True) is True}
+    taking = [card for card in line.get("plc_inputs") or [] if card.get("action") == "capture"]
+    capturing = {camera_id for card in taking if card.get("enabled", True) is True
+                 for camera_id in triggered_cameras(cameras, card)}
+    numbers = {card.get("trigger_no") for card in taking}
     for index, cam in enumerate(cameras):
         mode = modes.get(cam.get("camera_id"), "off")
         # A camera on hardware trigger needs no signal card: every picture it takes is read.
         if reads_codes(cam) and cam.get("qr_trigger") == "signal" and cam.get("camera_id") not in capturing \
                 and mode != "hardware":
             warnings.append(
-                f"Camera {index + 1} takes a picture when a PLC signal asks, but no signal card that is switched on "
-                f"has the action 'Take a picture' for it, so it reads no codes. Add one under PLC signals."
+                f"Camera {index + 1} reads codes when an input asks, but no trigger of an input that is switched "
+                f"on is ticked on its card, so it reads no codes. Tick a trigger under Read codes, or add an "
+                f"input with the action 'Take a picture' under Inputs."
             )
+        for number in cam.get("triggers") or []:
+            if number not in numbers:
+                warnings.append(
+                    f"Camera {index + 1} has trigger {number} ticked, but no input has that trigger number. "
+                    f"Add an input with the action 'Take a picture' and that number, or untick it."
+                )
         if mode == "software":
             # It takes a picture only when the server triggers it; these uses need a steady stream.
             if cam.get("role", "vision") == "vision" and cam.get("count_mode") != "trigger":
@@ -1456,16 +1547,25 @@ def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any
             if reads_codes(cam) and cam.get("qr_trigger", "continuous") == "continuous":
                 warnings.append(
                     f"Camera {index + 1} is on Software trigger: it takes a picture only when the server asks, so "
-                    f"Read codes 'Continuously' reads nothing. Set Read codes to 'When a PLC signal asks' or to a "
+                    f"Read codes 'Continuously' reads nothing. Set Read codes to 'When an input asks' or to a "
                     f"wire line."
                 )
-    for card in line.get("plc_inputs") or []:
-        if card.get("action") == "capture" and card.get("enabled", True) is True \
-                and modes.get(card.get("camera_id")) == "hardware":
-            number = next((i + 1 for i, cam in enumerate(cameras) if cam.get("camera_id") == card.get("camera_id")), "?")
+    for card in taking:
+        if card.get("enabled", True) is not True:
+            continue
+        used_by = triggered_cameras(cameras, card)
+        if not used_by and cameras:
             warnings.append(
-                f"PLC signal '{card.get('name') or 'Take a picture'}' asks Camera {number} for a picture, but that "
-                f"camera is triggered by its own input, so the signal is not obeyed. Remove the card, or set the "
+                f"Input '{card.get('name') or 'Take a picture'}' (trigger {card.get('trigger_no')}) takes no picture: "
+                f"no camera has that trigger ticked. Tick it on a camera's card, under Counting or Read codes."
+            )
+        for camera_id in used_by:
+            if modes.get(camera_id) != "hardware":
+                continue
+            number = next((i + 1 for i, cam in enumerate(cameras) if cam.get("camera_id") == camera_id), "?")
+            warnings.append(
+                f"Input '{card.get('name') or 'Take a picture'}' asks Camera {number} for a picture, but that "
+                f"camera is triggered by its own input, so it is not obeyed. Remove it, or set the "
                 f"camera's Trigger to Software."
             )
     checks = code_checks(cameras)
@@ -1506,14 +1606,14 @@ def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any
         name = card.get("name") or card.get("id")
         if waits_for is None:
             warnings.append(
-                f"PLC action '{name}' has a travel delay of {delay} ms, shorter than the "
+                f"Output action '{name}' has a travel delay of {delay} ms, shorter than the "
                 f"Sync window ({window} ms). A product's result can take as long as the Sync window (when no code is "
                 f"read), so this action would fire late. Make its travel delay longer than the Sync window."
             )
             continue
         offset, match, _ = join_settings(waits_for)
         warnings.append(
-            f"PLC action '{name}' has a travel delay of {delay} ms, shorter than the time a product's result can take: "
+            f"Output action '{name}' has a travel delay of {delay} ms, shorter than the time a product's result can take: "
             f"Camera {cameras.index(waits_for) + 1} joins the product result {offset} ms after the counting camera with a {match} ms match "
             f"window, so the result can come {latest} ms after the crossing and this action would fire late. "
             f"Make its travel delay longer than {latest} ms."
@@ -1546,7 +1646,7 @@ def endpoints_used_by_line(line: Dict[str, Any]) -> Dict[str, str]:
     for card in line.get("plc_inputs") or []:
         endpoint = card.get("plc_endpoint_id")
         if endpoint:
-            used.setdefault(str(endpoint), f"PLC signal '{card.get('name') or card.get('id')}'")
+            used.setdefault(str(endpoint), f"Input '{card.get('name') or card.get('id')}'")
     for cam in line.get("cameras") or []:
         if cam.get("camera_id"):
             used.setdefault(str(cam["camera_id"]), "camera")

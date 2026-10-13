@@ -104,7 +104,6 @@ def test_every_action_is_accepted():
     ({"action": "start_line", "data_type": "string"}, "batch"),
     ({"action": "alarm", "alarm_severity": "loud"}, "severity"),
     ({"action": "alarm", "alarm_text": "x" * 201}, "200"),
-    ({"action": "capture"}, "camera"),
     ({"action": "start_line", "address": "x" * 129}, "address"),
     ({"action": "start_line", "id": "no spaces"}, "id"),
     ({"action": "start_line", "enabled": "yes"}, "true or false"),
@@ -184,16 +183,19 @@ def test_a_capture_signal_needs_a_reader_set_to_capture_on_a_signal(lines):  # n
     with pytest.raises(ValueError, match="not on this line"):
         _save(name="No camera", plc_inputs=[capture])
     # The message names the select as the camera card does: "Read codes".
-    with pytest.raises(ValueError, match="Read codes set to 'When a PLC signal asks'"):
+    with pytest.raises(ValueError, match="Read codes set to 'When an input asks'"):
         _save(name="Continuous", cameras=[_reader()], plc_inputs=[capture])
     with pytest.raises(ValueError, match="Camera 1"):
         _save(name="Vision", cameras=[_vision("qr")], plc_inputs=[capture])
     line = _save(name="On a signal", cameras=[_reader(qr_trigger="signal", qr_trigger_delay_ms=250)], plc_inputs=[capture])
     assert line["cameras"][0]["qr_trigger"] == "signal" and line["cameras"][0]["qr_trigger_delay_ms"] == 250
-    assert line["plc_inputs"][0]["camera_id"] == "qr"
-    # Taking the reader off "signal" while a card still names it is refused too.
-    with pytest.raises(ValueError, match="When a PLC signal asks"):
-        SettingsPersistenceService.save_line({"id": line["id"], "cameras": [_reader()]})
+    # The card names no camera any more: the camera has the card's trigger ticked.
+    assert "camera_id" not in line["plc_inputs"][0] and line["plc_inputs"][0]["trigger_no"] == 1
+    assert line["cameras"][0]["triggers"] == [1]
+    # Taking the reader off "signal" unticks it; the line then says the input takes no picture.
+    line = SettingsPersistenceService.save_line({"id": line["id"], "cameras": [_reader()]})
+    assert "triggers" not in line["cameras"][0]
+    assert any("takes no picture" in warning for warning in line_warnings(line))
 
 
 def test_a_signal_reader_needs_no_vision_camera(lines):  # noqa: F811
@@ -205,13 +207,13 @@ def test_a_signal_reader_needs_no_vision_camera(lines):  # noqa: F811
 
 def test_a_signal_reader_that_no_signal_triggers_is_warned_about(lines):  # noqa: F811
     line = _save(name="Reader", cameras=[_reader(qr_trigger="signal")])
-    assert any("Camera 1" in warning and "PLC signal" in warning for warning in line_warnings(line))
+    assert any("Camera 1" in warning and "an input asks" in warning for warning in line_warnings(line))
     line = SettingsPersistenceService.save_line({"id": line["id"], "plc_inputs": [_signal("capture", camera_id="qr")]})
-    assert not any("PLC signal" in warning for warning in line_warnings(line))
+    assert not any("an input asks" in warning for warning in line_warnings(line))
     # A card that is switched off takes no picture either.
     line = SettingsPersistenceService.save_line(
         {"id": line["id"], "plc_inputs": [_signal("capture", camera_id="qr", enabled=False)]})
-    assert any("Camera 1" in warning and "PLC signal" in warning for warning in line_warnings(line))
+    assert any("Camera 1" in warning and "an input asks" in warning for warning in line_warnings(line))
 
 
 def test_sync_works_with_a_product_sensor_and_a_code_reader(lines):  # noqa: F811
@@ -236,7 +238,7 @@ def test_sync_works_with_a_product_sensor_and_a_code_reader(lines):  # noqa: F81
 
 def test_a_channel_a_signal_reads_counts_as_used(lines):  # noqa: F811
     line = _save(name="Filling", plc_inputs=[_signal(plc_endpoint_id="plc-7")])
-    assert endpoints_used_by_line(line) == {"plc-7": "PLC signal 'start line'"}
+    assert endpoints_used_by_line(line) == {"plc-7": "Input 'start line'"}
     assert SettingsPersistenceService.lines_using_endpoint("plc-7") == ["Filling"]
 
 

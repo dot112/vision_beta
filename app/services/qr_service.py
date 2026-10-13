@@ -218,10 +218,11 @@ class _QRReaderWorker:
 
     def request_capture(self, track_id: Optional[int] = None, class_name: Optional[str] = None,
                         wire_line: Optional[int] = None, delay: float = 0.0, test: bool = False,
-                        frame: Optional[Any] = None) -> None:
+                        frame: Optional[Any] = None, trigger_no: Optional[int] = None) -> None:
         """Take one picture after ``delay`` seconds, decode it and hand it to the camera's line.
 
         ``frame``: the picture is this one (a hardware trigger took it); no other is taken.
+        ``trigger_no``: the number of the input that asked; the capture's record carries it.
         """
         with self._input_lock:
             self._captures.append({
@@ -231,6 +232,7 @@ class _QRReaderWorker:
                 "wire_line": wire_line,
                 "test": test,
                 "frame": frame,
+                "trigger_no": trigger_no,
             })
         self._trigger.set()
 
@@ -337,6 +339,8 @@ class _QRReaderWorker:
             "width": int(mat.shape[1]) if mat is not None else 0,
             "height": int(mat.shape[0]) if mat is not None else 0,
         }
+        if request.get("trigger_no") is not None:
+            record["trigger_no"] = request["trigger_no"]
         if mat is not None:
             jpeg = draw_capture(mat, record, self.CAPTURE_MAX_WIDTH)
         return record, jpeg

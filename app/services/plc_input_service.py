@@ -384,7 +384,7 @@ class PLCInputService:
                 return      # one lost link is the PLC connection's own alarm
         alarm_manager.raise_alarm(
             AlarmCode.PLC_INPUT_FAILED, _alarm_source(card),
-            f"PLC signal '{card.get('name')}' of line '{card.get('line_name')}' could not be read "
+            f"Input '{card.get('name')}' of line '{card.get('line_name')}' could not be read "
             f"from {card.get('address')} on {endpoint.get('name') or endpoint.get('id')}: {message}",
             AlarmSeverity.WARNING,
             {"line_id": card["line_id"], "input_id": card["id"], "endpoint_id": endpoint.get("id"),
@@ -535,33 +535,59 @@ class PLCInputService:
         logger.info("PLC signal '%s': counters of line '%s' reset", card.get("name"), card.get("line_name"))
 
     @classmethod
-    async def _capture(cls, card: Dict[str, Any]) -> None:
-        """One picture with the card's camera: a code reader that captures when a PLC signal
-        asks, or a vision camera in trigger mode, whose picture is one product."""
-        from app.services.line_config import reads_codes
-        from app.state.application_state import app_state
+    async def _capture(cls, card: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """One picture with every camera of the line that ticked the card's trigger number, all at once.
+
+        Returns what each camera did. A camera that cannot take its picture does not stop the
+        others; their reasons are raised together as one ValueError, which the card shows.
+        """
+        from app.services.line_config import triggered_cameras
 
         runtime = cls._runtime(card)
         if runtime is None or not runtime.enabled:
-            return
-        camera_id = card.get("camera_id") or ""
+            return []
+        number = card.get("trigger_no")
+        cameras = triggered_cameras(runtime.cameras, card)
+        if not cameras:
+            raise ValueError(f"No camera of this line uses trigger {number}: tick it on a camera's card, "
+                             "under Counting or Read codes")
+        done = await asyncio.gather(
+            *(cls._capture_camera(runtime, camera_id, number) for camera_id in cameras), return_exceptions=True,
+        )
+        for result in done:
+            if isinstance(result, BaseException) and not isinstance(result, ValueError):
+                raise result
+        problems = [str(result) for result in done if isinstance(result, ValueError)]
+        if problems:
+            raise ValueError("; ".join(problems))
+        return [result for result in done if result is not None]
+
+    @classmethod
+    async def _capture_camera(cls, runtime: Any, camera_id: str, trigger_no: Optional[int]) -> Optional[Dict[str, Any]]:
+        """One picture with one camera: a code reader that captures when an input asks, or a
+        vision camera in trigger mode, whose picture is one product."""
+        import app.services.trigger_inspection as trigger_inspection
+        from app.services.line_config import reads_codes
+        from app.state.application_state import app_state
+
         entry = runtime.camera_entry(camera_id)
         if entry is None:
-            return
+            return None
+        answer: Dict[str, Any] = {"camera_id": camera_id, "status": "requested", "trigger_no": trigger_no}
         if getattr(app_state.cameras.get(camera_id), "trigger_mode", "off") == "hardware":
             # Its pictures are used as they come; reading the last one again would count it twice.
-            raise ValueError(f"Camera '{camera_id}' is triggered by its own input, so this signal is not obeyed: "
+            raise ValueError(f"Camera '{camera_id}' is triggered by its own input, so this input is not obeyed: "
                              "every picture the camera takes is used already")
         if reads_codes(entry) and entry.get("qr_trigger") == "signal":
             from app.services.qr_service import QRReaderPipeline
             delay = int(entry.get("qr_trigger_delay_ms") or 0) / 1000.0
-            QRReaderPipeline.get_worker(camera_id).request_capture(delay=delay)
+            QRReaderPipeline.get_worker(camera_id).request_capture(delay=delay, trigger_no=trigger_no)
         if entry.get("role", "vision") == "vision" and entry.get("count_mode") == "trigger":
-            from app.services.trigger_inspection import trigger_camera
             # A camera that is not connected, or has no model, is said on the card (ValueError).
-            result = await trigger_camera(runtime, camera_id)
-            if result["status"] == "no_frame":
+            answer = await trigger_inspection.trigger_camera(runtime, camera_id, trigger_no=trigger_no)
+            if answer["status"] == "no_frame":
                 raise ValueError(f"No new picture came from camera '{camera_id}' in time; nothing was counted")
+        return answer
 
     @staticmethod
     def _alarm(card: Dict[str, Any], on: bool) -> None:
@@ -571,7 +597,7 @@ class PLCInputService:
             return
         alarm_manager.raise_alarm(
             AlarmCode.PLC_INPUT_ALARM, _alarm_source(card),
-            str(card.get("alarm_text") or card.get("name") or "PLC signal alarm"),
+            str(card.get("alarm_text") or card.get("name") or "Input alarm"),
             AlarmSeverity(card.get("alarm_severity") or "warning"),
             {"line_id": card["line_id"], "input_id": card["id"], "endpoint_id": card.get("plc_endpoint_id"),
              "address": card.get("address")},
