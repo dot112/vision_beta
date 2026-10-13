@@ -62,12 +62,32 @@ def _instantiate_driver(camera: Camera) -> BaseCamera:
         )
 
 
+def _connection_settings(sent: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """A network camera channel's transport, buffer size and resolution as the camera's own settings.
+
+    Only what was sent is in the answer. A resolution of "native" gives width and height of None:
+    the camera's picture is then not resized.
+    """
+    from app.services.settings_persistence_service import picture_size
+
+    settings: Dict[str, Any] = {}
+    sent = sent or {}
+    if "transport" in sent:
+        settings["transport"] = sent["transport"]
+    if "buffer_size" in sent:
+        settings["buffer_size"] = sent["buffer_size"]
+    if "resolution" in sent:
+        settings["width"], settings["height"] = picture_size(sent["resolution"]) or (None, None)
+    return settings
+
+
 class CameraService:
     # Cameras being reconnected in the background after their address changed.
     _restarting: Dict[str, "asyncio.Task[None]"] = {}
 
     @staticmethod
-    async def sync_ip_cameras(db: Optional[AsyncSession] = None) -> List[str]:
+    async def sync_ip_cameras(db: Optional[AsyncSession] = None,
+                              connection: Optional[Dict[str, Dict[str, Any]]] = None) -> List[str]:
         """Bring the IP cameras saved under Connections into the database, and restart
         every running camera whose saved address is no longer the one it reads from.
 
@@ -78,7 +98,7 @@ class CameraService:
         if db is None:
             from app.db.session import AsyncSessionLocal
             async with AsyncSessionLocal() as own_db:
-                return await CameraService.sync_ip_cameras(own_db)
+                return await CameraService.sync_ip_cameras(own_db, connection)
 
         from app.services.settings_persistence_service import SettingsPersistenceService
         moved: List[str] = []
@@ -89,28 +109,53 @@ class CameraService:
             if not camera_id or not source:
                 continue
             name = saved.get("name") or "IP Camera"
+            # "gige": a GigE Vision camera, whose source is its serial number.
+            kind = "gige" if saved.get("type") == "gige" else "ip"
+            # Transport, buffer and picture size the Connections card was just saved with, if any.
+            sent = _connection_settings((connection or {}).get(camera_id)) if kind == "ip" else {}
+            reopen = False      # the running camera has to be opened again to take the change
             existing = await CameraService.get_camera_by_id(db, camera_id)
             if not existing:
+                settings = {"auto_connect": saved.get("auto_connect", True)}
+                settings.update({key: value for key, value in sent.items() if value is not None})
                 db.add(Camera(
                     id=camera_id,
                     name=name,
-                    type="ip",
+                    type=kind,
                     source=source,
-                    settings={"auto_connect": saved.get("auto_connect", True)},
+                    settings=settings,
                     is_active=False,
                 ))
                 dirty_db = True
-            elif existing.source != source or existing.name != name:
-                if existing.source != source:
-                    # A camera still waiting to connect is tried on the new address now.
-                    CameraReconnector.retry_now(camera_id)
-                existing.source = source
-                existing.name = name
-                dirty_db = True
+            else:
+                if existing.source != source or existing.name != name or existing.type != kind:
+                    if existing.source != source or existing.type != kind:
+                        # A camera still waiting to connect is tried on the new address now.
+                        CameraReconnector.retry_now(camera_id)
+                    reopen = existing.type != kind
+                    existing.source = source
+                    existing.name = name
+                    existing.type = kind
+                    dirty_db = True
+                if sent:
+                    merged = dict(existing.settings or {})
+                    for key, value in sent.items():
+                        if value is None:
+                            merged.pop(key, None)
+                        else:
+                            merged[key] = value
+                    if merged != (existing.settings or {}):
+                        # The stream is opened with its transport and buffer: a change needs a reopen.
+                        reopen = reopen or any(merged.get(k) != (existing.settings or {}).get(k) for k in ("transport", "buffer_size"))
+                        existing.settings = merged
+                        dirty_db = True
+                        live = app_state.cameras.get(camera_id)
+                        if live is not None:
+                            live.settings = dict(merged)
 
             driver = app_state.cameras.get(camera_id)
             running_on = getattr(driver, "source", None)
-            if running_on is not None and running_on != source:
+            if running_on is not None and (running_on != source or reopen):
                 moved.append(camera_id)
             elif driver is not None:
                 driver.name = name

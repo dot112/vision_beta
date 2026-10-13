@@ -1784,7 +1784,7 @@
                 button.disabled = true;
                 try {
                     // The same channel the Connections page makes for a network camera.
-                    const saved = await api("/api/v1/system/endpoints", { method: "POST", body: { name, description: "", enabled: true, protocol: "ipcam", source, transport: "tcp", resolution: "640x480", buffer_size: 1 } });
+                    const saved = await api("/api/v1/system/endpoints", { method: "POST", body: { name, description: "", enabled: true, protocol: "ipcam", source, transport: "tcp", resolution: "native", buffer_size: 1 } });
                     await loadCamerasList();
                     refreshDeviceSelects();
                     refreshAddDevices();

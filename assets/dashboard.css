@@ -1430,3 +1430,14 @@ button.status-pill:hover { filter: brightness(1.08); }
 .pl-triggers { margin-top: 10px; }
 .pl-trigger-list { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 2px; }
 .pl-trigger-list label { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+
+/* Line dashboard with several cameras: the main camera and the other cameras end on the same line.
+   The taller side sets the height; the main picture, or the other cameras' pictures, fill the rest. */
+@media (min-width: 993px) {
+    body .pl-feed-row { align-items: stretch; }
+    body .pl-feed-row > #liveVideoCardPanel { display: flex; flex-direction: column; }
+    body .pl-feed-row > #liveVideoCardPanel .video-box { flex: 1 1 auto; max-height: none; min-height: 0; }
+    body .pl-strip { align-content: stretch; grid-auto-rows: 1fr; }
+    body .pl-strip-tile { display: flex; flex-direction: column; }
+    body .pl-strip-tile .pl-strip-pic { flex: 1 1 auto; }
+}

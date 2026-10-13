@@ -72,7 +72,7 @@
                     <span>MQTT Broker</span>
                 </button>
                 <button type="button" class="proto-btn" id="protoBtnIpcam" onclick="selectCommProto('ipcam')">
-                    <span>IP Camera</span>
+                    <span>Network camera</span>
                 </button>
                 <button type="button" class="proto-btn" id="protoBtnWebhook" onclick="selectCommProto('webhook')">
                     <span>API / Webhook</span>
@@ -340,33 +340,62 @@
             
             <!-- 3. IP Camera Panel -->
             <div id="commPanelIpcam" class="comm-proto-panel" style="display:none">
-                <div class="cam-settings-section">IP Camera Stream Details</div>
+                <div class="cam-settings-section">Network camera</div>
                 <div class="form-group">
-                    <label class="form-label">RTSP / HTTP Stream URL *</label>
-                    <input type="text" id="ipcamSourceInput" class="form-input" placeholder="rtsp://admin:pass@192.168.1.100:554/stream1 or http://ip:8080/video" />
-                    <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
-                        <span>Supports RTSP H.264/H.265, MJPEG over HTTP.</span>
+                    <label class="form-label" for="ipcamKindInput">Camera type</label>
+                    <select id="ipcamKindInput" class="form-input" onchange="syncIpcamKind()">
+                        <option value="ip">IP camera (RTSP or HTTP stream)</option>
+                        <option value="gige">GigE Vision (industrial camera)</option>
+                    </select>
+                </div>
+
+                <!-- An IP camera: its stream address -->
+                <div id="ipcamIpFields">
+                    <div class="form-group">
+                        <label class="form-label" for="ipcamSourceInput">Stream URL *</label>
+                        <input type="text" id="ipcamSourceInput" class="form-input" placeholder="rtsp://192.168.1.100:554/stream1 or http://192.168.1.100:8080/video" />
+                        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">RTSP (H.264 / H.265), an MJPEG stream over HTTP, or a snapshot URL.</div>
+                    </div>
+                    <div class="cam-settings-row">
+                        <div class="form-group" style="margin:0"><label class="form-label" for="ipcamUserInput">User name</label>
+                            <input type="text" id="ipcamUserInput" class="form-input" autocomplete="off" placeholder="None" /></div>
+                        <div class="form-group" style="margin:0"><label class="form-label" for="ipcamPassInput">Password</label>
+                            <input type="password" id="ipcamPassInput" class="form-input" autocomplete="new-password" placeholder="None" /></div>
+                    </div>
+                    <div id="ipcamLoginNote" style="font-size:11px;color:var(--text-muted);margin:4px 0 12px">Only for a camera that asks for a sign-in. They are saved inside the stream URL.</div>
+                    <div class="cam-settings-row">
+                        <div class="form-group" style="margin:0"><label class="form-label" for="ipcamTransportInput">RTSP transport</label>
+                            <select id="ipcamTransportInput" class="form-input">
+                                <option value="tcp">TCP (reliable)</option>
+                                <option value="udp">UDP (lowest delay)</option>
+                                <option value="http">RTSP over HTTP (tunnel)</option>
+                            </select></div>
+                        <div class="form-group" style="margin:0"><label class="form-label" for="ipcamResolutionInput">Picture size</label>
+                            <select id="ipcamResolutionInput" class="form-input">
+                                <option value="native" selected>The stream's own size</option>
+                                <option value="640x480">640 × 480</option>
+                                <option value="1280x720">1280 × 720</option>
+                                <option value="1920x1080">1920 × 1080</option>
+                            </select></div>
+                    </div>
+                    <div class="cam-settings-row">
+                        <div class="form-group" style="margin:0"><label class="form-label" for="ipcamBufferInput">Buffer size (frames)</label>
+                            <input type="number" id="ipcamBufferInput" class="form-input" value="1" min="1" max="16" /></div>
+                        <div style="font-size:11px;color:var(--text-muted);align-self:end;padding-bottom:8px">Transport does not apply to an HTTP stream. A picture size scales the picture in the server.</div>
                     </div>
                 </div>
-                <div class="cam-settings-row">
-                    <div class="form-group" style="margin:0"><label class="form-label">Transport Protocol</label>
-                        <select id="ipcamTransportInput" class="form-input">
-                            <option value="tcp">TCP (Reliable / Low Packet Loss)</option>
-                            <option value="udp">UDP (Ultra-Low Latency)</option>
-                            <option value="http">HTTP / Multipart</option>
-                        </select></div>
-                    <div class="form-group" style="margin:0"><label class="form-label">Target Resolution</label>
-                        <select id="ipcamResolutionInput" class="form-input">
-                            <option value="640x480">640 × 480 (VGA - Fast)</option>
-                            <option value="1280x720">1280 × 720 (720p HD)</option>
-                            <option value="1920x1080">1920 × 1080 (1080p FHD)</option>
-                            <option value="native">Native Stream Resolution</option>
-                        </select></div>
-                </div>
-                <div class="cam-settings-row">
-                    <div class="form-group" style="margin:0"><label class="form-label">Buffer Size (Frames)</label>
-                        <input type="number" id="ipcamBufferInput" class="form-input" value="1" min="1" max="10" /></div>
-                    <div></div>
+
+                <!-- A GigE Vision camera: its serial number -->
+                <div id="ipcamGigeFields" style="display:none">
+                    <div class="form-group">
+                        <label class="form-label" for="ipcamSerialInput">Serial number *</label>
+                        <div style="display:flex;gap:8px">
+                            <input type="text" id="ipcamSerialInput" class="form-input" maxlength="128" placeholder="Press Scan, or type the camera's serial number" style="flex:1" />
+                            <button type="button" id="ipcamScanBtn" class="btn-action btn-outline" onclick="scanGigeCameras()" style="white-space:nowrap">Scan</button>
+                        </div>
+                        <div id="ipcamScanResult" style="margin-top:8px"></div>
+                    </div>
+                    <div style="font-size:11px;color:var(--text-muted)">A GigE Vision or USB3 Vision camera is found by its serial number, whatever its network address. Its trigger, exposure and gain are set on the camera's card: Line setup, the camera, <b>Image</b>. Needs the optional GenICam install and the camera maker's SDK on the server.</div>
                 </div>
             </div>
 
@@ -400,7 +429,7 @@
 
             <!-- 5. PLC Controller Panel -->
             <div id="commPanelPlc" class="comm-proto-panel" style="display:none">
-                <div class="cam-settings-section">Industrial PLC Connection &amp; Protocol Parameters</div>
+                <div class="cam-settings-section">Controller connection and protocol</div>
                 
                 <div class="cam-settings-row">
                     <div class="form-group" style="margin:0">
@@ -570,12 +599,46 @@
                         </div>
                         <div class="form-group" style="margin:0">
                             <label class="form-label">Security Policy</label>
-                            <select id="plcOpcuaSecurity" class="form-input">
+                            <select id="plcOpcuaSecurity" class="form-input" onchange="syncOpcuaCertFields()">
                                 <option value="None">None (No channel security)</option>
                                 <option value="Basic256Sha256_Sign">Basic256Sha256 (Sign — requires client certificate/key configuration)</option>
                                 <option value="Basic256Sha256_SignAndEncrypt">Basic256Sha256 (Sign &amp; Encrypt — requires client certificate/key configuration)</option>
                             </select>
                         </div>
+                    </div>
+                    <!-- A secured channel signs its messages with a client certificate and its private key -->
+                    <div id="plcOpcuaCertFields" style="display:none;margin-top:12px">
+                        <div class="form-group">
+                            <label class="form-label" for="plcOpcuaCertInput">Client certificate *</label>
+                            <div class="cert-upload-box">
+                                <select id="plcOpcuaCertInput" class="form-input" style="flex:1"><option value="">-- Choose an uploaded certificate --</option></select>
+                                <label class="btn-action btn-outline" style="cursor:pointer;white-space:nowrap;margin:0;font-size:11px;padding:7px 10px" title="Upload a client certificate (PEM or DER)">
+                                    <span>Upload</span>
+                                    <input type="file" accept=".pem,.der,.crt,.cer,*/*" style="display:none" onchange="handleOpcuaCertUpload(event, 'client_cert', 'plcOpcuaCertInput')" />
+                                </label>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="plcOpcuaKeyInput">Private key *</label>
+                            <div class="cert-upload-box">
+                                <select id="plcOpcuaKeyInput" class="form-input" style="flex:1"><option value="">-- Choose an uploaded private key --</option></select>
+                                <label class="btn-action btn-outline" style="cursor:pointer;white-space:nowrap;margin:0;font-size:11px;padding:7px 10px" title="Upload the certificate's private key (PEM or DER, without a password)">
+                                    <span>Upload</span>
+                                    <input type="file" accept=".pem,.der,.key,*/*" style="display:none" onchange="handleOpcuaCertUpload(event, 'private_key', 'plcOpcuaKeyInput')" />
+                                </label>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="plcOpcuaServerCertInput">Server certificate (optional)</label>
+                            <div class="cert-upload-box">
+                                <select id="plcOpcuaServerCertInput" class="form-input" style="flex:1"><option value="">-- None: trust the server's certificate --</option></select>
+                                <label class="btn-action btn-outline" style="cursor:pointer;white-space:nowrap;margin:0;font-size:11px;padding:7px 10px" title="Upload the server's certificate to accept only that server">
+                                    <span>Upload</span>
+                                    <input type="file" accept=".pem,.der,.crt,.cer,*/*" style="display:none" onchange="handleOpcuaCertUpload(event, 'server_cert', 'plcOpcuaServerCertInput')" />
+                                </label>
+                            </div>
+                        </div>
+                        <div id="opcuaCertMsg" style="font-size:11px;color:var(--text-muted)">The private key must belong to the certificate and have no password. The key stays on the server and is never shown again. The server (PLC) must trust the client certificate.</div>
                     </div>
                 </div>
 
@@ -2586,8 +2649,8 @@ function renderCommsGrid() {
             iconSvg = COMM_PROTO_ICONS.mqtt;
         } else if (proto === "ipcam") {
             badgeClass = "badge-ipcam";
-            badgeLabel = "IP Camera";
-            detailText = ep.source || "rtsp://...";
+            badgeLabel = ep.camera_kind === "gige" ? "GigE Vision" : "IP camera";
+            detailText = ep.camera_kind === "gige" ? `Serial ${ep.source || "?"}` : (ep.source || "rtsp://...");
             iconSvg = COMM_PROTO_ICONS.ipcam;
         } else if (proto === "webhook") {
             badgeClass = "badge-webhook";
@@ -3004,10 +3067,7 @@ function openAddCommModal(protocol = "tcp") {
     setMqttSparkplugFields();
     toggleMqttTlsFields();
 
-    document.getElementById("ipcamSourceInput").value = "";
-    document.getElementById("ipcamTransportInput").value = "tcp";
-    document.getElementById("ipcamResolutionInput").value = "640x480";
-    document.getElementById("ipcamBufferInput").value = "1";
+    fillIpcamFields(null);
 
     document.getElementById("webhookUrlInput").value = "";
     document.getElementById("webhookMethodInput").value = "POST";
@@ -3041,6 +3101,8 @@ function openAddCommModal(protocol = "tcp") {
         document.getElementById("plcEipPath").value = "1,0";
         document.getElementById("plcOpcuaPath").value = "";
         document.getElementById("plcOpcuaSecurity").value = "None";
+        loadOpcuaCertDropdowns({ cert: "", key: "", server: "" });
+        syncOpcuaCertFields();
         document.getElementById("plcMelsecNetwork").value = "0";
         document.getElementById("plcMelsecStation").value = "255";
         document.getElementById("plcFinsNetwork").value = "0";
@@ -3116,10 +3178,7 @@ function openEditCommModal(endpointId) {
         setMqttSparkplugFields(ep);
         toggleMqttTlsFields();
     } else if (proto === "ipcam") {
-        document.getElementById("ipcamSourceInput").value = ep.source || "";
-        document.getElementById("ipcamTransportInput").value = ep.transport || "tcp";
-        document.getElementById("ipcamResolutionInput").value = ep.resolution || "640x480";
-        document.getElementById("ipcamBufferInput").value = ep.buffer_size || 1;
+        fillIpcamFields(ep);
     } else if (proto === "webhook") {
         document.getElementById("webhookUrlInput").value = ep.url || "";
         document.getElementById("webhookMethodInput").value = ep.method || "POST";
@@ -3154,6 +3213,8 @@ function openEditCommModal(endpointId) {
             document.getElementById("plcEipPath").value = ep.eip_path || "1,0";
             document.getElementById("plcOpcuaPath").value = ep.opcua_path || "";
             document.getElementById("plcOpcuaSecurity").value = ep.opcua_security || "None";
+            loadOpcuaCertDropdowns({ cert: opcuaFileName(ep.opcua_cert_path), key: opcuaFileName(ep.opcua_key_path), server: opcuaFileName(ep.opcua_server_cert_path) });
+            syncOpcuaCertFields();
             document.getElementById("plcMelsecNetwork").value = ep.melsec_network ?? 0;
             document.getElementById("plcMelsecStation").value = ep.melsec_station ?? 255;
             document.getElementById("plcFinsNetwork").value = ep.fins_network ?? 0;
@@ -3176,6 +3237,145 @@ function closeCommModal(event) {
 function isCommDialogOpen() {
     return Boolean(document.getElementById("commModalOverlay")?.classList.contains("active"));
 }
+
+// ─── Network camera: IP camera or GigE Vision ─────────────────────────────
+function syncIpcamKind() {
+    const gige = document.getElementById("ipcamKindInput").value === "gige";
+    document.getElementById("ipcamIpFields").style.display = gige ? "none" : "block";
+    document.getElementById("ipcamGigeFields").style.display = gige ? "block" : "none";
+}
+
+// The dialog's fields for a network camera. ``ep``: the saved channel, or null for a new one.
+function fillIpcamFields(ep) {
+    const kind = ep && ep.camera_kind === "gige" ? "gige" : "ip";
+    document.getElementById("ipcamKindInput").value = kind;
+    document.getElementById("ipcamSourceInput").value = kind === "ip" && ep ? (ep.source || "") : "";
+    document.getElementById("ipcamSerialInput").value = kind === "gige" && ep ? (ep.source || "") : "";
+    document.getElementById("ipcamUserInput").value = "";
+    document.getElementById("ipcamPassInput").value = "";
+    document.getElementById("ipcamScanResult").innerHTML = "";
+    // A saved address shows its sign-in as ***:***; leave the two fields empty to keep it.
+    const hasLogin = kind === "ip" && ep && /:\/\/[^/@]+@/.test(ep.source || "");
+    document.getElementById("ipcamUserInput").placeholder = hasLogin ? "Saved (leave empty to keep)" : "None";
+    document.getElementById("ipcamPassInput").placeholder = hasLogin ? "Saved (leave empty to keep)" : "None";
+    setSelectValueWithFallback(document.getElementById("ipcamTransportInput"), (ep && ep.transport) || "tcp");
+    setSelectValueWithFallback(document.getElementById("ipcamResolutionInput"), (ep && ep.resolution) || "native");
+    document.getElementById("ipcamBufferInput").value = (ep && ep.buffer_size) || 1;
+    syncIpcamKind();
+    // What the camera really runs with: its own card (Line setup) may have changed these since.
+    if (kind === "ip" && ep && ep.id) {
+        fetch(`/api/v1/cameras/${encodeURIComponent(ep.id)}`, { headers: { Authorization: `Bearer ${currentAuthToken}` } })
+            .then((res) => (res.ok ? res.json() : null))
+            .then((cam) => {
+                const editing = document.getElementById("commInputName");
+                if (!cam || !cam.settings || !editing || editingCommEndpointId !== ep.id) return;
+                const s = cam.settings;
+                if (s.transport) setSelectValueWithFallback(document.getElementById("ipcamTransportInput"), s.transport);
+                if (s.buffer_size) document.getElementById("ipcamBufferInput").value = s.buffer_size;
+                setSelectValueWithFallback(document.getElementById("ipcamResolutionInput"), s.width && s.height ? `${s.width}x${s.height}` : "native");
+            })
+            .catch(() => {});
+    }
+}
+
+// The stream URL with the user name and password from their two fields, when they are filled.
+function ipcamSourceWithLogin(source) {
+    const user = document.getElementById("ipcamUserInput").value.trim();
+    const pass = document.getElementById("ipcamPassInput").value;
+    if (!user && !pass) return source;
+    const match = source.match(/^([a-z][a-z0-9+.-]*:\/\/)(?:[^/@]*@)?(.*)$/i);
+    if (!match) return source;
+    const login = encodeURIComponent(user) + (pass ? `:${encodeURIComponent(pass)}` : "");
+    return `${match[1]}${login}@${match[2]}`;
+}
+
+async function scanGigeCameras() {
+    const button = document.getElementById("ipcamScanBtn");
+    const box = document.getElementById("ipcamScanResult");
+    button.disabled = true;
+    box.innerHTML = `<div style="font-size:12px;color:var(--text-muted)">Looking for cameras on the network and the USB3 ports…</div>`;
+    try {
+        const res = await fetch("/api/v1/cameras/discover/gige", { headers: { Authorization: `Bearer ${currentAuthToken}` } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        const editing = editingCommEndpointId;
+        const own = editing ? (allCommsEndpoints.find((e) => e.id === editing) || {}).source : "";
+        box.innerHTML = data.length ? data.map((c) => {
+            const taken = c.in_use && c.serial !== own;
+            return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px">
+                <span style="min-width:0;overflow-wrap:anywhere;font-size:13px"><b>${escapeHtml(c.model || "Camera")}</b> · ${escapeHtml(c.serial)}${c.interface ? ` · ${escapeHtml(c.interface)}` : ""}${c.vendor ? ` · ${escapeHtml(c.vendor)}` : ""}</span>
+                <button type="button" class="btn-action btn-sm btn-outline" data-serial="${escapeHtml(c.serial)}" data-model="${escapeHtml(c.model || "")}" onclick="pickGigeCamera(this)" ${taken ? "disabled" : ""}>${taken ? "In use" : "Use this camera"}</button>
+            </div>`;
+        }).join("") : `<div style="font-size:12px;color:var(--text-muted)">No camera was found. Is it powered, on the same network as the server, and not open in another program?</div>`;
+    } catch (e) {
+        box.innerHTML = `<div style="font-size:12px;color:var(--danger-color)">${escapeHtml(e.message || "The scan failed")}</div>`;
+    }
+    button.disabled = false;
+}
+
+function pickGigeCamera(button) {
+    document.getElementById("ipcamSerialInput").value = button.dataset.serial;
+    const name = document.getElementById("commInputName");
+    if (name && !name.value.trim()) name.value = `${button.dataset.model || "Camera"} ${button.dataset.serial}`.trim();
+}
+
+// ─── OPC UA: the client certificate, its private key, the server certificate ───
+function syncOpcuaCertFields() {
+    const security = document.getElementById("plcOpcuaSecurity");
+    const box = document.getElementById("plcOpcuaCertFields");
+    if (security && box) box.style.display = security.value === "None" ? "none" : "block";
+}
+
+// Fill the three lists with the uploaded files and choose what the channel uses.
+async function loadOpcuaCertDropdowns(chosen) {
+    let files = { certificates: [], private_keys: [] };
+    try {
+        const res = await fetch("/api/v1/plc/opcua/certs", { headers: { Authorization: `Bearer ${currentAuthToken}` } });
+        if (res.ok) files = await res.json();
+    } catch (_) { /* the lists stay empty */ }
+    const fill = (id, names, none, value) => {
+        const select = document.getElementById(id);
+        if (!select) return;
+        const want = value !== undefined ? value : select.value;
+        const all = want && !names.includes(want) ? [...names, want] : names;
+        select.innerHTML = `<option value="">${none}</option>` + all.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
+        select.value = want || "";
+        if (select._refreshCustomSelect) select._refreshCustomSelect();
+    };
+    const c = chosen || {};
+    fill("plcOpcuaCertInput", files.certificates || [], "-- Choose an uploaded certificate --", c.cert);
+    fill("plcOpcuaKeyInput", files.private_keys || [], "-- Choose an uploaded private key --", c.key);
+    fill("plcOpcuaServerCertInput", files.certificates || [], "-- None: trust the server's certificate --", c.server);
+}
+
+async function handleOpcuaCertUpload(event, kind, targetId) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    const msg = document.getElementById("opcuaCertMsg");
+    const say = (text, color) => { if (msg) { msg.innerText = text; msg.style.color = color; } };
+    say(`Uploading ${file.name}…`, "var(--text-muted)");
+    const form = new FormData();
+    form.append("file", file);
+    form.append("kind", kind);
+    try {
+        const res = await fetch("/api/v1/plc/opcua/certs/upload", { method: "POST", headers: { Authorization: `Bearer ${currentAuthToken}` }, body: form });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        const keep = (id) => document.getElementById(id).value;
+        await loadOpcuaCertDropdowns({
+            cert: targetId === "plcOpcuaCertInput" ? data.filename : keep("plcOpcuaCertInput"),
+            key: targetId === "plcOpcuaKeyInput" ? data.filename : keep("plcOpcuaKeyInput"),
+            server: targetId === "plcOpcuaServerCertInput" ? data.filename : keep("plcOpcuaServerCertInput"),
+        });
+        say(data.subject ? `Uploaded ${data.filename}: ${data.subject}, valid until ${String(data.expires || "").slice(0, 10)}.` : `Uploaded ${data.filename}.`, "var(--success-color)");
+    } catch (e) {
+        say(`${file.name}: ${e.message || "the upload failed"}`, "var(--danger-color)");
+    }
+}
+
+// The file name at the end of a path saved on the server.
+function opcuaFileName(path) { return String(path || "").split(/[\\/]/).pop(); }
 
 async function handleCertFileUpload(event, targetInputId="mqttCaCertInput") {
     const file = event.target.files?.[0];
@@ -3298,12 +3498,19 @@ async function saveCommEndpoint() {
             return showModal("Sparkplug IDs Required", "Enter a Group ID and an Edge node ID without / + #.");
         }
     } else if (proto === "ipcam") {
-        const source = document.getElementById("ipcamSourceInput").value.trim();
-        if (!source) return showModal("Source Required", "Please enter a valid RTSP or HTTP stream URL.");
-        payload.source = source;
-        payload.transport = document.getElementById("ipcamTransportInput").value;
-        payload.resolution = document.getElementById("ipcamResolutionInput").value;
-        payload.buffer_size = parseInt(document.getElementById("ipcamBufferInput").value) || 1;
+        payload.camera_kind = document.getElementById("ipcamKindInput").value;
+        if (payload.camera_kind === "gige") {
+            const serial = document.getElementById("ipcamSerialInput").value.trim();
+            if (!serial) return showModal("Serial number required", "Press Scan and choose the camera, or type its serial number.");
+            payload.source = serial;
+        } else {
+            const source = document.getElementById("ipcamSourceInput").value.trim();
+            if (!source) return showModal("Stream URL required", "Enter the camera's RTSP or HTTP stream URL.");
+            payload.source = ipcamSourceWithLogin(source);
+            payload.transport = document.getElementById("ipcamTransportInput").value;
+            payload.resolution = document.getElementById("ipcamResolutionInput").value;
+            payload.buffer_size = parseInt(document.getElementById("ipcamBufferInput").value) || 1;
+        }
     } else if (proto === "webhook") {
         const url = document.getElementById("webhookUrlInput").value.trim();
         if (!url) return showModal("URL Required", "Please enter a valid HTTP/HTTPS Webhook endpoint URL.");
@@ -3347,6 +3554,14 @@ async function saveCommEndpoint() {
         payload.eip_path = document.getElementById("plcEipPath").value.trim() || "1,0";
         payload.opcua_path = document.getElementById("plcOpcuaPath").value.trim() || "";
         payload.opcua_security = document.getElementById("plcOpcuaSecurity").value;
+        if (payload.opcua_security !== "None") {
+            payload.opcua_cert_file = document.getElementById("plcOpcuaCertInput").value;
+            payload.opcua_key_file = document.getElementById("plcOpcuaKeyInput").value;
+            payload.opcua_server_cert_file = document.getElementById("plcOpcuaServerCertInput").value;
+            if (!payload.opcua_cert_file || !payload.opcua_key_file) {
+                return showModal("Certificate required", "This Security Policy needs a client certificate and its private key. Upload and choose both, or set the policy to None.");
+            }
+        }
         payload.melsec_network = parseInt(document.getElementById("plcMelsecNetwork").value) || 0;
         payload.melsec_station = parseInt(document.getElementById("plcMelsecStation").value) || 255;
         payload.fins_network = parseInt(document.getElementById("plcFinsNetwork").value) || 0;

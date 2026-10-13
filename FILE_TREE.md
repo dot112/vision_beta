@@ -174,6 +174,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │   ├── modbus_service.py
 │   │   ├── model_service.py
 │   │   ├── mqtt_service.py
+│   │   ├── opcua_cert_service.py    # uploaded client certificates and keys of secured OPC UA channels
 │   │   ├── opcua_discovery_service.py
 │   │   ├── ota_service.py
 │   │   ├── plc_dispatcher_service.py
@@ -281,6 +282,8 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_logic_fixes.py
     ├── test_messages_and_plc_values.py
     ├── test_mqtt_channels.py
+    ├── test_network_camera_channel.py # the network camera card: IP camera or GigE Vision
+    ├── test_opcua_certs.py          # uploading and choosing OPC UA certificates and keys
     ├── test_mqtt_client.py
     ├── test_plc_action_persistence.py
     ├── test_plc_dispatcher.py
@@ -308,6 +311,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_sparkplug_node.py
     ├── test_sparkplug_service.py
     ├── test_trigger_inspection.py
+    ├── test_trigger_numbers.py      # a Take a picture input's trigger number; the triggers a camera ticks
     └── test_vision_pipeline.py
 ```
 

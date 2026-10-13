@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
 from app.db.models.user import User
 from app.dependencies import require_operator, require_supervisor
@@ -75,6 +75,31 @@ async def scan_opcua_endpoints(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/opcua/certs", summary="List the uploaded OPC UA certificates and private keys (Level 2+ Supervisor)")
+async def list_opcua_certs(user: User = Depends(require_supervisor)) -> Dict[str, Any]:
+    """The files a secured OPC UA channel can use: ``certificates``, ``private_keys``, ``all_files`` (names only)."""
+    from app.services import opcua_cert_service
+
+    return opcua_cert_service.list_files()
+
+
+@router.post("/opcua/certs/upload", summary="Upload an OPC UA client certificate, private key or server certificate (Level 2+ Supervisor)")
+async def upload_opcua_cert(
+    file: UploadFile = File(..., description="A certificate (PEM or DER) or a private key without a password"),
+    kind: str = Form(..., description="client_cert, private_key or server_cert"),
+    user: User = Depends(require_supervisor),
+) -> Dict[str, Any]:
+    """Check and keep one file. The answer's ``filename`` is what a channel names in ``opcua_cert_file``,
+    ``opcua_key_file`` or ``opcua_server_cert_file``. A private key is never sent back."""
+    from app.services import opcua_cert_service
+
+    data = await file.read(opcua_cert_service.MAX_BYTES + 1)
+    try:
+        return opcua_cert_service.store(kind.strip().lower(), file.filename or "", data)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────

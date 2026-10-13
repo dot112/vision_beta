@@ -8,7 +8,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from app.services.line_config import (
     OLD_CLASS_KEYS,
@@ -113,6 +113,51 @@ def _redact_url(url: str) -> str:
         return urlunsplit((parsed.scheme, netloc, parsed.path, query, parsed.fragment))
     except (TypeError, ValueError):
         return "[redacted URL]"
+
+
+def _opcua_file_path(endpoint_data: Dict[str, Any], existing: Optional[Dict[str, Any]], key: str, label: str) -> str:
+    """The path of one OPC UA file of a channel: the uploaded file named in ``<key>_file``, else the
+    path that was sent or is saved. Raises ValueError when the named file was not uploaded."""
+    if f"{key}_file" in endpoint_data:
+        from app.services import opcua_cert_service
+        return opcua_cert_service.resolve(endpoint_data.get(f"{key}_file"))
+    return _endpoint_text(endpoint_data.get(f"{key}_path", (existing or {}).get(f"{key}_path", "")), label, maximum=512)
+
+
+def picture_size(resolution: Any) -> Optional[Tuple[int, int]]:
+    """(width, height) of a resolution written as "1280x720"; None when it is not one."""
+    match = re.fullmatch(r"(\d{2,5})\s*x\s*(\d{2,5})", str(resolution or "").strip().lower())
+    if not match:
+        return None
+    width, height = int(match.group(1)), int(match.group(2))
+    return (width, height) if 16 <= width <= 7680 and 16 <= height <= 4320 else None
+
+
+async def _test_gige_camera(serial: str) -> Dict[str, Any]:
+    """The Test button of a GigE Vision channel: is a camera with this serial number there?"""
+    from app.hardware.camera import genicam_backend
+    from app.state.application_state import app_state
+
+    if not serial:
+        return {"success": False, "message": "The camera's serial number is empty. Press Scan to find it."}
+    for camera_id, driver in list(app_state.cameras.items()):
+        if type(driver).__name__ == "GigECamera" and str(getattr(driver, "source", "")) == serial \
+                and getattr(driver, "is_connected", False) and not getattr(driver, "reconnecting", False):
+            return {"success": True, "message": f"Camera {serial} is connected ({camera_id})"}
+    try:
+        backend = genicam_backend.default_backend()
+        devices = await asyncio.to_thread(backend.list_devices)
+    except genicam_backend.GenICamUnavailable as exc:
+        return {"success": False, "message": str(exc)}
+    except Exception as exc:
+        return {"success": False, "message": f"The scan failed: {type(exc).__name__}: {exc}"}
+    found = next((device for device in devices if device.get("serial") == serial), None)
+    if found is None:
+        return {"success": False, "message": f"No camera with the serial number {serial} was found. Is it powered, "
+                                                "on the same network as the server, and not open in another program?"}
+    what = " ".join(part for part in (found.get("vendor"), found.get("model")) if part) or "camera"
+    where = f" on {found['interface']}" if found.get("interface") else ""
+    return {"success": True, "message": f"Camera {serial} was found: {what}{where}"}
 
 
 def _restore_redacted_url(value: str, original: str) -> str:
@@ -998,7 +1043,8 @@ class SettingsPersistenceService:
         record = {
             "id": cam_id,
             "name": cam_data.get("name") or f"IP Camera {len(cameras)+1}",
-            "type": "ip",
+            # "gige": a GigE Vision camera, whose source is its serial number.
+            "type": "gige" if cam_data.get("type") == "gige" else "ip",
             "source": _restore_redacted_url(
                 cam_data.get("source", "").strip(),
                 existing.get("source", "") if existing else "",
@@ -1278,30 +1324,53 @@ class SettingsPersistenceService:
                         )
             record.update(sparkplug)
         elif proto == "ipcam":
+            # A network camera: an IP camera (its stream URL) or a GigE Vision camera (its serial number).
+            kind = str(endpoint_data.get("camera_kind", (existing or {}).get("camera_kind", "ip")) or "ip").strip().lower()
+            if kind not in {"ip", "gige"}:
+                raise ValueError("The camera type must be 'ip' (IP camera) or 'gige' (GigE Vision)")
             source = _endpoint_text(
                 endpoint_data.get("source", (existing or {}).get("source", "")),
-                "IP camera source",
+                "Camera serial number" if kind == "gige" else "IP camera source",
                 maximum=2048,
                 required=record["enabled"],
-            )
-            if existing and isinstance(existing.get("source"), str):
-                source = _restore_redacted_url(source, existing["source"])
-            if source:
-                try:
-                    parsed_source = urlsplit(source)
-                except ValueError as exc:
-                    raise ValueError("IP camera source URL is invalid") from exc
-                if parsed_source.scheme.lower() not in {"rtsp", "rtsps", "http", "https"} or not parsed_source.hostname:
-                    raise ValueError("IP camera source must be an RTSP, RTSPS, HTTP, or HTTPS URL")
+            ).strip()
+            if kind == "gige":
+                if source and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:\-]{0,127}", source):
+                    raise ValueError("The camera's serial number may hold letters, digits and . _ : - (128 at most)")
+            else:
+                if existing and isinstance(existing.get("source"), str):
+                    source = _restore_redacted_url(source, existing["source"])
+                if source:
+                    try:
+                        parsed_source = urlsplit(source)
+                    except ValueError as exc:
+                        raise ValueError("IP camera source URL is invalid") from exc
+                    if parsed_source.scheme.lower() not in {"rtsp", "rtsps", "http", "https"} or not parsed_source.hostname:
+                        raise ValueError("IP camera source must be an RTSP, RTSPS, HTTP, or HTTPS URL")
+            transport = _endpoint_text(endpoint_data.get("transport", (existing or {}).get("transport", "tcp")),
+                                       "IP camera transport", maximum=16).strip().lower() or "tcp"
+            if transport not in {"tcp", "udp", "http"}:
+                raise ValueError("IP camera transport must be tcp, udp or http")
+            resolution = _endpoint_text(endpoint_data.get("resolution", (existing or {}).get("resolution", "native")),
+                                        "IP camera resolution", maximum=32).strip().lower() or "native"
+            if resolution != "native" and picture_size(resolution) is None:
+                raise ValueError("IP camera resolution must be 'native' or width x height, such as 1280x720")
             record.update({
+                "camera_kind": kind,
                 "source": source,
-                "transport": _endpoint_text(endpoint_data.get("transport", (existing or {}).get("transport", "tcp")), "IP camera transport", maximum=16),
-                "resolution": _endpoint_text(endpoint_data.get("resolution", (existing or {}).get("resolution", "640x480")), "IP camera resolution", maximum=32),
-                "buffer_size": _bounded_int(endpoint_data.get("buffer_size"), "IP camera buffer size", 1, 1, 16),
+                "transport": transport,
+                "resolution": resolution,
+                "buffer_size": _bounded_int(endpoint_data.get("buffer_size", (existing or {}).get("buffer_size")),
+                                            "IP camera buffer size", 1, 1, 16),
             })
+            # What the camera itself is given: only what this save sent, so that a rename does not
+            # undo what the camera's own card set. A GigE camera has none of the three.
+            camera_connection = {key: record[key] for key in ("transport", "resolution", "buffer_size")
+                                 if key in endpoint_data} if kind == "ip" else {}
             # Sync into ip_cameras list
             cls.add_or_update_ip_camera({
                 "id": record["id"],
+                "type": kind,
                 "name": record["name"],
                 "source": record["source"],
                 "is_active": False,
@@ -1474,12 +1543,18 @@ class SettingsPersistenceService:
                 "serial_stopbits": _bounded_int(endpoint_data.get("serial_stopbits", (existing or {}).get("serial_stopbits")), "Serial stop bits", 1, 1, 2),
                 "melsec_xy_octal": _endpoint_bool(endpoint_data.get("melsec_xy_octal", (existing or {}).get("melsec_xy_octal", False)), "MELSEC octal X/Y", False),
                 # OPC UA secured connections and user login
-                "opcua_cert_path": _endpoint_text(endpoint_data.get("opcua_cert_path", (existing or {}).get("opcua_cert_path", "")), "OPC UA client certificate path", maximum=512),
-                "opcua_key_path": _endpoint_text(endpoint_data.get("opcua_key_path", (existing or {}).get("opcua_key_path", "")), "OPC UA private key path", maximum=512),
-                "opcua_server_cert_path": _endpoint_text(endpoint_data.get("opcua_server_cert_path", (existing or {}).get("opcua_server_cert_path", "")), "OPC UA server certificate path", maximum=512),
+                # A file uploaded on the Connections page is named in opcua_cert_file, opcua_key_file and
+                # opcua_server_cert_file ("" = none); a path on the server can still be given instead.
+                "opcua_cert_path": _opcua_file_path(endpoint_data, existing, "opcua_cert", "OPC UA client certificate path"),
+                "opcua_key_path": _opcua_file_path(endpoint_data, existing, "opcua_key", "OPC UA private key path"),
+                "opcua_server_cert_path": _opcua_file_path(endpoint_data, existing, "opcua_server_cert", "OPC UA server certificate path"),
                 "username": _endpoint_text(endpoint_data.get("username", (existing or {}).get("username", "")), "PLC username", maximum=256),
                 "password": _endpoint_text(endpoint_data.get("password") or (existing or {}).get("password", ""), "PLC password", maximum=512),
             })
+            if record["opcua_cert_path"] and record["opcua_key_path"] \
+                    and ("opcua_cert_file" in endpoint_data or "opcua_key_file" in endpoint_data):
+                from app.services import opcua_cert_service
+                opcua_cert_service.check_pair(record["opcua_cert_path"], record["opcua_key_path"])
 
         if existing:
             existing.update(record)
@@ -1529,7 +1604,7 @@ class SettingsPersistenceService:
             # its stream open: without this the old address stays in use.
             try:
                 from app.services.camera_service import CameraService
-                await CameraService.sync_ip_cameras()
+                await CameraService.sync_ip_cameras(connection={ep_id: camera_connection})
             except Exception:
                 logger.exception("Could not apply the saved address of IP camera %s", ep_id)
         return record
@@ -1689,6 +1764,8 @@ class SettingsPersistenceService:
 
         elif proto == "ipcam":
             source = ep.get("source", "")
+            if str(ep.get("camera_kind") or "ip") == "gige":
+                return await _test_gige_camera(str(source or "").strip())
             if not source:
                 return {"success": False, "message": "IP stream source URL is empty."}
 

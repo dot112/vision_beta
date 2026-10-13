@@ -99,7 +99,7 @@ Start the server. On **Line setup**:
 
 **You should see** 10 products on the Line dashboard, each with its picture, and the card saying `last picture at <time> (10 so far)`.
 
-Then set **Trigger** to *Software*, **Apply**, and on the **PLC signals** step add a signal with the action *Take a picture* for this camera (the PLC simulator works: `python "test codes/plc_simulator.py" --port 15020`). Each time the signal comes on: one product.
+Then set **Trigger** to *Software*, **Apply**, and on the **Inputs** step add an input with the action *Take a picture* (it gets trigger number 1), then tick **Trigger 1** on the camera's card under **Counting** and save the line setup (the PLC simulator works: `python "test codes/plc_simulator.py" --port 15020`). Each time the signal comes on: one product.
 
 **If a number is wrong:** send the server's log (`logs/`) for those minutes and a screenshot of the camera card with Image open.
 
@@ -131,10 +131,10 @@ With the first camera connected and its line running, plug in a second one and p
 
 ## Step 9: the code reader
 
-A camera with the job *Code reader* and **Read codes** on *When a PLC signal asks*:
+A camera with the job *Code reader* and **Read codes** on *When an input asks*:
 
 - **Trigger: Hardware**: every picture the button takes is read once. Put the same code in front of it twice: two reads.
-- **Trigger: Software** with a *Take a picture* signal card: each signal takes one picture and reads it. Cover the code: it takes up to 3 pictures before giving "no code".
+- **Trigger: Software** with a *Take a picture* input: each signal takes one picture and reads it. Cover the code: it takes up to 3 pictures before giving "no code".
 
 ## Step 10: the strobe output
 
@@ -153,7 +153,7 @@ Set **Strobe output** to one of the camera's output lines and put a meter or a l
 - CoaXPress cameras and PTP (IEEE 1588) timed triggers.
 - The Line dashboard's camera tile shows the last picture as a still. Before the first trigger it is empty; the camera's card on Line setup says "waiting for a trigger".
 - Clearing **Strobe output** does not switch the camera's line back; power the camera off and on, or set it in the maker's viewer.
-- A camera on Software trigger that both counts (*One picture per trigger*) and reads codes (*When a PLC signal asks*) takes two pictures per signal, one for each.
+- A camera on Software trigger that both counts (*One picture per trigger*) and reads codes (*When an input asks*) takes two pictures per signal, one for each.
 
 ## Trying it without a camera
 
