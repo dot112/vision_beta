@@ -368,8 +368,7 @@ def test_opc_ua_reports_a_node_that_cannot_be_read():
     drv = _opcua({"ns=2;s=Gone": RuntimeError("BadNodeIdUnknown")})
     ok, got, message = asyncio.run(drv.read("ns=2;s=Gone"))
     assert (ok, got) == (False, None) and "BadNodeIdUnknown" in message
-    ok, got, message = asyncio.run(drv.read("Gone"))        # not a NodeId at all
-    assert (ok, got) == (False, None) and "NodeId" in message
+    # An address that is not a NodeId is a tag's name, looked up on the server: tests/test_opcua_tag_names.py.
 
 
 # ── MELSEC SLMP ───────────────────────────────────────────────────────────────

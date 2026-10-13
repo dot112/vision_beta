@@ -4592,8 +4592,8 @@ const PLC_PROTOCOL_TARGETS = {
     opcua: {
         label: "OPC UA",
         types: [
-            { id: "opcua_node_bool", name: "Node ID / Path (Boolean)", defaultAddr: "ns=2;s=Line1.Rejector", placeholder: "e.g. ns=2;s=Line1.Rejector" },
-            { id: "opcua_node_val", name: "Node ID / Path (Int / Float)", defaultAddr: "ns=2;s=Line1.GoodCount", placeholder: "e.g. ns=2;s=Line1.GoodCount" }
+            { id: "opcua_node_bool", name: "Tag name or NodeId (Boolean)", defaultAddr: "Rejector", placeholder: "e.g. Tag_1 or DB1.Rejector" },
+            { id: "opcua_node_val", name: "Tag name or NodeId (Int / Float)", defaultAddr: "GoodCount", placeholder: "e.g. GoodCount or DB1.GoodCount" }
         ]
     },
     melsec: {
@@ -5248,7 +5248,7 @@ function refreshPlcModalBody(cardId) {
     const activeTarget = supportedTypes.find(t => t.id === card.target_type) || supportedTypes[0] || { placeholder: "Target Address / Tag" };
     const curTargetPlaceholder = activeTarget.placeholder || "Target Address / Tag";
     const targetAddressHelp = protoDef.label === "OPC UA"
-        ? '<div style="font-size:10px;color:var(--text-muted);margin-top:3px">Enter the full NodeId, not only the displayed tag name. Example: <code>ns=2;s=Line1.Rejector</code>.</div>'
+        ? '<div style="font-size:10px;color:var(--text-muted);margin-top:3px">Type the tag name as the PLC shows it, for example <code>Tag_1</code> or <code>DB1.Speed</code>. The server finds its full NodeId and shows it in the Test result. A full NodeId also works.</div>'
         : "";
 
     // Channel selector options with stock "None / No Channel Selected" option
@@ -7124,7 +7124,7 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
 })();
 </script>
 <script src="/assets/camera_settings.js?v=2.5.0"></script>
-<script src="/assets/plc_signals.js?v=2.5.0"></script>
+<script src="/assets/plc_signals.js?v=2.6.0"></script>
 <script src="/assets/production_lines.js?v=2.6.0"></script>
 <script>
 /* ─── Cameras: Connect / Disconnect / Settings / Delete on every row ────────

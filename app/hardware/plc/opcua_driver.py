@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 import math
 import os
-from typing import Any, Tuple
+import re
+import time
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from app.hardware.plc._common import coerce_read
 from app.hardware.plc.base import PLCDriver
@@ -31,9 +33,47 @@ def _certificate_application_uri(cert_path: str) -> str:
         return ""
 
 
+# A full NodeId as OPC UA writes it: ns=3;s="Tag_1", i=85, nsu=http://...;s=Run, ns=2;g=<guid>.
+_NODE_ID = re.compile(r"^(?:(?:ns=\d+|nsu=[^;]+);)?[isgb]=", re.IGNORECASE)
+# The namespace of a Siemens S7-1200/1500's own tags. There a tag's NodeId is its name in double
+# quotes: ns=3;s="Tag_1", and a data block's member ns=3;s="DB1"."Speed".
+SIEMENS_NAMESPACE = "http://www.siemens.com/simatic-s7-opcua"
+# Namespaces that hold no PLC tags: the OPC UA base and the Device Integration model.
+_NO_TAG_NAMESPACES = ("http://opcfoundation.org/UA/", "http://opcfoundation.org/UA/DI/")
+_OBJECTS_FOLDER = "i=85"
+_SERVER_OBJECT = "i=2253"
+
+
+def siemens_identifier(name: str) -> str:
+    """A tag's name the way a Siemens PLC writes it in a NodeId: every part in double quotes.
+
+    ``Tag_1`` -> ``"Tag_1"``; ``DB1.Speed`` -> ``"DB1"."Speed"``; ``DB1.Values[2]`` -> ``"DB1"."Values"[2]``.
+    A name that already has quotes is left as it is.
+    """
+    if '"' in name:
+        return name
+    parts = []
+    for part in name.split("."):
+        match = re.fullmatch(r"(.*?)((?:\[[^\]]*\])*)", part)
+        parts.append(f'"{match.group(1)}"{match.group(2)}')
+    return ".".join(parts)
+
+
+def _name_of(node_id: str) -> Optional[str]:
+    """The tag name inside a NodeId with a text identifier (``ns=2;s=Tag_1`` -> ``Tag_1``), else None."""
+    match = re.match(r"^(?:(?:ns=\d+|nsu=[^;]+);)?s=(.+)$", node_id, re.IGNORECASE)
+    if not match:
+        return None
+    return match.group(1).replace('"', "").strip() or None
+
+
 class OPCUADriver(PLCDriver):
     """
-    Write OPC UA variable nodes addressed by standard NodeId strings.
+    Read and write OPC UA variable nodes. An address is a tag's name, or a full NodeId.
+
+    A name (``Tag_1``, ``DB1.Speed``) is looked up on the server once per connection: on a
+    Siemens PLC it is the node ``ns=3;s="Tag_1"``, on other servers the same name without
+    quotes in the server's own namespace, and on a server with numbered nodes it is searched for.
 
     Endpoint options:
       opcua_security          None | Basic256Sha256_Sign | Basic256Sha256_SignAndEncrypt |
@@ -59,6 +99,11 @@ class OPCUADriver(PLCDriver):
         super().__init__(endpoint)
         self._client = None
         self.last_error = ""
+        # What each address stands for on this connection: {address as typed: NodeId}.
+        self._node_ids: Dict[str, str] = {}
+        # Names the server did not have: {name: (when it was looked for, the message)}.
+        self._missing: Dict[str, Tuple[float, str]] = {}
+        self._lookup_lock: Optional[asyncio.Lock] = None
 
     def _server_url(self) -> str:
         host = self.host.strip()
@@ -153,6 +198,9 @@ class OPCUADriver(PLCDriver):
     async def disconnect(self) -> None:
         client, self._client = self._client, None
         self.is_connected = False
+        # A PLC that was loaded again can give its tags other NodeIds: look them up again.
+        self._node_ids.clear()
+        self._missing.clear()
         if client is not None:
             try:
                 await client.disconnect()
@@ -175,30 +223,165 @@ class OPCUADriver(PLCDriver):
         except Exception:
             await self.disconnect()
 
-    def _node(self, address: str):
+    # ── From an address to a node ────────────────────────────────────────────
+
+    # A name the server does not have is not looked for again for this long: a card can fire per product.
+    MISSING_SECONDS = 10.0
+    # Searching a server whose NodeIds are not built from names: where it stops.
+    BROWSE_MAX_NODES = 4000
+    BROWSE_MAX_DEPTH = 8
+    BROWSE_SECONDS = 5.0
+
+    async def _resolve(self, address: str) -> Tuple[Any, str]:
+        """(node, its NodeId) for an address: a full NodeId as typed, or a tag's name looked up on the server.
+
+        Raises ValueError when the address is empty or the name cannot be found.
+        """
         if not self.is_connected or self._client is None:
             raise ConnectionError("OPC UA client is not connected")
-        node_id = str(address or "").strip()
-        if not node_id or len(node_id) > 512:
-            raise ValueError("OPC UA NodeId must contain 1 to 512 characters")
-        if "=" not in node_id:
-            raise ValueError(
-                'OPC UA target must be a full NodeId, for example ns=3;s="Tag_1"; '
-                "a BrowseName such as tag_1 by itself is not a NodeId"
-            )
-        return self._client.get_node(node_id)
+        text = str(address or "").strip()
+        if not text or len(text) > 512:
+            raise ValueError("OPC UA address must contain 1 to 512 characters: a tag's name or a full NodeId")
+        node_id = self._node_ids.get(text)
+        if node_id is None:
+            node_id = text if _NODE_ID.match(text) else await self._node_id_for(text)
+        return self._client.get_node(node_id), node_id
+
+    async def _node_id_for(self, name: str) -> str:
+        """The NodeId of the tag called ``name``, looked up once per connection."""
+        if self._lookup_lock is None:
+            self._lookup_lock = asyncio.Lock()
+        async with self._lookup_lock:
+            known = self._node_ids.get(name)
+            if known is not None:
+                return known
+            missing = self._missing.get(name)
+            if missing is not None and time.monotonic() - missing[0] < self.MISSING_SECONDS:
+                raise ValueError(missing[1])
+            try:
+                node_id = await self._find(name)
+            except ValueError as exc:
+                self._missing[name] = (time.monotonic(), str(exc))
+                raise
+            self._missing.pop(name, None)
+            self._node_ids[name] = node_id
+            logger.info("OPC UA %s: '%s' is the node %s", self._ep.get("id", ""), name, node_id)
+            return node_id
+
+    async def _find(self, name: str) -> str:
+        from asyncua import ua
+
+        namespaces = [str(uri) for uri in await self._client.get_namespace_array()]
+        siemens = namespaces.index(SIEMENS_NAMESPACE) if SIEMENS_NAMESPACE in namespaces else None
+        order = [index for index, uri in enumerate(namespaces)
+                 if index >= 1 and index != siemens and uri not in _NO_TAG_NAMESPACES]
+        if siemens is not None:
+            order.insert(0, siemens)
+        quoted = siemens_identifier(name)
+        found: List[str] = []
+        for index in order:
+            # A Siemens PLC writes the name in quotes; other servers as it is.
+            for identifier in dict.fromkeys([quoted, name] if index == siemens else [name, quoted]):
+                node_id = f"ns={index};s={identifier}"
+                try:
+                    is_variable = await self._client.get_node(node_id).read_node_class() == ua.NodeClass.Variable
+                except ua.UaStatusCodeError:
+                    continue
+                if is_variable:
+                    if index == siemens:
+                        return node_id      # the PLC's own tag
+                    found.append(node_id)
+        if not found:
+            found = await self._search(name)
+        if len(found) == 1:
+            return found[0]
+        if found:
+            raise ValueError(f"Several OPC UA nodes are called '{name}': {', '.join(found[:5])}. "
+                             "Type the full NodeId of the one you mean")
+        example = f'ns={siemens};s={quoted}' if siemens is not None else f"ns=2;s={name}"
+        raise ValueError(f"No OPC UA node called '{name}' was found on the server. Check the name, and that the tag "
+                         f"can be reached from OPC UA; or type its full NodeId, such as {example}")
+
+    async def _search(self, name: str) -> List[str]:
+        """The NodeIds of the variables whose name is ``name``, searched from the Objects folder.
+
+        For servers whose NodeIds are numbers. The server's own object is left out. Stops at
+        BROWSE_MAX_NODES nodes, BROWSE_MAX_DEPTH levels or BROWSE_SECONDS.
+        """
+        from asyncua import ua
+
+        exact: List[str] = []
+        loose: List[str] = []
+        level = [_OBJECTS_FOLDER]
+        seen = set(level)
+        deadline = time.monotonic() + self.BROWSE_SECONDS
+        for _ in range(self.BROWSE_MAX_DEPTH):
+            following: List[str] = []
+            for parent in level:
+                if time.monotonic() > deadline or len(seen) > self.BROWSE_MAX_NODES:
+                    following = []
+                    break
+                try:
+                    children = await self._client.get_node(parent).get_children_descriptions()
+                except ua.UaStatusCodeError:
+                    continue
+                for child in children:
+                    child_id = child.NodeId.to_string()
+                    if child_id in seen or child_id == _SERVER_OBJECT:
+                        continue
+                    seen.add(child_id)
+                    names = (str(child.BrowseName.Name or ""), str(child.DisplayName.Text or ""))
+                    if child.NodeClass == ua.NodeClass.Variable:
+                        if name in names:
+                            exact.append(child_id)
+                        elif name.lower() in (n.lower() for n in names):
+                            loose.append(child_id)
+                    elif child.NodeClass == ua.NodeClass.Object:
+                        following.append(child_id)
+            if not following:
+                break
+            level = following
+        return exact or loose
+
+    async def _on_node(self, address: str, action: Callable[[Any], Awaitable[Any]]) -> Tuple[Any, str]:
+        """Run ``action(node)`` on the address's node. Returns (its result, the NodeId it ran on).
+
+        A NodeId that was typed in full and that the server does not know is put right once: the tag
+        name inside it is looked up (``ns=2;s=Tag_1`` on a Siemens PLC is ``ns=3;s="Tag_1"``).
+        """
+        from asyncua import ua
+
+        node, node_id = await self._resolve(address)
+        try:
+            return await action(node), node_id
+        except ua.uaerrors.BadNodeIdUnknown:
+            text = str(address or "").strip()
+            name = _name_of(text) if node_id == text else None
+            if name is None:
+                raise
+            right = await self._node_id_for(name)
+            if right == node_id:
+                raise
+            self._node_ids[text] = right
+            logger.info("OPC UA %s: the server has no node %s; using %s", self._ep.get("id", ""), text, right)
+            return await action(self._client.get_node(right)), right
+
+    @staticmethod
+    def _shown(address: str, node_id: str) -> str:
+        """How a message names the node: what was typed, and the NodeId it stands for when that differs."""
+        text = str(address or "").strip()
+        return text if text == node_id else f"{text} ({node_id})"
 
     async def _write_value(self, address: str, value) -> Tuple[bool, str]:
         try:
             from asyncua import ua
 
-            node = self._node(address)
             # Siemens S7-1500 rejects writes with SourceTimestamp. Passing a
             # Variant directly makes asyncua add one, so send a value-only
             # DataValue just like the working PLC test client does.
             data_value = ua.DataValue(ua.Variant(value, ua.VariantType.Boolean))
-            await node.write_value(data_value)
-            return True, f"OPC UA wrote {value!s} to {address}"
+            _, node_id = await self._on_node(address, lambda node: node.write_value(data_value))
+            return True, f"OPC UA wrote {value!s} to {self._shown(address, node_id)}"
         except Exception as exc:
             await self._handle_failure(exc)
             return False, f"OPC UA write failed for {address}: {type(exc).__name__}: {exc}"
@@ -211,10 +394,9 @@ class OPCUADriver(PLCDriver):
 
     async def toggle(self, address: str) -> Tuple[bool, str]:
         try:
-            node = self._node(address)
-            value = await node.read_value()
+            value, node_id = await self._on_node(address, lambda node: node.read_value())
             if not isinstance(value, bool):
-                return False, f"OPC UA toggle requires a Boolean node: {address}"
+                return False, f"OPC UA toggle requires a Boolean node: {self._shown(address, node_id)}"
             return await self._write_value(address, not value)
         except Exception as exc:
             await self._handle_failure(exc)
@@ -222,14 +404,15 @@ class OPCUADriver(PLCDriver):
 
     async def _read(self, address: str, data_type: str) -> Tuple[bool, Any, str]:
         try:
-            value = await self._node(address).read_value()
+            value, node_id = await self._on_node(address, lambda node: node.read_value())
+            shown = self._shown(address, node_id)
             if not isinstance(value, (bool, int, float, str)):
                 return False, None, (
-                    f"OPC UA node {address} holds {type(value).__name__}; "
+                    f"OPC UA node {shown} holds {type(value).__name__}; "
                     "only a Boolean, a number or a string can be read"
                 )
             value = coerce_read(value, data_type)
-            return True, value, f"OPC UA read {value!s} from {address}"
+            return True, value, f"OPC UA read {value!s} from {shown}"
         except Exception as exc:
             await self._handle_failure(exc)
             return False, None, f"OPC UA read failed for {address}: {type(exc).__name__}: {exc}"
@@ -261,24 +444,33 @@ class OPCUADriver(PLCDriver):
             numeric_value = float(value)
             if not math.isfinite(numeric_value):
                 return False, "OPC UA numeric value must be finite"
-            node = self._node(address)
-            variant_type = await node.read_data_type_as_variant_type()
-            type_name = getattr(variant_type, "name", str(variant_type))
-            if type_name in self._INTEGER_RANGES:
-                if not numeric_value.is_integer():
-                    return False, f"OPC UA node {address} requires an integer value"
-                typed_value = int(numeric_value)
-                minimum, maximum = self._INTEGER_RANGES[type_name]
-                if not minimum <= typed_value <= maximum:
-                    return False, f"Value is outside the {type_name} range for OPC UA node {address}"
-            elif type_name in {"Float", "Double"}:
-                typed_value = numeric_value
-            else:
-                return False, f"OPC UA WRITE supports numeric scalar nodes; {address} is {type_name}"
-            # Do not let asyncua add SourceTimestamp; Siemens S7-1500 can reject it.
-            data_value = ua.DataValue(ua.Variant(typed_value, variant_type))
-            await node.write_value(data_value)
-            return True, f"OPC UA wrote {typed_value} to {address}"
+
+            class _Refused(Exception):
+                pass
+
+            async def put(node) -> Any:
+                variant_type = await node.read_data_type_as_variant_type()
+                type_name = getattr(variant_type, "name", str(variant_type))
+                if type_name in self._INTEGER_RANGES:
+                    if not numeric_value.is_integer():
+                        raise _Refused(f"OPC UA node {address} requires an integer value")
+                    typed_value: Any = int(numeric_value)
+                    minimum, maximum = self._INTEGER_RANGES[type_name]
+                    if not minimum <= typed_value <= maximum:
+                        raise _Refused(f"Value is outside the {type_name} range for OPC UA node {address}")
+                elif type_name in {"Float", "Double"}:
+                    typed_value = numeric_value
+                else:
+                    raise _Refused(f"OPC UA WRITE supports numeric scalar nodes; {address} is {type_name}")
+                # Do not let asyncua add SourceTimestamp; Siemens S7-1500 can reject it.
+                await node.write_value(ua.DataValue(ua.Variant(typed_value, variant_type)))
+                return typed_value
+
+            try:
+                typed, node_id = await self._on_node(address, put)
+            except _Refused as refused:
+                return False, str(refused)
+            return True, f"OPC UA wrote {typed} to {self._shown(address, node_id)}"
         except Exception as exc:
             await self._handle_failure(exc)
             return False, f"OPC UA write failed for {address}: {type(exc).__name__}: {exc}"

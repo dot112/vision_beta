@@ -301,3 +301,31 @@ def test_dashboard_offers_the_industrial_camera_settings(client):
     assert f'placeholder="{gige_camera.DEFAULT_TRIGGER_LINE}"' in form
     cards = client.get("/assets/production_lines.js").text
     assert "/api/v1/cameras/discover/gige" in cards and 'type: "gige"' in cards
+
+
+def test_the_dashboard_scripts_parse(client, tmp_path):
+    """A quote in a text can end a script's string early: every script of the page must still parse."""
+    import re
+    import shutil
+    import subprocess
+
+    import pytest
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    page = client.get("/dashboard").text
+    scripts = re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", page, re.S)
+    sources = re.findall(r'<script[^>]*\bsrc="(/assets/[^"?]+)', page)
+    assert scripts and sources
+    for index, code in enumerate([*scripts, *(client.get(src).text for src in sources)]):
+        path = tmp_path / f"script_{index}.js"
+        path.write_text(code, encoding="utf-8")
+        result = subprocess.run([node, "--check", str(path)], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr[:500]
+
+
+def test_an_opc_ua_address_is_asked_for_as_a_tag_name(client):
+    page = client.get("/dashboard").text
+    assert "Enter the full NodeId" not in page and "Tag name or NodeId" in page
+    assert 'opcua: ["OPC UA", "Tag_1",' in client.get("/assets/plc_signals.js").text

@@ -284,6 +284,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_mqtt_channels.py
     ├── test_network_camera_channel.py # the network camera card: IP camera or GigE Vision
     ├── test_opcua_certs.py          # uploading and choosing OPC UA certificates and keys
+    ├── test_opcua_tag_names.py      # an OPC UA address as a tag's name: finding its full NodeId
     ├── test_mqtt_client.py
     ├── test_plc_action_persistence.py
     ├── test_plc_dispatcher.py

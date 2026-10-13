@@ -75,7 +75,7 @@
         modbus_rtu: ["Modbus RTU", "C5, 10001, R10, 30001", MODBUS_HINT],
         s7: ["Siemens S7", "I0.0, M10.4, MW10", "A bit (I0.0, M10.4, DB1.DBX0.0), a byte (MB3), a word (MW10) or a double word (MD8, DB1.DBD8)."],
         eip: ["EtherNet/IP", "Line1_Start", "The tag's name. It is read as the tag's own type."],
-        opcua: ["OPC UA", "ns=2;s=Line1.Start", "The full NodeId, not only the name the PLC shows."],
+        opcua: ["OPC UA", "Tag_1", "The tag's name as the PLC shows it (Tag_1, DB1.Start); the server finds its full NodeId. A full NodeId also works."],
         melsec: ["Mitsubishi MELSEC", "M5, D100", "A bit (M5) or a word (D100). D100:DINT and D100:REAL read two words."],
         fins: ["Omron FINS", "CIO 0.05, W10.01, D100", "A bit (CIO 0.05, W10.01) or a word (D100). D100:DINT and D100:REAL read two words."],
     };
