@@ -539,6 +539,7 @@ class PLCInputService:
         """One picture with the card's camera: a code reader that captures when a PLC signal
         asks, or a vision camera in trigger mode, whose picture is one product."""
         from app.services.line_config import reads_codes
+        from app.state.application_state import app_state
 
         runtime = cls._runtime(card)
         if runtime is None or not runtime.enabled:
@@ -547,6 +548,10 @@ class PLCInputService:
         entry = runtime.camera_entry(camera_id)
         if entry is None:
             return
+        if getattr(app_state.cameras.get(camera_id), "trigger_mode", "off") == "hardware":
+            # Its pictures are used as they come; reading the last one again would count it twice.
+            raise ValueError(f"Camera '{camera_id}' is triggered by its own input, so this signal is not obeyed: "
+                             "every picture the camera takes is used already")
         if reads_codes(entry) and entry.get("qr_trigger") == "signal":
             from app.services.qr_service import QRReaderPipeline
             delay = int(entry.get("qr_trigger_delay_ms") or 0) / 1000.0

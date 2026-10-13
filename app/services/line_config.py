@@ -1421,22 +1421,52 @@ def model_warnings(line: Dict[str, Any], models: Dict[str, Dict[str, Any]]) -> L
 
 
 def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any]]] = None,
-                  products_per_minute: float = 0.0) -> List[str]:
+                  products_per_minute: float = 0.0, trigger_modes: Optional[Dict[str, str]] = None) -> List[str]:
     """Things about a saved line the user should look at; none of them stops the line.
 
     ``models`` adds the warnings about the vision cameras' models (model_warnings).
     ``products_per_minute``: how fast the line runs now; with it, a joined
     camera whose match window could reach the next product is warned about.
+    ``trigger_modes``: by camera id, the Trigger of an industrial camera ("hardware":
+    a signal on its own input takes each picture, "software": the server does). It is
+    the camera's own setting, which a line's settings do not hold.
     """
+    modes = trigger_modes or {}
     warnings: List[str] = model_warnings(line, models) if models is not None else []
     cameras = line.get("cameras") or []
     capturing = {card.get("camera_id") for card in line.get("plc_inputs") or []
                  if card.get("action") == "capture" and card.get("enabled", True) is True}
     for index, cam in enumerate(cameras):
-        if reads_codes(cam) and cam.get("qr_trigger") == "signal" and cam.get("camera_id") not in capturing:
+        mode = modes.get(cam.get("camera_id"), "off")
+        # A camera on hardware trigger needs no signal card: every picture it takes is read.
+        if reads_codes(cam) and cam.get("qr_trigger") == "signal" and cam.get("camera_id") not in capturing \
+                and mode != "hardware":
             warnings.append(
                 f"Camera {index + 1} takes a picture when a PLC signal asks, but no signal card that is switched on "
                 f"has the action 'Take a picture' for it, so it reads no codes. Add one under PLC signals."
+            )
+        if mode == "software":
+            # It takes a picture only when the server triggers it; these uses need a steady stream.
+            if cam.get("role", "vision") == "vision" and cam.get("count_mode") != "trigger":
+                warnings.append(
+                    f"Camera {index + 1} is on Software trigger: it takes a picture only when the server asks, so it "
+                    f"cannot count moving products. Set its Count mode to 'One picture per trigger', or its Trigger "
+                    f"to Off or Hardware."
+                )
+            if reads_codes(cam) and cam.get("qr_trigger", "continuous") == "continuous":
+                warnings.append(
+                    f"Camera {index + 1} is on Software trigger: it takes a picture only when the server asks, so "
+                    f"Read codes 'Continuously' reads nothing. Set Read codes to 'When a PLC signal asks' or to a "
+                    f"wire line."
+                )
+    for card in line.get("plc_inputs") or []:
+        if card.get("action") == "capture" and card.get("enabled", True) is True \
+                and modes.get(card.get("camera_id")) == "hardware":
+            number = next((i + 1 for i, cam in enumerate(cameras) if cam.get("camera_id") == card.get("camera_id")), "?")
+            warnings.append(
+                f"PLC signal '{card.get('name') or 'Take a picture'}' asks Camera {number} for a picture, but that "
+                f"camera is triggered by its own input, so the signal is not obeyed. Remove the card, or set the "
+                f"camera's Trigger to Software."
             )
     checks = code_checks(cameras)
     joined = joined_cameras(cameras) if counting_camera(line) else []

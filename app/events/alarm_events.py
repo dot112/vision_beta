@@ -51,6 +51,7 @@ class AlarmCode:
     """Well-known alarm codes. Free-form codes are allowed; these keep callers consistent."""
 
     CAMERA_MODEL_UNAVAILABLE = "camera.model_unavailable"
+    CAMERA_TRIGGER_OVERRUN = "camera.trigger_overrun"
     PLC_CONNECT_FAILED = "plc.connect_failed"
     PLC_DISCONNECT_ERROR = "plc.disconnect_error"
     PLC_ACTION_FAILED = "plc.action_failed"
@@ -79,10 +80,13 @@ ALARM_CATALOG: List[Dict[str, str]] = [
      "description": "A camera on the line is not connected."},
     {"code": "camera.stalled", "label": "Camera stalled", "group": "Cameras",
      "severity": "critical", "scope": "line",
-     "description": "A connected camera on the line has sent no new frame for a few seconds."},
+     "description": "A connected camera on the line has sent no new frame for a few seconds, or a triggered camera has stopped answering."},
     {"code": "camera.model_unavailable", "label": "Camera has no model it can run", "group": "Cameras",
      "severity": "critical", "scope": "line",
      "description": "A vision camera on the running line has no model, or its model could not be loaded: nothing is detected on it."},
+    {"code": "camera.trigger_overrun", "label": "Camera pictures arrive faster than they are inspected", "group": "Cameras",
+     "severity": "warning", "scope": "line",
+     "description": "A triggered camera took pictures faster than its line could inspect them: the oldest waiting pictures were dropped and their products were not counted."},
     {"code": "line.fps_low", "label": "Line frame rate low", "group": "Lines",
      "severity": "warning", "scope": "line",
      "description": "The running line processes fewer frames/s than its minimum; counts may be missed."},

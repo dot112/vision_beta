@@ -368,9 +368,16 @@ class CountingService:
         confidence: float = 1.0,
         bbox: Optional[Dict[str, Any]] = None,
         camera_id: Optional[str] = None,
+        arrived_at: Optional[float] = None,
     ) -> Dict[str, Any]:
         """A product no tracker saw cross a count line (a PLC sensor saw it, or one
-        triggered picture did), as _crossing() describes one. Nothing is counted yet."""
+        triggered picture did), as _crossing() describes one. Nothing is counted yet.
+
+        ``arrived_at``: the clock time the product's picture arrived. It is then the
+        product's time, however long the model took: a reject gate's travel delay runs from it.
+        """
+        now = time.time()
+        moment = now if arrived_at is None else min(float(arrived_at), now)
         return {
             "track_id": track_id,
             "class_name": class_name,
@@ -383,9 +390,9 @@ class CountingService:
             "vel_x": 0.0,
             "vel_y": 0.0,
             "camera_id": camera_id or self.camera_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "time": time.time(),
-            "crossed_at": time.monotonic(),
+            "timestamp": datetime.fromtimestamp(moment, timezone.utc).isoformat(),
+            "time": moment,
+            "crossed_at": time.monotonic() - (now - moment),
         }
 
     def _crossing(self, event: Tuple[Any, ...], camera_id: Optional[str], now: float) -> Dict[str, Any]:

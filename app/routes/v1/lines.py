@@ -70,7 +70,8 @@ async def _view(line_id: str, with_logic: bool) -> Dict[str, Any]:
         rate = runtime.counter.products_per_minute if runtime and runtime.enabled else 0.0
         line["warnings"] = [
             await _name_cameras(warning, line.get("cameras"))
-            for warning in line_warnings(line, await _model_info(line), products_per_minute=rate)
+            for warning in line_warnings(line, await _model_info(line), products_per_minute=rate,
+                                         trigger_modes=await _trigger_modes(line.get("cameras")))
         ]
     return line
 
@@ -223,6 +224,32 @@ async def _camera_names(cameras: Any) -> Dict[str, str]:
         if camera_id not in names and driver_name:
             names[camera_id] = driver_name
     return names
+
+
+async def _trigger_modes(cameras: Any) -> Dict[str, str]:
+    """{camera_id: "hardware" | "software"} for the line's industrial cameras that are set to a trigger.
+
+    The Trigger is the camera's own setting (Cameras page), so the line's settings do not hold it.
+    """
+    from app.db.models.camera import Camera
+    from app.db.session import AsyncSessionLocal
+
+    ids = [str(c.get("camera_id")) for c in cameras if isinstance(c, dict) and c.get("camera_id")] \
+        if isinstance(cameras, list) else []
+    modes: Dict[str, str] = {}
+    if not ids:
+        return modes
+    try:
+        async with AsyncSessionLocal() as db:
+            for camera_id in ids:
+                row = await db.get(Camera, camera_id)
+                mode = str((row.settings or {}).get("trigger_mode") or "off").lower() \
+                    if row is not None and row.type == "gige" else "off"
+                if mode in ("hardware", "software"):
+                    modes[camera_id] = mode
+    except Exception:
+        pass    # the line is shown without these warnings
+    return modes
 
 
 async def _name_cameras(text: Optional[str], cameras: Any) -> Optional[str]:

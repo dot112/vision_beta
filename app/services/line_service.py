@@ -375,6 +375,7 @@ class LineRuntime:
         # Cameras in trigger mode: the track number of the next triggered product, and one
         # trigger at a time per camera (trigger_inspection).
         self._trigger_seq = 0
+        self._trigger_seq_lock = threading.Lock()
         self._trigger_locks: Dict[str, asyncio.Lock] = {}
         # The line's batch (work order) number, "" for none.
         self.batch = ""

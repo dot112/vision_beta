@@ -118,6 +118,7 @@ class _QRReaderWorker:
         self._trigger = threading.Event()
         self._stop = threading.Event()
         self._busy = False
+        self._capturing = False
         self._pending: Optional[Any] = None
         self._last_seen: dict = {}
         self._latest: List[Tuple[Any, bool]] = []
@@ -138,6 +139,12 @@ class _QRReaderWorker:
     @property
     def is_busy(self) -> bool:
         return self._busy
+
+    @property
+    def capture_busy(self) -> bool:
+        """True while a requested picture waits or is being read."""
+        with self._input_lock:
+            return self._capturing or bool(self._captures)
 
     def submit_frame_if_idle(self, mat: Any, frame_id: int) -> bool:
         # Decoding only reads the frame, and drivers replace frames rather than
@@ -210,8 +217,12 @@ class _QRReaderWorker:
         return new_codes
 
     def request_capture(self, track_id: Optional[int] = None, class_name: Optional[str] = None,
-                        wire_line: Optional[int] = None, delay: float = 0.0, test: bool = False) -> None:
-        """Take one picture after ``delay`` seconds, decode it and hand it to the camera's line."""
+                        wire_line: Optional[int] = None, delay: float = 0.0, test: bool = False,
+                        frame: Optional[Any] = None) -> None:
+        """Take one picture after ``delay`` seconds, decode it and hand it to the camera's line.
+
+        ``frame``: the picture is this one (a hardware trigger took it); no other is taken.
+        """
         with self._input_lock:
             self._captures.append({
                 "due": time.monotonic() + max(0.0, delay),
@@ -219,6 +230,7 @@ class _QRReaderWorker:
                 "class_name": class_name,
                 "wire_line": wire_line,
                 "test": test,
+                "frame": frame,
             })
         self._trigger.set()
 
@@ -235,15 +247,28 @@ class _QRReaderWorker:
             due = [c for c in self._captures if c["due"] <= now]
             for c in due:
                 self._captures.remove(c)
+            if due:
+                self._capturing = True
         return due
 
     def _fresh_frame(self) -> Optional[Any]:
-        """A frame the camera delivered after this call, or its latest one if none comes in time."""
+        """A frame the camera delivered after this call, or its latest one if none comes in time.
+
+        A camera on software trigger is triggered here, and the picture is the one that trigger made.
+        """
         from app.state.application_state import app_state
 
         driver = app_state.cameras.get(self.camera_id)
         if driver is None or not getattr(driver, "is_connected", False):
             return None
+        if getattr(driver, "trigger_mode", "off") == "software":
+            try:
+                shot = driver.take_picture()
+            except RuntimeError as exc:
+                _error_log.log(logger, logging.WARNING, ("trigger", self.camera_id),
+                               "Camera %s could not be triggered for a code picture: %s", self.camera_id, exc)
+                return None
+            return shot[0] if shot is not None else None
         first = driver.get_latest_frame_id() if hasattr(driver, "get_latest_frame_id") else 0
         deadline = time.monotonic() + self.FRESH_FRAME_WAIT_S
         while not self._stop.is_set() and time.monotonic() < deadline:
@@ -269,8 +294,13 @@ class _QRReaderWorker:
         jpeg: Optional[bytes] = None
         code_type = self._code_type()
         list_id = self._product_list()
-        while frames < self.CAPTURE_FRAMES and (frames == 0 or time.monotonic() - started < self.CAPTURE_RETRY_WINDOW_S):
-            frame = self._fresh_frame()
+        given = request.get("frame")
+        # A camera on software trigger takes a new picture for every try, which can take longer.
+        window = self.CAPTURE_RETRY_WINDOW_S if not self._software_triggered() else self.CAPTURE_FRAMES * 2.0
+        while frames < self.CAPTURE_FRAMES and (frames == 0 or time.monotonic() - started < window):
+            if given is not None and frames:
+                break       # a picture a hardware trigger took is the only one of its product
+            frame = given if given is not None else self._fresh_frame()
             if frame is None:
                 break
             mat, t, frames = frame, time.monotonic(), frames + 1
@@ -311,6 +341,11 @@ class _QRReaderWorker:
             jpeg = draw_capture(mat, record, self.CAPTURE_MAX_WIDTH)
         return record, jpeg
 
+    def _software_triggered(self) -> bool:
+        from app.state.application_state import app_state
+
+        return getattr(app_state.cameras.get(self.camera_id), "trigger_mode", "off") == "software"
+
     def _run_capture(self, request: Dict[str, Any]) -> None:
         from app.services.line_service import line_manager
 
@@ -334,8 +369,12 @@ class _QRReaderWorker:
         while not self._stop.is_set():
             self._trigger.wait(timeout=self._next_wait())
             self._trigger.clear()
-            for request in self._due_captures():
-                self._run_capture(request)
+            try:
+                for request in self._due_captures():
+                    self._run_capture(request)
+            finally:
+                with self._input_lock:
+                    self._capturing = False
             with self._input_lock:
                 mat, self._pending = self._pending, None
             if mat is None:

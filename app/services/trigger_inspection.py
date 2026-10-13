@@ -11,12 +11,20 @@ It waits for the next picture the camera's model gets through, decides what
 that picture says, and hands the product to the line as a crossing: it is
 counted, recorded and sent like a product a tracking camera saw, and goes
 through Sync and the joined cameras the same way.
+
+An industrial camera can take the picture itself (its ``trigger_mode``):
+
+- ``software``: the trigger sends the camera its trigger command, and the
+  picture that command made is the product's picture.
+- ``hardware``: a signal on the camera's own input takes each picture, and the
+  frame runner makes a product of every one (``product_from_result``). The
+  server cannot trigger such a camera.
 """
 from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.line_config import REASON_NOTHING_DETECTED, REASON_VISION
 from app.utils.logger import get_logger
@@ -67,6 +75,75 @@ def inspection_verdict(detections: List[Any], config: Any) -> Optional[Dict[str,
     return None
 
 
+def product_from_result(runtime: Any, camera_id: str, detections: List[Any],
+                        arrived_at: Optional[float] = None) -> Dict[str, Any]:
+    """Make the product one picture of a camera in trigger mode shows, from what its model found.
+
+    ``arrived_at``: the clock time the picture arrived; it becomes the product's time.
+    Returns ``status`` "inspected" (a product was made) or "nothing" (nothing was found
+    and that is ignored), with ``result``, ``class_name``, ``reject_reason``, ``track_id``
+    and ``detections`` (how many). Safe to call from a camera's inference thread.
+    """
+    answer: Dict[str, Any] = {"status": "nothing", "result": None, "class_name": None, "reject_reason": None,
+                              "track_id": None, "detections": len(detections)}
+    counter = runtime.counter_for(camera_id)
+    verdict = inspection_verdict(detections, counter.config)
+    if verdict is None:
+        return answer
+    with runtime._trigger_seq_lock:
+        runtime._trigger_seq += 1
+        track_id = runtime._trigger_seq
+    crossing = counter.make_crossing(
+        verdict["class_name"], verdict["is_defect"], track_id=track_id,
+        confidence=verdict["confidence"], bbox=verdict["bbox"], camera_id=camera_id, arrived_at=arrived_at,
+    )
+    if verdict["reject_reason"]:
+        crossing["reject_reason"] = verdict["reject_reason"]
+    counter.emit_crossing(crossing)
+    answer.update({
+        "status": "inspected",
+        "result": "reject" if verdict["is_defect"] else "good",
+        "class_name": verdict["class_name"],
+        "reject_reason": (verdict["reject_reason"] or REASON_VISION) if verdict["is_defect"] else None,
+        "track_id": track_id,
+    })
+    return answer
+
+
+async def _software_shot(driver: Any, worker: Any, runtime: Any, camera_id: str,
+                         timeout: float) -> Optional[Tuple[List[Any], float, float]]:
+    """Trigger a camera on software trigger and run its model on the picture that trigger made.
+
+    Returns (detections, inference ms, the time the picture arrived), or None when no picture
+    came or the model did not get through it in time. Raises ValueError when the camera
+    cannot be triggered.
+    """
+    try:
+        shot = await asyncio.to_thread(driver.take_picture, timeout)
+    except RuntimeError as exc:
+        raise ValueError(str(exc)) from exc
+    if shot is None:
+        return None
+    mat, frame_id, arrived = shot
+    loop = asyncio.get_running_loop()
+    done: asyncio.Future = loop.create_future()
+
+    def finished(_frame_id: int, detections: List[Any], inference_ms: float, _arrived: Optional[float]) -> None:
+        loop.call_soon_threadsafe(lambda: done.done() or done.set_result((detections, inference_ms)))
+
+    deadline = time.monotonic() + timeout
+    while not worker.submit_frame_if_idle(mat, frame_id, conf_thresh=runtime.confidence_for(camera_id), copy=False,
+                                          arrived_at=arrived, on_result=finished):
+        if time.monotonic() >= deadline:
+            return None
+        await asyncio.sleep(_POLL_S)
+    try:
+        detections, inference_ms = await asyncio.wait_for(done, timeout)
+    except asyncio.TimeoutError:
+        return None
+    return detections, inference_ms, arrived
+
+
 def trigger_cameras(runtime: Any) -> List[str]:
     """The line's vision cameras in trigger mode, in card order."""
     return [
@@ -87,7 +164,8 @@ async def trigger_camera(runtime: Any, camera_id: str, timeout: Optional[float] 
     detections as ``detection_items``.
 
     Raises ValueError when the line is stopped, the camera is not connected,
-    has no loaded model, or is not a vision camera in trigger mode.
+    has no loaded model, is not a vision camera in trigger mode, is triggered
+    by its own input (hardware trigger), or does not take the software trigger.
     """
     import app.services.line_service as line_service
     from app.services.vision_service import CameraStreamPipeline
@@ -97,8 +175,13 @@ async def trigger_camera(runtime: Any, camera_id: str, timeout: Optional[float] 
         raise ValueError(f"Camera '{camera_id}' is not a vision camera of this line with Count mode 'One picture per trigger'")
     if not runtime.enabled:
         raise ValueError(f"Line '{runtime.name}' is stopped; start it to inspect")
-    if not getattr(app_state.cameras.get(camera_id), "is_connected", False):
+    driver = app_state.cameras.get(camera_id)
+    if not getattr(driver, "is_connected", False):
         raise ValueError(f"Camera '{camera_id}' is not connected")
+    mode = getattr(driver, "trigger_mode", "off")
+    if mode == "hardware":
+        raise ValueError(f"Camera '{camera_id}' is triggered by its own input: every picture it takes is one "
+                         "product already, so the server cannot trigger it")
     engine, _, _ = line_service.line_manager.engine_for_camera(camera_id)
     if not getattr(engine, "is_loaded", True):
         raise ValueError(f"Camera '{camera_id}' has no vision model loaded, so its picture cannot be inspected")
@@ -115,42 +198,30 @@ async def trigger_camera(runtime: Any, camera_id: str, timeout: Optional[float] 
             "camera_id": camera_id, "status": "no_frame", "result": None, "class_name": None,
             "reject_reason": None, "track_id": None, "detections": 0, "inference_time_ms": 0.0, "waited_ms": 0.0,
         }
-        while worker.result_seq < wanted:
-            if time.monotonic() - started >= timeout:
-                answer["waited_ms"] = round((time.monotonic() - started) * 1000, 2)
-                logger.warning("Trigger on camera %s of line '%s': no new picture within %.1f s; nothing was counted",
-                               camera_id, runtime.name, timeout)
-                if with_detections:
-                    answer["detection_items"] = []
-                return answer
-            await asyncio.sleep(_POLL_S)
-        detections, inference_ms = worker.get_latest_inference()
+        arrived_at: Optional[float] = None
+        if mode == "software":
+            # The server takes the picture itself: that picture, and no other, is the product's.
+            shot = await _software_shot(driver, worker, runtime, camera_id, timeout)
+            if shot is not None:
+                detections, inference_ms, arrived_at = shot
+        else:
+            shot = None
+            while worker.result_seq < wanted and time.monotonic() - started < timeout:
+                await asyncio.sleep(_POLL_S)
+            if worker.result_seq >= wanted:
+                shot = detections, inference_ms = worker.get_latest_inference()
+        if shot is None:
+            answer["waited_ms"] = round((time.monotonic() - started) * 1000, 2)
+            logger.warning("Trigger on camera %s of line '%s': no new picture within %.1f s; nothing was counted",
+                           camera_id, runtime.name, timeout)
+            if with_detections:
+                answer["detection_items"] = []
+            return answer
         answer.update({
-            "status": "nothing",
-            "detections": len(detections),
             "inference_time_ms": round(float(inference_ms), 2),
             "waited_ms": round((time.monotonic() - started) * 1000, 2),
         })
         if with_detections:
             answer["detection_items"] = [d.model_dump() if hasattr(d, "model_dump") else d for d in detections]
-
-        counter = runtime.counter_for(camera_id)
-        verdict = inspection_verdict(detections, counter.config)
-        if verdict is None:
-            return answer
-        runtime._trigger_seq += 1
-        crossing = counter.make_crossing(
-            verdict["class_name"], verdict["is_defect"], track_id=runtime._trigger_seq,
-            confidence=verdict["confidence"], bbox=verdict["bbox"], camera_id=camera_id,
-        )
-        if verdict["reject_reason"]:
-            crossing["reject_reason"] = verdict["reject_reason"]
-        counter.emit_crossing(crossing)
-        answer.update({
-            "status": "inspected",
-            "result": "reject" if verdict["is_defect"] else "good",
-            "class_name": verdict["class_name"],
-            "reject_reason": (verdict["reject_reason"] or REASON_VISION) if verdict["is_defect"] else None,
-            "track_id": runtime._trigger_seq,
-        })
+        answer.update(product_from_result(runtime, camera_id, detections, arrived_at))
         return answer
