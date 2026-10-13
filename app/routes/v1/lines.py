@@ -586,6 +586,9 @@ async def clone_line(line_id: str, body: Optional[Dict[str, Any]] = None, user: 
         card = copy.deepcopy(card)
         card["id"] = f"{card.get('id') or 'card'}-{uuid.uuid4().hex[:6]}"
         card.pop("camera_id", None)  # cameras are not copied, so camera choices cannot be either
+        # Nor are the PLC signal cards, so the copy cannot wait for one to confirm it.
+        card.pop("confirm_input_id", None)
+        card.pop("confirm_timeout_ms", None)
         cards.append(card)
     send_cards = []
     for card in source.get("send_actions", []):

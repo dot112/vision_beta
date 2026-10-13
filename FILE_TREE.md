@@ -174,6 +174,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │   ├── ota_service.py
 │   │   ├── plc_dispatcher_service.py
 │   │   ├── plc_failsafe_service.py
+│   │   ├── plc_input_service.py   # PLC signals: reads each channel's signal cards and acts on the line
 │   │   ├── product_service.py
 │   │   ├── production_records_service.py   # recorder (queue + batch writer, retention), filters, summary, restored counters
 │   │   ├── qr_service.py
@@ -184,6 +185,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │   ├── sparkplug_metrics.py
 │   │   ├── sparkplug_service.py
 │   │   ├── tcp_channels.py
+│   │   ├── trigger_inspection.py   # one picture, one product, for a vision camera in trigger mode
 │   │   ├── telemetry_service.py
 │   │   └── vision_service.py
 │   ├── state/
@@ -207,6 +209,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 ├── assets/
 │   ├── camera_settings.js     # a camera's image/video settings form (Line setup cards, Cameras dialog)
 │   ├── dashboard.css
+│   ├── plc_signals.js         # the PLC signals (inputs) step of Line setup: cards, dialog, live values
 │   ├── production_lines.js    # lines, Line setup camera cards, Line dashboard camera strip
 │   ├── zajel_logo.png
 │   ├── zajel_logo_small.png
@@ -214,15 +217,18 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │       ├── inter-latin.woff2
 │       └── Inter-LICENSE.txt
 ├── docs/
-│   └── progress/          # handoff files: the work split into 5 sections (README.md first)
-│       ├── README.md
-│       ├── section-1-logic-fixes.md
-│       ├── section-2-camera-cards.md
-│       ├── section-3-joined-cameras.md
-│       ├── section-4-product-records.md
-│       ├── section-5-plc-inputs.md
-│       ├── session-prompts.md   # the first message for each section's session
-│       └── screenshots/         # dashboard screenshots a section took (section-2/, section-3/: Line setup, Line dashboard; section-4/: Production records)
+│   ├── progress/          # handoff files: the work split into 5 sections (README.md first)
+│   │   ├── README.md
+│   │   ├── section-1-logic-fixes.md
+│   │   ├── section-2-camera-cards.md
+│   │   ├── section-3-joined-cameras.md
+│   │   ├── section-4-product-records.md
+│   │   ├── section-5-plc-inputs.md
+│   │   ├── session-prompts.md   # the first message for each section's session
+│   │   └── screenshots/         # dashboard screenshots a section took (section-2/, section-3/: Line setup, Line dashboard; section-4/: Production records; section-5/: PLC signals, their dialog, the batch field)
+│   └── superpowers/
+│       └── plans/           # the step-by-step plan a section was built from
+│           └── 2026-10-12-section-5-plc-inputs.md
 ├── docker/
 │   ├── mosquitto/
 │   │   ├── mosquitto.conf
@@ -243,6 +249,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_alarm_events.py
     ├── test_api.py
     ├── test_auto_connect.py
+    ├── test_batch.py
     ├── test_bundled_broker.py
     ├── test_bytetrack_kalman.py
     ├── test_camera_cards.py
@@ -266,11 +273,15 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_plc_dispatcher.py
     ├── test_plc_drivers.py
     ├── test_plc_failsafe.py
+    ├── test_plc_inputs.py
+    ├── test_plc_inputs_e2e.py   # a real Modbus TCP driver against test codes/plc_simulator.py
     ├── test_plc_protocols.py
+    ├── test_plc_read.py
     ├── test_product_lists.py
     ├── test_production_records.py
     ├── test_qr_trigger.py
     ├── test_reader_actions.py
+    ├── test_reject_confirmation.py
     ├── test_request_load_protection.py
     ├── test_resilience.py
     ├── test_rule_engine.py
@@ -283,6 +294,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_sparkplug_metrics.py
     ├── test_sparkplug_node.py
     ├── test_sparkplug_service.py
+    ├── test_trigger_inspection.py
     └── test_vision_pipeline.py
 ```
 

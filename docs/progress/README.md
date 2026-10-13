@@ -34,7 +34,7 @@ Make the software work on almost any production line:
 | 2 | Camera cards on Line setup, up to 8 cameras | [section-2-camera-cards.md](section-2-camera-cards.md) | 1 | **Done** | `claude/magical-ritchie-r7rxvs` |
 | 3 | Several vision cameras: own station or joined result | [section-3-joined-cameras.md](section-3-joined-cameras.md) | 2 | **Done** | `claude/section-3-joined-cameras-mg2wnm` |
 | 4 | Product records in the database, Records page, CSV/XLSX export | [section-4-product-records.md](section-4-product-records.md) | 1 (3 only for the `stations` detail) | **Done** | `claude/optimistic-carson-s5ko0o` |
-| 5 | PLC inputs, batch number, trigger inspection, reject confirmation | [section-5-plc-inputs.md](section-5-plc-inputs.md) | 2 and 4 | **In progress**: the backend is done (tasks 1 to 7 of 9); the dashboard and the docs are left | `claude/section-5-plc-inputs` (local, not pushed) |
+| 5 | PLC inputs, batch number, trigger inspection, reject confirmation | [section-5-plc-inputs.md](section-5-plc-inputs.md) | 2 and 4 | **Done** | `claude/section-5-plc-inputs` |
 
 **Order:** run the sections one after another, 1 → 2 → 3 → 4 → 5. Each new session starts from the branch the previous section pushed, which is in the table above:
 
@@ -56,7 +56,7 @@ The next session reads this table to know where to start.
 
 ## How the project works (short map)
 
-FastAPI server (`main.py`) plus one HTML dashboard (`dashboard.html`, plus `assets/production_lines.js` and `assets/dashboard.css`, read from disk on every request).
+FastAPI server (`main.py`) plus one HTML dashboard (`dashboard.html`, plus `assets/production_lines.js`, `assets/plc_signals.js` and `assets/dashboard.css`, read from disk on every request).
 
 | Area | Files | What it does |
 |---|---|---|
@@ -68,13 +68,14 @@ FastAPI server (`main.py`) plus one HTML dashboard (`dashboard.html`, plus `asse
 | Cameras | `app/services/camera_service.py`, `app/hardware/camera/*`, `app/routes/v1/camera.py` | Camera database rows (`Camera.settings` JSON holds resolution, rotation, ROI and so on), drivers, connect/reconnect. |
 | Code reading | `app/services/qr_service.py`, `app/engines/qr_engine.py` | `QRReaderPipeline.get_worker(cam).request_capture(...)` takes one picture (triggered reading). |
 | Cards | `app/services/card_triggers.py` | `card_fires(card, event)` is the one check both PLC cards and send cards use. |
-| PLC | `app/services/plc_dispatcher_service.py`, `app/hardware/plc/*`, `app/services/plc_failsafe_service.py` | PLC action cards → `PLCDriverFactory.get_driver(endpoint)` → `execute_operation`. Per-endpoint `asyncio.Lock` in `PLCDispatcherService._endpoint_locks`. |
+| PLC | `app/services/plc_dispatcher_service.py`, `app/hardware/plc/*`, `app/services/plc_failsafe_service.py` | PLC action cards → `PLCDriverFactory.get_driver(endpoint)` → `execute_operation`. Per-endpoint `asyncio.Lock` in `PLCDispatcherService._endpoint_locks`. A card with `confirm_input_id` waits for its confirmation signal (`_await_confirmation`). Every driver has `read(address, data_type)`. |
+| PLC signals | `app/services/plc_input_service.py`, `app/services/trigger_inspection.py` | `PLCInputService` polls each PLC channel's signal cards (a line's `plc_inputs`) under that channel's lock and acts on the line: start/stop, reset, product sensor (`LineRuntime.sensor_product`), picture (`request_capture` or `trigger_camera`), batch (`set_line_batch`), confirmation, alarm. `trigger_camera(runtime, camera_id)` makes one product from one picture of a camera with `count_mode` `trigger`. |
 | Messages | `app/services/send_dispatcher_service.py` | Send cards → `deliver(endpoint, message, topic)` on the telemetry dispatcher thread (`counting_service._telemetry_dispatcher`). |
 | Lines API | `app/routes/v1/lines.py` | `PUT /lines/{id}` (`_save` → `SettingsPersistenceService.save_line`), `apply_line()`, `set_line_running()`, `/start`, `/stop`, `/clone`. |
 | Product records | `app/services/production_records_service.py`, `app/services/records_export.py`, `app/routes/v1/records.py` | `production_recorder.record()` / `record_event(payload, kind, counted)` queue one row per product or code read (never blocks); written in batches to `product_records`. Filters, summary, `restore_line_counts()` (counters after a restart, from each line's `counts_reset_at`), CSV/XLSX export. |
 | Alarms | `app/events/alarm_events.py` | `alarm_manager.raise_alarm/clear_alarm`, and `ALARM_CATALOG` (add new codes there). |
 | DB | `app/db/models/*`, `alembic/versions/*` | SQLite (async). Revision 0001 builds tables from the models, so **a new table must be added to `_LATER_TABLES` in `0001_initial_schema.py`** and created by its own revision (see 0004/0005/0006). Also import the model in `alembic/env.py`. |
-| Dashboard | `dashboard.html`, `assets/production_lines.js`, `assets/camera_settings.js` | `production_lines.js` adds the line selector, the Plant overview, Lines, Products and Production records pages, Line setup (the line section and one card per camera, up to 8, with every camera setting; Section 2) and the Line dashboard's camera strip. `camera_settings.js` is a camera's image/video form (card Image and Video folds, and the Cameras page dialog). Its `window.fetch` wrapper adds `?line_id=` to `/api/v1/counting/`, `/api/v1/plc/actions` and `/api/v1/send/actions` calls while a line other than Line 1 is selected. |
+| Dashboard | `dashboard.html`, `assets/production_lines.js`, `assets/camera_settings.js` | `plc_signals.js` is the PLC signals (inputs) step of Line setup (`window.PlcSignals`; loaded before `production_lines.js`, which calls `PlcSignals.load()` for the selected line). `production_lines.js` adds the line selector, the Plant overview, Lines, Products and Production records pages, Line setup (the line section and one card per camera, up to 8, with every camera setting; Section 2) and the Line dashboard's camera strip. `camera_settings.js` is a camera's image/video form (card Image and Video folds, and the Cameras page dialog). Its `window.fetch` wrapper adds `?line_id=` to `/api/v1/counting/`, `/api/v1/plc/actions` and `/api/v1/send/actions` calls while a line other than Line 1 is selected. |
 
 ## Rules for working in this repository
 
@@ -89,7 +90,7 @@ FastAPI server (`main.py`) plus one HTML dashboard (`dashboard.html`, plus `asse
 - **Set up and run the checks:**
   ```bash
   python3 -m venv /tmp/venv && /tmp/venv/bin/pip install -q -r requirements.txt -r requirements-dev.txt
-  /tmp/venv/bin/python -m pytest -q -p no:cacheprovider     # 780 pass after Section 4
+  /tmp/venv/bin/python -m pytest -q -p no:cacheprovider     # 780 pass after Section 4; see section-5-plc-inputs.md for the count after Section 5
   /tmp/venv/bin/ruff check .
   ```
   CI (`.github/workflows/ci.yml`) runs lint, the tests, and a Docker Compose start/stop check on every push.
@@ -104,9 +105,9 @@ FastAPI server (`main.py`) plus one HTML dashboard (`dashboard.html`, plus `asse
 | V1 | `tracker.py` | A class named like "defect", "scratch" or "broken" was always rejected, even when not ticked. | 1, **done** |
 | V2 | `vision_service.py`, `camera_service.camera_orientation` | `int(rotation or 90)` read "No rotation" (0) as 90°, and the exit edge was taken from the rotation, not from the flow. | 1, **done** |
 | V3 | `counting_config_from_dict` | Count direction and tracking settings were never read from the settings. Also, "both" mode never counted a product moving from line B back to line A. | 1, **done** (UI: Section 2, **done**) |
-| V4 | `VisionService.detect_live_camera`, `/control/trigger/{camera}` | `passed` used the name rule; the trigger endpoint does not count anything. | 1 **done** (passed); trigger: Section 5 |
+| V4 | `VisionService.detect_live_camera`, `/control/trigger/{camera}` | `passed` used the name rule; the trigger endpoint does not count anything. | 1 **done** (passed); 5 **done** (it makes one product for a camera in trigger mode) |
 | V5 | `CountingService` | The speed figure was read without a lock; a partial reset broke good + rejected = total. | 1, **done** |
 | M1 | `send_dispatcher_service.deliver` (TCP) | The TCP channel's delimiter, timeout and mode (client/server) are ignored: always JSON + `\n`, a new connection per message, a 2 s timeout. | 1, **done** |
 | M2 | Send cards | JSON only, no text format. | 1, **done** |
-| P1 | PLC card "Wait for PLC ACK / Reply" | Does nothing but change the status text. | 1 (removed, **done**), 5 (real confirmation) |
+| P1 | PLC card "Wait for PLC ACK / Reply" | Does nothing but change the status text. | 1 (removed, **done**), 5 (**done**: a confirmation signal) |
 | P2 | PLC cards | WRITE only writes a fixed number; no data + strobe in one card. | 1, **done** |

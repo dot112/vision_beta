@@ -140,6 +140,27 @@ def test_a_signal_an_action_names_cannot_be_deleted(gate):
 
 # ── A fire and its confirmation ───────────────────────────────────────────────
 
+def test_a_cloned_line_drops_the_confirmation_link(client, admin_headers):
+    """A clone copies the PLC actions but not the signal cards, so its actions cannot wait for one."""
+    created = client.post("/api/v1/lines", headers=admin_headers, json={
+        "name": "Confirm source", "plc_inputs": [_signal("confirm_card", plc_endpoint_id="")],
+        "plc_actions": [_gate(plc_endpoint_id="")]})
+    assert created.status_code == 201, created.text
+    source = created.json()
+    copy_id = None
+    try:
+        assert source["plc_actions"][0]["confirm_input_id"] == SIGNAL
+        copy = client.post(f"/api/v1/lines/{source['id']}/clone", json={"name": "Confirm copy"}, headers=admin_headers)
+        assert copy.status_code == 201, copy.text
+        copy_id = copy.json()["id"]
+        card = copy.json()["plc_actions"][0]
+        assert card["name"] == "Reject gate" and not card.get("confirm_input_id")
+    finally:
+        for line_id in (copy_id, source["id"]):
+            if line_id:
+                client.delete(f"/api/v1/lines/{line_id}", headers=admin_headers)
+
+
 def test_a_confirmed_fire(gate):
     line, driver = gate
     _cards(line, _gate())

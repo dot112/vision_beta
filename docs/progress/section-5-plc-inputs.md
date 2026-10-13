@@ -6,33 +6,24 @@ Read [README.md](README.md) first: it has the goal, the owner's decisions, the p
 
 ## Status
 
-**In progress** on branch `claude/section-5-plc-inputs` (started from `main` after Section 4 was merged). The branch is local: it has not been pushed yet.
+**Done** on branch `claude/section-5-plc-inputs` (started from `main` after Section 4 was merged). Built from the plan in [docs/superpowers/plans/2026-10-12-section-5-plc-inputs.md](../superpowers/plans/2026-10-12-section-5-plc-inputs.md): nine tasks, each with its tests first.
 
-The work follows the plan in [docs/superpowers/plans/2026-10-12-section-5-plc-inputs.md](../superpowers/plans/2026-10-12-section-5-plc-inputs.md): nine tasks, each with its tests first.
+- **Reading a PLC** (`app/hardware/plc/*`): every driver has `read(address, data_type="auto") -> (ok, value, message)`, run under the driver's `_operation_lock`. Modbus TCP and RTU read coils, discrete inputs (`10001`, `DI2`), holding registers (`R10`, `40011`) and input registers (`30001`, `IR5`), with `:INT`, `:DINT`, `:REAL` and the channel's word order; S7 reads bits, bytes, words and double words; EtherNet/IP a tag as its own type; OPC UA a node; MELSEC and FINS bits and words. A Generic TCP channel answers "Reading is not supported". Shared decoding is in `app/hardware/plc/_common.py`.
+- **Signal cards** (`line_config.normalize_plc_input`, `normalize_plc_inputs`): saved as `plc_inputs` inside the line's entry, for Line 1 too; at most 32. No upgrade step: `SCHEMA_VERSION` stays 8 and a line without the key has no cards. A body of `PUT /lines/{id}` without `plc_inputs` keeps them.
+- **Polling** (`app/services/plc_input_service.py`, `PLCInputService`): one task per PLC channel on the main loop, reading that channel's cards at the shortest `poll_ms` among them, each read under `PLCDispatcherService._endpoint_locks[channel]`. Edges with debounce (`SignalFilter`), the PLC counter increase (`counter_delta`), a status per card, and the alarms `plc.input_failed` and `plc.input_alarm`. It starts with the other PLC services (`SettingsPersistenceService.restore_on_startup`), stops first at shutdown, and reloads when a line or a channel is saved.
+- **What a signal does**: `start_line`, `stop_line`, `run_level` (`set_line_running`), `reset_counters` (`reset_line_counters`), `product_sensor` (`LineRuntime.sensor_product`: one crossing through `finish_crossing`, or through Sync when it is on), `capture` (`request_capture` of a reader, or `trigger_camera`), `set_batch`, `confirm_card`, `alarm`. Start, stop, reset and batch are written to the audit log as `plc:<channel name>`, role `PLC`.
+- **Batch**: `LineRuntime.batch`, saved in the line's entry by `SettingsPersistenceService.set_line_batch`; set by `PUT /lines/{id}/batch`, a `set_batch` signal or the Line dashboard. It is in every product's and code read's message and PLC event while the line has one, in the records' `batch` column, in `MESSAGE_FIELDS`, in the examples (`sample_payload`, the dashboard's `sendSampleMessage`: `"B-1001"`), and in the Sparkplug tag `Line/Batch`.
+- **Trigger inspection** (`app/services/trigger_inspection.py`): camera fields `count_mode` (`track` / `trigger`) and `no_product` (`ignore` / `reject` / `good`), both in `CAMERA_KEPT_KEYS`; reject reason `nothing_detected` (code 6). `trigger_camera(runtime, camera_id)` waits for the first picture handed to the model after the trigger (at most `TRIGGER_TIMEOUT_S`, 2 s) and makes one crossing of it. Triggers: a `capture` signal, `POST /lines/{id}/trigger`, and `/control/trigger/{camera_id}` (old answer shape kept).
+- **Reject confirmation**: a PLC action card's `confirm_input_id` and `confirm_timeout_ms` (in `PLC_CARD_KEPT_KEYS`; checked by `plc_failsafe_service.validate_confirmation`). The dispatcher puts the fire in line for the signal before its output is sent and waits after it; statuses `confirmed` and `not_confirmed`, alarm `plc.action_not_confirmed`.
+- **Dashboard**: `assets/plc_signals.js` (`window.PlcSignals`) is the **PLC signals (inputs)** step of Line setup: cards or a list, **Add signal**, **Apply**, a dialog with every field (the action's own fields only when they apply), **Read now**, and three chips per card (last value, last change, error) from the status call once a second while the page is shown. The PLC action dialog has **Confirmation signal** and **Confirm within (ms)**, and a card with one shows *Waits for a signal*, *Confirmed* or *Not confirmed*. A vision camera's card has **Count mode** and **When nothing is found** (the old choice of *A then B* or *Both ways* is now called **Count crossings**); **Read codes** has *When a PLC signal asks*. The Line dashboard shows **Batch** beside the line state: a field with **Set** for a Supervisor, the text for an Operator.
+- **Line state**: a line with no camera and a product sensor card that is switched on is `running`, not `no_camera` (`LineRuntime.state`); the Line dashboard and the Plant overview say its products come from a PLC product sensor.
+- **API key scopes**: `GET …/plc-inputs/status` `monitor:read`; `POST …/plc-inputs/{id}/read` and a line body with `plc_inputs` `plc:configure`; `POST /lines/{id}/trigger` `inspection:trigger`; `PUT /lines/{id}/batch` `configuration:write`.
+- **Docs**: README (**PLC signals (inputs)**, **Trigger inspection**, **Batch number**, reject confirmation and the new step in *Setting up a line*, the API paragraph, the Sparkplug table), `API_KEY_QUICKSTART.md`, `FILE_TREE.md`, `PROJECT_DESCRIPTION.md`, `FUTURE_FIXES.md` (the five sections, and what still needs a real line or PLC).
+- **Checks**: on the Windows development machine `pytest` **1007 passed**, with 11 tests left out that fail there before this section too (8 need Linux's fast refused connections, 3 need the `tzdata` package) and 1 skipped on Windows; 239 tests are new in this section (`tests/test_plc_read.py`, `test_plc_inputs.py`, `test_batch.py`, `test_trigger_inspection.py`, `test_reject_confirmation.py`, `test_plc_inputs_e2e.py`, and additions to `test_lines_api.py` and `test_sparkplug_metrics.py`). `ruff check .` is clean. Each task's tests were also checked by breaking the code on purpose and seeing a test fail. **Linux CI has not run this branch yet**: it runs when the branch is pushed.
+- **Live run** from a temporary copy of the server with `test codes/plc_simulator.py` (Modbus TCP) as the PLC: a *Start the line* card on coil `C5` started the line and the audit log says `plc:Sim PLC`; a *Product sensor* card on register `R10` with the type *PLC counter* counted 0 → 3 → 5 as 5 products and later +4 and +5 as 9; the batch set on the Line dashboard was on every one of those records and in the CSV export of the last hour (7 rows with the first batch, 9 with the second); a PLC action with a confirmation signal showed *Not confirmed* (and its alarm) when the coil stayed off and *Confirmed* when it came within the time; **Read now** showed the coil's value, and "Reading is not supported" on a Generic TCP channel; a camera saved with *One picture per trigger* and *Reject* kept both after a reload, and set back to moving products it has no `count_mode` key; after a server restart the line was still running with its batch and its counts. The pages were checked with headless Chrome at 1440 and 375 px: no page errors and no sideways scroll. Screenshots: [`screenshots/section-5/`](screenshots/section-5/) (the PLC signals step as cards and as a list, its dialog, the confirmation fields of a PLC action, the batch field on the Line dashboard).
+- **Not run**: a camera in trigger mode with a real model and real triggers (the scratch copy had no connected camera; the unit tests cover it with the stand-in engine), and any PLC other than the Modbus TCP simulator.
 
-| Task | What | State |
-|---|---|---|
-| 1 | `read()` for every PLC driver | **Done** (`504f4a9`) |
-| 2 | Signal cards in the line settings | **Done** (`e2e93a8`) |
-| 3 | The polling service | **Done** (`bdb629a`) |
-| 4 | What a signal does, and its API | **Done** (`adf6b9c`) |
-| 5 | Batch number | **Done** (`9df924a`) |
-| 6 | Trigger inspection | **Done** (`d6e33e6`) |
-| 7 | Reject confirmation | **Done** (`c45d4ca`) |
-| 8 | Dashboard | Not started |
-| 9 | End-to-end test, docs, final pass, push and CI | Not started |
-
-So the whole backend is done and tested; the dashboard and the docs are left. Until Task 8, the new settings can only be set through the API.
-
-**Tests:** 1000 pass on the Windows development machine with `bash .superpowers/sdd/2026-10-12-section-5-plc-inputs/pt.sh`, which leaves out 11 tests that fail there before this section too (8 need Linux's fast refused connections, 3 need the `tzdata` package). `ruff check .` is clean. The branch has not run on Linux CI yet.
-
-### To go on (Tasks 8 and 9)
-
-1. `git checkout claude/section-5-plc-inputs`. Read this file, the plan (its Global Constraints and decisions D1 to D16, then Tasks 8 and 9) and "Decisions made while building" below.
-2. The plan's progress ledger is in `.superpowers/sdd/2026-10-12-section-5-plc-inputs/progress.md` (not in git; it is on the development machine). It has every task's test run and decision. The same folder has `pt.sh` (the test run above) and `mutcheck.py` (breaks one piece of code on purpose and checks that a test notices).
-3. Do Task 8, then Task 9. Ask the owner before pushing.
-
-### What the backend gives the dashboard (for Task 8)
+### What the API gives
 
 - **Line** (`GET /api/v1/lines/{id}`): `plc_inputs` (the signal cards; missing on a line that never had one), `batch` (only while the line has one) and `status.batch` (text or `null`).
 - **Signal card:** `id` (`plcin_` + 8 hex digits; made by the server when left out), `name`, `enabled`, `plc_endpoint_id`, `address`, `data_type` (`auto`, `bool`, `int16`, `uint16`, `int32`, `real`, `string`, `counter`), `poll_ms` (50 to 10000, default 100), `edge` (`rising`, `falling`, `change`), `debounce_ms` (0 to 5000), `action`; `camera_id` for `capture`; `alarm_text` and `alarm_severity` (`info`, `warning`, `critical`) for `alarm`. `counter` is only for `product_sensor`, `string` only for `set_batch`.
@@ -44,20 +35,8 @@ So the whole backend is done and tested; the dashboard and the docs are left. Un
 - **Camera card:** a vision camera has `count_mode` (`track` / `trigger`; sent as `track` it is not saved) and, in trigger mode, `no_product` (`ignore` / `reject` / `good`). A code reader's `qr_trigger` has a fourth choice, `signal`.
 - **Trigger:** `POST /api/v1/lines/{id}/trigger` with an optional `{"camera_id"}` → `{"line_id", "results": [...]}`; 409 when the line is stopped or has no camera in trigger mode.
 - **PLC action card:** `confirm_input_id` (the id of a signal card with the action `confirm_card`; `""` for none) and `confirm_timeout_ms` (50 to 10000, default 1000). New statuses `confirmed` and `not_confirmed`; `last_result.confirmed` is true or false.
-- **Values to keep in step:** reject reason code **6** is `nothing_detected` (`PLC_VALUE_SOURCE_HINTS.reject_reason_code`); the sample message's batch is `"B-1001"` (`sample_payload` and the dashboard's `sendSampleMessage`); the PLC Test button writes batch `1`.
-- **Refused when a line is saved** (the dashboard should not offer them): a product sensor on a line with a vision camera; a `capture` signal whose camera is neither a reader on `signal` nor a vision camera in trigger mode; a reader on wire line 1 or 2 when the counting camera is in trigger mode; deleting (or changing the action of) a signal that a PLC action still names as its confirmation.
-
-### Decisions made while building (beyond the plan's D1 to D16)
-
-- **Product sensor cards count for the line whether switched on or not.** A line whose sensor card is switched off stays a sensor line: Sync keeps its setting and a code read is not a product of its own. It counts nothing until the card is on again.
-- **Two extras on signal cards:** a line warning for a reader set to `signal` that no switched-on `capture` card names; and a PLC channel a signal reads counts as used, so it is not deleted without a warning.
-- **The poller starts with the other PLC services** (`SettingsPersistenceService.restore_on_startup`) and stops first in the server's shutdown.
-- **`set_batch` also acts on the first read** (the plan excepted only `alarm`): the batch the PLC holds is the line's batch, also when it changed while the server was down.
-- **A read that also drops the PLC link** raises `plc.input_failed` only when it happens twice in a row; the reconnect then waits for the channel's reconnect interval.
-- **A start or stop from a signal runs one at a time per line.** A reset signal does nothing when nothing was counted since the last reset. A capture or sensor signal on a stopped line does nothing.
-- **A batch that is too long is refused, not cut** (a cut batch is a wrong batch in the records). So is a bit, or text with a control character. A signal card keeps the reason its last action failed until one succeeds, and shows it as its error.
-- **Trigger mode:** a trigger is refused while the camera's model is not loaded; two triggers at once on one camera take two pictures; the video of a camera in trigger mode shows no count lines; `/control/trigger` for such a camera writes no detection history row.
-- **Reject confirmation:** a fire whose card is deleted or switched off while it waits ends quietly, with no alarm.
+- **Values to keep in step** (a test in `tests/test_lines_api.py` checks them): reject reason code **6** is `nothing_detected` (`PLC_VALUE_SOURCE_HINTS.reject_reason_code`); the sample message's batch is `"B-1001"` (`sample_payload` and the dashboard's `sendSampleMessage`); the PLC Test button writes batch `1`; the actions, data types, edges, severities and limits of `line_config.py` are typed again in `assets/plc_signals.js` and `assets/production_lines.js`.
+- **Refused when a line is saved** (the dashboard does not offer them): a product sensor on a line with a vision camera; a `capture` signal whose camera is neither a reader on `signal` nor a vision camera in trigger mode; a reader on wire line 1 or 2 when the counting camera is in trigger mode; deleting (or changing the action of) a signal that a PLC action still names as its confirmation.
 
 ## Goal (owner's decision: "Yes, add PLC inputs")
 
@@ -183,4 +162,52 @@ Vision cameras get a **trigger mode** (one picture per trigger instead of tracki
 
 ## Notes
 
-(Fill in when done.)
+### Decisions (the plan's D1 to D16)
+
+| # | Decision | Why |
+|---|---|---|
+| D1 | `plc_inputs` and `batch` are kept inside the line's entry for every line, Line 1 too. | Only `action_trigger`, `plc_actions` and `send_actions` are at the top level, for version 1. New keys have no version 1 reader. |
+| D2 | `batch` is kept by the server (like `counts_reset_at`): `PUT /lines/{id}` ignores it; only `PUT /lines/{id}/batch`, a `set_batch` signal and the dashboard field change it. | One audited way in. |
+| D3 | A signal card has no `card_id`. The link for reject confirmation is `confirm_input_id` on the PLC action card only; the signal dialog lists the actions that name it. | Two places for one link can disagree. |
+| D4 | `product_sensor` is refused on a line that has a vision camera. Use `capture` to trigger a camera instead. | With a vision camera every product would count twice. |
+| D5 | A sensor product always goes through `finish_crossing` with a crossing dict (through `_on_crossing` when Sync is on). Its track id is a per-line sensor counter, not `None`. | It is then recorded with nothing else to do, and a "once per event" card tells products apart after a counter reset. |
+| D6 | On a line with a product sensor and no vision camera, the sensor is the product source: Sync is allowed, a camera that checks codes forces Sync on, and "when no code is read" keeps its setting. | Otherwise each code read would count a second product. |
+| D7 | Code reader choice `qr_trigger: "signal"`. A `capture` signal must name a reader set to it, or a vision camera in trigger mode. | A reader left on "continuous" would decode every frame as well and report each code twice. |
+| D8 | PLC counter: the increase is `(new - old) mod 65536`. An increase above 1000 between two reads is taken as the PLC resetting its counter: nothing is counted. | A reset from 500 to 0 would otherwise count 65036 products. |
+| D9 | The first read of a signal is its starting point and runs no action. Exceptions: `alarm` (raised at once when the value is on) and `set_batch` (the batch the PLC holds is the line's batch). | A start bit that is already on must not start a line when the server boots. |
+| D10 | A PLC that cannot be reached is retried at the channel's `reconnect_interval` (5 s by default), not at every poll. Its signals show "PLC not connected"; only the existing `plc.connect_failed` alarm is raised. | A 50 ms poll must not hammer a dead PLC. |
+| D11 | The batch is added to a message and a PLC event only when the line has one. | Lines without a batch keep their messages as they are. |
+| D12 | Trigger mode waits for a frame handed to the model after the trigger; a result that was in flight is skipped. Still at most 2 s. | The frame in flight was taken before the part was in place. |
+| D13 | The **Test** button of a PLC action does not wait for the confirmation signal and raises no confirmation alarm. | Commissioning must not raise critical alarms. |
+| D14 | API key scopes as listed under Status. | The spec names the first two and the trigger scope. |
+| D15 | Tests are split by subject into six files instead of one `tests/test_plc_inputs.py`. | One file would pass 1500 lines. |
+| D16 | A line clone does not copy signal cards. | Two lines would be started and stopped by the same bit. |
+
+### Decisions made while building
+
+- **Product sensor cards count for the line whether switched on or not.** A line whose sensor card is switched off stays a sensor line: Sync keeps its setting and a code read is not a product of its own. It counts nothing until the card is on again.
+- **Two extras on signal cards:** a line warning for a reader set to `signal` that no switched-on `capture` card names; and a PLC channel a signal reads counts as used, so it is not deleted without a warning.
+- **A read that also drops the PLC link** raises `plc.input_failed` only when it happens twice in a row; the reconnect then waits for the channel's reconnect interval.
+- **A start or stop from a signal runs one at a time per line.** A reset signal does nothing when nothing was counted since the last reset. A capture or sensor signal on a stopped line does nothing.
+- **A batch that is too long is refused, not cut** (a cut batch is a wrong batch in the records). So is a bit, or text with a control character. A signal card keeps the reason its last action failed until one succeeds, and shows it as its error.
+- **Trigger mode:** a trigger is refused while the camera's model is not loaded; two triggers at once on one camera take two pictures; the video of a camera in trigger mode shows no count lines; `/control/trigger` for such a camera writes no detection history row.
+- **Reject confirmation:** a fire whose card is deleted or switched off while it waits ends quietly, with no alarm.
+- **Names on the dashboard:** the new select is **Count mode**, as the spec and the server's messages call it, so the older select (*A then B* / *Both ways*) became **Count crossings**. Two messages of a refused line save said "Capture" for the select the card calls **Read codes**; they now say **Read codes**.
+- **A sensor-only line is `running`** (see Status). Without it the Line dashboard called a counting line "No camera".
+- **A clone drops the confirmation link.** `POST /lines/{id}/clone` copies the PLC actions but not the signal cards (D16), so a copied action that still named its confirmation signal made the whole clone fail with 422. The copy now loses `confirm_input_id` and `confirm_timeout_ms`, as it loses `camera_id`.
+- **Sparkplug `Line/Batch`** was added: it is one more tag in every line's birth (empty without a batch), so a batch set later needs no new birth.
+- **Screenshots** are JPEG files in `screenshots/section-5/`, like sections 2 to 4, taken with headless Chrome (this machine has no Playwright).
+
+### Known limits
+
+- Nothing was read from a real PLC. See "What still needs a real line or a real PLC" in `FUTURE_FIXES.md`.
+- The signals of one channel are read one after another. Many cards on a slow PLC make a round longer than the "Read every" asked for; the PLC counter type is the answer for fast sensors.
+- A dispatch task cancelled at shutdown while its output is being sent leaves its confirmation waiter in the queue (the process is ending).
+- `/control/trigger` for a camera in trigger mode writes no detection history row; the product record has the product.
+- The cards of a PLC action show *Confirmed* / *Not confirmed* only while Line setup is open (they ask the server every 2 s); the alarm is the lasting sign.
+- The dashboard's lists of actions, data types and limits are typed by hand in `assets/plc_signals.js`; a test fails when the server gains a choice the dashboard does not have.
+
+### For whoever works on this next
+
+- The scratch tools of this section are on the development machine in `backup/scratch-tools/` (not in git): `shots_s5.py` takes the screenshots and runs the page checks with headless Chrome; the PLC simulator is `test codes/plc_simulator.py --port <free port>`.
+- After the push, check that GitHub Actions (lint, tests, Docker) are green: the tests have only run on Windows.

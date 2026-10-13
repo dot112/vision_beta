@@ -269,6 +269,62 @@ names; Line setup shows per camera whether its model is loaded.
 - Uploads to `/products/lists/{id}/replace` are size-limited before they are
   stored (`RequestBodyLimitMiddleware` takes a `/*` path).
 
+## Flexible line control: the five sections (2026-10-07 to 2026-10-13)
+
+After the seven changes above, the work in `docs/progress/` (read its
+`README.md` first) made the software fit more kinds of lines. Each section has
+its own file there with what was built, the decisions and the checks.
+
+1. **Logic fixes.** A class named like a defect is rejected only when the
+   camera's switch says so; "No rotation" is 0 and the exit side follows the
+   flow; count direction and tracking are read per camera; TCP channels use
+   their own delimiter, timeout and mode; send cards can send text from a
+   template; a PLC WRITE can write a value of the product and pulse a strobe;
+   "Wait for PLC ACK" was removed because it waited for nothing.
+2. **Camera cards.** Line setup has one card per camera, up to 8 per line,
+   with every setting of that camera and one Save.
+3. **Several vision cameras.** A second vision camera is an own station or
+   joins the counting camera's product result, matched by travel time.
+4. **Product records.** Every product and code read is stored, shown on the
+   Production records page and exported as CSV or Excel; the counters survive
+   a restart.
+5. **PLC signals.** The PLC can start and stop a line, count products, take a
+   picture, reset the counters, set the batch number, confirm a PLC action
+   and raise an alarm; a vision camera can inspect one picture per trigger;
+   every product carries the line's batch number.
+
+### What still needs a real line or a real PLC
+
+Section 5 was run against the Modbus TCP simulator in `test codes/` and
+against stand-in PLCs in the tests. Check these on the first plant trial:
+
+1. **Each driver's read.** Modbus TCP was read on the simulator (coils and
+   holding registers). Modbus RTU, S7, EtherNet/IP, OPC UA, MELSEC and FINS
+   reads, discrete inputs and input registers were only read from stand-ins
+   written from the protocol descriptions. Use **Read now** on a signal card
+   for one address of each kind the plant uses, and compare with the PLC.
+2. **The read time on a busy PLC.** Signals of one channel are read one after
+   another at the shortest "Read every" among them, between that channel's
+   PLC actions. With many cards or a slow PLC a round can take longer than
+   the time asked for. Watch a card's "Changed" time against the real event,
+   and raise "Read every" or use the PLC counter type when edges are missed.
+3. **Trigger timing on a real indexing machine.** A trigger uses the first
+   picture handed to the model after it, within 2 seconds. Whether that
+   picture shows the part at rest depends on the camera's frame rate and
+   exposure and on when the PLC raises the signal. Check with the picture
+   delay of the machine and a part that is good on one side only.
+4. **Confirmation on a real reject gate.** "Confirm within" has to cover the
+   gate's travel delay, the pulse and the product's fall past the sensor.
+   Check that two rejects close together are each confirmed, and that a
+   blocked gate raises "PLC action not confirmed".
+5. **A product sensor with Sync.** A sensor product is paired with the code
+   read inside the Sync window; on the real line the reader and the sensor
+   are not at the same spot. Set the window from the real distance.
+
+Not done, on purpose: a signal card has no hysteresis for analogue values
+(use a bit or a counter in the PLC), and a line clone does not copy signal
+cards.
+
 ## Still to check
 
 1. **Linux CI.** Nothing was pushed (the owner has not asked for it). The
