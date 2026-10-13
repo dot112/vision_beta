@@ -325,6 +325,23 @@ Not done, on purpose: a signal card has no hysteresis for analogue values
 (use a bit or a counter in the PLC), and a line clone does not copy signal
 cards.
 
+### Triggered industrial cameras (2026-10-13): built, not run on a real camera
+
+GigE Vision and USB3 Vision cameras with a hardware or a software trigger (README, "Triggered industrial cameras"). Plan and decisions: [docs/superpowers/plans/2026-10-13-triggered-industrial-cameras.md](docs/superpowers/plans/2026-10-13-triggered-industrial-cameras.md).
+
+**What was run:** 93 automated tests against a stand-in camera; the whole path in a live server with stand-in cameras and a real model (a product per "hardware" picture, one per software trigger, 13 s idle without an alarm); the dashboard at 1440 and 375 px. The camera library installs and imports on Python 3.14 on Windows.
+
+**What was not run:** anything against a real camera, a maker's GenTL producer file, or Python 3.12 (the Docker image's version; ready-built files of the library exist for it). The steps are in [docs/real-life-tests/triggered-cameras.md](docs/real-life-tests/triggered-cameras.md). The points most likely to need a change on the first camera:
+
+1. **Feature names.** The driver writes the standard names (`TriggerMode`, `TriggerSource`, `ExposureTime`, `LineSource` ...) and the older `ExposureTimeAbs` and `TriggerDelayAbs`. A camera with other names lists them as refused settings.
+2. **The link check.** It reads one feature past the library's cache every 5 s. If a maker's driver answers from its cache anyway, a pulled cable on a triggered camera is not noticed (real-life step 7).
+3. **Scanning while a camera is open.** The library's own scan closes every open camera, so with a camera open the server re-reads the open ports' device lists instead, through two internal fields of the library (which is pinned to 1.4.3 for that). If that fails it is logged and the old list is kept (real-life step 8).
+4. **Pixel formats.** 8-bit mono, Bayer, RGB, BGR and YUV 4:2:2, and unpacked 10 to 16 bit, are read. Packed formats are not; the camera is switched to a format that works when it offers one.
+
+**Left out on purpose:** level triggers, bulb exposure, the trigger divider, CoaXPress, PTP; a "waiting for a trigger" text on the Line dashboard's camera tile; adding an industrial camera from the Cameras page (Line setup's Add camera card does it); one shared picture for a Software-triggered camera that both counts and reads codes on a signal.
+
+**Not reviewed:** like Section 5 below it, this branch had no independent code review.
+
 ## Still to check
 
 1. **Linux CI.** Nothing was pushed (the owner has not asked for it). The

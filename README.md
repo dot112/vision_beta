@@ -14,7 +14,7 @@ For scoped API key setup and the YOLO annotated stream endpoint, see [API_KEY_QU
 
 ## Features
 
-- **Camera HAL**: USB (DirectShow/UVC) and RTSP IP (low-latency TCP); GigE Vision needs a vendor SDK driver that is not included
+- **Camera HAL**: USB (DirectShow/UVC), RTSP IP (low-latency TCP), and GigE Vision / USB3 Vision industrial cameras with hardware or software trigger (optional install; not yet run on a real camera, see [the real-life tests](docs/real-life-tests/triggered-cameras.md))
 - **AI Inference Engine**: YOLO ONNX inference through ONNX Runtime; GPU providers depend on platform-specific runtime installation
 - **QR & 1D/2D Barcode Engine**: Instant decoding and SKU verification
 - **Rule, Action & Flow Engines**: Asynchronous decision logic for configured PLC outputs and MQTT alerts
@@ -230,6 +230,61 @@ The product is counted, recorded and sent like a tracked one and fires the same 
 - `POST /api/v1/control/trigger/{camera_id}`, which answers as it always did and now also makes the product for a camera in trigger mode.
 
 The picture is the first one handed to the model **after** the trigger: a picture that was being worked on when the trigger came was taken before the part was in place, so it is skipped. With no new picture within 2 seconds the trigger gives no product, and a signal card shows that as its error. A trigger is refused while the line is stopped or the camera's model is not loaded. Two triggers at once on one camera take two pictures. The video of a camera in trigger mode shows no count lines.
+
+#### Triggered industrial cameras (GigE Vision, USB3 Vision)
+
+> **Not yet run on a real camera.** This part was built and tested against a stand-in camera. Before a first installation, work through [docs/real-life-tests/triggered-cameras.md](docs/real-life-tests/triggered-cameras.md) on a desk.
+
+An industrial camera connects through the GenICam standard, so one driver covers GigE Vision and USB3 Vision cameras of every maker that follows it. It runs freely like a network camera, or takes one picture per trigger.
+
+**Install.** `pip install -r requirements-industrial.txt`, and the camera maker's SDK, which brings the GenTL producer file (`.cti`) and sets `GENICAM_GENTL64_PATH`. `GENTL_CTI_PATH` in `.env` names the folders or files yourself; several makers' producers are loaded together, so cameras of several makers work at once. The server runs without any of this: only industrial cameras need it. On Windows the server must run natively for these cameras (Docker Desktop cannot reach them). On Linux in Docker: host networking, the maker's SDK folder mounted into the container, and `GENTL_CTI_PATH` set to it; this is not built into the image.
+
+**Add one.** Line setup, **Add camera**, **Scan industrial cameras**, **Add to the camera list**. The camera is saved under its serial number. API: `GET /api/v1/cameras/discover/gige` (503 says what to install), then `POST /api/v1/cameras` with `type: "gige"` and `source` = the serial number.
+
+**Its settings** are on the camera's card under **Image** (`settings` in the API). They are written to the connected camera when saved, without a reconnect.
+
+| Setting | Values | |
+|---|---|---|
+| Trigger `trigger_mode` | `off`, `hardware`, `software` | Off: runs freely. Hardware: a signal on the camera's own input takes each picture. Software: the server takes each picture. |
+| Trigger input `trigger_line` | such as `Line0`, `Line1` | Hardware only. The card offers the connected camera's own inputs. |
+| Edge `trigger_edge` | `rising`, `falling` | Hardware only. |
+| Trigger delay `trigger_delay_us` | 0 to 10,000,000 µs | From the trigger to the exposure. |
+| Exposure `exposure_us` | 10 to 10,000,000 µs, or empty | Empty: the camera keeps its own. |
+| Gain `gain_db` | 0 to 48 dB, or empty | Empty: the camera keeps its own. |
+| Strobe output `strobe_line` | one of the camera's lines, or empty | On while the sensor is exposed, for a light. |
+
+A setting the camera refuses does not stop it connecting; the card lists it. A camera that refuses its trigger runs freely and says so, so that its pictures are never counted one product each by mistake.
+
+**How it is wired.**
+
+```
+Hardware trigger                                    Software trigger
+sensor or PLC output ──wire──> camera trigger input  sensor ──> PLC input ──> PLC bit ──network──> server
+camera strobe output ──wire──> light (optional)      server ──camera cable (trigger command)──> camera
+camera ──GigE or USB3 cable──> server                camera ──GigE or USB3 cable──> server
+server ──network──> PLC (reject pulse, as before)    server ──network──> PLC (reject pulse, as before)
+```
+
+- The camera's input is usually opto-isolated: the signal goes to the input pin and the signal's 0 V to the camera's I/O ground. Check the voltage range in the camera's manual.
+- One sensor can go to the camera's input **and** to a PLC input. The camera then takes the picture; the PLC uses its copy for its own timing. Do not also add a *Take a picture* or *Product sensor* signal card for that sensor: the product would be counted twice.
+- Hardware trigger is exact to microseconds and is the one for **moving** parts. Software trigger is late by the PLC's read time (50 ms or more) and the network, and suits parts that **stand still**.
+- The result is known one picture transfer and one model run after the trigger. A reject gate's travel delay must be longer than that. A product's time is the time its picture arrived at the server.
+
+**What a picture means** is the line's choice, on the same card. The camera's trigger decides *when* a picture is taken:
+
+| Camera trigger | Count mode: moving products | Count mode: one picture per trigger | Read codes: continuously or on a wire line | Read codes: when a PLC signal asks |
+|---|---|---|---|---|
+| **Off** | as any camera | a signal card or the API takes the stream's next picture | as any camera | a signal card takes a fresh picture |
+| **Hardware** | the newest picture, like a video (for a camera triggered by an encoder or a clock) | **every picture is one product**; no signal card | the newest picture, like a video | **every picture is read once**; no signal card |
+| **Software** | warning: nothing takes its pictures | a signal card or the API triggers the camera, and **that picture is the product** | on a wire line the crossing triggers the camera; continuously gives a warning | a signal card triggers the camera and **that picture is read** (up to 3 pictures while no code reads) |
+
+With hardware trigger and "every picture", no picture is skipped: up to 64 wait while the model is busy and are inspected in the order taken. When more than 64 wait, the oldest is dropped, the alarm **Camera pictures arrive faster than they are inspected** (`camera.trigger_overrun`) is raised, and the card says how many were lost. A picture taken while the line is stopped is shown, not inspected and never counted later. A signal card that asks a hardware-triggered camera for a picture is not obeyed; the card says so and the line warns about it.
+
+A triggered camera can be silent for hours without an alarm. It is asked every 5 seconds whether it is still there; when it stops answering, **Camera stalled** is raised and the server opens it again by itself, with its trigger settings.
+
+**Limits.** Level triggers, pulse-width (bulb) exposure, the trigger divider, CoaXPress and PTP-timed triggers are not built. The Line dashboard's camera tile shows the last picture as a still, and nothing before the first trigger (the card on Line setup says "waiting for a trigger"). On Software trigger, a camera that both counts per trigger and reads codes on a signal takes two pictures per signal. Clearing the strobe output does not switch the camera's line back until the camera is powered off and on.
+
+**Without a camera.** `GENTL_CTI_PATH=simulator` gives two stand-in cameras (a picture every 2 seconds on Hardware, one per trigger on Software) to learn the screens with. `python "test codes/industrial_camera_check.py"` lists the real cameras the server would find and prints what one offers.
 
 #### Batch number
 

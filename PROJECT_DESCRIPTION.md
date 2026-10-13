@@ -9,7 +9,7 @@ It is intended to give operators a single place to monitor cameras and detection
 ## Main capabilities
 
 - **Vision:** Run object detection with YOLO-compatible ONNX models; run a model of its own on each vision camera; configure confidence and NMS thresholds.
-- **Camera input:** Support USB cameras and RTSP/IP cameras through camera drivers and services.
+- **Camera input:** Support USB cameras, RTSP/IP cameras, and GigE Vision / USB3 Vision industrial cameras (through GenICam, an optional install) with a hardware or a software trigger, through camera drivers and services. The industrial camera driver has not run on a real camera yet.
 - **Tracking and counting:** Track detections, report line crossings and class counts, and expose telemetry through the API/dashboard. Up to 8 cameras per production line; an extra vision camera inspects on its own or joins the counting camera's product result (matched by travel time), so a product inspected by several cameras gets one result.
 - **Production records:** Store every product and code read in the database, show them on a Records page with filters and totals, export any time range as CSV or Excel (.xlsx), and keep the line counters through a restart.
 - **QR/barcode inspection:** Decode QR and 1D/2D barcode data from uploaded images or camera frames.

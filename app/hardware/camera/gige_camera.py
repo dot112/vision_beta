@@ -483,8 +483,9 @@ class GigECamera(BaseCamera):
 
     def _reopen(self, stop: threading.Event) -> None:
         """The camera stopped answering: open it again with its settings, until it is back or disconnected."""
-        self.reconnecting = True
+        # The reason first: whoever sees `reconnecting` reads it next.
         self.last_error = f"Industrial camera '{self.name}' ({self.source}) is not answering; reconnecting"
+        self.reconnecting = True
         logger.warning(self.last_error)
         backend = self._backend
         delay = self.REOPEN_FIRST_S
@@ -505,8 +506,8 @@ class GigECamera(BaseCamera):
                 continue
             with self._lock:
                 self._queue.clear()
-            self.reconnecting = False
             self.last_error = None
+            self.reconnecting = False
             logger.info("Industrial camera '%s' is back; trigger: %s", self.name, self._applied_trigger)
             return
 

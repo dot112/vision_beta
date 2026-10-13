@@ -54,6 +54,12 @@ Section 4 only needs Section 1. It *can* run beside 2 and 3, but it touches the 
 
 The next session reads this table to know where to start.
 
+## After the five sections
+
+| Work | State | Where |
+|---|---|---|
+| Triggered industrial cameras (GigE Vision, USB3 Vision; hardware and software trigger) | **Built 2026-10-13, not run on a real camera, not reviewed.** Branch `claude/triggered-industrial-cameras`, on top of Section 5's branch. | Plan and decisions: [the plan](../superpowers/plans/2026-10-13-triggered-industrial-cameras.md). What to check on the first camera: [real-life tests](../real-life-tests/triggered-cameras.md). |
+
 ## How the project works (short map)
 
 FastAPI server (`main.py`) plus one HTML dashboard (`dashboard.html`, plus `assets/production_lines.js`, `assets/plc_signals.js` and `assets/dashboard.css`, read from disk on every request).

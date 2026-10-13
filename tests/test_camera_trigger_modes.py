@@ -329,6 +329,15 @@ def test_a_software_trigger_takes_the_picture_it_asked_for(lines, rig):  # noqa:
     assert rig.engine.seen == [DENT]            # the runner does not inspect it a second time
 
 
+def test_a_picture_nobody_asked_a_software_camera_for_is_not_inspected(lines, rig):  # noqa: F811   D12
+    runtime = _line(lines, [_trigger_cam("cam", no_product="reject")])
+    cam, backend = rig.camera("cam", trigger_mode="software")
+    backend.push(_picture(DENT))                # a late or stray picture: no trigger is waiting for it
+    assert _wait_until(lambda: cam.get_latest_frame_id() == 1)
+    rig.pump_for(0.1)
+    assert rig.engine.seen == [] and runtime.counter.total_inspected == 0
+
+
 def test_an_unanswered_software_trigger_does_not_shift_the_next_one(lines, rig, monkeypatch):  # noqa: F811   Review Focus 4
     monkeypatch.setattr(trigger_inspection, "TRIGGER_TIMEOUT_S", 0.1)
     runtime = _line(lines, [_trigger_cam("cam")])

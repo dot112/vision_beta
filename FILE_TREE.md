@@ -21,6 +21,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 ├── pyproject.toml
 ├── README.md
 ├── requirements-dev.txt
+├── requirements-industrial.txt   # optional: GigE Vision / USB3 Vision cameras (harvesters)
 ├── requirements-runtime.txt
 ├── requirements-training.txt
 ├── requirements.txt
@@ -82,7 +83,9 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │   ├── camera/
 │   │   │   ├── __init__.py
 │   │   │   ├── base.py
-│   │   │   ├── gige_camera.py
+│   │   │   ├── genicam_backend.py   # the calls into the GenICam library (the only file that imports harvesters)
+│   │   │   ├── genicam_sim.py       # a stand-in industrial camera (tests, and GENTL_CTI_PATH=simulator)
+│   │   │   ├── gige_camera.py       # GigE Vision / USB3 Vision driver: trigger modes, the picture queue
 │   │   │   ├── http_capture.py
 │   │   │   ├── ip_camera.py
 │   │   │   └── usb_camera.py
@@ -227,10 +230,13 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │   ├── section-5-plc-inputs.md
 │   │   ├── session-prompts.md   # the first message for each section's session
 │   │   └── screenshots/         # dashboard screenshots a section took (section-2/, section-3/: Line setup, Line dashboard; section-4/: Production records; section-5/: PLC signals, their dialog, the batch field)
+│   ├── real-life-tests/
+│   │   └── triggered-cameras.md # what to check on the first real industrial camera, step by step
 │   └── superpowers/
 │       ├── plans/           # the step-by-step plan a piece of work was built from
 │       │   ├── 2026-10-06-sparkplug-b.md
-│       │   └── 2026-10-12-section-5-plc-inputs.md
+│       │   ├── 2026-10-12-section-5-plc-inputs.md
+│       │   └── 2026-10-13-triggered-industrial-cameras.md
 │       └── specs/
 │           └── 2026-10-06-sparkplug-b-design.md
 ├── docker/
@@ -243,6 +249,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   ├── modbus port502 test.py
 │   ├── opc au tag control.py
 │   ├── opc ua server scan detection and DB control.py
+│   ├── industrial_camera_check.py   # lists the industrial cameras found and prints what one offers
 │   ├── plc_simulator.py
 │   └── test_modbus_full.py
 └── tests/
@@ -260,12 +267,14 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_camera_models.py
     ├── test_camera_orientation.py
     ├── test_camera_roi_and_qr.py
+    ├── test_camera_trigger_modes.py # triggered cameras on a line: products and code reads from each picture
     ├── test_code_types.py
     ├── test_detect_hardware.py
     ├── test_error_alarms.py
     ├── test_flow_engine.py
     ├── test_health.py
     ├── test_ip_camera_http.py
+    ├── test_industrial_camera.py    # the GigE / USB3 Vision driver and its API, on a stand-in camera
     ├── test_joined_cameras.py
     ├── test_lines.py
     ├── test_lines_api.py

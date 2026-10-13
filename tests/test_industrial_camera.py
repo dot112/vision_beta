@@ -337,8 +337,8 @@ def test_a_camera_that_stops_answering_is_opened_again_with_its_settings(connect
     cam, backend = connected(settings={"trigger_mode": "hardware"})
     backend.fail["ping"] = OSError("no answer")
     backend.fail["open"] = OSError("no answer")
-    assert _wait_until(lambda: cam.reconnecting)
-    assert "not answering" in cam.last_error and ("close",) in backend.calls
+    assert _wait_until(lambda: cam.reconnecting and ("close",) in backend.calls)
+    assert "not answering" in cam.last_error
     backend.fail.clear()
     assert _wait_until(lambda: not cam.reconnecting)
     assert cam.is_connected and cam.last_error is None and cam.trigger_mode == "hardware"
