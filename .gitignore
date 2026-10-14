@@ -96,3 +96,6 @@ certs/**/*.pem
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ─── Obsidian vault (plugin settings hold access tokens) ──────────────────────
+vision vault/
