@@ -499,34 +499,40 @@ class QRReaderPipeline:
         import cv2
         import numpy as np
 
+        from app.engines.inference_engine import STATUS_STOPPED, draw_status_bar, overlay_scale
         from app.services.line_service import line_manager
 
         worker = cls.peek(camera_id)
         reads, decode_ms = worker.latest() if worker else ([], 0.0)
         h, w = img.shape[:2]
+        s = overlay_scale(w, h)
         routed = line_manager.route(camera_id)
         trigger = routed[0].capture_triggers.get(camera_id) if routed else None
-        if trigger:
+        if routed and not getattr(routed[0], "enabled", False):
+            # Nothing is read while the line is stopped: the last codes would stand still on the picture.
+            reads = []
+            parts = ["QR READER", STATUS_STOPPED]
+        elif trigger:
             # The codes are drawn on the captured picture, not on live video.
             reads = []
-            title = f"QR READER | CAPTURES WHEN A PRODUCT CROSSES WIRE LINE {trigger[0]}"
+            parts = ["QR READER", f"CAPTURES WHEN A PRODUCT CROSSES WIRE LINE {trigger[0]}"]
         else:
-            title = f"QR READER | CODES: {len(reads)} | {decode_ms:.0f}ms"
+            parts = ["QR READER", f"CODES: {len(reads)}", f"{decode_ms:.0f}ms"]
         if fps > 0:
-            title += f" | FPS: {fps:.1f}"
-        if banner:
-            cv2.rectangle(img, (0, 0), (w, 32), (20, 24, 33), -1)
-            cv2.putText(img, title, (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1)
+            parts.append(f"FPS: {fps:.1f}")
+        top = draw_status_bar(img, parts) if banner else 0
+        font, thick = 0.5 * s, max(1, int(round(s)))
         for code, known in reads:
             color = (0, 200, 0) if known else (0, 0, 230)
             if code.polygon and len(code.polygon) >= 3:
                 pts = np.array([[int(p[0] * scale_x), int(p[1] * scale_y)] for p in code.polygon], np.int32).reshape((-1, 1, 2))
-                cv2.polylines(img, [pts], isClosed=True, color=color, thickness=3)
+                cv2.polylines(img, [pts], isClosed=True, color=color, thickness=max(3, int(round(3 * s))))
             if code.bbox:
                 label = f"{'KNOWN' if known else 'UNKNOWN'}: {code.data[:40]}"
                 x = int(code.bbox.x1 * scale_x)
-                y = max(48, int(code.bbox.y1 * scale_y))
-                (lw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                cv2.rectangle(img, (x, y - 20), (x + lw + 8, y), color, -1)
-                cv2.putText(img, label, (x + 4, y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                y = max(top + int(round(16 * s)), int(round(48 * s)), int(code.bbox.y1 * scale_y))
+                (lw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font, thick)
+                cv2.rectangle(img, (x, y - int(round(20 * s))), (x + lw + int(round(8 * s)), y), color, -1)
+                cv2.putText(img, label, (x + int(round(4 * s)), y - int(round(6 * s))), cv2.FONT_HERSHEY_SIMPLEX, font,
+                            (255, 255, 255), thick)
         return img

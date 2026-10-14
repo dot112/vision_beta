@@ -303,6 +303,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_request_load_protection.py
     ├── test_resilience.py
     ├── test_rule_engine.py
+    ├── test_segment_masks.py        # segmentation masks worked out inside each object's box
     ├── test_send_cards.py
     ├── test_session_and_continuous_vision.py
     ├── test_snapshot_width.py
@@ -314,6 +315,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_sparkplug_service.py
     ├── test_trigger_inspection.py
     ├── test_trigger_numbers.py      # a Take a picture input's trigger number; the triggers a camera ticks
+    ├── test_video_overlay.py        # the video's status bar: same size on screen; a stopped line says so
     └── test_vision_pipeline.py
 ```
 

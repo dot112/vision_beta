@@ -14,7 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.models.detection import DetectionLog
-from app.engines.inference_engine import begin_model_timing, end_model_timing
+from app.engines.inference_engine import (
+    STATUS_NO_LINE,
+    STATUS_NO_MODEL,
+    STATUS_STOPPED,
+    begin_model_timing,
+    end_model_timing,
+)
 from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
 from app.schemas.vision import DetectionResponse, LiveInspectionResponse
 from app.services.camera_service import CameraService
@@ -25,6 +31,21 @@ from app.utils.threads import run_supervised
 logger = get_logger(__name__)
 # A model or tracker that fails on every frame is reported once a minute, not 30 times a second.
 _error_log = LogThrottle(60.0)
+
+def inspection_status(routed: Optional[Tuple[Any, str]], engine: Any) -> Optional[str]:
+    """Why a camera's pictures go to no model now, or None while they do.
+
+    ``routed`` is line_manager.route(camera): the runner only feeds cameras of a
+    running line (ContinuousVisionRunner._feed_camera).
+    """
+    if routed is None:
+        return STATUS_NO_LINE
+    if not getattr(routed[0], "enabled", False):
+        return STATUS_STOPPED
+    if not getattr(engine, "is_loaded", True):
+        return STATUS_NO_MODEL
+    return None
+
 
 def _clamp_int(value: Any, default: int, low: int, high: int) -> int:
     try:
@@ -424,11 +445,15 @@ class _CameraStreamPublisher:
                 ret_ann, ann_buf = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
                 annotated_jpeg = ann_buf.tobytes() if ret_ann else None
             elif want_ann:
-                worker = CameraStreamPipeline.get_worker(self.camera_id)
-                detections, latency_ms = worker.get_latest_inference()
-
-                # 4. Draw annotations directly onto BGR display_mat
+                # 4. Draw annotations directly onto BGR display_mat. A camera that is not
+                # inspected now shows why, not the last results it had (they would stand
+                # still on the moving picture).
                 engine, _, _ = line_manager.engine_for_camera(self.camera_id)
+                status = inspection_status(routed, engine)
+                if status in (STATUS_STOPPED, STATUS_NO_LINE):
+                    detections, latency_ms = [], 0.0
+                else:
+                    detections, latency_ms = CameraStreamPipeline.get_worker(self.camera_id).get_latest_inference()
                 annotated_mat = engine.draw_annotations_mat(
                     display_mat,
                     detections,
@@ -438,6 +463,7 @@ class _CameraStreamPublisher:
                     scale_y=scale_y,
                     fps=fps,
                     camera_id=self.camera_id,
+                    status=status,
                 )
 
                 # Codes a vision camera read beside its model are outlined on its video too.
@@ -1175,6 +1201,8 @@ class VisionService:
 
         from app.services.line_service import line_manager
         engine, _, _ = line_manager.engine_for_camera(camera_id)
+        # This picture is inspected now, on request; the bar still says when the camera's line is not.
+        status = inspection_status(line_manager.route(camera_id), engine)
 
         def _infer_and_render() -> bytes:
             # Inference, drawing and JPEG encoding all run off the event loop.
@@ -1184,7 +1212,7 @@ class VisionService:
                 detections, latency_ms = det_response.detections, det_response.inference_time_ms
             else:
                 detections, latency_ms = [], 0.0  # no model runs on this camera
-            annotated_mat = engine.draw_annotations_mat(mat, detections, latency_ms, camera_id=camera_id)
+            annotated_mat = engine.draw_annotations_mat(mat, detections, latency_ms, camera_id=camera_id, status=status)
             _, jpeg = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
             return shrink_jpeg(jpeg.tobytes(), max_width) if max_width else jpeg.tobytes()
 
