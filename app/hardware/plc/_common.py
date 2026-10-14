@@ -20,8 +20,9 @@ async def pulse_with_reset(
     off: Callable[[], Awaitable[Result]],
     duration_ms: int,
     label: str,
+    wait: Callable[[int], Awaitable[None]],
 ) -> Result:
-    """Turn a bit ON, wait, and always turn it OFF again — even if the caller is cancelled."""
+    """Turn a bit ON, wait (the driver's _pulse_wait), and always turn it OFF again — even if the caller is cancelled."""
     ok_on, msg_on = await on()
     if not ok_on:
         # The ON write may have landed even though its reply was lost.
@@ -29,7 +30,7 @@ async def pulse_with_reset(
         suffix = "OFF cleanup acknowledged" if ok_off else "OFF cleanup failed"
         return False, f"{label} PULSE ON failed: {msg_on}; {suffix}"
     try:
-        await asyncio.sleep(max(0, duration_ms) / 1000.0)
+        await wait(duration_ms)
     finally:
         reset_task = asyncio.create_task(off())
         try:

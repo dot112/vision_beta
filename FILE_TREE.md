@@ -276,6 +276,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_health.py
     ├── test_ip_camera_http.py
     ├── test_industrial_camera.py    # the GigE / USB3 Vision driver and its API, on a stand-in camera
+    ├── test_inputs_see_output_pulses.py # an input reads what an output action's pulse switches on
     ├── test_joined_cameras.py
     ├── test_lines.py
     ├── test_lines_api.py

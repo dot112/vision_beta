@@ -474,7 +474,7 @@ class EtherNetIPDriver(PLCDriver):
         if not ok1:
             return False, f"EIP PULSE ON failed for {address}: {msg1}"
         try:
-            await asyncio.sleep(duration_ms / 1000.0)
+            await self._pulse_wait(duration_ms)
         finally:
             reset_task = asyncio.create_task(self.reset(address))
             try:

@@ -318,17 +318,22 @@ class PLCInputService:
             for card in cards:
                 cls._state(card).error = problem
             return
+        # The channel's lock keeps one output action's writes together (data, strobe, pulse).
+        # A read does not need it: the driver sends one request at a time, and a read
+        # must see what a pulse switches on. Connecting and disconnecting take it, so
+        # neither cuts an output action in half.
         lock = PLCDispatcherService._endpoint_locks.setdefault(endpoint_id, asyncio.Lock())
         timeout = float(endpoint.get("timeout", 3))
         for card in cards:
             state = cls._state(card)
-            # The lock is taken per read, so a PLC action never waits for more than one read.
-            async with lock:
-                if not driver.is_connected and not await cls._connect(endpoint, driver, now):
+            if not driver.is_connected:
+                async with lock:
+                    connected = driver.is_connected or await cls._connect(endpoint, driver, now)
+                if not connected:
                     for waiting in cards:
                         cls._state(waiting).error = NOT_CONNECTED
                     return
-                ok, value, message = await cls._read(driver, card, timeout)
+            ok, value, message = await cls._read(driver, card, timeout, lock)
             if ok:
                 cls._took(card, state, value, now)
             else:
@@ -352,18 +357,21 @@ class PLCInputService:
         return bool(connected)
 
     @staticmethod
-    async def _read(driver: Any, card: Dict[str, Any], timeout: float) -> Tuple[bool, Any, str]:
+    async def _read(driver: Any, card: Dict[str, Any], timeout: float,
+                    lock: asyncio.Lock) -> Tuple[bool, Any, str]:
         # A PLC counter is read as one unsigned word; the service works out its increase.
         wire_type = "uint16" if card.get("data_type") == "counter" else card.get("data_type") or "auto"
         try:
             return await asyncio.wait_for(driver.read(card["address"], wire_type), timeout=timeout + 1.0)
         except asyncio.TimeoutError:
-            # A late reply could be read as the answer to the next request.
-            try:
-                await asyncio.wait_for(driver.disconnect(), timeout=1.0)
-            except Exception:
-                pass
-            driver.is_connected = False
+            # A late reply could be read as the answer to the next request. The
+            # connection is dropped once no output action is half done.
+            async with lock:
+                try:
+                    await asyncio.wait_for(driver.disconnect(), timeout=1.0)
+                except Exception:
+                    pass
+                driver.is_connected = False
             return False, None, "The PLC did not answer the read in time"
         except Exception as exc:
             return False, None, f"{type(exc).__name__}: {exc}"
@@ -647,13 +655,13 @@ class PLCInputService:
             return answer(False, None, problem)
         timeout = float(endpoint.get("timeout", 3))
         lock = PLCDispatcherService._endpoint_locks.setdefault(endpoint.get("id", ""), asyncio.Lock())
-        async with lock:
-            if not driver.is_connected:
+        if not driver.is_connected:
+            async with lock:
                 try:
-                    connected = await asyncio.wait_for(driver.connect(), timeout=timeout)
+                    connected = driver.is_connected or await asyncio.wait_for(driver.connect(), timeout=timeout)
                 except Exception:
                     connected = False
-                if not connected:
-                    detail = getattr(driver, "last_error", "") or getattr(driver, "last_connect_error", "")
-                    return answer(False, None, NOT_CONNECTED + (f": {detail}" if detail else ""))
-            return answer(*await cls._read(driver, card, timeout))
+            if not connected:
+                detail = getattr(driver, "last_error", "") or getattr(driver, "last_connect_error", "")
+                return answer(False, None, NOT_CONNECTED + (f": {detail}" if detail else ""))
+        return answer(*await cls._read(driver, card, timeout, lock))

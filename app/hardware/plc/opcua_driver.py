@@ -434,7 +434,7 @@ class OPCUADriver(PLCDriver):
                 message += "; OFF cleanup acknowledged" if off_ok else "; OFF cleanup failed"
             return False, f"OPC UA pulse ON failed: {message}"
         try:
-            await asyncio.sleep(max(0, duration_ms) / 1000.0)
+            await self._pulse_wait(duration_ms)
         finally:
             reset_task = asyncio.create_task(self.reset(address))
             try:

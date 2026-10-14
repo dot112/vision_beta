@@ -496,7 +496,7 @@ class S7Driver(PLCDriver):
             suffix = "OFF cleanup acknowledged" if ok_off else f"OFF cleanup failed: {off_msg}"
             return False, f"S7 PULSE ON failed for {address}; {suffix}"
         try:
-            await asyncio.sleep(duration_ms / 1000.0)
+            await self._pulse_wait(duration_ms)
         finally:
             reset_task = asyncio.create_task(self.reset(address))
             try:

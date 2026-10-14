@@ -253,7 +253,7 @@ class OmronFINSDriver(PLCDriver):
 
     async def pulse(self, address: str, duration_ms: int) -> Tuple[bool, str]:
         return await pulse_with_reset(
-            lambda: self.set(address), lambda: self.reset(address), duration_ms, f"FINS {address}"
+            lambda: self.set(address), lambda: self.reset(address), duration_ms, f"FINS {address}", self._pulse_wait
         )
 
     async def write(self, address: str, value: float) -> Tuple[bool, str]:

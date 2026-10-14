@@ -291,7 +291,7 @@ class ModbusTCPDriver(PLCDriver):
         if not ok:
             return False, f"PULSE ON error: {err}"
         try:
-            await asyncio.sleep(duration_ms / 1000.0)
+            await self._pulse_wait(duration_ms)
         finally:
             reset_task = asyncio.create_task(
                 self._client.write_register(idx, 0) if addr_type == "register"

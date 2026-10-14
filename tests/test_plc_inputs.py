@@ -602,7 +602,10 @@ def test_a_read_that_keeps_dropping_the_link_raises_the_alarm_the_second_time(si
     assert alarm_manager.get(FAILED, "plc_input:plcin_start_line") is not None
 
 
-def test_reads_never_come_between_a_cards_write_and_its_strobe(signals, acts):
+def test_a_read_waits_for_one_request_not_for_a_cards_whole_write(signals, acts):
+    # A read changes nothing in the PLC, so it may come between a card's data and its
+    # strobe; another card's write still may not (test_messages_and_plc_values). A read
+    # held up until the card is done would miss what the card's pulse switches on.
     _line_with(_signal("start_line"))
     signals.write_seconds = 0.03
     card = _normalize_card({"id": "w", "name": "w", "enabled": True, "plc_endpoint_id": "ep1", "operation": "write",
@@ -617,7 +620,7 @@ def test_reads_never_come_between_a_cards_write_and_its_strobe(signals, acts):
         await write
 
     _run(steps)
-    assert signals.calls == [("WRITE", "40001"), ("PULSE", "M0.1"), ("read", "10001", "auto")]
+    assert signals.calls == [("WRITE", "40001"), ("read", "10001", "auto"), ("PULSE", "M0.1")]
 
 
 def test_a_disabled_card_is_not_read(signals, acts):

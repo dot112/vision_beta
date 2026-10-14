@@ -234,7 +234,7 @@ class MelsecSLMPDriver(PLCDriver):
 
     async def pulse(self, address: str, duration_ms: int) -> Tuple[bool, str]:
         ok, msg = await pulse_with_reset(
-            lambda: self.set(address), lambda: self.reset(address), duration_ms, f"MELSEC {address}"
+            lambda: self.set(address), lambda: self.reset(address), duration_ms, f"MELSEC {address}", self._pulse_wait
         )
         return ok, msg
 

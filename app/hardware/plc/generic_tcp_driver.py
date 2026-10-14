@@ -225,7 +225,7 @@ class GenericTCPDriver(PLCDriver):
         if not ok1:
             return False, f"GenericTCP PULSE ON failed for {address}"
         try:
-            await asyncio.sleep(duration_ms / 1000.0)
+            await self._pulse_wait(duration_ms)
         finally:
             reset_task = asyncio.create_task(self.reset(address))
             try:
