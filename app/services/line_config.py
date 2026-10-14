@@ -149,8 +149,13 @@ SEND_PROTOCOLS = ("mqtt", "tcp", "webhook")
 # (card_triggers decides what each means).
 CARD_TRIGGERS = (
     "cross_line", "good_counter", "reject_counter", "class",
-    "qr_read", "qr_known", "qr_unknown", "qr_no_read", "line_state", "alarm",
+    "qr_read", "qr_known", "qr_unknown", "qr_no_read", "line_state", "alarm", "timer",
 )
+# "timer" (send cards only): a message every set_value ms, while the line runs or always.
+TIMER_CONDITIONS = ("while_running", "always")
+TIMER_MIN_MS = 100
+TIMER_MAX_MS = 86_400_000           # 24 hours
+TIMER_DEFAULT_MS = 1000
 MAX_SEND_CARDS = 32
 # The settings send cards replaced, once kept in a line's action_trigger.
 OLD_SEND_KEYS = (
@@ -658,6 +663,10 @@ def normalize_send_card(raw: Any, index: int = 0) -> Dict[str, Any]:
         codes = codes.split(",")
     if not isinstance(codes, list) or len(codes) > 200:
         raise ValueError(f"{label}: the alarms must be a list")
+    condition = str(raw.get("condition") or "any").strip().lower()[:32]
+    set_value = str(raw.get("set_value") if raw.get("set_value") is not None else "").strip()[:128]
+    if trigger == "timer":
+        condition, set_value = _timer_setting(raw, label)
     card: Dict[str, Any] = {
         "id": card_id,
         "name": name,
@@ -667,8 +676,9 @@ def normalize_send_card(raw: Any, index: int = 0) -> Dict[str, Any]:
         # The topic the message is published to when the channel is an MQTT broker.
         "topic": topic,
         "trigger": trigger,
-        "condition": str(raw.get("condition") or "any").strip().lower()[:32],
-        "set_value": str(raw.get("set_value") if raw.get("set_value") is not None else "").strip()[:128],
+        "condition": condition,
+        # The counter value or class name; for a timer, the interval in ms.
+        "set_value": set_value,
         # What the message contains (send_dispatcher_service.MESSAGE_FIELDS); None = everything.
         "fields": fields,
         # "json": the fields above as JSON; "text": the template with its {placeholders} filled in.
@@ -676,11 +686,34 @@ def normalize_send_card(raw: Any, index: int = 0) -> Dict[str, Any]:
         "template": template,
     }
     camera_id = str(raw.get("camera_id") or "").strip()
-    if camera_id:
+    if camera_id and trigger != "timer":            # a timer is the line's, not a camera's
         card["camera_id"] = camera_id[:64]
     if trigger == "alarm":
         card["alarm_codes"] = [str(code).strip() for code in codes if str(code).strip()]
     return card
+
+
+def _timer_setting(raw: Dict[str, Any], label: str) -> Tuple[str, str]:
+    """(condition, interval in ms as text) of a timer send card, checked."""
+    condition = str(raw.get("condition") or TIMER_CONDITIONS[0]).strip().lower()
+    if condition not in TIMER_CONDITIONS:
+        raise ValueError(f"{label}: a timer sends while the line runs or always, not '{condition}'")
+    text = str(raw.get("set_value") if raw.get("set_value") not in (None, "") else TIMER_DEFAULT_MS).strip()
+    if not text.isdigit():
+        raise ValueError(f"{label}: the timer's interval must be a whole number of ms, not '{text[:32]}'")
+    every = int(text)
+    if not TIMER_MIN_MS <= every <= TIMER_MAX_MS:
+        raise ValueError(f"{label}: the timer's interval must be {TIMER_MIN_MS} to {TIMER_MAX_MS} ms, not {every}")
+    return condition, str(every)
+
+
+def timer_interval_ms(card: Dict[str, Any]) -> int:
+    """A timer send card's interval in ms (its set_value, as normalize_send_card checked it)."""
+    try:
+        every = int(str(card.get("set_value") or TIMER_DEFAULT_MS).strip())
+    except ValueError:
+        every = TIMER_DEFAULT_MS
+    return min(TIMER_MAX_MS, max(TIMER_MIN_MS, every))
 
 
 # Send card settings an older client does not know of: kept when it leaves them out.

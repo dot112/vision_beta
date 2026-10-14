@@ -1402,6 +1402,11 @@ button.status-pill:hover { filter: brightness(1.08); }
 }
 .send-chip:hover, .send-chip:focus-visible { border-color: var(--primary-color); color: var(--primary-color); }
 
+/* A send card's value box, with its unit beside it (ms for a timer). */
+.send-value-row { display: flex; align-items: center; gap: 8px; }
+.send-value-row .form-input { flex: 1; min-width: 0; }
+.send-value-unit { font-size: 12.5px; font-weight: 600; color: var(--text-muted); }
+
 /* ── PLC signals (Line setup) ───────────────────────────────────────────── */
 /* A signal card's value, last change and error, from the server once a second. */
 .sig-chips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 22px; }

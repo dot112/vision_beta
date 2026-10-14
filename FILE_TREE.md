@@ -305,6 +305,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_rule_engine.py
     ├── test_segment_masks.py        # segmentation masks worked out inside each object's box
     ├── test_send_cards.py
+    ├── test_send_timer.py           # send cards with the Timer trigger: a message every N ms
     ├── test_session_and_continuous_vision.py
     ├── test_snapshot_width.py
     ├── test_sparkplug_api.py

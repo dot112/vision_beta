@@ -319,6 +319,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await asyncio.to_thread(CameraStreamPipeline.stop_all)
     except Exception:
         logger.exception("Failed to stop camera stream workers cleanly")
+    try:
+        # Timer send cards: no more messages every N ms.
+        from app.services.send_dispatcher_service import SendDispatcherService
+        await SendDispatcherService.stop_timers()
+    except Exception:
+        logger.exception("Failed to stop the timer send cards cleanly")
 
     try:
         # No more signals are read from the PLCs: nothing starts a line or counts a product from here on.

@@ -3743,7 +3743,10 @@ const CARD_TRIGGERS = [
     { id: "qr_no_read",     label: "No code read",               summary: "No code read" },
     { id: "line_state",     label: "Line started / stopped",     summary: "Line started / stopped" },
     { id: "alarm",          label: "Alarm raised / cleared",     summary: "Alarm" },
+    // Send cards only: a message every N ms (the value box), while the line runs or always.
+    { id: "timer",          label: "Timer (every N ms)",         summary: "Timer", sendOnly: true },
 ];
+const TIMER_MIN_MS = 100, TIMER_MAX_MS = 86400000;
 const CARD_CONDITIONS = {
     cross_line: [
         ["reject", "Rejected product (final result)"],
@@ -3774,6 +3777,10 @@ const CARD_CONDITIONS = {
         ["cleared", "Cleared: all chosen alarms are off"],
         ["toggled", "Raised or cleared"],
     ],
+    timer: [
+        ["while_running", "While the line runs"],
+        ["always", "Always (continuous), also when the line is stopped"],
+    ],
 };
 
 function cardTriggerKind(trigger) {
@@ -3782,8 +3789,10 @@ function cardTriggerKind(trigger) {
     return CARD_CONDITIONS[trigger] ? trigger : "cross_line";
 }
 
-function cardTriggerOptionsHtml(card) {
-    return CARD_TRIGGERS.map(t => `<option value="${t.id}" ${card.trigger === t.id ? "selected" : ""}>${escapeHtml(t.label)}</option>`).join("");
+// forSend: a send card's list, which also has the triggers only send cards offer (the timer).
+function cardTriggerOptionsHtml(card, forSend = false) {
+    return CARD_TRIGGERS.filter(t => forSend || !t.sendOnly)
+        .map(t => `<option value="${t.id}" ${card.trigger === t.id ? "selected" : ""}>${escapeHtml(t.label)}</option>`).join("");
 }
 
 function cardConditionOptionsHtml(card) {
@@ -3799,8 +3808,9 @@ function applyCardTriggerDefaults(card, trigger) {
     card.condition = CARD_CONDITIONS[kind][0][0];
     if (kind === "counter") card.set_value = card.set_value || "100";
     else if (kind === "class") card.set_value = card.set_value || "defect";
+    else if (kind === "timer") card.set_value = "1000";
     else card.set_value = "";
-    if (kind === "line_state" || kind === "alarm") card.camera_id = "";
+    if (kind === "line_state" || kind === "alarm" || kind === "timer") card.camera_id = "";
     if (kind === "alarm") card.alarm_codes = card.alarm_codes || [];
 }
 
@@ -3810,6 +3820,7 @@ function cardSetValueInfo(card) {
     if (kind === "counter") return { used: true, number: true, placeholder: card.condition === "counter_modulo" ? "Interval N (e.g. 10 or 50 products)" : "Target count (e.g. 100)" };
     if (kind === "class") return { used: true, number: false, placeholder: "Class name (e.g. defect, bottle, cap)" };
     if (kind === "cross_line" && card.condition === "class") return { used: true, number: false, placeholder: "Class name crossing the line" };
+    if (kind === "timer") return { used: true, number: true, unit: "ms", min: TIMER_MIN_MS, max: TIMER_MAX_MS, placeholder: "Interval in ms (e.g. 1000)" };
     return { used: false, number: false, placeholder: kind === "line_state" ? "Not used for a line start or stop" : "Not used for this trigger" };
 }
 
@@ -3833,6 +3844,8 @@ function cardTriggerSummary(c) {
         condSummary = (c.camera_id ? "Selected camera" : "Any code reader") + (c.condition === "unpaired" ? ", unpaired codes" : "");
     } else if (kind === "line_state") {
         condSummary = { on: "On (line starts)", off: "Off (line stops)", toggled: "Toggled (starts or stops)" }[c.condition] || "On (line starts)";
+    } else if (kind === "timer") {
+        condSummary = `Every ${c.set_value || "1000"} ms · ${c.condition === "always" ? "always" : "while the line runs"}`;
     } else if (kind === "alarm") {
         if (!_alarmCatalog) loadAlarmCatalog();
         triggerSummary = { raised: "Alarm raised", cleared: "All alarms cleared", toggled: "Alarm raised or cleared" }[c.condition] || "Alarm raised";
@@ -3846,7 +3859,8 @@ function cardTriggerSummary(c) {
 
 function cardCameraOptionsHtml(card) {
     const kind = cardTriggerKind(card.trigger);
-    const none = kind === "line_state" ? "Not used for a line start or stop" : kind === "alarm" ? "Not used for alarms" : "Counting camera / any code reader of this line";
+    const none = kind === "line_state" ? "Not used for a line start or stop" : kind === "alarm" ? "Not used for alarms"
+        : kind === "timer" ? "Not used for a timer" : "Counting camera / any code reader of this line";
     const cams = (window.ProductionLines && window.ProductionLines.lineCameras()) || [];
     return `<option value="" ${!card.camera_id ? "selected" : ""}>${none}</option>` + cams.map(cam =>
         `<option value="${escapeHtml(cam.camera_id)}" ${card.camera_id === cam.camera_id ? "selected" : ""}>${escapeHtml(cam.name)} (${cam.role === "qr" ? "QR / barcode reader" : cam.read_codes ? "Vision + QR / barcode" : "Vision"})</option>`).join("");
@@ -3987,6 +4001,11 @@ async function applySendActionCards() {
         showToast(`'${badText.name}': ${sendTemplateProblem(badText.template)}`, "warning");
         return false;
     }
+    const badTimer = _sendActionCards.find(c => c.trigger === "timer" && !sendTimerOk(c.set_value));
+    if (badTimer) {
+        showToast(`'${badTimer.name}': the timer's interval must be a whole number from ${TIMER_MIN_MS} to ${TIMER_MAX_MS.toLocaleString("en")} ms.`, "warning");
+        return false;
+    }
     _sendActionApplyInFlight = true;
     updateSendActionSaveState();
     const snapshot = _sendActionCards.map(card => Object.fromEntries(Object.entries(card).filter(([key]) => !SEND_RUNTIME_FIELDS.includes(key))));
@@ -4012,6 +4031,12 @@ async function applySendActionCards() {
         _sendActionApplyInFlight = false;
         updateSendActionSaveState();
     }
+}
+
+// A timer's interval: whole ms in the range the server accepts.
+function sendTimerOk(value) {
+    const text = String(value ?? "").trim();
+    return /^\d+$/.test(text) && Number(text) >= TIMER_MIN_MS && Number(text) <= TIMER_MAX_MS;
 }
 
 function addSendActionCard() {
@@ -4261,6 +4286,7 @@ function setSendFormat(format) {
     if (draft.format === "text" && !String(draft.template || "").trim()) {
         const kind = cardTriggerKind(draft.trigger);
         draft.template = kind === "line_state" ? "{line_name};{line_state}"
+            : kind === "timer" ? "{line_name};{line_state};{good_count};{rejected_count}"
             : kind === "alarm" ? "{alarm_code};{alarm_message}"
                 : kind === "qr" ? "{code};{code_status};{product_name}"
                     : "{result_code};{class_name};{good_count};{rejected_count}";
@@ -4375,6 +4401,7 @@ function sendSampleMessage(card) {
         const running = card.condition !== "off";
         return { event: running ? "LINE_STARTED" : "LINE_STOPPED", timestamp: now, ...line, line_state: running ? "started" : "stopped", ...totals };
     }
+    if (kind === "timer") return { event: "TIMER", timestamp: now, ...line, ...totals };
     if (kind === "alarm") {
         const raised = card.condition !== "cleared";
         return { event: raised ? "ALARM_RAISED" : "ALARM_CLEARED", timestamp: now, ...line, alarm_code: "camera.disconnected", alarm_message: "Camera 'Line camera' lost its connection", alarm_severity: "critical", alarm_source: "camera:example", alarm_raised: raised, ...totals };
@@ -4481,14 +4508,16 @@ function refreshSendModalBody() {
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11.5px;font-weight:600">Trigger:</label>
-                <select class="form-input" onchange="onSendModalTriggerChange(this.value)">${cardTriggerOptionsHtml(card)}</select>
+                <select class="form-input" onchange="onSendModalTriggerChange(this.value)">${cardTriggerOptionsHtml(card, true)}</select>
             </div>
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11.5px;font-weight:600">Condition:</label>
                 <select class="form-input" onchange="setSendDraft('condition', this.value)">${cardConditionOptionsHtml(card)}</select>
             </div>
         </div>
-        <div style="font-size:10px;color:var(--text-muted);margin-top:-8px">Good and rejected mean the product's final result: the vision camera's and, where a camera checks codes, the code's. The message goes out as soon as that result is known.</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:-8px">${kind === "timer"
+            ? "The line's state and totals are sent every interval: the first message one interval after the line starts (or, for Always, after Apply)."
+            : "Good and rejected mean the product's final result: the vision camera's and, where a camera checks codes, the code's. The message goes out as soon as that result is known."}</div>
 
         ${isAlarm ? `
         <div class="form-group" style="margin:0">
@@ -4498,12 +4527,16 @@ function refreshSendModalBody() {
         </div>` : `
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600">Value / class:</label>
-            <input type="${setValue.number ? "number" : "text"}" class="form-input" value="${escapeHtml(card.set_value || "")}" ${setValue.used ? "" : 'disabled style="opacity:0.4;cursor:not-allowed"'} placeholder="${escapeHtml(setValue.placeholder)}" oninput="setSendDraft('set_value', this.value, false)" />
+            <div class="send-value-row">
+                <input type="${setValue.number ? "number" : "text"}" class="form-input" value="${escapeHtml(card.set_value || "")}" ${setValue.used ? "" : 'disabled style="opacity:0.4;cursor:not-allowed"'} ${setValue.min ? `min="${setValue.min}" max="${setValue.max}" step="1"` : ""} placeholder="${escapeHtml(setValue.placeholder)}" oninput="setSendDraft('set_value', this.value, false)" />
+                ${setValue.unit ? `<span class="send-value-unit">${escapeHtml(setValue.unit)}</span>` : ""}
+            </div>
+            ${setValue.min ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px">${setValue.min} to ${setValue.max.toLocaleString("en")} ms (24 hours).</div>` : ""}
         </div>`}
 
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600">Camera:</label>
-            <select class="form-input" ${kind === "line_state" || isAlarm ? "disabled" : ""} onchange="setSendDraft('camera_id', this.value, false)">${cardCameraOptionsHtml(card)}</select>
+            <select class="form-input" ${kind === "line_state" || isAlarm || kind === "timer" ? "disabled" : ""} onchange="setSendDraft('camera_id', this.value, false)">${cardCameraOptionsHtml(card)}</select>
         </div>
 
         <!-- 4. What the message contains: JSON fields, or text from a template -->

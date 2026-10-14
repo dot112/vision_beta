@@ -45,7 +45,10 @@ _TRIGGER_ALIASES = {
     "qr_no_read": "qr_no_read",
     "line_state": "line_state",
     "alarm": "alarm",
+    "timer": "timer",
 }
+# A send card that sends on its own clock (SendDispatcherService's timers), never for an event.
+TIMER_TRIGGER = "timer"
 
 
 def normalize_trigger(card: dict) -> dict:
@@ -113,6 +116,8 @@ def _alarm_picked(codes: List[str], code: Any) -> bool:
 def trigger_matches(card: dict, event: dict) -> bool:
     """True when the card's trigger and condition match the event (normalize_trigger() first)."""
     trigger = str(card.get("trigger_type", "line_cross")).lower()
+    if trigger == TIMER_TRIGGER:
+        return False        # sent every N ms by its own timer, not for an event
     condition = str(card.get("trigger_condition", "any")).lower()
     trigger_value = int(card.get("trigger_value", 1) or 1)
 

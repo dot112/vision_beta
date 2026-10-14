@@ -9,9 +9,14 @@ messages to different systems.
 
 A card has no delay: the message goes out as soon as the event is known. For a
 product that is when its final result is decided.
+
+A card with the trigger "timer" is not sent for an event: it sends the line's
+totals every N ms (its set_value), while the line runs ("while_running") or
+always. Each such card has one task on the main event loop (start_timers).
 """
 from __future__ import annotations
 
+import asyncio
 import functools
 import json
 import threading
@@ -19,8 +24,14 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from app.services.card_triggers import alarm_event, card_fires, card_line, normalize_trigger
-from app.services.line_config import PRIMARY_LINE_ID, SEND_PROTOCOLS, TEMPLATE_FIELDS, parse_template
+from app.services.card_triggers import TIMER_TRIGGER, alarm_event, card_fires, card_line, normalize_trigger
+from app.services.line_config import (
+    PRIMARY_LINE_ID,
+    SEND_PROTOCOLS,
+    TEMPLATE_FIELDS,
+    parse_template,
+    timer_interval_ms,
+)
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -176,6 +187,11 @@ def line_state_payload(event: dict) -> Dict[str, Any]:
     }
 
 
+def timer_payload(line_id: str) -> Dict[str, Any]:
+    """The message of a timer card, before the line's name, state and totals are added."""
+    return {"event": "TIMER", "timestamp": datetime.now(timezone.utc).isoformat(), "line_id": line_id}
+
+
 def alarm_payload(event: dict) -> Dict[str, Any]:
     """The message of an alarm that was raised or cleared."""
     raised = bool(event.get("alarm_raised"))
@@ -260,6 +276,12 @@ class SendDispatcherService:
     _cards: List[dict] = []
     _status: Dict[str, Dict[str, Any]] = {}
     _lock = threading.Lock()
+    # Timer cards: {(line id, card id): (what its clock depends on, its task)}, on _timer_loop.
+    _timers: Dict[Tuple[str, str], Tuple[Tuple[Any, ...], "asyncio.Task[None]"]] = {}
+    _timer_loop: Optional[asyncio.AbstractEventLoop] = None
+    # How often a "while the line runs" timer looks whether its stopped line was started
+    # by a way that does not announce it (the server starting with the line running).
+    TIMER_IDLE_CHECK_S = 0.25
 
     # ── Cards ─────────────────────────────────────────────────────────────────
 
@@ -272,6 +294,7 @@ class SendDispatcherService:
             logger.info("SendDispatcherService: loaded %d send card(s)", len(cls._cards))
         except Exception as exc:
             logger.warning("SendDispatcherService.load_cards error: %s", exc)
+        cls._request_timer_sync()
 
     @classmethod
     def set_cards(cls, cards: List[dict], line_id: Optional[str] = None) -> None:
@@ -287,6 +310,7 @@ class SendDispatcherService:
         with cls._lock:
             for gone in [cid for cid in cls._status if cid not in live]:
                 del cls._status[gone]
+        cls._request_timer_sync()
 
     @classmethod
     def get_status(cls, line_id: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
@@ -404,7 +428,105 @@ class SendDispatcherService:
     @classmethod
     def line_state_changed(cls, event: dict) -> int:
         """A line was started or stopped (the event of card_triggers.line_state_event)."""
+        # Its "while the line runs" timers start again: the first message one interval after a start.
+        cls._request_timer_sync(restart_line=str(event.get("line_id") or PRIMARY_LINE_ID))
         return cls.evaluate(event, cls._with_totals(line_state_payload(event), event.get("line_id")))
+
+    # ── Timer cards ───────────────────────────────────────────────────────────
+
+    @classmethod
+    def start_timers(cls) -> None:
+        """Run the timer cards on the running event loop from now on (server start)."""
+        cls._timer_loop = asyncio.get_running_loop()
+        cls._sync_timers()
+
+    @classmethod
+    async def stop_timers(cls) -> None:
+        """Stop every timer card (server shutdown)."""
+        cls._timer_loop = None
+        tasks = [task for _, task in cls._timers.values()]
+        cls._timers = {}
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    @classmethod
+    def _request_timer_sync(cls, restart_line: Optional[str] = None) -> None:
+        """Bring the timer tasks in line with the cards, from any thread. Nothing before start_timers()."""
+        loop = cls._timer_loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            on_loop = asyncio.get_running_loop() is loop
+        except RuntimeError:
+            on_loop = False
+        if on_loop:
+            cls._sync_timers(restart_line)
+        else:
+            loop.call_soon_threadsafe(cls._sync_timers, restart_line)
+
+    @classmethod
+    def _sync_timers(cls, restart_line: Optional[str] = None) -> None:
+        """One task per switched-on timer card. A card whose interval, condition or line changed gets a
+        new one; so do the "while the line runs" cards of ``restart_line``. Runs on _timer_loop."""
+        loop = cls._timer_loop
+        if loop is None:
+            return
+        wanted: Dict[Tuple[str, str], Tuple[Any, ...]] = {}
+        for card in cls._cards:
+            if card.get("trigger_type") == TIMER_TRIGGER and card.get("enabled", True) is True and card.get("id"):
+                wanted[(card_line(card), str(card["id"]))] = (timer_interval_ms(card), _timer_always(card))
+        for key, (clock, task) in list(cls._timers.items()):
+            restart = restart_line is not None and key[0] == restart_line and not clock[1]
+            if wanted.get(key) != clock or task.done() or restart:
+                task.cancel()
+                del cls._timers[key]
+        for key, clock in wanted.items():
+            if key not in cls._timers:
+                task = loop.create_task(cls._run_timer(key[0], key[1], clock[0] / 1000.0, clock[1]),
+                                        name=f"send_timer_{key[1]}")
+                cls._timers[key] = (clock, task)
+
+    @staticmethod
+    def _line_running(line_id: str) -> bool:
+        from app.services.line_service import line_manager
+
+        runtime = line_manager.get(line_id)
+        return bool(runtime is not None and runtime.enabled)
+
+    @classmethod
+    async def _run_timer(cls, line_id: str, card_id: str, every_s: float, always: bool) -> None:
+        """Send the card every ``every_s`` seconds, keeping to its schedule. Missed sends
+        (a busy server) are skipped, not sent in a burst."""
+        loop = asyncio.get_running_loop()
+        next_at: Optional[float] = None
+        while True:
+            now = loop.time()
+            if not always and not cls._line_running(line_id):
+                next_at = None
+                await asyncio.sleep(cls.TIMER_IDLE_CHECK_S)
+                continue
+            if next_at is None:
+                next_at = now + every_s
+            if now < next_at:
+                await asyncio.sleep(next_at - now)
+                continue
+            card = next((c for c in cls._cards if card_line(c) == line_id and c.get("id") == card_id), None)
+            if card is not None:
+                cls.send_timer(card)
+            next_at += every_s * (int((now - next_at) // every_s) + 1)
+
+    @classmethod
+    def send_timer(cls, card: dict) -> bool:
+        """Queue one message of a timer card now: the line's state and totals."""
+        line_id = card_line(card)
+        try:
+            payload = cls._with_line_state(cls._with_totals(timer_payload(line_id), line_id), {"line_id": line_id})
+            return cls._queue(card, build_message(card, payload))
+        except Exception as exc:
+            logger.warning("Send card '%s' could not send: %s: %s", card.get("name") or card.get("id"), type(exc).__name__, exc)
+            return False
 
     @staticmethod
     def _with_totals(payload: Dict[str, Any], line_id: Any) -> Dict[str, Any]:
@@ -459,6 +581,11 @@ class SendDispatcherService:
         cls.evaluate(event, cls._with_totals(payload, details.get("line_id")))
 
 
+def _timer_always(card: dict) -> bool:
+    """A timer card that sends also while its line is stopped."""
+    return str(card.get("condition") or card.get("trigger_condition") or "").lower() == "always"
+
+
 def sample_payload(card: dict, line_name: str = "") -> Dict[str, Any]:
     """Example values for a card's message, for its Test button and the dialog's preview."""
     trigger = str(card.get("trigger_type") or card.get("trigger") or "cross_line").lower()
@@ -475,6 +602,8 @@ def sample_payload(card: dict, line_name: str = "") -> Dict[str, Any]:
         running = condition != "off"
         return {"event": "LINE_STARTED" if running else "LINE_STOPPED", "timestamp": now, **line,
                 "line_state": "started" if running else "stopped", **totals}
+    if trigger == TIMER_TRIGGER:
+        return {"event": "TIMER", "timestamp": now, **line, **totals}
     if trigger == "alarm":
         raised = condition != "cleared"
         return {"event": "ALARM_RAISED" if raised else "ALARM_CLEARED", "timestamp": now, **line,

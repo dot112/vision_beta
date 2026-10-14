@@ -1926,6 +1926,8 @@ class SettingsPersistenceService:
             from app.services.send_dispatcher_service import SendDispatcherService
             SendDispatcherService.load_cards()
             SendDispatcherService.watch_alarms()
+            # Timer cards: a message every N ms from now on.
+            SendDispatcherService.start_timers()
         except Exception as send_err:
             logger.warning("Send card startup error: %s", send_err)
 
