@@ -228,3 +228,22 @@ def test_an_empty_address_is_refused():
     drv, _ = _plc()
     ok, message = asyncio.run(drv.set("  "))
     assert ok is False and "address" in message.lower()
+
+
+def test_a_tag_whose_namespace_moved_is_found_again_without_a_reconnect():
+    """The namespace number is the server's to give: after a new PLC download it can be another one."""
+    drv, server = _plc()
+
+    async def run():
+        first = await drv.read("Tag_1")
+        typed = await drv.read("ns=2;s=Tag_2")                     # a wrong form, put right and remembered
+        # The same connection, but the PLC's own namespace is now number 4.
+        server.namespaces = SIEMENS[:3] + ["urn:added", SIEMENS[3]]
+        server.values = {'ns=4;s="Tag_1"': True, 'ns=4;s="Tag_2"': True}
+        return first, typed, await drv.read("Tag_1"), await drv.set("ns=2;s=Tag_2"), await drv.read("Tag_1")
+
+    first, typed, moved, written, again = asyncio.run(run())
+    assert 'ns=3;s="Tag_1"' in first[2] and 'ns=3;s="Tag_2"' in typed[2]
+    assert moved[:2] == (True, True) and 'ns=4;s="Tag_1"' in moved[2]
+    assert written[0] is True and server.writes == [('ns=4;s="Tag_2"', True)]
+    assert again[:2] == (True, True)

@@ -346,8 +346,9 @@ class OPCUADriver(PLCDriver):
     async def _on_node(self, address: str, action: Callable[[Any], Awaitable[Any]]) -> Tuple[Any, str]:
         """Run ``action(node)`` on the address's node. Returns (its result, the NodeId it ran on).
 
-        A NodeId that was typed in full and that the server does not know is put right once: the tag
-        name inside it is looked up (``ns=2;s=Tag_1`` on a Siemens PLC is ``ns=3;s="Tag_1"``).
+        When the server does not know the node, the tag's name is looked up again and the action
+        is run once more: for a NodeId typed in the wrong form (``ns=2;s=Tag_1`` on a Siemens PLC is
+        ``ns=3;s="Tag_1"``), and for a remembered NodeId whose namespace number has changed.
         """
         from asyncua import ua
 
@@ -356,9 +357,15 @@ class OPCUADriver(PLCDriver):
             return await action(node), node_id
         except ua.uaerrors.BadNodeIdUnknown:
             text = str(address or "").strip()
-            name = _name_of(text) if node_id == text else None
+            # The tag's name: the address itself, or the name inside a NodeId that was typed.
+            name = _name_of(text) if _NODE_ID.match(text) else text
             if name is None:
                 raise
+            # A NodeId that was remembered is no longer right (the PLC was loaded again and its
+            # namespace has another number): forget it and look the name up again.
+            for key in (text, name):
+                if self._node_ids.get(key) == node_id:
+                    del self._node_ids[key]
             right = await self._node_id_for(name)
             if right == node_id:
                 raise
