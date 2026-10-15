@@ -113,7 +113,7 @@ When there is no value, it skips the write or writes a default. Text goes to OPC
 
   Part 3 uses `compare`.
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
 
   ```python
   V = {"result": "good", "class": "Apple", "confidence": 0.93, "good_count": 7, "reject_count": 1, "code": "J-1",
@@ -172,20 +172,20 @@ When there is no value, it skips the write or writes a default. Text goes to OPC
       assert compare(left, op, right) == want if want is not MISSING else compare(left, op, right) is MISSING
   ```
 
-- [ ] **Step 2: Run the tests and make sure they fail.**
+- [x] **Step 2: Run the tests and make sure they fail.**
 
   Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_formula.py`
 
   Expected: FAIL (`ModuleNotFoundError`).
 
-- [ ] **Step 3: Implement it** with decisions W1 to W5.
+- [x] **Step 3: Implement it** with decisions W1 to W5.
   - **Order of checks.** First the length, the newline and the empty text. Then the tokens (with exact positions). Then the keyword renaming, and building the text that `ast.parse(mode="eval")` reads, with a column map from the new text back to the typed text. Then the walk over the node whitelist, which also checks names and function argument counts.
   - **Argument counts.** `if` takes 3. `round` takes 1 or 2, with digits from 0 to 6. `min` and `max` take 1 or more. `abs`, `int` and `text` take 1.
   - **`text()`.** A whole number has no `.0`. `true` and `false` stay as they are.
 
-- [ ] **Step 4: Run the tests and make sure they pass.** Run the same command. Expected: PASS.
+- [x] **Step 4: Run the tests and make sure they pass.** Run the same command. Expected: PASS.
 
-- [ ] **Step 5: Commit.** Message: "A small formula language for written values (no eval)".
+- [x] **Step 5: Commit.** Message: "A small formula language for written values (no eval)".
 
 ### Task 2: One set of values per event, and input value names
 
