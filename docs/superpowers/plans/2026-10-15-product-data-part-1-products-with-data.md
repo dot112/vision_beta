@@ -172,7 +172,7 @@ Places where the spec leaves a choice open:
     - `flat_product_values(product: Optional[Dict]) -> Dict[str, Any]`: `{"product.name", "product.code", "product.list", "product.<key>"…}`, where only values that are present appear. Parts 2 and 3 use it.
     - `data_text(data: Optional[Dict]) -> str`: `"lane=3; recipe=R-12"`, using `format_cell`. Empty gives `""`.
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
 
   ```python
   LANE, RECIPE, FRAGILE = ({"key": "lane", "label": "Lane", "type": "number"},
@@ -230,17 +230,17 @@ Places where the spec leaves a choice open:
       assert data_text({"lane": 3.0, "fragile": True, "recipe": "R-1"}) == "lane=3; fragile=yes; recipe=R-1"
   ```
 
-- [ ] **Step 2: Run the tests and make sure they fail.**
+- [x] **Step 2: Run the tests and make sure they fail.**
 
   Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_product_fields.py`
 
   Expected: FAIL (`ModuleNotFoundError`).
 
-- [ ] **Step 3: Implement the module.** For `key_from_header`: a header that is a reserved key, or one already in `taken`, gets `_2`, `_3`… The new key is added to `taken`.
+- [x] **Step 3: Implement the module.** For `key_from_header`: a header that is a reserved key, or one already in `taken`, gets `_2`, `_3`… The new key is added to `taken`.
 
-- [ ] **Step 4: Run the tests and make sure they pass.** Run the same command. Expected: PASS.
+- [x] **Step 4: Run the tests and make sure they pass.** Run the same command. Expected: PASS.
 
-- [ ] **Step 5: Commit.** Message: "Product fields: types, checks and CSV cells".
+- [x] **Step 5: Commit.** Message: "Product fields: types, checks and CSV cells".
 
 ### Task 3: Lists with fields and products with data (service, catalog, API)
 
