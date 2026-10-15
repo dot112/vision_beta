@@ -133,3 +133,83 @@ def test_an_operator_cannot_change_fields(client, admin_headers, operator_header
     res = client.put(f"{API}/lists/{made['id']}", json={"fields": [{"key": "lane", "type": "number"}]}, headers=operator_headers)
     assert res.status_code == 403
     assert client.get(f"{API}/lists", headers=operator_headers).status_code == 200
+
+
+# ── CSV files with fields ─────────────────────────────────────────────────────
+
+JUICES = ("code,name,description,Lane,Recipe,Fragile,Note\n"
+          'J-1,Apple,,1,R-1,yes,"1,5"\nJ-2,Orange,,2,R-2,no,2\nJ-3,Grape,,,R-3,,\n')
+
+
+def _juices(client, admin_headers):
+    res = client.post(f"{API}/import", files=_upload(JUICES, "Juices.csv"), headers=admin_headers)
+    assert res.status_code == 200, res.text
+    return res.json()["list"]
+
+
+def _data(client, admin_headers, list_id):
+    products = client.get(f"{API}?list_id={list_id}", headers=admin_headers).json()["products"]
+    return {p["code"]: p["data"] for p in products}
+
+
+def test_csv_columns_get_their_types(client, admin_headers, lists):
+    made = _juices(client, admin_headers)
+    assert [(f["key"], f["label"], f["type"]) for f in made["fields"]] == [
+        ("lane", "Lane", "number"), ("recipe", "Recipe", "text"), ("fragile", "Fragile", "yes_no"), ("note", "Note", "text")]
+    shown = _data(client, admin_headers, made["id"])
+    assert shown["J-1"] == {"lane": 1, "recipe": "R-1", "fragile": True, "note": "1,5"}
+    assert shown["J-2"] == {"lane": 2, "recipe": "R-2", "fragile": False, "note": "2"}
+    assert shown["J-3"] == {"recipe": "R-3"}            # empty cells are missing, not 0 / "" / no
+    # A file without extra columns makes a list without fields, as before.
+    plain = lists("Plain.csv", "A-1")
+    assert plain["fields"] == []
+
+
+def test_an_exported_list_replaces_itself_unchanged(client, admin_headers, lists):
+    made = _juices(client, admin_headers)
+    exported = client.get(f"{API}/export?list_id={made['id']}", headers=admin_headers).text
+    assert exported.splitlines()[0] == "code,name,description,lane,recipe,fragile,note"
+    assert exported.splitlines()[1] == 'J-1,Apple,,1,R-1,yes,"1,5"'
+    assert exported.splitlines()[3] == "J-3,Grape,,,R-3,,"
+    again = client.post(f"{API}/lists/{made['id']}/replace", files=_upload(exported), headers=admin_headers)
+    assert again.status_code == 200, again.text
+    assert (again.json()["added"], again.json()["updated"], again.json()["removed"]) == (0, 0, 0)
+
+
+def test_replace_keeps_fields_the_file_has_no_column_for(client, admin_headers, lists):
+    made = _juices(client, admin_headers)
+    # An older file with only code and name: every product keeps its values.
+    old = client.post(f"{API}/lists/{made['id']}/replace", files=_upload("code,name\nJ-1,Apple\nJ-2,Orange\nJ-3,Grape\n"),
+                      headers=admin_headers)
+    assert old.status_code == 200, old.text
+    assert old.json()["updated"] == 0
+    assert _data(client, admin_headers, made["id"])["J-1"] == {"lane": 1, "recipe": "R-1", "fragile": True, "note": "1,5"}
+    # A Lane column (matched by its label, any case) replaces only the lanes.
+    lanes = client.post(f"{API}/lists/{made['id']}/replace",
+                        files=_upload("code,name,LANE\nJ-1,Apple,7\nJ-2,Orange,2\nJ-3,Grape,\n"), headers=admin_headers)
+    assert lanes.json()["updated"] == 1
+    shown = _data(client, admin_headers, made["id"])
+    assert shown["J-1"] == {"lane": 7, "recipe": "R-1", "fragile": True, "note": "1,5"}
+    assert shown["J-3"] == {"recipe": "R-3"}
+    bad = client.post(f"{API}/lists/{made['id']}/replace", files=_upload("code,name,lane\nJ-1,Apple,seven\n"),
+                      headers=admin_headers)
+    assert bad.status_code == 422 and "Line 2" in bad.json()["detail"] and "lane" in bad.json()["detail"]
+
+
+def test_replace_refuses_columns_the_list_has_no_field_for(client, admin_headers, lists):
+    made = _juices(client, admin_headers)
+    res = client.post(f"{API}/lists/{made['id']}/replace", files=_upload("code,name,Colour,Size\nJ-1,Apple,red,L\n"),
+                      headers=admin_headers)
+    assert res.status_code == 422
+    assert "Colour" in res.json()["detail"] and "Size" in res.json()["detail"] and "field" in res.json()["detail"]
+    assert _data(client, admin_headers, made["id"])["J-1"]["lane"] == 1
+
+
+def test_a_formula_looking_text_value_is_exported_safely(client, admin_headers, lists):
+    made = _juices(client, admin_headers)
+    j1 = next(p for p in client.get(f"{API}?list_id={made['id']}", headers=admin_headers).json()["products"] if p["code"] == "J-1")
+    client.put(f"{API}/{j1['id']}", json={"data": {"recipe": "=cmd|' /C calc'!A0", "lane": 1}}, headers=admin_headers)
+    exported = client.get(f"{API}/export?list_id={made['id']}", headers=admin_headers).text
+    assert "'=cmd|' /C calc'!A0" in exported.splitlines()[1]
+    client.post(f"{API}/lists/{made['id']}/replace", files=_upload(exported), headers=admin_headers)
+    assert _data(client, admin_headers, made["id"])["J-1"]["recipe"] == "=cmd|' /C calc'!A0"

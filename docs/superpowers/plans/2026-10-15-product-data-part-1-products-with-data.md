@@ -323,7 +323,7 @@ Places where the spec leaves a choice open:
 
   Only `product_service.py` calls `parse_csv`.
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
 
   ```python
   JUICES = ("code,name,description,Lane,Recipe,Fragile,Note\n"
@@ -357,15 +357,15 @@ Places where the spec leaves a choice open:
       # recipe "=cmd|' /C calc'!A0" exports as "'=cmd|..." (_csv_safe) and imports back as typed.
   ```
 
-- [ ] **Step 2: Run the tests and make sure they fail.** Expected: FAIL.
+- [x] **Step 2: Run the tests and make sure they fail.** Expected: FAIL.
 
-- [ ] **Step 3: Implement it.**
+- [x] **Step 3: Implement it.**
   - In `replace_contents`, a product counts as `updated` when its name, description or any data value changes.
   - A bad cell is refused with its line number, as today: `"Line 3: Lane (lane): enter a number"`.
 
-- [ ] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_product_data.py tests/test_product_lists.py`. Expected: PASS. `test_product_lists.py` keeps passing unchanged: a file without extra columns makes a list with no fields.
+- [x] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_product_data.py tests/test_product_lists.py`. Expected: PASS. `test_product_lists.py` keeps passing unchanged: a file without extra columns makes a list with no fields.
 
-- [ ] **Step 5: Commit.** Message: "Product CSV files carry the fields".
+- [x] **Step 5: Commit.** Message: "Product CSV files carry the fields".
 
 ### Task 5: The product goes with the item (events, messages, templates, records, export)
 
