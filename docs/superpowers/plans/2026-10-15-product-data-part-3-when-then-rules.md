@@ -359,27 +359,27 @@
   - `assets/plc_signals.js`: the action `none`, "Only fires cards", with no edge; the data type `string` for `none`.
 - Test: `tests/test_card_values_js.py`
 
-- [ ] **Step 1: Write the failing node test.**
+- [x] **Step 1: Write the failing node test.**
   - `onlyWhenText({match: "any", rules: [{left: "class", op: "!=", right: "product.expected_class", right_kind: "value"}, {left: "product.lane", op: "=", right: "3", right_kind: "constant"}]})` must equal `"only when class ≠ product.expected_class or product.lane = 3"`.
   - `onlyWhenText(null)` must equal `""`.
 
-- [ ] **Step 2: Run the test and make sure it fails.** Expected: FAIL.
+- [x] **Step 2: Run the test and make sure it fails.** Expected: FAIL.
 
-- [ ] **Step 3: Implement it.**
+- [x] **Step 3: Implement it.**
   - **Rule rows.** Each rule is a row: [value dropdown from `valueChoices`], [operator], [constant box, or value dropdown when "a value" is picked]. Add a **match all / any** switch, plus Add rule (at most 5) and Remove.
   - **Product checks block.** Each check has a name, on/off, the same rule rows, and Remove. Add check allows at most 10. The block saves with the line.
   - **Input trigger.** Its condition list is On (off to on), Off (on to off) and Any change. The input picker lists the line's inputs by name.
 
-- [ ] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_card_values_js.py tests/test_lines_api.py`. Expected: PASS.
+- [x] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_card_values_js.py tests/test_lines_api.py`. Expected: PASS.
 
-- [ ] **Step 5: Check it in a browser** with a git-ignored `backup/scratch-tools/shots_rules.py`, at 1440 and at 375 px:
+- [x] **Step 5: Check it in a browser** with a git-ignored `backup/scratch-tools/shots_rules.py`, at 1440 and at 375 px:
   - both card dialogs with an input trigger and two rules;
   - the product checks block with "Wrong bottle";
   - an input card set to "Only fires cards".
 
   Check for no page errors and no CSP violations, and look at the screenshots.
 
-- [ ] **Step 6: Commit.** Message: "Dashboard: Input changed trigger, Only when rules and product checks".
+- [x] **Step 6: Commit.** Message: "Dashboard: Input changed trigger, Only when rules and product checks".
 
 ### Task 6: Docs, full checks and the live juice example
 

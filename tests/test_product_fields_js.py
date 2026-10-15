@@ -17,7 +17,7 @@ def _node(expression: str):
     if node is None:
         pytest.skip("node is not installed")
     code = f"const F = require({json.dumps(str(SCRIPT))}); console.log(JSON.stringify({expression}));"
-    result = subprocess.run([node, "-e", code], capture_output=True, text=True, timeout=30)
+    result = subprocess.run([node, "-e", code], capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert result.returncode == 0, result.stderr[:500]
     return json.loads(result.stdout)
 
@@ -42,5 +42,5 @@ def test_values_typed_in_the_product_dialog():
 def test_the_page_loads_the_helper_before_the_products_page(client):
     page = client.get("/dashboard").text
     helper = page.index('/assets/product_fields.js?v=2.7.0')
-    assert helper < page.index("/assets/production_lines.js?v=2.7.0")
+    assert helper < page.index("/assets/production_lines.js?v=")
     assert client.get("/assets/product_fields.js").status_code == 200

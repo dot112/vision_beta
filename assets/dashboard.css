@@ -1467,3 +1467,20 @@ button.status-pill:hover { filter: brightness(1.08); }
 .plc-formula-check.warn { color: var(--warning-color); }
 .plc-formula-check.bad { color: var(--danger-color); }
 .plc-text-warn { font-size: 11.5px; color: var(--warning-color); margin-top: 8px; }
+
+/* Only when: the rule editor of output actions, send cards and product checks */
+.ow-block { display: flex; flex-direction: column; gap: 8px; }
+.ow-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ow-head .ow-match { width: auto; flex: 0 1 260px; }
+.ow-rows { display: flex; flex-direction: column; gap: 6px; }
+.ow-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.8fr) minmax(0, 0.9fr) minmax(0, 1.2fr) auto; gap: 6px; align-items: center; }
+.ow-none { font-size: 11.5px; color: var(--text-muted); }
+.ow-add { align-self: flex-start; }
+.pl-checks { display: flex; flex-direction: column; gap: 10px; margin: 10px 0; }
+.pl-check-item { border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.pl-check-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pl-check-top .pl-check-name { flex: 1 1 220px; }
+@media (max-width: 640px) {
+    .ow-row { grid-template-columns: 1fr 1fr; padding-bottom: 6px; border-bottom: 1px solid var(--border-color); }
+    .ow-row .ow-del { grid-column: 1 / -1; justify-self: end; }
+}

@@ -1278,10 +1278,15 @@
 
     function syncLineSetup() {
         cardsOnPage().forEach(syncCard);
+        const checks = byId("plChecksPanel");
+        // Product checks need a camera that reads codes; checks already made stay in view, so they can be removed.
+        if (checks) checks.hidden = !setupReadsCodes() && !(setup.checks || []).length;
         const sync = byId("plSync");
         if (sync) {
-            // A camera that checks codes beside a vision camera (or a product sensor) needs Sync: it pairs each product with its code.
-            const forced = setupChecksCodes() && setupHasSource();
+            // A camera that checks codes beside a vision camera (or a product sensor) needs Sync: it pairs each product with
+            // its code. So do the line's product checks.
+            const checking = (setup.checks || []).some((c) => c.enabled !== false) && setupReadsCodes();
+            const forced = (setupChecksCodes() || checking) && setupHasSource();
             // Sync needs both a product source and a camera that reads codes. Without them (the cameras
             // were removed) it is switched off, or the server refuses the save; it comes back on with them.
             const possible = setupHasSource() && setupReadsCodes();
@@ -1937,7 +1942,7 @@
                         <label class="pl-inline pl-check" style="margin-top:6px"><input type="checkbox" id="plSync" ${d.sync && d.sync.enabled ? "checked" : ""}> Pair each counted product with its code</label>
                         <div class="pl-note">For a vision camera and a code reader looking at the same spot, or one vision camera that also reads codes.</div>
                         <div class="pl-note" id="plSyncOff" style="display:none"><b>Off:</b> Sync needs a vision camera (or a PLC product sensor) and a camera that reads codes.</div>
-                        <div class="pl-note" id="plSyncForced" style="display:none"><b>On while a camera accepts or rejects by code:</b> the line waits for the code (at most the Sync window) and then gives the product one result.</div></div>
+                        <div class="pl-note" id="plSyncForced" style="display:none"><b>On while a camera accepts or rejects by code, or the line has product checks:</b> the line waits for the code (at most the Sync window) and then gives the product one result.</div></div>
                     <div class="form-group"><label class="form-label">Sync window (ms)</label><input type="number" class="form-input" id="plSyncWindow" min="50" max="10000" step="50" value="${(d.sync && d.sync.window_ms) || 500}">
                         <div class="pl-note">Products must pass further apart than this. A reject card's travel delay must be longer.</div></div>
                 </div>
@@ -1951,11 +1956,15 @@
                     <span class="pl-note" style="margin:0">One Save for the line and every camera card. To send results to another system, add a card under Send results below.</span>
                 </div>
             </div>
-            <div class="pl-cam-grid" id="plCamGrid">${addCardHtml()}</div>`;
+            <div class="pl-cam-grid" id="plCamGrid">${addCardHtml()}</div>
+            <div class="card-panel" id="plChecksPanel" hidden></div>`;
+        setup.checks = JSON.parse(JSON.stringify(d.product_checks || []));
         bindAddCard(trigger);
         (d.cameras || []).forEach((cam) => addCard(cam, trigger, openFolds(cam.camera_id, [])));
         card.querySelector(".card-panel").addEventListener("input", markDirty);
         card.querySelector(".card-panel").addEventListener("change", (e) => { markDirty(); if (e.target.id === "plSync") syncLineSetup(); });
+        bindChecks();
+        renderChecks();
         syncLineSetup();
         byId("plSaveSetup").addEventListener("click", saveLineSetup);
         byId("plStartLine")?.addEventListener("click", () => runLine("start"));
@@ -1992,6 +2001,79 @@
             card.classList.add("pl-flash");
             setTimeout(() => card.classList.remove("pl-flash"), 1600);
         }, 60);
+    }
+
+    // ── Product checks: reject a product when its rules pass ──────────────────
+
+    const MAX_PRODUCT_CHECKS = 10;
+    // What a check's rules can use: the product's values, the inputs, what the camera saw. Never the result,
+    // which the checks decide.
+    function checkChoices() {
+        if (!window.CardValues) return [];
+        const cameras = cardsOnPage().map(cardEntry);
+        const inputs = window.PlcSignals && PlcSignals.valueInputs ? PlcSignals.valueInputs() : [];
+        return CardValues.valueChoices({ fields: CardValues.fieldChoices(cameras, state.productLists), inputs })
+            .filter((c) => !["result", "result_code", "reject_reason"].includes(c.name));
+    }
+
+    function renderChecks() {
+        const panel = byId("plChecksPanel");
+        if (!panel || !window.CardValues) return;
+        const readOnly = level() < 2;
+        const choices = checkChoices();
+        const items = (setup.checks || []).map((c, i) => `<div class="pl-check-item" data-check="${i}">
+            <div class="pl-check-top">
+                <input type="text" class="form-input pl-check-name" maxlength="64" value="${esc(c.name || "")}" placeholder="Name, for example Wrong bottle" aria-label="Check name">
+                <label class="pl-inline pl-check"><input type="checkbox" class="pl-check-on" ${c.enabled !== false ? "checked" : ""}> On</label>
+                <button type="button" class="btn-action btn-red pl-check-del restricted-l2">Remove</button>
+            </div>
+            ${CardValues.onlyWhenHtml(c.only_when, choices, null, { emptyText: "Add a rule: a check needs at least one." })}
+        </div>`).join("");
+        panel.innerHTML = `<div class="card-panel-header"><span class="card-panel-title">Product checks</span></div>
+            <div class="pl-note" style="margin-top:0">Reject a product when the rules of a check pass, for example when the class the camera saw is not the product's expected class (<span class="pl-code">class ≠ product.expected_class</span>). The checks run for a product whose code is in a list, after the camera's and the code's own result. The reason is <b>product check</b> (reject reason code 7 for an output action), with the check's name. The line pairs each product with its code (Sync).</div>
+            <div class="pl-checks">${items || `<div class="pl-note">No product checks.</div>`}</div>
+            <button type="button" class="btn-action btn-outline pl-check-add restricted-l2" ${readOnly || (setup.checks || []).length >= MAX_PRODUCT_CHECKS ? "disabled" : ""}>Add check</button>`;
+        if (typeof applyRoleRestrictions === "function") applyRoleRestrictions(panel);
+        refreshSelects();
+    }
+
+    function bindChecks() {
+        const panel = byId("plChecksPanel");
+        if (!panel) return;
+        const changed = (redraw) => { markDirty(); if (redraw) renderChecks(); syncLineSetup(); };
+        const onEdit = (e, action) => {
+            const item = e.target.closest(".pl-check-item");
+            if (!item) return;
+            const check = setup.checks[Number(item.dataset.check)];
+            const block = e.target.closest("[data-ow]");
+            if (block) {
+                const first = (checkChoices()[0] || {}).name || "class";
+                check.only_when = CardValues.applyEdit(block, e.target, action, first) || { match: "all", rules: [] };
+                changed(CardValues.needsRedraw(e.target, action));
+            } else if (e.target.classList.contains("pl-check-name")) {
+                check.name = e.target.value;
+                markDirty();
+            } else if (e.target.classList.contains("pl-check-on")) {
+                check.enabled = e.target.checked;
+                changed(false);
+            }
+        };
+        panel.addEventListener("input", (e) => onEdit(e));
+        panel.addEventListener("change", (e) => { if (!e.target.classList.contains("ow-right") || e.target.tagName === "SELECT") onEdit(e); });
+        panel.addEventListener("click", (e) => {
+            if (e.target.closest(".pl-check-add")) {
+                setup.checks.push({ name: "", enabled: true, only_when: { match: "all", rules: [
+                    { left: "class", op: "!=", right: "", right_kind: "value" }] } });
+                changed(true);
+            } else if (e.target.closest(".pl-check-del")) {
+                setup.checks.splice(Number(e.target.closest(".pl-check-item").dataset.check), 1);
+                changed(true);
+            } else if (e.target.closest(".ow-add")) {
+                onEdit(e, "add");
+            } else if (e.target.closest(".ow-del")) {
+                onEdit({ target: e.target.closest(".ow-del") }, "remove");
+            }
+        });
     }
 
     // ── Save: the line, then the cameras whose image or video settings changed ─
@@ -2055,12 +2137,18 @@
         if (noModel >= 0) { toast(`${label(noModel)}: choose its vision model. A vision camera cannot be saved without one.`, "warning"); return; }
         const noList = cameras.findIndex((c) => c.qr_action && c.qr_action !== "report" && !c.product_list_id);
         if (noList >= 0) { toast(`${label(noList)}: choose the product list its codes are checked against.`, "warning"); return; }
+        const unnamed = (setup.checks || []).findIndex((c) => !String(c.name || "").trim());
+        if (unnamed >= 0) { toast(`Product check ${unnamed + 1}: give it a name.`, "warning"); return; }
         const body = {
             name: byId("plName").value.trim(),
             min_fps: parseFloat(byId("plMinFps").value) || 0,
             yield_target: parseFloat(byId("plYieldTarget").value) || 0,
             cameras,
             sync: { enabled: byId("plSync").checked, window_ms: parseInt(byId("plSyncWindow").value, 10) || 500 },
+            product_checks: (setup.checks || []).map((c) => ({
+                ...(c.id ? { id: c.id } : {}), name: String(c.name || "").trim(), enabled: c.enabled !== false,
+                only_when: c.only_when || { match: "all", rules: [] },
+            })),
         };
         const button = byId("plSaveSetup");
         button.disabled = true;
@@ -2358,6 +2446,7 @@
         no_code: "no code",
         station_no_result: "joined camera saw nothing",
         nothing_detected: "nothing detected",
+        product_check: "product check",
     };
 
     // Where a capture is shown: a strip tile of the camera that took it, or the
@@ -2476,7 +2565,7 @@
                 const paired = r.paired === false && r.status !== "no_read" ? " (unpaired)" : "";
                 // The product's one result, where a camera accepts or rejects by code.
                 const verdict = !r.result ? `<span style="color:var(--text-muted)">—</span>`
-                    : r.result === "reject" ? `<b style="color:var(--danger-color)">Rejected</b>${r.reject_reason ? ` · ${esc(REJECT_REASON[r.reject_reason] || r.reject_reason)}` : ""}`
+                    : r.result === "reject" ? `<b style="color:var(--danger-color)">Rejected</b>${r.reject_reason ? ` · ${esc(REJECT_REASON[r.reject_reason] || r.reject_reason)}${r.product_check ? `: ${esc(r.product_check)}` : ""}` : ""}`
                         : `<b style="color:var(--success-color)">Good</b>`;
                 return `<tr><td class="pl-code">${esc(new Date(r.timestamp).toLocaleTimeString())}</td><td class="pl-code">${esc(r.code || "—")}</td>
                     <td><b style="color:${color}">${esc(label)}</b>${esc(paired)}</td><td>${esc(r.product_name || "—")}</td><td>${esc(r.class_name || "—")}</td><td>${verdict}</td></tr>`;
@@ -3255,7 +3344,7 @@
             ${cell("Line", esc(lineNameOf(r)))}
             ${cell("Camera", `${esc(r.camera_name || cameraName(r.camera_id) || "")}${r.kind === "product" && !r.counted ? ` <span class="pl-note" style="display:inline">own station</span>` : ""}`)}
             ${cell("Result", recordResult(r))}
-            ${cell("Reason", esc(r.reject_reason ? (REJECT_REASON[r.reject_reason] || r.reject_reason) : ""))}
+            ${cell("Reason", esc(r.reject_reason ? (REJECT_REASON[r.reject_reason] || r.reject_reason) + ((r.details || {}).product_check ? `: ${r.details.product_check}` : "") : ""))}
             ${cell("Class", esc(r.class_name || ""))}
             ${cell("Code", recordCode(r))}
             ${cell("Product", esc(r.product_name || ""))}

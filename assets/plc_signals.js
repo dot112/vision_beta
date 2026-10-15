@@ -793,6 +793,8 @@
     window.PlcSignals = {
         load,
         valueInputs,
+        // Every input of the line, for the trigger "Input changed".
+        inputChoices: () => state.cards.map((card) => ({ id: card.id, name: card.name || card.id })),
         render,
         add,
         apply,

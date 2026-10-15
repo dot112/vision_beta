@@ -17,7 +17,7 @@ def _node(expression: str):
     if node is None:
         pytest.skip("node is not installed")
     code = f"const C = require({json.dumps(str(SCRIPT))}); console.log(JSON.stringify({expression}));"
-    result = subprocess.run([node, "-e", code], capture_output=True, text=True, timeout=30)
+    result = subprocess.run([node, "-e", code], capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert result.returncode == 0, result.stderr[:500]
     return json.loads(result.stdout)
 
@@ -60,5 +60,32 @@ def test_how_a_card_says_what_it_writes():
 
 def test_the_page_loads_the_value_helpers(client):
     page = client.get("/dashboard").text
-    assert "/assets/card_values.js?v=2.8.0" in page
+    assert "/assets/card_values.js?v=2.9.0" in page
     assert client.get("/assets/card_values.js").status_code == 200
+
+
+def test_only_when_in_words():
+    assert _node("""C.onlyWhenText({match: 'any', rules: [
+        {left: 'class', op: '!=', right: 'product.expected_class', right_kind: 'value'},
+        {left: 'product.lane', op: '=', right: '3', right_kind: 'constant'}]})""") == (
+        "only when class ≠ product.expected_class or product.lane = 3")
+    assert _node("""C.onlyWhenText({match: 'all', rules: [{left: 'code', op: 'empty', right: '', right_kind: 'constant'},
+        {left: 'input.speed', op: '>=', right: '20', right_kind: 'constant'}]})""") == "only when code is empty and input.speed ≥ 20"
+    assert _node("C.onlyWhenText(null)") == "" and _node("C.onlyWhenText({match: 'all', rules: []})") == ""
+
+
+def test_the_rule_editor_escapes_what_was_typed():
+    html = _node("""C.onlyWhenHtml({match: 'all', rules: [{left: 'class', op: '=', right: '"><img src=x onerror=alert(1)>',
+        right_kind: 'constant'}]}, C.valueChoices({fields: [], inputs: []}), 'plcOnlyWhenEdit')""")
+    assert "<img" not in html and "&lt;img" in html and 'data-ow' in html
+    assert 'onchange="plcOnlyWhenEdit(this)"' in html
+    assert "plcOnlyWhenEdit(this, 'add')" in html and "plcOnlyWhenEdit(this, 'remove')" in html
+    assert "onchange" not in _node("C.onlyWhenHtml(null, [], null)")              # no handler: the page delegates
+    five = _node("C.onlyWhenHtml({match: 'all', rules: [1, 2, 3, 4, 5].map(() => ({left: 'class', op: 'empty'}))}, [], null)")
+    assert 'ow-add" disabled' in five and 'ow-add" disabled' not in html     # at most 5 rules
+
+
+def test_a_value_rule_without_a_value_asks_for_one():
+    html = _node("C.onlyWhenHtml({match: 'all', rules: [{left: 'class', op: '!=', right: '', right_kind: 'value'}]},"
+                 " C.valueChoices({fields: [], inputs: []}), null)")
+    assert '<option value="" selected>Choose a value</option>' in html

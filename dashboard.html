@@ -7,7 +7,7 @@
     <title>Universalz Vision — Line control</title>
     <link rel="icon" type="image/png" href="/assets/universalz_mark.png">
     <link rel="preload" href="/assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="stylesheet" href="/assets/dashboard.css?v=3.4.0">
+    <link rel="stylesheet" href="/assets/dashboard.css?v=3.5.0">
     <script>
         // Apply the saved theme before the first paint (no dark-to-light flash).
         try { document.documentElement.setAttribute("data-theme", localStorage.getItem("theme") === "light" ? "light" : "dark"); } catch (_) {}
@@ -3758,6 +3758,7 @@ const CARD_TRIGGERS = [
     { id: "qr_no_read",     label: "No code read",               summary: "No code read" },
     { id: "line_state",     label: "Line started / stopped",     summary: "Line started / stopped" },
     { id: "alarm",          label: "Alarm raised / cleared",     summary: "Alarm" },
+    { id: "input",          label: "Input changed",              summary: "Input changed" },
     // Send cards only: a message every N ms (the value box), while the line runs or always.
     { id: "timer",          label: "Timer (every N ms)",         summary: "Timer", sendOnly: true },
 ];
@@ -3796,7 +3797,55 @@ const CARD_CONDITIONS = {
         ["while_running", "While the line runs"],
         ["always", "Always (continuous), also when the line is stopped"],
     ],
+    input: [
+        ["on", "On: off to on"],
+        ["off", "Off: on to off"],
+        ["change", "Any change"],
+    ],
 };
+
+// The line's inputs (Inputs step of Line setup), for the trigger "Input changed".
+function cardInputChoices() {
+    return window.PlcSignals && PlcSignals.inputChoices ? PlcSignals.inputChoices() : [];
+}
+function cardInputPickerHtml(card, onchange) {
+    const inputs = cardInputChoices();
+    const current = card.input_id || "";
+    let options = `<option value="" ${current ? "" : "selected"}>Choose an input</option>`
+        + inputs.map(i => `<option value="${escapeHtml(i.id)}" ${i.id === current ? "selected" : ""}>${escapeHtml(i.name)}</option>`).join("");
+    if (current && !inputs.some(i => i.id === current)) options += `<option value="${escapeHtml(current)}" selected>(input not found)</option>`;
+    return `<div class="form-group" style="margin:0">
+        <label class="form-label" style="font-size:11.5px;font-weight:600">Input:</label>
+        <select class="form-input" onchange="${onchange}">${options}</select>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${inputs.length ? "Fires on each change of this input that the condition names, whatever the input's own action does. The first value read after a start is not a change." : "This line has no inputs yet: add one under Inputs (the action Only fires cards is for an input that only does this)."}</div>
+    </div>`;
+}
+
+// Only when: the value names a card's rules can use (the line's product fields and input values).
+function cardRuleChoices(card) {
+    if (!window.CardValues) return [];
+    const choices = CardValues.valueChoices({ fields: cardFieldChoices(), inputs: cardValueInputs() });
+    if (cardTriggerKind(card.trigger) === "input") {
+        choices.push({ name: "input.value", label: "New value of the input" }, { name: "input.previous", label: "Old value of the input" });
+    }
+    return choices;
+}
+function cardOnlyWhenHtml(card, handler) {
+    if (!window.CardValues) return "";
+    return `<div class="form-group" style="margin:0">
+        ${CardValues.onlyWhenHtml(card.only_when, cardRuleChoices(card), handler)}
+        <div style="font-size:10px;color:var(--text-muted);margin-top:4px">Checked after the trigger and condition, with the values of that moment: for example only when <code>product.lane = 3</code>. A rule whose value is missing does not pass (except <b>is empty</b>).</div>
+    </div>`;
+}
+function plcOnlyWhenEdit(element, action) {
+    const cardId = document.getElementById("plcModalBodyContainer").dataset.cardId;
+    updatePlcCardProp(cardId, "only_when", CardValues.applyEdit(element.closest("[data-ow]"), element, action, "result"));
+    if (CardValues.needsRedraw(element, action)) refreshPlcModalBody(cardId);
+    renderPlcActionCards();
+}
+function sendOnlyWhenEdit(element, action) {
+    setSendDraft("only_when", CardValues.applyEdit(element.closest("[data-ow]"), element, action, "result"), CardValues.needsRedraw(element, action));
+}
 
 function cardTriggerKind(trigger) {
     if (trigger === "good_counter" || trigger === "reject_counter") return "counter";
@@ -3825,8 +3874,9 @@ function applyCardTriggerDefaults(card, trigger) {
     else if (kind === "class") card.set_value = card.set_value || "defect";
     else if (kind === "timer") card.set_value = "1000";
     else card.set_value = "";
-    if (kind === "line_state" || kind === "alarm" || kind === "timer") card.camera_id = "";
+    if (kind === "line_state" || kind === "alarm" || kind === "timer" || kind === "input") card.camera_id = "";
     if (kind === "alarm") card.alarm_codes = card.alarm_codes || [];
+    if (kind === "input" && !card.input_id) card.input_id = (cardInputChoices()[0] || {}).id || "";
 }
 
 // Whether the "value / class" box applies, and what it asks for.
@@ -3868,6 +3918,14 @@ function cardTriggerSummary(c) {
         const names = codes.includes("*") ? ["Any alarm"] : codes.map(alarmLabel);
         condSummary = !names.length ? "(choose alarms)" : names.length > 1 ? `${names[0]} +${names.length - 1} more` : names[0];
         condFull = names.join(", ");
+    } else if (kind === "input") {
+        const input = cardInputChoices().find(i => i.id === c.input_id);
+        condSummary = `${input ? input.name : "(choose an input)"}: ${{ on: "off to on", off: "on to off", change: "any change" }[c.condition] || "off to on"}`;
+    }
+    const onlyWhen = window.CardValues ? CardValues.onlyWhenText(c.only_when) : "";
+    if (onlyWhen) {
+        condFull = `${condFull || condSummary}, ${onlyWhen}`;
+        condSummary = `${condSummary}, ${onlyWhen}`;
     }
     return { triggerSummary, condSummary, condFull: condFull || condSummary };
 }
@@ -4470,6 +4528,7 @@ function refreshSendModalBody() {
 
     const kind = cardTriggerKind(card.trigger);
     const isAlarm = kind === "alarm";
+    const isInput = kind === "input";
     const setValue = cardSetValueInfo(card);
     const channels = sendChannels();
     const isMqtt = sendCardIsMqtt(card);
@@ -4539,7 +4598,7 @@ function refreshSendModalBody() {
             <label class="form-label" style="font-size:11.5px;font-weight:600">Alarms that send this message:</label>
             <div class="plc-alarm-picker">${plcAlarmPickerHtml(card, "toggleSendAlarmCode")}</div>
             ${(card.alarm_codes || []).length ? "" : `<div class="plc-alarm-warn">Pick at least one alarm. This card never sends without one.</div>`}
-        </div>` : `
+        </div>` : isInput ? cardInputPickerHtml(card, "setSendDraft('input_id', this.value, false)") : `
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600">Value / class:</label>
             <div class="send-value-row">
@@ -4551,8 +4610,10 @@ function refreshSendModalBody() {
 
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600">Camera:</label>
-            <select class="form-input" ${kind === "line_state" || isAlarm || kind === "timer" ? "disabled" : ""} onchange="setSendDraft('camera_id', this.value, false)">${cardCameraOptionsHtml(card)}</select>
+            <select class="form-input" ${kind === "line_state" || isAlarm || kind === "timer" || isInput ? "disabled" : ""} onchange="setSendDraft('camera_id', this.value, false)">${cardCameraOptionsHtml(card)}</select>
         </div>
+
+        ${cardOnlyWhenHtml(card, "sendOnlyWhenEdit")}
 
         <!-- 4. What the message contains: JSON fields, or text from a template -->
         <div class="form-group" style="margin:0">
@@ -5108,7 +5169,7 @@ const PLC_VALUE_SOURCE_HINTS = {
     reject_count: "The line's reject count, with this product.",
     total_count: "Good + rejected, with this product.",
     class_index: "The product's class as a number: its place in the camera's \"Products to count\" list followed by \"Defects to reject\", from 1. 0 when it is in neither.",
-    reject_reason_code: "0 not rejected, 1 vision class, 2 code not in the list, 3 code in the reject list, 4 no code read, 5 a joined camera gave no result, 6 nothing detected (a camera in trigger mode), 9 other.",
+    reject_reason_code: "0 not rejected, 1 vision class, 2 code not in the list, 3 code in the reject list, 4 no code read, 5 a joined camera gave no result, 6 nothing detected (a camera in trigger mode), 7 a product check, 9 other.",
     batch: "The line's batch number. It must be a number; until a batch is set, the action fails and says why.",
     product_field: "A field of the product whose code was read (Products page, Fields). Yes / no is written as 1 / 0; a text field only to an OPC UA String tag.",
     code: "The code read on the item, as text. Only an OPC UA controller takes text (a String tag).",
@@ -5392,7 +5453,8 @@ function openPlcActionSettingsModal(cardId) {
     // shows them: the dialog is drawn again only for a card that writes a product field.
     loadCardProductLists().then(() => {
         const draft = getEditablePlcActionCard(cardId);
-        if (_activeEditingPlcCardId === cardId && draft && draft.value_source === "product_field"
+        const usesFields = draft && (draft.value_source === "product_field" || ((draft.only_when || {}).rules || []).length);
+        if (_activeEditingPlcCardId === cardId && usesFields
             && document.getElementById("plcActionSettingsModal")?.classList.contains("active")) {
             refreshPlcModalBody(cardId);
         }
@@ -5445,6 +5507,7 @@ function refreshPlcModalBody(cardId) {
     const triggerKind = cardTriggerKind(card.trigger);
     const isLineState = triggerKind === "line_state";
     const isAlarm = triggerKind === "alarm";
+    const isInput = triggerKind === "input";
     const setValue = cardSetValueInfo(card);
 
     // Target Types
@@ -5537,7 +5600,7 @@ function refreshPlcModalBody(cardId) {
                 For a lamp, use two actions: SET on <b>Raised</b> and RESET on <b>Cleared</b>. Cleared waits until none of the chosen alarms is on.
                 <b>This line</b> alarms fire only this line's actions; <b>All lines</b> alarms fire every line's.
             </div>
-        </div>` : `
+        </div>` : isInput ? cardInputPickerHtml(card, `updatePlcCardProp(${PLC_CARD_ID}, 'input_id', this.value); renderPlcActionCards()`) : `
         <!-- 4. Set Value / Class -->
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600">Set Value / Class:</label>
@@ -5547,11 +5610,14 @@ function refreshPlcModalBody(cardId) {
         <!-- 4b. Camera of the production line that fires this card -->
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600">Camera:</label>
-            <select class="form-input" ${isLineState ? 'disabled title="A line starts and stops as a whole"' : isAlarm ? 'disabled title="The alarms above decide"' : ''} onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'camera_id', this.value); renderPlcActionCards()">
+            <select class="form-input" ${isLineState ? 'disabled title="A line starts and stops as a whole"' : isAlarm ? 'disabled title="The alarms above decide"' : isInput ? 'disabled title="The input above decides"' : ''} onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'camera_id', this.value); renderPlcActionCards()">
                 ${cardCameraOptionsHtml(card)}
             </select>
-            ${isLineState || isAlarm ? '' : `<div style="font-size:10px;color:var(--text-muted);margin-top:3px">Pick a camera to fire only on its events, e.g. a line's second vision camera.</div>`}
+            ${isLineState || isAlarm || isInput ? '' : `<div style="font-size:10px;color:var(--text-muted);margin-top:3px">Pick a camera to fire only on its events, e.g. a line's second vision camera.</div>`}
         </div>
+
+        <!-- 4c. Only when: rules on the event's values -->
+        ${cardOnlyWhenHtml(card, "plcOnlyWhenEdit")}
 
         <!-- 5. Target Type & Address (Protocol-Aware, 2 cols) -->
         <div class="card-pair">
@@ -7337,11 +7403,11 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
     setInterval(tick, 1000);
 })();
 </script>
-<script src="/assets/card_values.js?v=2.8.0"></script>
+<script src="/assets/card_values.js?v=2.9.0"></script>
 <script src="/assets/camera_settings.js?v=2.5.0"></script>
-<script src="/assets/plc_signals.js?v=2.8.0"></script>
+<script src="/assets/plc_signals.js?v=2.9.0"></script>
 <script src="/assets/product_fields.js?v=2.7.0"></script>
-<script src="/assets/production_lines.js?v=2.7.0"></script>
+<script src="/assets/production_lines.js?v=2.9.0"></script>
 <script>
 /* ─── Cameras: Connect / Disconnect / Settings / Delete on every row ────────
    Runs after assets/production_lines.js has added its Line and Role columns. */

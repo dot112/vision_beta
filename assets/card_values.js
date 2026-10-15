@@ -87,7 +87,97 @@
         return false;
     }
 
-    const api = { VALUE_NAMES, FORMULA_EXAMPLES, valueChoices, fieldChoices, valueSourceText, writesText };
+    // ── Only when: up to 5 rules on the event's values (app/services/rules.py) ──
+
+    const MAX_RULES = 5;
+    const RULE_OPS = [["=", "="], ["!=", "≠"], ["<", "<"], ["<=", "≤"], [">", ">"], [">=", "≥"],
+        ["contains", "contains"], ["empty", "is empty"], ["not_empty", "is not empty"]];
+    const opLabel = (op) => (RULE_OPS.find(([id]) => id === op) || [op, op])[1];
+    const noRight = (op) => op === "empty" || op === "not_empty";
+    const esc = (value) => String(value === null || value === undefined ? "" : value)
+        .replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    function ruleText(rule) {
+        if (noRight(rule.op)) return `${rule.left} ${opLabel(rule.op)}`;
+        const right = rule.right_kind === "value" ? rule.right : (rule.right === "" ? '""' : rule.right);
+        return `${rule.left} ${opLabel(rule.op)} ${right}`;
+    }
+
+    // "only when class ≠ product.expected_class or product.lane = 3"; "" without rules.
+    function onlyWhenText(onlyWhen) {
+        const rules = (onlyWhen && onlyWhen.rules) || [];
+        if (!rules.length) return "";
+        return "only when " + rules.map(ruleText).join(onlyWhen.match === "any" ? " or " : " and ");
+    }
+
+    // The editor. handler: the name of a page function called as handler(element) on a change and
+    // handler(element, 'add' | 'remove') on the buttons; null when the page listens itself (delegation).
+    function onlyWhenHtml(onlyWhen, choices, handler, options) {
+        const rules = (onlyWhen && onlyWhen.rules) || [];
+        const match = onlyWhen && onlyWhen.match === "any" ? "any" : "all";
+        const on = (event) => (handler ? ` ${event}="${handler}(this)"` : "");
+        const click = (action) => (handler ? ` onclick="${handler}(this, '${action}')"` : "");
+        const opt = (value, label, current) => `<option value="${esc(value)}" ${value === current ? "selected" : ""}>${esc(label)}</option>`;
+        const names = (current) => {
+            const list = (choices || []).map((c) => opt(c.name, `${c.label} (${c.name})`, current));
+            if (current && !(choices || []).some((c) => c.name === current)) list.push(opt(current, `${current} (not on this line)`, current));
+            return list.join("");
+        };
+        const rows = rules.map((rule, index) => {
+            const kind = rule.right_kind === "value" ? "value" : "constant";
+            const right = rule.right === undefined || rule.right === null ? "" : rule.right;
+            const tail = noRight(rule.op) ? "<span></span><span></span>" : `
+                <select class="form-input ow-kind" aria-label="Compare with"${on("onchange")}>${opt("constant", "a constant", kind)}${opt("value", "a value", kind)}</select>
+                ${kind === "value"
+                    ? `<select class="form-input ow-right" aria-label="Value to compare with"${on("onchange")}>${right ? "" : `<option value="" selected>Choose a value</option>`}${names(right)}</select>`
+                    : `<input type="text" class="form-input ow-right" maxlength="256" aria-label="Constant" value="${esc(right)}"${on("oninput")}>`}`;
+            return `<div class="ow-row" data-index="${index}">
+                <select class="form-input ow-left" aria-label="Value"${on("onchange")}>${names(rule.left)}</select>
+                <select class="form-input ow-op" aria-label="Operator"${on("onchange")}>${RULE_OPS.map(([id, label]) => opt(id, label, rule.op)).join("")}</select>
+                ${tail}
+                <button type="button" class="btn-action btn-outline ow-del" data-index="${index}"${click("remove")}>Remove</button>
+            </div>`;
+        }).join("");
+        const empty = (options && options.emptyText) || "No rules: it acts every time.";
+        return `<div class="ow-block" data-ow>
+            <div class="ow-head"><span class="form-label" style="margin:0">Only when</span>
+                <select class="form-input ow-match" aria-label="Which rules must pass"${on("onchange")}>${opt("all", "all of these rules pass", match)}${opt("any", "any of these rules passes", match)}</select></div>
+            <div class="ow-rows">${rows || `<div class="ow-none">${esc(empty)}</div>`}</div>
+            <button type="button" class="btn-action btn-outline ow-add"${rules.length >= MAX_RULES ? " disabled" : ""}${click("add")}>Add rule</button>
+        </div>`;
+    }
+
+    // The rules as shown in an editor ([data-ow]).
+    function readOnlyWhen(block) {
+        if (!block) return null;
+        const rules = Array.from(block.querySelectorAll(".ow-row")).map((row) => {
+            const kind = row.querySelector(".ow-kind");
+            const right = row.querySelector(".ow-right");
+            return { left: row.querySelector(".ow-left").value, op: row.querySelector(".ow-op").value,
+                right: right ? right.value : "", right_kind: kind ? kind.value : "constant" };
+        });
+        return { match: block.querySelector(".ow-match").value, rules };
+    }
+
+    // The rules after a change in the editor (action: 'add' | 'remove' | undefined); null without rules.
+    function applyEdit(block, element, action, firstName) {
+        const onlyWhen = readOnlyWhen(block) || { match: "all", rules: [] };
+        if (action === "add" && onlyWhen.rules.length < MAX_RULES) {
+            onlyWhen.rules.push({ left: firstName || "result", op: "=", right: "", right_kind: "constant" });
+        } else if (action === "remove") {
+            onlyWhen.rules.splice(Number(element.dataset.index), 1);
+        } else if (element && element.classList && element.classList.contains("ow-kind")) {
+            onlyWhen.rules[Number(element.closest(".ow-row").dataset.index)].right = "";
+        }
+        return onlyWhen.rules.length ? onlyWhen : null;
+    }
+
+    // Whether the editor must be drawn again after this change (its rows or controls change).
+    const needsRedraw = (element, action) => !!action
+        || !!(element && element.classList && (element.classList.contains("ow-kind") || element.classList.contains("ow-op")));
+
+    const api = { VALUE_NAMES, FORMULA_EXAMPLES, MAX_RULES, RULE_OPS, valueChoices, fieldChoices, valueSourceText, writesText,
+        onlyWhenText, onlyWhenHtml, readOnlyWhen, applyEdit, needsRedraw };
     root.CardValues = api;
     if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);
