@@ -468,7 +468,7 @@ Places where the spec leaves a choice open:
     - `dataInputsHtml(fields, data) -> string` and `readDataInputs(root, fields) -> {data, error}`.
   - Part 2 reuses `cellText`.
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
   - A node test (skipped when node is missing, as in `tests/test_lines_api.py:317`) runs:
 
     ```
@@ -478,9 +478,9 @@ Places where the spec leaves a choice open:
     It asserts the output is `["expected_class","lane_2","yes","3",""]`.
   - A second test: `/dashboard` includes `/assets/product_fields.js?v=2.7.0` before `production_lines.js`, and `test_the_dashboard_scripts_parse` still passes.
 
-- [ ] **Step 2: Run the tests and make sure they fail.** Expected: FAIL (the file does not exist).
+- [x] **Step 2: Run the tests and make sure they fail.** Expected: FAIL (the file does not exist).
 
-- [ ] **Step 3: Implement it.**
+- [x] **Step 3: Implement it.**
   - **Fields dialog.** A **Fields** button next to Rename (supervisor only) opens a dialog with one row per field:
     - label, then key (it can be typed only before the field is saved, and is filled in from the label), then type (Number / Text / Yes or no);
     - up and down buttons, and Delete;
@@ -490,9 +490,9 @@ Places where the spec leaves a choice open:
   - **Product dialog.** Add and Edit open the same dialog: Code, Name, Description, then one input per field (a number box, a text box, or a yes/no select with an empty choice). This replaces `window.prompt`.
   - **Errors.** The server's 422 text is shown in the dialog.
 
-- [ ] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_product_fields_js.py tests/test_lines_api.py`. Expected: PASS.
+- [x] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_product_fields_js.py tests/test_lines_api.py`. Expected: PASS.
 
-- [ ] **Step 5: Check it in a browser.**
+- [x] **Step 5: Check it in a browser.**
   - Write `backup/scratch-tools/shots_product_fields.py`, copying `shots_brand.py`. It is git-ignored and not committed.
   - Run it on the scratch copy:
     1. import `JUICES`;
@@ -501,7 +501,7 @@ Places where the spec leaves a choice open:
     4. at 1440 and at 375 px, check that the table shows the columns, there are no page errors, and there are no CSP violations (as in `check_security_csp.py`).
   - Look at the screenshots.
 
-- [ ] **Step 6: Commit.** Message: "Products page: fields per list and a product dialog".
+- [x] **Step 6: Commit.** Message: "Products page: fields per list and a product dialog".
 
 ### Task 7: Docs, full checks and the live check
 

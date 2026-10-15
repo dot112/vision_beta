@@ -231,6 +231,22 @@
         @media (max-width:992px) { .pl-feed-row { grid-template-columns:1fr; } .pl-strip, .pl-strip.many { grid-template-columns:repeat(2, minmax(0, 1fr)); } }
         @media (max-width:520px) { .pl-cam-grid { grid-template-columns:1fr; } .pl-card { padding:12px; } }
         @media (max-width:700px) { .pl-line-select { margin-left:8px; } .pl-line-select > span { display:none; } .pl-stats { grid-template-columns:repeat(2, 1fr); } }
+        .pf-head, .pf-row { display:grid; grid-template-columns:minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 0.9fr) 150px; gap:8px; align-items:center; }
+        .pf-head { font-size:12px; color:var(--text-muted); }
+        .pf-rows { display:flex; flex-direction:column; gap:8px; }
+        .pf-buttons { display:flex; gap:4px; }
+        .pf-buttons .btn-action { padding:6px 10px; }
+        .pf-note, .pf-count { font-size:12px; color:var(--text-muted); }
+        .pf-add { align-self:flex-start; }
+        .pf-error { color:var(--danger-color); font-size:12.5px; padding:0 24px; }
+        .pf-error:empty { display:none; }
+        .pf-key-hint { font-size:11px; color:var(--text-faint); font-weight:400; margin-left:6px; }
+        .pf-cell { font-size:12.5px; white-space:nowrap; }
+        @media (max-width:640px) {
+            .pf-head { display:none; }
+            .pf-row { grid-template-columns:1fr 1fr; padding-bottom:8px; border-bottom:1px solid var(--border-color); }
+            .pf-buttons { justify-content:flex-end; }
+        }
     `;
     document.head.appendChild(style);
 
@@ -2561,6 +2577,7 @@
                     <label class="form-label" for="plProdList" style="margin:0">List shown</label>
                     <select id="plProdList" class="form-input" aria-label="Product list shown"></select>
                     <button class="btn-action btn-outline" id="plListRename">Rename</button>
+                    <button class="btn-action btn-outline" id="plListFields" title="The list's own fields: a value per product">Fields</button>
                     <label class="btn-action btn-outline" id="plReplaceLabel" style="cursor:pointer">Replace contents<input type="file" id="plReplaceFile" accept=".csv,text/csv" style="display:none"></label>
                     <button class="btn-action btn-red" id="plListDelete">Delete this list</button>
                 </div>
@@ -2573,7 +2590,7 @@
                 </div>
                 <div class="pl-inline" style="margin-bottom:10px"><input type="search" id="plProdSearch" class="form-input" placeholder="Search code or name"><span id="plProdCount" style="font-size:12px;color:var(--text-muted)"></span></div>
                 <div class="table-responsive"><table class="pl-table">
-                    <thead><tr><th>Code</th><th>Name</th><th>Description</th><th>Actions</th></tr></thead>
+                    <thead><tr id="plProdHeadRow"><th>Code</th><th>Name</th><th>Description</th><th>Actions</th></tr></thead>
                     <tbody id="plProdBody"><tr><td colspan="4">Loading…</td></tr></tbody>
                 </table></div>
             </div>`);
@@ -2582,6 +2599,7 @@
         byId("plImportFile").addEventListener("change", importProducts);
         byId("plReplaceFile").addEventListener("change", replaceProductList);
         byId("plListRename").addEventListener("click", renameProductList);
+        byId("plListFields").addEventListener("click", editProductFields);
         byId("plListDelete").addEventListener("click", deleteProductList);
         byId("plProdList").addEventListener("change", (e) => { showProductList(e.target.value); refreshProducts(); });
         let timer = null;
@@ -2631,7 +2649,7 @@
         importLabel.style.cursor = full ? "not-allowed" : "pointer";
         importLabel.title = full ? `There are already ${state.maxProductLists} lists. Delete a list first, or use Replace contents.` : "Each imported file becomes a new list";
         byId("plImportFile").disabled = full;
-        ["plListRename", "plListDelete"].forEach((id) => { byId(id).disabled = !shown || !canEdit; byId(id).style.display = canEdit ? "" : "none"; });
+        ["plListRename", "plListFields", "plListDelete"].forEach((id) => { byId(id).disabled = !shown || !canEdit; byId(id).style.display = canEdit ? "" : "none"; });
         byId("plReplaceLabel").style.display = canEdit && shown ? "" : "none";
         byId("plExport").disabled = !shown;
         const used = (shown && shown.used_by) || [];
@@ -2655,11 +2673,15 @@
             const q = state.productSearch ? `&search=${encodeURIComponent(state.productSearch)}` : "";
             const data = await api(`/api/v1/products?list_id=${encodeURIComponent(shown.id)}&limit=500${q}`);
             const canEdit = level() >= 2;
+            const fields = shown.fields || [];
+            byId("plProdHeadRow").innerHTML = `<th>Code</th><th>Name</th><th>Description</th>${fields.map((f) =>
+                `<th title="product.${esc(f.key)}">${esc(f.label)}</th>`).join("")}<th>Actions</th>`;
             byId("plProdCount").textContent = `${data.total} code(s)${data.total > data.products.length ? `, showing ${data.products.length}` : ""}`;
             body.innerHTML = data.products.map((p) => `<tr data-id="${esc(p.id)}">
                 <td class="pl-code">${esc(p.code)}</td><td>${esc(p.name)}</td><td style="font-size:12px;color:var(--text-muted)">${esc(p.description || "")}</td>
+                ${fields.map((f) => `<td class="pf-cell">${esc(window.ProductFields.cellText(f, (p.data || {})[f.key]))}</td>`).join("")}
                 <td><div class="pl-actions">${canEdit ? `<button class="btn-action btn-outline" data-act="edit">Edit</button><button class="btn-action btn-red" data-act="delete">Delete</button>` : ""}</div></td>
-            </tr>`).join("") || `<tr><td colspan="4">${state.productSearch ? "No code matches the search." : "This list has no product codes yet."}</td></tr>`;
+            </tr>`).join("") || `<tr><td colspan="${4 + fields.length}">${state.productSearch ? "No code matches the search." : "This list has no product codes yet."}</td></tr>`;
             body.querySelectorAll("button[data-act]").forEach((b) => b.addEventListener("click", () => {
                 const row = b.closest("tr");
                 const product = data.products.find((p) => p.id === row.dataset.id);
@@ -2676,6 +2698,11 @@
         const name = byId("plProdName").value.trim();
         const description = byId("plProdDesc").value.trim();
         if (!code || !name) { toast("Enter a code and a product name", "warning"); return; }
+        if ((shownProductList()?.fields || []).length) {
+            // The list has fields: their values are entered in the dialog.
+            openProductDialog(null, { code, name, description });
+            return;
+        }
         try {
             const shown = shownProductList();
             // Without a list yet, the server makes "List 1" for the first code.
@@ -2687,16 +2714,101 @@
         } catch (e) { toast(`Could not add the product: ${e.message}`, "warning"); }
     }
 
-    async function editProduct(p) {
-        const name = window.prompt(`Name for ${p.code}:`, p.name);
-        if (name === null) return;
-        const description = window.prompt(`Description for ${p.code} (optional):`, p.description || "");
-        if (description === null) return;
-        try {
-            await api(`/api/v1/products/${encodeURIComponent(p.id)}`, { method: "PUT", body: { name: name.trim(), description: description.trim() } });
-            toast("Product updated", "success");
-            refreshProducts();
-        } catch (e) { toast(`Could not update the product: ${e.message}`, "warning"); }
+    function editProduct(p) {
+        openProductDialog(p);
+    }
+
+    // A dialog of the Products page (made once): a title, a body, an error line, Cancel and Save.
+    function productsDialog(id, title, subtitle) {
+        let modal = byId(id);
+        if (!modal) {
+            document.body.insertAdjacentHTML("beforeend", `<div class="modal-backdrop" id="${id}">
+                <div class="modal-card action-trigger-modal-panel">
+                    <div class="comm-modal-header"><div>
+                        <div class="pf-title" style="font-size:15px;font-weight:700;color:var(--text-color)"></div>
+                        <div class="pf-subtitle" style="font-size:12.5px;color:var(--text-muted);margin-top:2px"></div>
+                    </div></div>
+                    <div class="comm-modal-body pf-body" style="display:flex;flex-direction:column;gap:12px"></div>
+                    <div class="pf-error" role="alert"></div>
+                    <div class="comm-modal-footer">
+                        <button type="button" class="btn-action btn-outline pf-cancel">Cancel</button>
+                        <div class="comm-modal-footer-actions"><button type="button" class="btn-action btn-blue pf-ok">Save</button></div>
+                    </div>
+                </div>
+            </div>`);
+            modal = byId(id);
+            modal.querySelector(".pf-cancel").addEventListener("click", () => modal.classList.remove("active"));
+            modal.querySelector(".pf-ok").addEventListener("click", () => { if (modal.onSave) modal.onSave(); });
+        }
+        modal.querySelector(".pf-title").textContent = title;
+        modal.querySelector(".pf-subtitle").textContent = subtitle;
+        modal.querySelector(".pf-error").textContent = "";
+        return modal;
+    }
+
+    // The fields of the list shown: add, rename (label), change type, reorder, delete.
+    function editProductFields() {
+        const shown = shownProductList();
+        if (!shown) return;
+        const modal = productsDialog("plFieldsModal", `Fields of '${shown.name}'`,
+            "Each product of the list can have a value for each field: a number, text, or yes or no.");
+        const editor = window.ProductFields.mountFieldsEditor(modal.querySelector(".pf-body"), shown.fields || []);
+        let warned = false;
+        modal.onSave = async () => {
+            const error = modal.querySelector(".pf-error");
+            if (editor.changesValues() && !warned) {
+                // A deleted field or a new type removes values that do not fit: say so once, then save.
+                warned = true;
+                error.textContent = "A field is deleted or changes its type: product values that do not fit it are removed. Press Save again to go on.";
+                return;
+            }
+            try {
+                const r = await api(`/api/v1/products/lists/${encodeURIComponent(shown.id)}`, { method: "PUT", body: { fields: editor.read() } });
+                modal.classList.remove("active");
+                toast(r.dropped ? `Fields saved; ${r.dropped} value(s) that no longer fit were removed` : "Fields saved", "success");
+                refreshProducts();
+            } catch (e) { error.textContent = e.message; }
+        };
+        modal.classList.add("active");
+        refreshSelects();
+    }
+
+    // Add (product null; prefill: what was typed on the page) or edit a product, with its field values.
+    function openProductDialog(product, prefill) {
+        const shown = shownProductList();
+        if (!shown) return;
+        const fields = shown.fields || [];
+        const p = product || prefill || {};
+        const modal = productsDialog("plProductModal", product ? `Edit ${product.code}` : "Add a product", `List '${shown.name}'`);
+        const body = modal.querySelector(".pf-body");
+        body.innerHTML = `
+            <div class="form-group"><label class="form-label" for="pfCode">Code</label><input type="text" id="pfCode" class="form-input" maxlength="256" value="${esc(p.code || "")}"></div>
+            <div class="form-group"><label class="form-label" for="pfName">Name</label><input type="text" id="pfName" class="form-input" maxlength="128" value="${esc(p.name || "")}"></div>
+            <div class="form-group"><label class="form-label" for="pfDesc">Description (optional)</label><input type="text" id="pfDesc" class="form-input" maxlength="512" value="${esc(p.description || "")}"></div>
+            ${window.ProductFields.dataInputsHtml(fields, product ? product.data : null)}`;
+        modal.onSave = async () => {
+            const error = modal.querySelector(".pf-error");
+            const code = byId("pfCode").value.trim();
+            const name = byId("pfName").value.trim();
+            const description = byId("pfDesc").value.trim();
+            if (!code || !name) { error.textContent = "Enter a code and a product name."; return; }
+            const values = window.ProductFields.readDataInputs(body, fields);
+            if (values.error) { error.textContent = values.error; return; }
+            try {
+                if (product) {
+                    await api(`/api/v1/products/${encodeURIComponent(product.id)}`, { method: "PUT", body: { code, name, description, data: values.data } });
+                } else {
+                    await api("/api/v1/products", { method: "POST", body: { code, name, description, list_id: shown.id, data: values.data } });
+                    ["plProdCode", "plProdName", "plProdDesc"].forEach((id) => { byId(id).value = ""; });
+                }
+                modal.classList.remove("active");
+                toast(product ? "Product updated" : `Product code ${code} added`, "success");
+                refreshProducts();
+            } catch (e) { error.textContent = e.message; }
+        };
+        modal.classList.add("active");
+        refreshSelects();
+        byId(product ? "pfName" : "pfCode").focus();
     }
 
     function deleteProduct(p) {
