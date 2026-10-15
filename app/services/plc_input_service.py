@@ -639,6 +639,19 @@ class PLCInputService:
         return rows
 
     @classmethod
+    def values(cls, line_id: str) -> Dict[str, Any]:
+        """{value name: last accepted value} of a line's inputs that have a value name and have been read."""
+        found: Dict[str, Any] = {}
+        for card in cls._all:
+            name = card.get("value_name")
+            if card.get("line_id") != line_id or not name:
+                continue
+            state = cls._states.get((line_id, card["id"]))
+            if state is not None and state.filter.has_value:
+                found[name] = state.filter.value
+        return found
+
+    @classmethod
     async def read_now(cls, card: Dict[str, Any]) -> Dict[str, Any]:
         """Read a card's address once, now (the dialog's "Read now"; the card need not be saved)."""
         from app.services.plc_dispatcher_service import PLCDispatcherService

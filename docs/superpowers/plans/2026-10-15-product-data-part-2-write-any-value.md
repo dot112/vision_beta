@@ -214,7 +214,7 @@ When there is no value, it skips the write or writes a default. Text goes to OPC
 
   Part 3 adds `input.value` and `input.previous`.
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
 
   ```python
   def test_a_product_event_gives_every_value(lines, monkeypatch):           # lines: tests/test_send_cards.py
@@ -251,16 +251,16 @@ When there is no value, it skips the write or writes a default. Text goes to OPC
       # a card without a value name is not listed; a card not read yet is not listed.
   ```
 
-- [ ] **Step 2: Run the tests and make sure they fail.** Expected: FAIL.
+- [x] **Step 2: Run the tests and make sure they fail.** Expected: FAIL.
 
-- [ ] **Step 3: Implement it.**
+- [x] **Step 3: Implement it.**
   - Read the line through `line_service.line_manager.get(line_id)`. Import it inside the function, as `plc_dispatcher_service` does. When the line is not found, the line's values are simply missing; that is not an error.
   - Read the camera name through `send_dispatcher_service._camera_name`.
   - Keep `value_name` out of `_signature`, so naming a value does not reset the input's state.
 
-- [ ] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_event_values.py tests/test_plc_inputs.py tests/test_production_records.py`. Expected: PASS.
+- [x] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_event_values.py tests/test_plc_inputs.py tests/test_production_records.py`. Expected: PASS.
 
-- [ ] **Step 5: Commit.** Message: "One set of value names for every event; inputs can name their value".
+- [x] **Step 5: Commit.** Message: "One set of value names for every event; inputs can name their value".
 
 ### Task 3: Card settings, save-time checks and the formula check
 

@@ -799,6 +799,8 @@ DEFAULT_PLC_INPUT_POLL_MS = 100
 PLC_INPUT_DEBOUNCE_LIMITS_MS = (0, 5000)
 PLC_INPUT_ALARM_SEVERITIES = ("info", "warning", "critical")
 MAX_PLC_INPUTS = 32
+# input.value and input.previous name the input that changed, so no input may be called that.
+INPUT_EVENT_NAMES = ("value", "previous")
 # A "Take a picture" input has a trigger number. A camera that takes one picture per trigger
 # lists the numbers that take its picture (``triggers``): one or more.
 MAX_TRIGGER_NO = 99
@@ -870,6 +872,18 @@ def normalize_plc_input(raw: Any, index: int = 0) -> Dict[str, Any]:
     edge = str(raw.get("edge") or "rising").strip().lower()
     if edge not in PLC_INPUT_EDGES:
         raise ValueError(f"{label}: the edge must be 'rising', 'falling' or 'change'")
+    # The name its last value goes by in formulas and rules: input.<value name>.
+    value_name = raw.get("value_name")
+    value_name = "" if value_name is None else str(value_name).strip()
+    if value_name:
+        if not VALUE_NAME_RE.fullmatch(value_name):
+            raise ValueError(f"{label}: a value name starts with a letter and has only letters, digits and _ "
+                             f"(at most 32 characters)")
+        if value_name in INPUT_EVENT_NAMES:
+            raise ValueError(f"{label}: input.{value_name} is the value of the input that changed; "
+                             f"choose another value name")
+        if data_type == "counter":
+            raise ValueError(f"{label}: a PLC counter counts products and has no value name")
     low, high = PLC_INPUT_POLL_LIMITS_MS
     poll_ms = int(_number(raw.get("poll_ms"), f"{label} poll time", DEFAULT_PLC_INPUT_POLL_MS, low, high))
     low, high = PLC_INPUT_DEBOUNCE_LIMITS_MS
@@ -887,6 +901,8 @@ def normalize_plc_input(raw: Any, index: int = 0) -> Dict[str, Any]:
         "debounce_ms": debounce_ms,
         "action": action,
     }
+    if value_name:
+        card["value_name"] = value_name
     if action == "capture":
         # The trigger's number. None: the list of inputs gives it the next free one (normalize_plc_inputs).
         number = raw.get("trigger_no")
@@ -921,6 +937,10 @@ def normalize_plc_inputs(raw: Any) -> List[Dict[str, Any]]:
     ids = [card["id"] for card in cards]
     if len(set(ids)) != len(ids):
         raise ValueError("Two inputs have the same id")
+    names = [card["value_name"] for card in cards if card.get("value_name")]
+    for name in names:
+        if names.count(name) > 1:
+            raise ValueError(f"Two inputs have the value name '{name}'; give each its own")
     # Each "Take a picture" input has its own trigger number; one without gets the next free number.
     taking = [card for card in cards if card["action"] == "capture"]
     used = [card["trigger_no"] for card in taking if card["trigger_no"] is not None]

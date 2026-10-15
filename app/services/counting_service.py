@@ -525,6 +525,7 @@ class CountingService:
             "result": "reject" if is_reject else "good",
             "reject_reason": reason,
             "vision_result": "reject" if vision_reject else "good",
+            "confidence": round(float(crossing["confidence"]), 4),
             "good_count": self.good_count,
             "reject_count": self.rejected_count,
             "detected_classes": [class_name] if class_name else [],
