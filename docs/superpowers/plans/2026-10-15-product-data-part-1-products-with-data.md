@@ -508,11 +508,11 @@ Places where the spec leaves a choice open:
 **Files:**
 - Modify: `README.md` (a "Product data" subsection under "Models, product lists and the API"; the export column), `FILE_TREE.md`, `PROJECT_DESCRIPTION.md`, `API_KEY_QUICKSTART.md` (the new body keys)
 
-- [ ] **Step 1: Write the docs.** Keep the wording plain. Include the juice CSV as the example.
+- [x] **Step 1: Write the docs.** Keep the wording plain. Include the juice CSV as the example.
 
-- [ ] **Step 2: Run the full checks.** Run `bash backup/scratch-tools/pt.sh` and the ruff command. Expected: no failures, and ruff clean.
+- [x] **Step 2: Run the full checks.** Run `bash backup/scratch-tools/pt.sh` and the ruff command. Expected: no failures, and ruff clean.
 
-- [ ] **Step 3: Run the mutation checks.** Write mutations of these decisions, then run `mutcheck.py`. Expected: every mutation is CAUGHT.
+- [x] **Step 3: Run the mutation checks.** Write mutations of these decisions, then run `mutcheck.py`. Expected: every mutation is CAUGHT.
   - the empty-means-missing rule;
   - the reserved keys;
   - refit dropping;
@@ -520,7 +520,7 @@ Places where the spec leaves a choice open:
   - `product` only for a known code;
   - the template's case rule.
 
-- [ ] **Step 4: Live check on the scratch copy.**
+- [x] **Step 4: Live check on the scratch copy.**
   1. Import `JUICES` and point a line's QR camera at the list.
   2. Have the stand-in camera (`fake_cams.py`) or the owner's test streamer show code J-1.
   3. Check that the Records page row's details (in the API answer) hold the product, and that the CSV export has `lane=1; …`.
@@ -528,9 +528,9 @@ Places where the spec leaves a choice open:
 
   Remove the test data afterwards.
 
-- [ ] **Step 5: Update the vault.**
+- [x] **Step 5: Update the vault.**
   - `03 Decisions/Product data, values and rules decisions.md`: part 1 done, with test counts.
   - `01 Project/Status and branches.md`.
   - Today's session note.
 
-- [ ] **Step 6: Commit.** Message: "Docs for product data".
+- [x] **Step 6: Commit.** Message: "Docs for product data".

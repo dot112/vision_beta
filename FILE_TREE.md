@@ -39,7 +39,8 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │       ├── 0003_encrypted_api_key_secrets.py
 │       ├── 0004_products.py
 │       ├── 0005_product_lists.py
-│       └── 0006_product_records.py
+│       ├── 0006_product_records.py
+│       └── 0007_product_data.py   # product_lists.fields and products.data
 ├── app/
 │   ├── __init__.py
 │   ├── config.py
@@ -180,6 +181,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │   ├── plc_dispatcher_service.py
 │   │   ├── plc_failsafe_service.py
 │   │   ├── plc_input_service.py   # PLC signals: reads each channel's signal cards and acts on the line
+│   │   ├── product_fields.py   # a list's fields and a product's values: checks, CSV cells
 │   │   ├── product_service.py
 │   │   ├── production_records_service.py   # recorder (queue + batch writer, retention), filters, summary, restored counters
 │   │   ├── qr_service.py
@@ -215,6 +217,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   ├── camera_settings.js     # a camera's image/video settings form (Line setup cards, Cameras dialog)
 │   ├── dashboard.css
 │   ├── plc_signals.js         # the PLC signals (inputs) step of Line setup: cards, dialog, live values
+│   ├── product_fields.js      # Products page: the fields editor and a product's values
 │   ├── production_lines.js    # lines, Line setup camera cards, Line dashboard camera strip
 │   ├── universalz_logo.png       # the wordmark, light theme
 │   ├── universalz_logo_dark.png  # the wordmark with near-white letters, dark theme
@@ -296,6 +299,9 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_plc_inputs_e2e.py   # a real Modbus TCP driver against test codes/plc_simulator.py
     ├── test_plc_protocols.py
     ├── test_plc_read.py
+    ├── test_product_data.py      # migration 0007, fields and data in the API and CSV, the product with the item
+    ├── test_product_fields.py
+    ├── test_product_fields_js.py # assets/product_fields.js, run with node
     ├── test_product_lists.py
     ├── test_production_records.py
     ├── test_qr_trigger.py
