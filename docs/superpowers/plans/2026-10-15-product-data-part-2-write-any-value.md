@@ -490,11 +490,11 @@ When there is no value, it skips the write or writes a default. Text goes to OPC
 - Modify: `README.md` (output actions: the value table, the formula language, If no value, text and OPC UA), `FILE_TREE.md`, `PROJECT_DESCRIPTION.md`, `API_KEY_QUICKSTART.md` (the formula check, the test `code`)
 - Create: `backup/scratch-tools/opcua_sim.py` (git-ignored). It is an asyncua server on 127.0.0.1:4841 with an Int16 `Lane` and a String `Recipe`.
 
-- [ ] **Step 1: Write the docs.** Include the juice example: Sort writes `product.lane`, Send recipe writes `product.recipe` to a String tag, and the formula `if(result == "good", product.lane, 9)`.
+- [x] **Step 1: Write the docs.** Include the juice example: Sort writes `product.lane`, Send recipe writes `product.recipe` to a String tag, and the formula `if(result == "good", product.lane, 9)`.
 
-- [ ] **Step 2: Run the full checks.** Run `bash backup/scratch-tools/pt.sh` and ruff. Expected: no failures, and ruff clean.
+- [x] **Step 2: Run the full checks.** Run `bash backup/scratch-tools/pt.sh` and ruff. Expected: no failures, and ruff clean.
 
-- [ ] **Step 3: Run the mutation checks.** Expected: every mutation is CAUGHT.
+- [x] **Step 3: Run the mutation checks.** Expected: every mutation is CAUGHT.
   - the whitelist (allow `ast.Subscript`, allow `**`);
   - the keyword rename;
   - MISSING on division by zero;
@@ -503,16 +503,16 @@ When there is no value, it skips the write or writes a default. Text goes to OPC
   - the 254 limit;
   - `if_missing` default.
 
-- [ ] **Step 4: Live check on the scratch copy, against `opcua_sim.py`.**
+- [x] **Step 4: Live check on the scratch copy, against `opcua_sim.py`.**
   1. Use the juice list from part 1 and a line whose QR reader reads J-1.
   2. Set up the cards Sort (`product.lane` to `Lane`) and Send recipe (`product.recipe` to `Recipe`).
   3. Show code J-1 and check that `Lane` = 1 and `Recipe` = `R-1` on the stand-in server.
   4. Show an unknown code and check that both cards say Skipped.
   5. Then, **only with the owner's OK**, run the same against PLCSIM, after the owner has added the two tags.
 
-- [ ] **Step 5: Update the vault.**
+- [x] **Step 5: Update the vault.**
   - the decision note: part 2 done, with counts;
   - Status and branches;
   - the session note.
 
-- [ ] **Step 6: Commit.** Message: "Docs for writing any value".
+- [x] **Step 6: Commit.** Message: "Docs for writing any value".

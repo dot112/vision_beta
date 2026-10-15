@@ -179,6 +179,8 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │   ├── opcua_discovery_service.py
 │   │   ├── ota_service.py
 │   │   ├── plc_dispatcher_service.py
+│   │   ├── event_values.py   # one set of value names per event (result, class, code, product.*, input.*)
+│   │   ├── formula.py   # the formula language of output actions (ast whitelist, never eval) and compare()
 │   │   ├── plc_failsafe_service.py
 │   │   ├── plc_input_service.py   # PLC signals: reads each channel's signal cards and acts on the line
 │   │   ├── product_fields.py   # a list's fields and a product's values: checks, CSV cells
@@ -215,6 +217,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │       └── shared_memory.py
 ├── assets/
 │   ├── camera_settings.js     # a camera's image/video settings form (Line setup cards, Cameras dialog)
+│   ├── card_values.js         # card dialogs: the value names a card can use, what a card writes
 │   ├── dashboard.css
 │   ├── plc_signals.js         # the PLC signals (inputs) step of Line setup: cards, dialog, live values
 │   ├── product_fields.js      # Products page: the fields editor and a product's values
@@ -300,6 +303,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_plc_protocols.py
     ├── test_plc_read.py
     ├── test_product_data.py      # migration 0007, fields and data in the API and CSV, the product with the item
+    ├── test_write_any_value.py   # value sources, If no value, text writes, the formula check, Test with a code
     ├── test_product_fields.py
     ├── test_product_fields_js.py # assets/product_fields.js, run with node
     ├── test_product_lists.py
