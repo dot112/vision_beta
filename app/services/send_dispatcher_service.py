@@ -32,6 +32,7 @@ from app.services.line_config import (
     parse_template,
     timer_interval_ms,
 )
+from app.services.product_fields import flat_product_values
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -65,6 +66,8 @@ MESSAGE_FIELDS: Dict[str, Tuple[str, ...]] = {
     "counts": ("counts",),
     "metrics": ("metrics",),
     "alarm": ("alarm_code", "alarm_message", "alarm_severity", "alarm_source", "alarm_raised"),
+    # The product of a known code: its code, name, list and values ({"code", "name", "list", "list_id", "fields"}).
+    "product": ("product",),
 }
 
 
@@ -141,7 +144,10 @@ def template_values(payload: Dict[str, Any]) -> Dict[str, Any]:
         "alarm_code": pick("alarm_code"),
         "alarm_message": pick("alarm_message"),
     }
-    return {name: values.get(name) for name in TEMPLATE_FIELDS}
+    found = {name: values.get(name) for name in TEMPLATE_FIELDS}
+    # {product.name}, {product.lane}...: the product of a known code and its values.
+    found.update(flat_product_values(payload.get("product") if isinstance(payload.get("product"), dict) else None))
+    return found
 
 
 @functools.lru_cache(maxsize=256)

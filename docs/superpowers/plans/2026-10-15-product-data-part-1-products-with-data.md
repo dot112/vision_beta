@@ -387,7 +387,7 @@ Places where the spec leaves a choice open:
 
   Part 2 reads `event["product"]`.
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
 
   Reuse `lines`, `recorder`, `_line`, `_cross`, `_run` and `LIST` from `tests/test_production_records.py`, as `test_messages_and_plc_values.py` reuses helpers from other test files.
 
@@ -437,9 +437,9 @@ Places where the spec leaves a choice open:
       # right after stations; a record without details gives an empty cell.
   ```
 
-- [ ] **Step 2: Run the tests and make sure they fail.** Expected: FAIL (`KeyError: 'product'`).
+- [x] **Step 2: Run the tests and make sure they fail.** Expected: FAIL (`KeyError: 'product'`).
 
-- [ ] **Step 3: Implement it.**
+- [x] **Step 3: Implement it.**
   - In `on_qr_read`: `read["product"] = product_catalog.product_info(product, list_id) if product else None`.
   - Copy the product only when it is not `None`.
   - In `build_row`, add `"product"` to the payload keys that are copied into `details`.
@@ -447,9 +447,9 @@ Places where the spec leaves a choice open:
   - In `template_values`, add the values from `flat_product_values(payload.get("product"))`.
   - Fix any test that checks the exact list of export headers, and say so in the commit message.
 
-- [ ] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_product_data.py tests/test_production_records.py tests/test_send_cards.py tests/test_messages_and_plc_values.py tests/test_reader_actions.py`. Expected: PASS.
+- [x] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_product_data.py tests/test_production_records.py tests/test_send_cards.py tests/test_messages_and_plc_values.py tests/test_reader_actions.py`. Expected: PASS.
 
-- [ ] **Step 5: Commit.** Message: "A known code's product data goes into events, messages, templates and records".
+- [x] **Step 5: Commit.** Message: "A known code's product data goes into events, messages, templates and records".
 
 ### Task 6: The Products page (fields editor, product dialog, columns)
 

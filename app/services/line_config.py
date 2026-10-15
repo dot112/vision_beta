@@ -18,6 +18,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from app.services.product_fields import VALUE_NAME_RE
+
 PRIMARY_LINE_ID = "line-1"
 # Version of the settings file. Each step in _UPGRADES below takes a file one
 # version up; a file is upgraded once, when the server first loads it.
@@ -593,9 +595,16 @@ def parse_template(template: str) -> Tuple[Tuple[bool, str], ...]:
         elif token in _TEMPLATE_ESCAPES:
             text.append(_TEMPLATE_ESCAPES[token])
         elif match.group(1) is not None:
-            name = match.group(1).strip().lower()
-            if name not in TEMPLATE_FIELDS:
-                raise ValueError(f"{{{match.group(1)}}} is not a placeholder" if name else "{} names no placeholder")
+            name = match.group(1).strip()
+            if name.lower().startswith("product."):
+                # The product's own values and fields: "product." in any case, the key as it is written.
+                if not VALUE_NAME_RE.fullmatch(name[len("product."):]):
+                    raise ValueError(f"{{{match.group(1)}}} is not a placeholder")
+                name = "product." + name[len("product."):]
+            else:
+                name = name.lower()
+                if name not in TEMPLATE_FIELDS:
+                    raise ValueError(f"{{{match.group(1)}}} is not a placeholder" if name else "{} names no placeholder")
             if any(text):
                 parts.append((False, "".join(text)))
             text = []

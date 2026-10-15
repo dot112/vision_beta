@@ -20,6 +20,7 @@ from xml.sax.saxutils import escape
 from sqlalchemy import func, literal, select, tuple_
 
 from app.db.models.production_record import ProductRecord
+from app.services.product_fields import data_text
 from app.services.product_service import _csv_safe
 from app.services.production_records_service import RecordFilter, utc
 
@@ -48,6 +49,7 @@ _FIELDS: Tuple[Tuple[str, Callable[[ProductRecord], Any]], ...] = (
     ("batch", lambda r: r.batch),
     ("reject_camera_id", lambda r: (r.details or {}).get("reject_camera_id") if isinstance(r.details, dict) else None),
     ("stations", lambda r: _stations(r.details)),
+    ("product_data", lambda r: _product_data(r.details)),
     ("id", lambda r: r.id),
 )
 
@@ -57,6 +59,13 @@ def _stations(details: Any) -> Optional[str]:
     if not stations:
         return None
     return json.dumps(stations, separators=(",", ":"), ensure_ascii=False)
+
+
+def _product_data(details: Any) -> Optional[str]:
+    """The product's values when the item passed: 'lane=3; recipe=R-12'."""
+    product = details.get("product") if isinstance(details, dict) else None
+    text = data_text(product.get("fields")) if isinstance(product, dict) else ""
+    return text or None
 
 
 def time_headers(tz_name: str) -> List[str]:

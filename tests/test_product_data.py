@@ -6,13 +6,23 @@ events, messages, templates and records.
 """
 from __future__ import annotations
 
+import asyncio
+import csv
+import io
+from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
 import sqlalchemy as sa
 
+from app.db.models.production_record import ProductRecord
+from app.services.line_config import parse_template
 from app.services.product_service import product_catalog
+from app.services.records_export import csv_header, csv_rows
+from app.services.send_dispatcher_service import build_message, render_template
 from tests.test_plc_inputs import operator_headers  # noqa: F401  (a fixture)
 from tests.test_product_lists import _upload, lists  # noqa: F401  (a fixture)
+from tests.test_production_records import LIST, _cross, _line, _run, lines, recorder  # noqa: F401  (fixtures)
 
 ROOT = Path(__file__).resolve().parents[1]
 API = "/api/v1/products"
@@ -213,3 +223,104 @@ def test_a_formula_looking_text_value_is_exported_safely(client, admin_headers, 
     assert "'=cmd|' /C calc'!A0" in exported.splitlines()[1]
     client.post(f"{API}/lists/{made['id']}/replace", files=_upload(exported), headers=admin_headers)
     assert _data(client, admin_headers, made["id"])["J-1"]["recipe"] == "=cmd|' /C calc'!A0"
+
+
+# ── The product goes with the item ────────────────────────────────────────────
+
+WIDGET = {"code": "LISTED", "name": "Widget", "list": "List 1", "list_id": LIST, "fields": {"lane": 3, "recipe": "R-12"}}
+
+
+@pytest.fixture
+def with_data(lines, monkeypatch):  # noqa: F811
+    """LISTED in LIST has data; LIST has the fields lane (number) and recipe (text)."""
+    monkeypatch.setattr(product_catalog, "_lists", {LIST: {"LISTED": {"code": "LISTED", "name": "Widget",
+                                                                      "data": {"lane": 3, "recipe": "R-12"}}}})
+    monkeypatch.setattr(product_catalog, "_names", {LIST: "List 1"})
+    monkeypatch.setattr(product_catalog, "_fields", {LIST: [{"key": "lane", "label": "Lane", "type": "number"},
+                                                            {"key": "recipe", "label": "Recipe", "type": "text"}]})
+    return lines
+
+
+def test_a_known_code_brings_its_product_data(with_data, recorder):  # noqa: F811
+    runtime = _line(with_data, [{"camera_id": "top"},
+                                {"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed"}])
+    sent = []
+    runtime.counter.dispatch_event = lambda payload, event, is_defect: sent.append((payload, event))
+
+    async def steps():
+        read = runtime.on_qr_read("qr", "LISTED", "QR_CODE")
+        assert read["product"] == WIDGET
+        await asyncio.sleep(0.01)
+        _cross(runtime.counter, "top")
+        await asyncio.sleep(0.12)
+
+    _run(steps)
+    payload, event = sent[0]
+    assert payload["product"] == WIDGET and event["product"] == WIDGET
+    assert recorder._rows[0]["details"]["product"] == WIDGET
+
+
+def test_a_code_only_product_and_a_plain_read_carry_it_too(with_data, recorder):  # noqa: F811
+    reader = _line(with_data, [{"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed"}],
+                   name="Codes")
+    sent = []
+    reader._publish = lambda topics, payload, event: sent.append((payload, event))
+    report = _line(with_data, [{"camera_id": "top"}, {"camera_id": "qr2", "role": "qr", "product_list_id": LIST}],
+                   name="Report")
+    report._publish = lambda topics, payload, event: sent.append((payload, event))
+
+    async def steps():
+        reader.on_qr_read("qr", "LISTED", "QR_CODE")
+        report.on_qr_read("qr2", "LISTED", "QR_CODE")
+        await asyncio.sleep(0.01)
+
+    _run(steps)
+    (product, product_event), (read, read_event) = sent
+    assert product_event["event_type"] == "code_product" and product["product"] == product_event["product"] == WIDGET
+    assert read["event"] == "QR_CODE_READ" and read["product"] == read_event["product"] == WIDGET
+    assert [row["details"]["product"] for row in recorder._rows] == [WIDGET, WIDGET]
+
+
+def test_an_unknown_code_has_no_product(with_data, recorder):  # noqa: F811
+    reader = _line(with_data, [{"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed"}],
+                   name="Codes")
+    sent = []
+    reader._publish = lambda topics, payload, event: sent.append((payload, event))
+
+    async def steps():
+        assert reader.on_qr_read("qr", "NOPE", "QR_CODE")["product"] is None
+        await asyncio.sleep(0.01)
+
+    _run(steps)
+    payload, event = sent[0]
+    assert "product" not in payload and "product" not in event
+    assert "product" not in (recorder._rows[0]["details"] or {})
+    assert render_template("[{product.lane}]", {"code": "NOPE"}) == "[]"
+
+
+def test_templates_name_product_values():
+    assert render_template("{product.name} lane {product.lane}, {product.Lane}!", {"product": WIDGET}) == "Widget lane 3, !"
+    assert parse_template("{Product.lane}") == ((True, "product.lane"),)
+    assert parse_template("{product.Lane}") == ((True, "product.Lane"),)
+    for bad in ("{product.}", "{product.1x}", "{product.a.b}", "{products.lane}"):
+        with pytest.raises(ValueError):
+            parse_template(bad)
+
+
+def test_a_message_can_list_the_product_field(client, admin_headers):
+    listed = client.get("/api/v1/send/fields", headers=admin_headers).json()
+    assert {"id": "product", "keys": ["product"]}.items() <= next(f for f in listed["fields"] if f["id"] == "product").items()
+    assert {"product.name", "product.code", "product.list"} <= {p["name"] for p in listed["placeholders"]}
+    assert build_message({"fields": ["product"]}, {"product": WIDGET, "class_name": "bottle"}) == {"product": WIDGET}
+
+
+def test_the_export_has_a_product_data_column():
+    def record(details):
+        return ProductRecord(id=1, recorded_at=datetime(2026, 10, 15, 8, 0, tzinfo=timezone.utc), kind="product",
+                             counted=True, details=details)
+
+    header = next(csv.reader(io.StringIO(csv_header("UTC").lstrip("﻿"))))
+    assert header.index("product_data") == header.index("stations") + 1
+    rows = list(csv.reader(io.StringIO(csv_rows([record({"product": WIDGET}), record(None)], timezone.utc))))
+    column = header.index("product_data")
+    assert rows[0][column] == "lane=3; recipe=R-12" and rows[1][column] == ""

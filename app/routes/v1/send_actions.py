@@ -37,6 +37,13 @@ FIELD_LABELS = [
     ("counts", "Counts per class"),
     ("metrics", "Totals (inspected, good, rejected, per minute, yield)"),
     ("alarm", "Alarm (code, message, severity)"),
+    ("product", "Product of the code (code, name, list and its fields)"),
+]
+# Placeholders for the product of a known code; {product.<field key>} names one of its fields.
+PRODUCT_PLACEHOLDERS = [
+    ("product.name", "Product name (from its list)"),
+    ("product.code", "Product code (from its list)"),
+    ("product.list", "Product list"),
 ]
 
 
@@ -88,7 +95,8 @@ async def list_message_fields(user: User = Depends(require_operator)) -> Dict[st
     from app.services.send_dispatcher_service import MESSAGE_FIELDS, TEMPLATE_FIELDS
     return {
         "fields": [{"id": field, "label": label, "keys": list(MESSAGE_FIELDS[field])} for field, label in FIELD_LABELS],
-        "placeholders": [{"name": name, "label": label} for name, label in TEMPLATE_FIELDS.items()],
+        "placeholders": [{"name": name, "label": label}
+                         for name, label in [*TEMPLATE_FIELDS.items(), *PRODUCT_PLACEHOLDERS]],
     }
 
 

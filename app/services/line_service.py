@@ -621,6 +621,8 @@ class LineRuntime:
             "known": product is not None,
             "product_name": product.get("name") if product else None,
             "product_list_id": list_id,
+            # The product the code stands for, with its values (None for an unknown code).
+            "product": product_catalog.product_info(product, list_id) if product else None,
             "camera_id": camera_id,
             "t": time.monotonic() if t is None else t,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -879,6 +881,8 @@ class LineRuntime:
                            camera_id=crossing.get("camera_id"), result=result, reason=reason)
         if kind is not None:
             plc_fields = {"qr_code": fields["qr_code"], "qr_status": status, "qr_paired": fields["qr_paired"]}
+        if kind == "paired" and read.get("product"):
+            fields["product"] = plc_fields["product"] = read["product"]
         if reject and reason in CODE_REASONS:
             with self._lock:
                 self.qr_stats["code_rejects"] += 1
@@ -968,6 +972,8 @@ class LineRuntime:
             "qr_paired": paired,
             "timestamp": time.time(),
         }
+        if read.get("product"):
+            payload["product"] = plc_event["product"] = read["product"]
         self._with_batch(payload, plc_event)
         return payload, plc_event
 
