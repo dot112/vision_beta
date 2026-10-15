@@ -284,7 +284,7 @@ When there is no value, it skips the write or writes a default. Text goes to OPC
   - `SettingsPersistenceService._check_input_links(cards, inputs) -> None`: a card with `value_source == "input"` must name a `value_name` of an input on the same line. Part 3 adds the `input_id` of the input trigger.
   - `POST /api/v1/lines/{line_id}/formula/check` (decision W12).
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
 
   ```python
   W = {"id": "w1", "name": "Sort", "operation": "WRITE"}
@@ -325,13 +325,13 @@ When there is no value, it skips the write or writes a default. Text goes to OPC
       assert "speed" in " ".join(client.post(..., json={"formula": "input.speed"}).json()["warnings"])
   ```
 
-- [ ] **Step 2: Run the tests and make sure they fail.** Expected: FAIL.
+- [x] **Step 2: Run the tests and make sure they fail.** Expected: FAIL.
 
-- [ ] **Step 3: Implement it.** The error texts name the card, as today ("PLC action card 'Sort': …"). The route lives in `lines.py`, next to the other line routes, with `require_supervisor`.
+- [x] **Step 3: Implement it.** The error texts name the card, as today ("PLC action card 'Sort': …"). The route lives in `lines.py`, next to the other line routes, with `require_supervisor`.
 
-- [ ] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_write_any_value.py tests/test_messages_and_plc_values.py tests/test_plc_action_persistence.py tests/test_lines_api.py`. Expected: PASS.
+- [x] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_write_any_value.py tests/test_messages_and_plc_values.py tests/test_plc_action_persistence.py tests/test_lines_api.py`. Expected: PASS.
 
-- [ ] **Step 5: Commit.** Message: "Output actions: new value sources, If no value, and a formula check".
+- [x] **Step 5: Commit.** Message: "Output actions: new value sources, If no value, and a formula check".
 
 ### Task 4: Writing the value (skip, default, text, Test with a code)
 

@@ -84,15 +84,22 @@ REJECT_REASONS = (REASON_VISION, REASON_NOT_LISTED, REASON_LISTED, REASON_NO_COD
 CODE_REASONS = (REASON_NOT_LISTED, REASON_LISTED, REASON_NO_CODE)
 
 # What a PLC WRITE card writes ("value_source"): its fixed number (as before),
-# or a value of the product or the line at the moment of the write.
+# or a value of the product or the line at the moment of the write. The last five:
+# a field of the item's product (value_field), the code, the product's name, the
+# last value of an input of the line (value_input) and a formula (app.services.formula).
 PLC_VALUE_SOURCES = ("fixed", "result_code", "good_count", "reject_count", "total_count",
-                     "class_index", "reject_reason_code", "batch")
+                     "class_index", "reject_reason_code", "batch",
+                     "product_field", "code", "product_name", "input", "formula")
+# What a card of those five sources does when there is no value (an unknown code, an
+# empty field, a formula that gives none): skip the write, or write default_value.
+IF_MISSING = ("skip", "default")
 # A rejected product's reason as a number for the PLC (0: not rejected, 9: any other reason).
 REJECT_REASON_CODES = {REASON_VISION: 1, REASON_NOT_LISTED: 2, REASON_LISTED: 3, REASON_NO_CODE: 4,
                        REASON_STATION_NO_RESULT: 5, REASON_NOTHING_DETECTED: 6}
 OTHER_REJECT_REASON_CODE = 9
 # PLC card settings an older client does not know of: kept when it leaves them out.
-PLC_CARD_KEPT_KEYS = ("value_source", "strobe_address", "strobe_pulse_ms", "confirm_input_id", "confirm_timeout_ms")
+PLC_CARD_KEPT_KEYS = ("value_source", "strobe_address", "strobe_pulse_ms", "confirm_input_id", "confirm_timeout_ms",
+                      "value_field", "value_input", "formula", "if_missing", "default_value")
 # Reject confirmation: a PLC card may name a signal card of its line with the action
 # "confirm_card" (confirm_input_id) and how long it waits for that signal's edge after
 # its output was sent (confirm_timeout_ms).

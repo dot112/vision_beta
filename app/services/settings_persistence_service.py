@@ -486,13 +486,15 @@ class SettingsPersistenceService:
 
         from app.services.plc_failsafe_service import validate_confirmation, validate_safe_state, validate_write_value
         cards = keep_card_fields(cards, cls._state.get("plc_actions"), PLC_CARD_KEPT_KEYS)
+        endpoints = cls.get_endpoints(protocol="plc")
         for card in cards:
             validate_safe_state(card)
-            validate_write_value(card)
+            validate_write_value(card, endpoints)
             validate_confirmation(card)
         # These are Line 1's cards; its PLC signal cards are in its own entry.
         primary = next((ln for ln in cls._state.get("lines") or [] if ln.get("id") == PRIMARY_LINE_ID), None) or {}
         cls._check_confirmation_links(cards, primary.get("plc_inputs"))
+        cls._check_input_links(cards, primary.get("plc_inputs"))
 
         saved_cards = copy.deepcopy(cards)
         cls._state["plc_actions"] = saved_cards
@@ -607,11 +609,13 @@ class SettingsPersistenceService:
         check_output_action_ids(cards)
         from app.services.plc_failsafe_service import validate_confirmation, validate_safe_state, validate_write_value
         cards = keep_card_fields(cards, line.get("plc_actions"), PLC_CARD_KEPT_KEYS)
+        endpoints = cls.get_endpoints(protocol="plc")
         for card in cards:
             validate_safe_state(card)
-            validate_write_value(card)
+            validate_write_value(card, endpoints)
             validate_confirmation(card)
         cls._check_confirmation_links(cards, line.get("plc_inputs"))
+        cls._check_input_links(cards, line.get("plc_inputs"))
         line["plc_actions"] = [{k: v for k, v in c.items() if k != "line_id"} for c in copy.deepcopy(cards)]
         return copy.deepcopy(line["plc_actions"])
 
@@ -639,6 +643,24 @@ class SettingsPersistenceService:
                 raise ValueError(
                     f"Output action '{name}' is confirmed by the input '{signal.get('name')}', so that input's "
                     f"action must stay 'Confirm an output action'. Choose another confirmation input for the action first."
+                )
+
+    @staticmethod
+    def _check_input_links(cards: Any, inputs: Any) -> None:
+        """An output action that writes an input's value names a value name of an input of the same line.
+
+        Raises ValueError naming the action. Run when a line's cards or its inputs are
+        saved, so an input whose value an action writes cannot be deleted or renamed.
+        """
+        names = {card.get("value_name") for card in inputs or [] if isinstance(card, dict) and card.get("value_name")}
+        for card in cards or []:
+            if not isinstance(card, dict) or str(card.get("value_source") or "").strip().lower() != "input":
+                continue
+            wanted = str(card.get("value_input") or "").strip()
+            if wanted not in names:
+                raise ValueError(
+                    f"Output action '{card.get('name') or card.get('id')}' writes the input value '{wanted}', which no "
+                    f"input of this line has. Give an input that value name, or choose another value for the action."
                 )
 
     @classmethod
@@ -683,19 +705,19 @@ class SettingsPersistenceService:
         cards = line.pop("plc_actions", None)
         if cards is not None:
             from app.services.plc_failsafe_service import validate_confirmation, validate_safe_state, validate_write_value
+            endpoints = cls.get_endpoints(protocol="plc")
             for card in cards:
                 if not isinstance(card, dict):
                     raise ValueError("PLC action cards must be a list of objects")
                 validate_safe_state(card)
-                validate_write_value(card)
+                validate_write_value(card, endpoints)
                 validate_confirmation(card)
         # The cards as they will be saved (what an older client left out is kept),
         # against the signal cards as they will be saved: checked before anything changes.
         saved_cards = cls.get_line_plc_actions(line["id"]) if existing is not None else []
-        cls._check_confirmation_links(
-            keep_card_fields(cards, saved_cards, PLC_CARD_KEPT_KEYS) if cards is not None else saved_cards,
-            line.get("plc_inputs"),
-        )
+        will_save = keep_card_fields(cards, saved_cards, PLC_CARD_KEPT_KEYS) if cards is not None else saved_cards
+        cls._check_confirmation_links(will_save, line.get("plc_inputs"))
+        cls._check_input_links(will_save, line.get("plc_inputs"))
 
         if line["id"] == PRIMARY_LINE_ID:
             if isinstance(trigger, dict):

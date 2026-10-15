@@ -605,6 +605,40 @@ async def put_line_batch(line_id: str, body: Dict[str, Any], user: User = Depend
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.post("/{line_id}/formula/check", summary="Check a formula of an output action (Level 2+ Supervisor)")
+async def check_formula(line_id: str, body: Dict[str, Any], user: User = Depends(require_supervisor)) -> Dict[str, Any]:
+    """``{"formula": "..."}``. Answers ``{"ok": true, "names", "warnings"}``, or ``{"ok": false, "error", "position"}``.
+
+    The warnings name product fields that no product list of the line's code readers has, and
+    input values the line has none of: allowed when saving, because lists and inputs change.
+    """
+    from app.services.formula import FormulaError, parse
+    from app.services.product_service import product_catalog
+    from app.services.settings_persistence_service import SettingsPersistenceService
+
+    line = SettingsPersistenceService.get_line(line_id, with_logic=False)
+    if line is None:
+        raise HTTPException(status_code=404, detail="Line not found")
+    text = body.get("formula")
+    try:
+        formula = parse(text if isinstance(text, str) else "")
+    except FormulaError as exc:
+        return {"ok": False, "error": str(exc), "position": exc.position}
+    fields = {"name", "code", "list"}
+    for camera in line.get("cameras") or []:
+        if reads_codes(camera):
+            fields.update(field["key"] for field in product_catalog.fields(camera.get("product_list_id")))
+    inputs = {"value", "previous"} | {card.get("value_name") for card in line.get("plc_inputs") or [] if card.get("value_name")}
+    warnings = []
+    for name in sorted(formula.names):
+        root, _, key = name.partition(".")
+        if root == "product" and key not in fields:
+            warnings.append(f"No product list of this line's code readers has the field '{key}'.")
+        elif root == "input" and key not in inputs:
+            warnings.append(f"No input of this line has the value name '{key}'.")
+    return {"ok": True, "names": sorted(formula.names), "warnings": warnings}
+
+
 @router.post("/{line_id}/start", summary="Run one line without touching the others (Level 2+ Supervisor)")
 async def start_line(line_id: str, user: User = Depends(require_supervisor)) -> Dict[str, Any]:
     return await set_line_running(line_id, True, user)
