@@ -416,7 +416,7 @@ When there is no value, it skips the write or writes a default. Text goes to OPC
 **Interfaces:**
 - Produces: `OPCUADriver.write(address: str, value: Union[float, str]) -> Tuple[bool, str]` (decision W9).
 
-- [ ] **Step 1: Write the failing test.**
+- [x] **Step 1: Write the failing test.**
 
   ```python
   def test_string_writes():
@@ -432,13 +432,13 @@ When there is no value, it skips the write or writes a default. Text goes to OPC
       assert asyncio.run(drv.write("Lane", 3.0))[0] is True and server.values['ns=3;s="Lane"'] == 3
   ```
 
-- [ ] **Step 2: Run the test and make sure it fails.** Expected: FAIL.
+- [x] **Step 2: Run the test and make sure it fails.** Expected: FAIL.
 
-- [ ] **Step 3: Implement it.** Use the value-only `DataValue`, as the numeric path does today; that avoids the Siemens SourceTimestamp problem.
+- [x] **Step 3: Implement it.** Use the value-only `DataValue`, as the numeric path does today; that avoids the Siemens SourceTimestamp problem.
 
-- [ ] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_opcua_tag_names.py tests/test_plc_protocols.py`. Expected: PASS.
+- [x] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_opcua_tag_names.py tests/test_plc_protocols.py`. Expected: PASS.
 
-- [ ] **Step 5: Commit.** Message: "OPC UA: write text to String tags".
+- [x] **Step 5: Commit.** Message: "OPC UA: write text to String tags".
 
 ### Task 6: Dashboard (value to write, input value names, skipped status)
 

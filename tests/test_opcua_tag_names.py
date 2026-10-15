@@ -46,7 +46,11 @@ class _Node:
     async def read_data_type_as_variant_type(self):
         self._known()
         value = self.server.values[self.node_id]
-        return ua.VariantType.Boolean if isinstance(value, bool) else ua.VariantType.Int16
+        if isinstance(value, bool):
+            return ua.VariantType.Boolean
+        if isinstance(value, str):
+            return ua.VariantType.String
+        return ua.VariantType.Double if isinstance(value, float) else ua.VariantType.Int16
 
     async def write_value(self, data_value):
         self._known()
@@ -247,3 +251,25 @@ def test_a_tag_whose_namespace_moved_is_found_again_without_a_reconnect():
     assert moved[:2] == (True, True) and 'ns=4;s="Tag_1"' in moved[2]
     assert written[0] is True and server.writes == [('ns=4;s="Tag_2"', True)]
     assert again[:2] == (True, True)
+
+
+# ── Text to a String tag ──────────────────────────────────────────────────────
+
+def test_string_writes():
+    drv, server = _driver(SIEMENS, {'ns=3;s="Recipe"': "", 'ns=3;s="Lane"': 0, 'ns=3;s="Speed"': 0.0})
+    assert drv.writes_text is True
+    ok, message = asyncio.run(drv.write("Recipe", "R-12"))
+    assert ok and server.values['ns=3;s="Recipe"'] == "R-12" and "R-12" in message
+    assert asyncio.run(drv.write("Recipe", 3.0))[0] is True and server.values['ns=3;s="Recipe"'] == "3"
+    assert asyncio.run(drv.write("Recipe", 2.5))[0] is True and server.values['ns=3;s="Recipe"'] == "2.5"
+    assert asyncio.run(drv.write("Recipe", "x" * 254))[0] is True
+    ok, message = asyncio.run(drv.write("Recipe", "x" * 255))
+    assert not ok and "254" in message and server.values['ns=3;s="Recipe"'] == "x" * 254
+    ok, message = asyncio.run(drv.write("Lane", "R-12"))
+    assert not ok and "text cannot be written" in message and server.values['ns=3;s="Lane"'] == 0
+    ok, message = asyncio.run(drv.write("Lane", 1.5))
+    assert not ok and "integer" in message                       # unchanged behaviour
+    assert asyncio.run(drv.write("Lane", 3.0))[0] is True and server.values['ns=3;s="Lane"'] == 3
+    assert asyncio.run(drv.write("Speed", 1.5))[0] is True and server.values['ns=3;s="Speed"'] == 1.5
+    ok, message = asyncio.run(drv.write("Speed", float("nan")))
+    assert not ok and "finite" in message

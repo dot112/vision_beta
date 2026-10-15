@@ -6,13 +6,16 @@ import math
 import os
 import re
 import time
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
 
 from app.hardware.plc._common import coerce_read
 from app.hardware.plc.base import PLCDriver
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Text written to a String node: a Siemens S7 STRING holds at most 254 characters.
+MAX_STRING_LENGTH = 254
 
 
 def _certificate_application_uri(cert_path: str) -> str:
@@ -447,13 +450,19 @@ class OPCUADriver(PLCDriver):
                 raise
         return reset_ok, f"OPC UA pulse {address} for {duration_ms} ms: {reset_message}"
 
-    async def write(self, address: str, value: float) -> Tuple[bool, str]:
+    async def write(self, address: str, value: Union[float, str]) -> Tuple[bool, str]:
+        """Write a number to a numeric node, or text (or a number as its text) to a String node."""
         try:
             from asyncua import ua
 
-            numeric_value = float(value)
-            if not math.isfinite(numeric_value):
-                return False, "OPC UA numeric value must be finite"
+            text = value if isinstance(value, str) else None
+            if text is None:
+                numeric_value = float(value)
+                if not math.isfinite(numeric_value):
+                    return False, "OPC UA numeric value must be finite"
+            elif len(text) > MAX_STRING_LENGTH:
+                return False, (f"The text for OPC UA node {address} has {len(text)} characters; "
+                               f"a PLC string holds at most {MAX_STRING_LENGTH}")
 
             class _Refused(Exception):
                 pass
@@ -461,17 +470,22 @@ class OPCUADriver(PLCDriver):
             async def put(node) -> Any:
                 variant_type = await node.read_data_type_as_variant_type()
                 type_name = getattr(variant_type, "name", str(variant_type))
-                if type_name in self._INTEGER_RANGES:
+                if type_name == "String":
+                    typed_value: Any = text if text is not None else (
+                        str(int(numeric_value)) if numeric_value.is_integer() else repr(numeric_value))
+                elif text is not None:
+                    raise _Refused(f"OPC UA node {address} is {type_name}; text cannot be written to it")
+                elif type_name in self._INTEGER_RANGES:
                     if not numeric_value.is_integer():
                         raise _Refused(f"OPC UA node {address} requires an integer value")
-                    typed_value: Any = int(numeric_value)
+                    typed_value = int(numeric_value)
                     minimum, maximum = self._INTEGER_RANGES[type_name]
                     if not minimum <= typed_value <= maximum:
                         raise _Refused(f"Value is outside the {type_name} range for OPC UA node {address}")
                 elif type_name in {"Float", "Double"}:
                     typed_value = numeric_value
                 else:
-                    raise _Refused(f"OPC UA WRITE supports numeric scalar nodes; {address} is {type_name}")
+                    raise _Refused(f"OPC UA WRITE supports numeric and String scalar nodes; {address} is {type_name}")
                 # Do not let asyncua add SourceTimestamp; Siemens S7-1500 can reject it.
                 await node.write_value(ua.DataValue(ua.Variant(typed_value, variant_type)))
                 return typed_value
