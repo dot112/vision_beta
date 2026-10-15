@@ -58,6 +58,8 @@ class GenICamBackend(Protocol):
     def choices(self, feature: str) -> List[str]: ...       # what a list feature offers; [] when it has none
     def execute(self, feature: str) -> None: ...
     def ping(self) -> None: ...                             # raises when the camera does not answer
+    def stream_drivers(self) -> List[str]: ...             # the drivers the producer can stream through; [] when no choice
+    def use_stream_driver(self, name: str) -> None: ...    # before start(); ValueError when the producer refuses it
     def start(self) -> None: ...
     def stop(self) -> None: ...
     def fetch(self, timeout: float) -> Optional[Tuple[np.ndarray, str]]: ...   # (pixels, pixel format); None on timeout
@@ -333,6 +335,30 @@ class HarvestersBackend:
     def ping(self) -> None:
         if self._ping_feature is not None:
             _read_live(self._node(self._ping_feature))
+
+    def _stream_nodes(self) -> Any:
+        """The producer's settings for the picture stream (pylon's GigE producer: "Type", its driver); None when it has none."""
+        try:
+            nodes = self._acquirer.data_streams[0].node_map
+            return nodes if nodes.has_node("Type") else None
+        except Exception:
+            return None
+
+    def stream_drivers(self) -> List[str]:
+        nodes = self._stream_nodes()
+        try:
+            return [str(name) for name in nodes.Type.symbolics] if nodes is not None else []
+        except Exception:
+            return []
+
+    def use_stream_driver(self, name: str) -> None:
+        nodes = self._stream_nodes()
+        if nodes is None:
+            raise ValueError(f"Stream driver {name}: the camera maker's producer offers no choice of stream driver")
+        try:
+            nodes.Type.value = name
+        except Exception as exc:
+            raise ValueError(f"Stream driver {name}: {_first_sentence(exc)}") from exc
 
     def start(self) -> None:
         try:

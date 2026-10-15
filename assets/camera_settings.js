@@ -53,8 +53,16 @@
             ${field("strobe_line", "Strobe output", `<input type="text" class="form-input" maxlength="32" placeholder="none" list="${lists}-out" value="${esc(s.strobe_line || "")}">`)}
             <div class="form-hint" style="align-self:end;padding-bottom:8px">A camera line that is on while the sensor is exposed, for a light. Empty = none.</div>
         </div>
-        <datalist id="${lists}-in"></datalist><datalist id="${lists}-out"></datalist>
+        <div class="cam-settings-row">
+            ${field("stream_driver", "Stream driver", `<input type="text" class="form-input" maxlength="32" placeholder="the maker's default" list="${lists}-drv" value="${esc(s.stream_driver || "")}">`)}
+            <div class="form-hint" style="align-self:end;padding-bottom:8px">How the pictures reach the server. Empty = the camera maker's default. A camera simulated on this computer needs <b>SocketDriver</b> with pylon (its filter driver never sees it).</div>
+        </div>
+        <datalist id="${lists}-in"></datalist><datalist id="${lists}-out"></datalist><datalist id="${lists}-drv"></datalist>
         <div class="form-hint cs-camera-state" style="margin:4px 0 10px">Connect the camera to see its inputs and its last picture.</div>
+        <div class="cs-trigger-test" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px" hidden>
+            <button type="button" class="btn-action btn-sm btn-outline restricted-l2 cs-trigger-btn">Software trigger</button>
+            <span class="form-hint cs-trigger-result" style="margin:0">One test picture now; nothing is counted.</span>
+        </div>
         <div class="pl-warn cs-camera-problems" style="margin:0 0 12px" hidden></div>`;
     }
 
@@ -81,6 +89,8 @@
         if (!p || !p.connected) {
             state.textContent = "Connect the camera to see its inputs and its last picture.";
             problems.hidden = true;
+            const test = root.querySelector(".cs-trigger-test");
+            if (test) test.hidden = true;
             return;
         }
         const fill = (suffix, names) => {
@@ -89,6 +99,9 @@
         };
         fill("-in", p.trigger_inputs);
         fill("-out", p.lines);
+        fill("-drv", p.stream_drivers);
+        const test = root.querySelector(".cs-trigger-test");
+        if (test) test.hidden = p.trigger_mode !== "software";
         const label = { off: "Off (runs freely)", hardware: "Hardware", software: "Software" }[p.trigger_mode] || p.trigger_mode;
         const last = p.last_picture_at
             ? `last picture at ${new Date(p.last_picture_at * 1000).toLocaleTimeString()} (${p.pictures} so far)`
@@ -101,8 +114,28 @@
         problems.innerHTML = said.length ? `The camera did not take every setting:<br>${said.map((t) => `• ${esc(t)}`).join("<br>")}` : "";
     }
 
+    // One picture by software trigger, to see that the camera answers (POST /cameras/{id}/trigger).
+    async function testTrigger(root, cameraId) {
+        const button = root.querySelector(".cs-trigger-btn");
+        const said = root.querySelector(".cs-trigger-result");
+        button.disabled = true;
+        said.textContent = "Triggering…";
+        try {
+            const res = await fetch(`/api/v1/cameras/${encodeURIComponent(cameraId)}/trigger`, { method: "POST" });
+            const data = await res.json().catch(() => ({}));
+            said.textContent = res.ok ? `Picture #${data.frame_id} came in ${Math.round(data.waited_ms)} ms.`
+                : (data.detail || `The trigger failed (HTTP ${res.status}).`);
+        } catch (_) {
+            said.textContent = "The server did not answer.";
+        }
+        button.disabled = false;
+        loadIndustrial(root, cameraId);
+    }
+
     function bindIndustrial(root, cameraId) {
         if (!get(root, "trigger_mode")) return;
+        const triggerButton = root.querySelector(".cs-trigger-btn");
+        if (triggerButton) triggerButton.addEventListener("click", () => testTrigger(root, cameraId));
         get(root, "trigger_mode").addEventListener("change", () => syncIndustrial(root));
         syncIndustrial(root);
         loadIndustrial(root, cameraId);
@@ -341,6 +374,7 @@
                 exposure_us: number("exposure_us"),
                 gain_db: number("gain_db"),
                 strobe_line: text("strobe_line"),
+                stream_driver: text("stream_driver"),
             });
         }
         if (get(root, "stream_max_width")) {

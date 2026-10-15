@@ -608,6 +608,24 @@ def parse_template(template: str) -> Tuple[Tuple[bool, str], ...]:
     return tuple(parts)
 
 
+# A card's id: letters, digits and _ . : -, up to 64 characters. The dashboard
+# puts ids into its pages, so an id must not be able to close a quote or a tag.
+CARD_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")
+
+
+def check_output_action_ids(cards: List[Any]) -> None:
+    """ValueError for an output action (PLC card) whose id breaks CARD_ID_RE. A card without an id is left as it was."""
+    for index, card in enumerate(cards):
+        card_id = card.get("id") if isinstance(card, dict) else None
+        if card_id is None or card_id == "":
+            continue
+        if isinstance(card_id, bool) or not isinstance(card_id, (str, int)) or not CARD_ID_RE.fullmatch(str(card_id)):
+            raise ValueError(
+                f"Output action {index + 1} has an id that is not valid: use letters, digits and _ . : - "
+                f"(up to 64 characters)"
+            )
+
+
 def new_send_card_id() -> str:
     return f"send_{uuid.uuid4().hex[:8]}"
 
@@ -618,7 +636,7 @@ def normalize_send_card(raw: Any, index: int = 0) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError(f"{label} must be an object")
     card_id = str(raw.get("id") or "").strip() or new_send_card_id()
-    if len(card_id) > 64 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]*", card_id):
+    if not CARD_ID_RE.fullmatch(card_id):
         raise ValueError(f"{label} has an id that is not valid")
     name = str(raw.get("name") or "").strip() or f"Send {index + 1}"
     if len(name) > 128:
@@ -817,7 +835,7 @@ def normalize_plc_input(raw: Any, index: int = 0) -> Dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError(f"{label} must be an object")
     card_id = str(raw.get("id") or "").strip() or new_plc_input_id()
-    if len(card_id) > 64 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]*", card_id):
+    if not CARD_ID_RE.fullmatch(card_id):
         raise ValueError(f"{label} has an id that is not valid")
     name = str(raw.get("name") or "").strip() or f"Signal {index + 1}"
     if len(name) > 128:

@@ -17,6 +17,8 @@
 **/*.pfx
 certificates
 certs
+# Obsidian vault kept in the project folder: its plugin settings hold access tokens.
+vision vault
 
 # Python and tool caches
 **/__pycache__
@@ -34,6 +36,7 @@ htmlcov
 .vscode
 .idea
 .claude
+.superpowers
 *.swp
 .DS_Store
 Thumbs.db

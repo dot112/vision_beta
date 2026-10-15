@@ -146,6 +146,12 @@ def test_sqlite_connections_use_wal_normal_sync_and_a_busy_timeout(tmp_path):
     assert asyncio.run(read()) == ["wal", 1, 5000]
 
 
+def test_a_server_whose_env_does_not_set_debug_runs_without_it(monkeypatch):
+    # Debug publishes /docs and lets the live-video socket take its token in the URL.
+    monkeypatch.delenv("DEBUG", raising=False)
+    assert Settings(SECRET_KEY="k" * 40, _env_file=None).DEBUG is False
+
+
 def test_sqlite_settings_are_validated():
     with pytest.raises(ValueError):
         Settings(SECRET_KEY="k" * 40, SQLITE_JOURNAL_MODE="OFF")

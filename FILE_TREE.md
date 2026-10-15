@@ -216,8 +216,9 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   ├── dashboard.css
 │   ├── plc_signals.js         # the PLC signals (inputs) step of Line setup: cards, dialog, live values
 │   ├── production_lines.js    # lines, Line setup camera cards, Line dashboard camera strip
-│   ├── zajel_logo.png
-│   ├── zajel_logo_small.png
+│   ├── universalz_logo.png       # the wordmark, light theme
+│   ├── universalz_logo_dark.png  # the wordmark with near-white letters, dark theme
+│   ├── universalz_mark.png       # the Z mark: page icon
 │   └── fonts/
 │       ├── inter-latin.woff2
 │       └── Inter-LICENSE.txt
@@ -314,6 +315,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_sparkplug_metrics.py
     ├── test_sparkplug_node.py
     ├── test_sparkplug_service.py
+    ├── test_tokens.py               # which sign-in tokens are accepted (hand-built JWTs)
     ├── test_trigger_inspection.py
     ├── test_trigger_numbers.py      # a Take a picture input's trigger number; the triggers a camera ticks
     ├── test_video_overlay.py        # the video's status bar: same size on screen; a stopped line says so

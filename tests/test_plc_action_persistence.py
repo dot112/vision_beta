@@ -79,3 +79,45 @@ def test_empty_canonical_list_does_not_resurrect_legacy_cards(isolated_persisten
     SettingsPersistenceService._state["action_trigger"]["plc_actions"] = [_card()]
 
     assert SettingsPersistenceService.get_plc_actions() == []
+
+
+# The dashboard puts a card's id into its pages; an id that closes a quote
+# there could run as script in another user's browser (security audit 2026-10-14).
+SCRIPT_IN_ID = "x');window.__auditXss=1;//"
+
+
+@pytest.mark.parametrize("bad_id", [SCRIPT_IN_ID, "it's", 'say"hi', 'a"onmouseover="x', "a<b>", "a/b", "a b", "-flag", "x" * 65, ["list"]])
+def test_an_output_action_id_outside_letters_digits_and_dot_colon_dash_underscore_is_refused(isolated_persistence, bad_id):
+    SettingsPersistenceService.replace_plc_actions([_card()])
+
+    with pytest.raises(ValueError, match="id"):
+        SettingsPersistenceService.replace_plc_actions([_card(), {**_card(), "id": bad_id}])
+
+    assert [card["id"] for card in SettingsPersistenceService.get_plc_actions()] == ["tag-1-toggle"]
+
+
+def test_an_other_lines_output_action_id_is_checked_too(isolated_persistence):
+    line = SettingsPersistenceService.save_line({"name": "Line 2", "cameras": []})
+
+    with pytest.raises(ValueError, match="id"):
+        SettingsPersistenceService.replace_line_plc_actions(line["id"], [{**_card(), "id": SCRIPT_IN_ID}])
+
+    assert SettingsPersistenceService.get_line_plc_actions(line["id"]) == []
+
+
+def test_the_batch_route_answers_422_for_a_card_id_with_a_quote(isolated_persistence):
+    from fastapi import HTTPException
+
+    user = SimpleNamespace(username="tester", role="supervisor", clearance_level=2)
+    with pytest.raises(HTTPException) as refused:
+        asyncio.run(save_plc_actions_batch([{**_card(), "id": SCRIPT_IN_ID}], user=user))
+
+    assert refused.value.status_code == 422
+    assert PLCDispatcherService._cards == []
+
+
+@pytest.mark.parametrize("good_id", ["plc_act_k3j9x0a", "tag-1-toggle", "Line2.reject:A", "7"])
+def test_ids_the_dashboard_and_older_versions_make_are_still_saved(isolated_persistence, good_id):
+    saved = SettingsPersistenceService.replace_plc_actions([{**_card(), "id": good_id}])
+
+    assert [card["id"] for card in saved] == [good_id]

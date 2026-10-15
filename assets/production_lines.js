@@ -1150,6 +1150,9 @@
 
     const setupHasVision = () => cardsOnPage().some((c) => isVisionJob(cardJob(c)));
     const setupChecksCodes = () => cardsOnPage().some((c) => JOBS[cardJob(c)].codes && cardValue(c, "qr_action") !== "report");
+    const setupReadsCodes = () => cardsOnPage().some((c) => JOBS[cardJob(c)].codes);
+    // Where the line's products come from: a vision camera, or a product sensor input on the PLC.
+    const setupHasSource = () => setupHasVision() || Boolean(window.PlcSignals && window.PlcSignals.hasProductSensor && window.PlcSignals.hasProductSensor());
 
     // Show the folds and fields that apply to a card's job and choices.
     function syncCard(card, index) {
@@ -1261,11 +1264,22 @@
         cardsOnPage().forEach(syncCard);
         const sync = byId("plSync");
         if (sync) {
-            // A camera that checks codes beside a vision camera needs Sync: it pairs each product with its code.
-            const forced = setupChecksCodes() && setupHasVision();
+            // A camera that checks codes beside a vision camera (or a product sensor) needs Sync: it pairs each product with its code.
+            const forced = setupChecksCodes() && setupHasSource();
+            // Sync needs both a product source and a camera that reads codes. Without them (the cameras
+            // were removed) it is switched off, or the server refuses the save; it comes back on with them.
+            const possible = setupHasSource() && setupReadsCodes();
             if (forced) sync.checked = true;
-            sync.disabled = forced || level() < 2;
+            if (!possible && sync.checked) {
+                sync.checked = false;
+                sync.dataset.autoOff = "1";
+            } else if (possible && sync.dataset.autoOff) {
+                sync.checked = true;
+                delete sync.dataset.autoOff;
+            }
+            sync.disabled = forced || !possible || level() < 2;
             byId("plSyncForced").style.display = forced ? "" : "none";
+            byId("plSyncOff").style.display = possible ? "none" : "";
         }
         const add = byId("plAddCard");
         if (add) {
@@ -1906,6 +1920,7 @@
                     <div class="form-group"><label class="form-label">Sync products and codes</label>
                         <label class="pl-inline pl-check" style="margin-top:6px"><input type="checkbox" id="plSync" ${d.sync && d.sync.enabled ? "checked" : ""}> Pair each counted product with its code</label>
                         <div class="pl-note">For a vision camera and a code reader looking at the same spot, or one vision camera that also reads codes.</div>
+                        <div class="pl-note" id="plSyncOff" style="display:none"><b>Off:</b> Sync needs a vision camera (or a PLC product sensor) and a camera that reads codes.</div>
                         <div class="pl-note" id="plSyncForced" style="display:none"><b>On while a camera accepts or rejects by code:</b> the line waits for the code (at most the Sync window) and then gives the product one result.</div></div>
                     <div class="form-group"><label class="form-label">Sync window (ms)</label><input type="number" class="form-input" id="plSyncWindow" min="50" max="10000" step="50" value="${(d.sync && d.sync.window_ms) || 500}">
                         <div class="pl-note">Products must pass further apart than this. A reject card's travel delay must be longer.</div></div>

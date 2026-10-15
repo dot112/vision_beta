@@ -491,11 +491,8 @@ def create_app() -> FastAPI:
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Access Restricted — Industrial Vision</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Poppins', sans-serif; }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
         body { background-color: #191B26; color: #FFFFFF; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
         .lock-card {
             background: #212332; border: 1px solid #2e3247; border-radius: 16px;
@@ -532,21 +529,18 @@ def create_app() -> FastAPI:
 </html>"""
 
     def _serve_dashboard_file(request: Request, filename: str) -> HTMLResponse:
-        # Verify if request is from local host, private network (Wi-Fi / LAN), or verified app
+        # Verify if request is from local host or a private network (Wi-Fi / LAN).
+        # Only the connecting address counts: the Host header is the client's
+        # own text, so naming localhost there must not let a request through.
         import ipaddress
         client_host = request.client.host if request.client else ""
-        req_host = request.url.hostname or ""
         is_private = False
         try:
             is_private = ipaddress.ip_address(client_host).is_private
         except ValueError:
             pass
 
-        is_local = (
-            client_host in ("127.0.0.1", "::1", "localhost", "testclient")
-            or req_host in ("127.0.0.1", "localhost")
-            or is_private
-        )
+        is_local = client_host in ("127.0.0.1", "::1", "localhost", "testclient") or is_private
         # This only limits dashboard delivery to the local network. API access
         # is separately authenticated with user tokens and role checks.
         is_app = is_local
@@ -586,7 +580,11 @@ def create_app() -> FastAPI:
 
     @app.get("/favicon.ico", include_in_schema=False)
     async def favicon() -> Response:
-        return Response(status_code=204)
+        # The Universalz Z mark, for browsers that ask for /favicon.ico themselves.
+        icon = _ASSETS_DIR / "universalz_mark.png"
+        if not icon.is_file():
+            return Response(status_code=204)
+        return FileResponse(icon, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
 
     @app.get("/", include_in_schema=False)
     async def root() -> JSONResponse:

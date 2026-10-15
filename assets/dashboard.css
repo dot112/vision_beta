@@ -216,7 +216,9 @@ button:active:not(:disabled) { filter: brightness(0.95); }
     box-shadow: var(--shadow-pop);
 }
 .login-brand { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-bottom: 24px; }
-.login-brand img { max-height: 64px; max-width: 200px; margin-bottom: 8px; object-fit: contain; }
+/* The Universalz wordmark (930 x 116): about 240 px wide on the sign-in card. */
+.login-brand .brand-logo { width: 240px; max-width: 100%; height: auto; margin-bottom: 6px; }
+.login-tagline { font-size: 11px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 10px; }
 .login-title { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
 .login-subtitle { font-size: 14px; color: var(--text-muted); }
 .login-input {
@@ -279,10 +281,12 @@ input[type="password"]::-ms-reveal, input[type="password"]::-ms-clear { display:
     flex-shrink: 0;
 }
 .pro-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
-/* The company logo (transparent), small next to the product name. */
-.pro-brand-logo { height: 32px; width: auto; flex-shrink: 0; object-fit: contain; }
+/* The Universalz wordmark (transparent, 930 x 116) above the product line. */
+.pro-brand-logo { display: block; height: 19px; width: auto; max-width: 160px; object-fit: contain; object-position: left center; margin-bottom: 4px; }
 .pro-brand-name { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; }
 .pro-brand-sub { font-size: 12px; color: var(--text-faint); white-space: nowrap; }
+/* Each theme shows the wordmark made for it: near-white letters on dark, navy letters on light. */
+[data-theme="light"] .brand-on-dark, :root:not([data-theme="light"]) .brand-on-light { display: none; }
 .btn-sidebar-collapse {
     display: flex;
     align-items: center;
@@ -1401,6 +1405,13 @@ button.status-pill:hover { filter: brightness(1.08); }
     color: var(--text-color); font: 600 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; cursor: pointer;
 }
 .send-chip:hover, .send-chip:focus-visible { border-color: var(--primary-color); color: var(--primary-color); }
+
+/* Two fields side by side in a card's dialog (trigger and condition, ...); one above the other
+   on a phone, where two dropdowns side by side cut their text. */
+.card-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+@media (max-width: 640px) {
+    .card-pair { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* A send card's value box, with its unit beside it (ms for a timer). */
 .send-value-row { display: flex; align-items: center; gap: 8px; }

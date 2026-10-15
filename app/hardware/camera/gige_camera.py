@@ -49,7 +49,7 @@ TRIGGER_EDGES = {"rising": "RisingEdge", "falling": "FallingEdge"}
 DEFAULT_TRIGGER_LINE = "Line0"
 # The camera's own settings: a change of one of them is written to the connected camera.
 CAMERA_SETTING_KEYS = ("trigger_mode", "trigger_line", "trigger_edge", "trigger_delay_us",
-                       "exposure_us", "gain_db", "strobe_line")
+                       "exposure_us", "gain_db", "strobe_line", "stream_driver")
 # When the camera's pixel format cannot be read, the first of these it offers is set.
 PREFERRED_FORMATS = ("BGR8", "RGB8", "BayerRG8", "BayerGB8", "BayerGR8", "BayerBG8", "Mono8")
 FORMAT_HINT = "set the camera to Mono8, an 8-bit Bayer format, RGB8 or BGR8"
@@ -144,6 +144,12 @@ def clean_camera_settings(settings: Dict[str, Any], camera_type: str,
                 raise ValueError(f"{key} must be the name of one of the camera's lines, such as Line1 "
                                  "(letters, digits and _, 32 at most)")
             cleaned[key] = text
+    if "stream_driver" in settings:
+        text = str(settings["stream_driver"] or "").strip()
+        if text and not _LINE_NAME.fullmatch(text):
+            raise ValueError("stream_driver must be the name of one of the camera producer's stream drivers, "
+                             "such as SocketDriver (letters, digits and _, 32 at most), or empty for its own")
+        cleaned["stream_driver"] = text
     for key, (low, high) in SETTING_LIMITS.items():
         if key in settings:
             value = settings[key]
@@ -183,6 +189,10 @@ class GigECamera(BaseCamera):
         self._lock = threading.Lock()
         self._arrived = threading.Condition(self._lock)     # a picture joined the queue
         self._shot_lock = threading.Lock()                  # one software trigger at a time
+        # The picture a software trigger waits for is handed over here, not through the queue:
+        # the vision runner clears the queue of a camera on a stopped line (or on none).
+        self._shot_wanted = False
+        self._shot: Optional[Tuple[Any, int, float]] = None
         self._new_frame_event = threading.Event()
         self._reapply = threading.Event()                   # the settings changed: write them to the camera
 
@@ -202,6 +212,7 @@ class GigECamera(BaseCamera):
         self._device: Dict[str, str] = {}
         self._inputs: List[str] = []
         self._lines: List[str] = []
+        self._stream_drivers: List[str] = []
         self._pixel_format: Optional[str] = None
 
     # ── The trigger mode the camera really is in ─────────────────────────────
@@ -307,6 +318,16 @@ class GigECamera(BaseCamera):
         """Write the camera's settings to it. Called before the pictures start, on the reader's thread or in connect."""
         backend = self._backend
         self._problems = []
+
+        # The producer's own stream driver unless one is chosen. pylon's GigE filter driver
+        # never sees a camera that runs on this computer (a simulator): SocketDriver does.
+        self._stream_drivers = backend.stream_drivers()
+        driver = str(self.settings.get("stream_driver") or "").strip()
+        if driver:
+            try:
+                backend.use_stream_driver(driver)
+            except ValueError as exc:
+                self._problems.append(str(exc))
 
         current = str(backend.get("PixelFormat")) if backend.has("PixelFormat") else ""
         if current and not format_is_supported(current):
@@ -418,6 +439,7 @@ class GigECamera(BaseCamera):
             "trigger_mode": self.trigger_mode,
             "trigger_inputs": list(self._inputs),
             "lines": list(self._lines),
+            "stream_drivers": list(self._stream_drivers),
             "setting_problems": list(self._problems),
             "picture_error": self._picture_error,
             "pictures": self._latest_frame_id,
@@ -530,7 +552,10 @@ class GigECamera(BaseCamera):
             self._latest_timestamp = time.monotonic()
             self.last_picture_at = arrived
             self._latest_jpeg = None
-            if self._applied_trigger != "off":
+            if self._shot_wanted and self._shot is None:
+                self._shot = (processed, self._latest_frame_id, arrived)
+                self._arrived.notify_all()
+            elif self._applied_trigger != "off":
                 if len(self._queue) >= self.QUEUE_SIZE:
                     self._queue.popleft()
                     self.dropped_frames += 1
@@ -582,17 +607,23 @@ class GigECamera(BaseCamera):
                                f"Camera '{self.name}' is not set to Software trigger")
         timeout = self.TRIGGER_WAIT_S if timeout is None else timeout
         with self._shot_lock:
-            self.clear_triggered_frames()
-            if not self.trigger_software():
-                raise RuntimeError(self.last_error or f"Camera '{self.name}' did not take the trigger")
-            deadline = time.monotonic() + timeout
             with self._arrived:
-                while not self._queue:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0 or not self.is_connected:
-                        return None
-                    self._arrived.wait(remaining)
-                return self._queue.popleft()
+                self._queue.clear()         # a late picture of an earlier trigger is not this one
+                self._shot, self._shot_wanted = None, True
+            try:
+                if not self.trigger_software():
+                    raise RuntimeError(self.last_error or f"Camera '{self.name}' did not take the trigger")
+                deadline = time.monotonic() + timeout
+                with self._arrived:
+                    while self._shot is None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0 or not self.is_connected:
+                            return None
+                        self._arrived.wait(remaining)
+                    return self._shot
+            finally:
+                with self._arrived:
+                    self._shot, self._shot_wanted = None, False
 
     # ── What every camera driver gives ────────────────────────────────────────
 

@@ -137,6 +137,118 @@ def test_the_test_button_looks_for_a_gige_camera_by_its_serial(client, admin_hea
     assert res["success"] is False and "requirements-industrial.txt" in res["message"]
 
 
+# ── One camera, one channel (2026-10-14: a double save made two) ─────────────
+
+
+def _serial() -> str:
+    import uuid
+    return f"S{uuid.uuid4().hex[:8]}"
+
+
+def _cameras_with(client, admin_headers, serial):
+    return [c for c in client.get("/api/v1/cameras", headers=admin_headers).json() if c["source"] == serial]
+
+
+def test_a_second_channel_for_a_cameras_serial_is_refused_and_names_the_first(client, admin_headers, channel):
+    serial = _serial()
+    first = channel(name="Top camera", camera_kind="gige", source=serial)
+
+    again = client.post(API, json={"name": "Copy", "protocol": "ipcam", "enabled": False, "camera_kind": "gige",
+                                   "source": serial}, headers=admin_headers)
+    assert again.status_code == 422 and "Top camera" in again.json()["detail"], again.text
+    other = channel(camera_kind="gige", source=_serial())
+    moved = client.put(f"{API}/{other['id']}", json={"name": "Other", "protocol": "ipcam", "camera_kind": "gige",
+                                                     "source": serial}, headers=admin_headers)
+    assert moved.status_code == 422 and "Top camera" in moved.json()["detail"], moved.text
+    assert [c["id"] for c in _cameras_with(client, admin_headers, serial)] == [first["id"]]
+
+
+def test_two_saves_of_one_new_camera_at_once_make_one_channel(lines):  # noqa: F811
+    import asyncio
+    serial = _serial()
+    results = []
+
+    async def steps():
+        save = SettingsPersistenceService.add_or_update_endpoint
+        body = {"name": "Cam", "protocol": "ipcam", "enabled": False, "camera_kind": "gige", "source": serial}
+        results.extend(await asyncio.gather(save(dict(body)), save(dict(body)), return_exceptions=True))
+
+    _run(steps)
+    assert sorted(type(r).__name__ for r in results) == ["ValueError", "dict"]
+    channels = [ep for ep in SettingsPersistenceService.get_endpoints() if ep.get("source") == serial]
+    assert len(channels) == 1
+
+
+def test_a_deleted_cameras_serial_can_be_added_again(client, admin_headers, channel):
+    serial = _serial()
+    first = channel(camera_kind="gige", source=serial)
+    assert client.delete(f"{API}/{first['id']}", headers=admin_headers).status_code == 200
+    assert _cameras_with(client, admin_headers, serial) == []
+    again = channel(camera_kind="gige", source=serial)
+    assert [c["id"] for c in _cameras_with(client, admin_headers, serial)] == [again["id"]]
+
+
+def test_a_camera_left_in_the_camera_list_is_taken_over_by_its_new_channel(client, admin_headers, channel):
+    serial = _serial()
+    made = client.post("/api/v1/cameras", json={"name": "Left behind", "type": "gige", "source": serial,
+                                                "settings": {"trigger_mode": "software"}}, headers=admin_headers)
+    assert made.status_code == 201, made.text
+
+    saved = channel(name="Top camera", camera_kind="gige", source=serial)
+    assert saved["id"] == made.json()["id"]
+    [camera] = _cameras_with(client, admin_headers, serial)
+    assert (camera["id"], camera["name"], camera["settings"]["trigger_mode"]) == (saved["id"], "Top camera", "software")
+
+
+def test_deleting_a_channel_removes_every_camera_an_old_double_save_left(client, admin_headers, channel, monkeypatch):
+    from app.services.camera_service import CameraService
+    serial = _serial()
+    first = channel(camera_kind="gige", source=serial)
+    # What a double save before this fix left behind: a second channel and camera with the same serial.
+    state = SettingsPersistenceService.get_state()
+    twin = {**next(ep for ep in state["communication_endpoints"] if ep["id"] == first["id"]), "id": "ipcam-twin0001", "name": "Twin"}
+    state["communication_endpoints"].append(twin)
+    state["ip_cameras"].append({"id": twin["id"], "name": "Twin", "type": "gige", "source": serial,
+                                "is_active": False, "auto_connect": False})
+    client.portal.call(CameraService.sync_ip_cameras)
+    assert len(_cameras_with(client, admin_headers, serial)) == 2
+
+    assert client.delete(f"{API}/{first['id']}", headers=admin_headers).status_code == 200
+    assert _cameras_with(client, admin_headers, serial) == []
+    monkeypatch.setattr(genicam_backend, "default_backend",
+                        lambda: FakeBackend(devices=[{"serial": serial, "model": "X", "vendor": "V", "interface": "GigE"}]))
+    [row] = client.get("/api/v1/cameras/discover/gige", headers=admin_headers).json()
+    assert row["in_use"] is False
+
+
+def test_the_camera_list_refuses_a_second_camera_with_the_same_serial(client, admin_headers):
+    serial = _serial()
+    body = {"name": "Line cam", "type": "gige", "source": serial, "settings": {}}
+    first = client.post("/api/v1/cameras", json=body, headers=admin_headers)
+    assert first.status_code == 201, first.text
+    try:
+        second = client.post("/api/v1/cameras", json={**body, "name": "Again"}, headers=admin_headers)
+        assert second.status_code == 422 and "Line cam" in second.json()["detail"], second.text
+    finally:
+        client.delete(f"/api/v1/cameras/{first.json()['id']}", headers=admin_headers)
+
+
+def test_the_scan_names_the_channel_that_has_a_camera(client, admin_headers, channel, monkeypatch):
+    used, loose, free = _serial(), _serial(), _serial()
+    channel(name="Top camera", camera_kind="gige", source=used)
+    made = client.post("/api/v1/cameras", json={"name": "Loose", "type": "gige", "source": loose, "settings": {}},
+                       headers=admin_headers).json()
+    try:
+        monkeypatch.setattr(genicam_backend, "default_backend", lambda: FakeBackend(devices=[
+            {"serial": s, "model": "X", "vendor": "V", "interface": "GigE"} for s in (used, loose, free)]))
+        rows = {r["serial"]: r for r in client.get("/api/v1/cameras/discover/gige", headers=admin_headers).json()}
+        assert (rows[used]["in_use"], rows[used]["channel"]) == (True, "Top camera")
+        assert (rows[loose]["in_use"], rows[loose]["channel"]) == (True, None)     # a new channel takes it over
+        assert (rows[free]["in_use"], rows[free]["channel"]) == (False, None)
+    finally:
+        client.delete(f"/api/v1/cameras/{made['id']}", headers=admin_headers)
+
+
 def test_the_connections_page_offers_both_camera_types(client):
     page = client.get("/dashboard").text
     for field in ("ipcamKindInput", "ipcamSourceInput", "ipcamUserInput", "ipcamPassInput", "ipcamTransportInput",

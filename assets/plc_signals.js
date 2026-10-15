@@ -783,6 +783,8 @@
         confirmSignals,
         triggers,
         hasPending,
+        // A product sensor input makes the line's products, as a vision camera would (Sync needs one or the other).
+        hasProductSensor: () => state.cards.some((c) => c.action === "product_sensor"),
         setView,
         setEnabled,
         remove,

@@ -17,7 +17,9 @@ class Settings(BaseSettings):
     APP_NAME: str = "Industrial Vision API"
     APP_VERSION: str = "1.0.0-beta"
     APP_ENV: str = "development"
-    DEBUG: bool = True
+    # Debug publishes /docs and /openapi.json, lets the live-video socket take
+    # its token in the URL, and reloads on code changes: off unless .env says so.
+    DEBUG: bool = False
     SECRET_KEY: str = ""
     ADMIN_INITIAL_PASSWORD: str = ""
 

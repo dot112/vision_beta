@@ -11,7 +11,7 @@ import pytest
 from app.hardware.camera import genicam_backend
 from app.hardware.camera.genicam_backend import GenICamUnavailable, cti_files
 from app.hardware.camera.genicam_sim import SimulatedBackend
-from app.hardware.camera.gige_camera import GigECamera, to_bgr
+from app.hardware.camera.gige_camera import GigECamera, clean_camera_settings, to_bgr
 
 DEVICE = {"serial": "A1", "model": "X", "vendor": "V", "interface": "GigE"}
 
@@ -199,6 +199,51 @@ def test_a_setting_the_camera_refuses_is_said_and_the_camera_still_connects(conn
     assert cam.is_connected and len(problems) == 1 and "ExposureTime" in problems[0]
 
 
+# ── Stream driver (pylon's GigE producer: its filter driver never sees a camera on this PC) ──
+
+
+def _pylon_like() -> FakeBackend:
+    backend = FakeBackend()
+    backend.stream_drivers_offered = ["WindowsFilterDriver", "SocketDriver"]
+    return backend
+
+
+def test_the_chosen_stream_driver_is_set_before_the_pictures_start(connected):
+    cam, backend = connected(settings={"stream_driver": "SocketDriver"}, backend=_pylon_like())
+    assert ("stream_driver", "SocketDriver") in backend.calls
+    assert backend.calls.index(("stream_driver", "SocketDriver")) < backend.calls.index(("start",))
+    assert cam.get_properties()["stream_drivers"] == ["WindowsFilterDriver", "SocketDriver"]
+    assert cam.get_properties()["setting_problems"] == []
+
+
+def test_without_a_stream_driver_the_producers_own_is_kept(connected):
+    _, backend = connected(backend=_pylon_like())
+    assert not [c for c in backend.calls if c[0] == "stream_driver"]
+
+
+def test_a_stream_driver_the_producer_does_not_offer_is_said_and_the_camera_still_connects(connected):
+    cam, _ = connected(settings={"stream_driver": "SocketDriver"}, backend=FakeBackend())    # offers none
+    problems = cam.get_properties()["setting_problems"]
+    assert cam.is_connected and len(problems) == 1 and "stream driver" in problems[0].lower()
+
+
+def test_a_changed_stream_driver_is_set_while_the_pictures_are_stopped(connected):
+    cam, backend = connected(backend=_pylon_like())
+    cam.set_properties({"stream_driver": "SocketDriver"})
+    assert _wait_until(lambda: ("stream_driver", "SocketDriver") in backend.calls)
+    after = backend.calls[backend.calls.index(("start",)) + 1:]
+    assert after.index(("stop",)) < after.index(("stream_driver", "SocketDriver")) < after.index(("start",))
+
+
+@pytest.mark.parametrize("value, ok", [("SocketDriver", True), ("", True), ("Socket Driver", False), ("x" * 33, False)])
+def test_a_stream_driver_is_a_plain_name(value, ok):
+    if ok:
+        assert clean_camera_settings({"stream_driver": value}, "gige")["stream_driver"] == value
+    else:
+        with pytest.raises(ValueError, match="stream_driver"):
+            clean_camera_settings({"stream_driver": value}, "gige")
+
+
 def test_disconnect_stops_the_thread_and_closes_the_camera():
     backend = FakeBackend()
     cam = GigECamera("c1", "Top", "A1", backend=backend)
@@ -277,6 +322,28 @@ def test_a_full_queue_drops_the_oldest_and_counts_it(connected):      # Review F
     assert _wait_until(lambda: cam.get_latest_frame_id() == GigECamera.QUEUE_SIZE + 1)
     assert cam.dropped_frames == 1 and cam.pending_triggered == GigECamera.QUEUE_SIZE
     assert cam.next_triggered_frame()[1] == 2
+
+
+def test_a_software_triggers_picture_is_not_lost_when_the_waiting_pictures_are_cleared(connected):
+    # The vision runner clears the waiting pictures of a camera on a stopped line (or on no line),
+    # while a test trigger or a code reader's Test picture waits for its own picture (2026-10-14).
+    cam, backend = connected(settings={"trigger_mode": "software"})
+    backend.on_trigger = lambda: backend.push(np.zeros((2, 2), np.uint8))
+    stop = threading.Event()
+
+    def runner():
+        while not stop.is_set():
+            cam.clear_triggered_frames()
+
+    clearer = threading.Thread(target=runner, daemon=True)
+    clearer.start()
+    try:
+        shots = [cam.take_picture(timeout=0.5) for _ in range(20)]
+    finally:
+        stop.set()
+        clearer.join(2)
+    assert all(shot is not None for shot in shots), sum(shot is None for shot in shots)
+    assert [shot[1] for shot in shots] == list(range(1, 21))
 
 
 def test_software_trigger_sends_the_command(connected):
@@ -501,6 +568,64 @@ def test_a_saved_setting_reaches_the_connected_camera_without_a_reconnect(client
         assert status["properties"]["trigger_mode"] == "hardware" and status["properties"]["trigger_inputs"] == ["Line0", "Line1"]
     finally:
         cam.disconnect()
+
+
+@pytest.fixture
+def attached(camera_row, monkeypatch):
+    """``attached(trigger_mode)`` saves a camera, connects a stand-in for it and returns (row, camera, backend)."""
+    from app.state.application_state import app_state
+    cameras = []
+
+    def make(trigger_mode="software"):
+        row = camera_row(source="A1", trigger_mode=trigger_mode)
+        backend = FakeBackend()
+        backend.on_trigger = lambda: backend.push(np.zeros((4, 4), np.uint8))
+        cam = GigECamera(row["id"], row["name"], "A1", settings=dict(row["settings"]), backend=backend)
+        assert cam.connect()
+        cameras.append(cam)
+        monkeypatch.setitem(app_state.cameras, row["id"], cam)
+        return row, cam, backend
+
+    yield make
+    for cam in cameras:
+        cam.disconnect()
+
+
+def test_the_test_trigger_takes_one_picture_by_software_trigger(client, admin_headers, attached):
+    row, cam, backend = attached("software")
+    res = client.post(f"{API}/{row['id']}/trigger", headers=admin_headers)
+    assert res.status_code == 200, res.text
+    assert res.json()["frame_id"] == cam.get_latest_frame_id() >= 1 and res.json()["waited_ms"] >= 0
+    assert backend.calls.count(("execute", "TriggerSoftware")) == 1
+
+
+def test_the_test_trigger_says_why_a_hardware_camera_cannot_be_triggered(client, admin_headers, attached):
+    row, _, backend = attached("hardware")
+    res = client.post(f"{API}/{row['id']}/trigger", headers=admin_headers)
+    assert res.status_code == 409 and "own input" in res.json()["detail"], res.text
+    assert ("execute", "TriggerSoftware") not in backend.calls
+
+
+def test_the_test_trigger_needs_a_connected_camera(client, admin_headers, camera_row):
+    row = camera_row(source="A1", trigger_mode="software")
+    res = client.post(f"{API}/{row['id']}/trigger", headers=admin_headers)
+    assert res.status_code == 409 and "not connected" in res.json()["detail"], res.text
+
+
+def test_the_test_trigger_leaves_a_running_lines_camera_alone(client, admin_headers, attached):
+    row, _, backend = attached("software")
+    line = client.post("/api/v1/lines", json={"name": "Trigger test line", "cameras": [{"camera_id": row["id"], "role": "qr"}]},
+                       headers=admin_headers)
+    assert line.status_code in (200, 201), line.text
+    line_id = line.json()["id"]
+    try:
+        assert client.post(f"/api/v1/lines/{line_id}/start", headers=admin_headers).status_code == 200
+        res = client.post(f"{API}/{row['id']}/trigger", headers=admin_headers)
+        assert res.status_code == 409 and "Trigger test line" in res.json()["detail"], res.text
+        assert ("execute", "TriggerSoftware") not in backend.calls
+    finally:
+        client.post(f"/api/v1/lines/{line_id}/stop", headers=admin_headers)
+        client.delete(f"/api/v1/lines/{line_id}", headers=admin_headers)
 
 
 def test_a_line_warns_about_a_software_camera_nothing_triggers(client, admin_headers, camera_row):

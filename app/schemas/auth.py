@@ -26,13 +26,17 @@ class UserBase(BaseModel):
     is_active: bool = True
 
 
+# New passwords: at least 6 characters (the first admin password, from .env, needs 20).
+PASSWORD_MIN_LENGTH = 6
+
+
 class UserCreate(UserBase):
-    password: str = Field(..., min_length=6, max_length=256, description="Plaintext password (6–256 characters)")
+    password: str = Field(..., min_length=PASSWORD_MIN_LENGTH, max_length=256, description="Plaintext password (6–256 characters)")
 
 
 class ChangePasswordRequest(BaseModel):
     current_password: str = Field(..., min_length=1, max_length=256, description="Current password")
-    new_password: str = Field(..., min_length=6, max_length=256, description="New password (6–256 characters)")
+    new_password: str = Field(..., min_length=PASSWORD_MIN_LENGTH, max_length=256, description="New password (6–256 characters)")
 
 
 class UserUpdateClearance(BaseModel):

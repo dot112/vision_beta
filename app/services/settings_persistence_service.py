@@ -18,6 +18,7 @@ from app.services.line_config import (
     SEND_CARD_KEPT_KEYS,
     TRACKING_KEYS,
     check_camera_ownership,
+    check_output_action_ids,
     clean_batch,
     endpoints_used_by_line,
     keep_card_fields,
@@ -481,6 +482,7 @@ class SettingsPersistenceService:
             cls.load()
         if not isinstance(cards, list) or any(not isinstance(card, dict) for card in cards):
             raise ValueError("PLC action cards must be a list of objects")
+        check_output_action_ids(cards)
 
         from app.services.plc_failsafe_service import validate_confirmation, validate_safe_state, validate_write_value
         cards = keep_card_fields(cards, cls._state.get("plc_actions"), PLC_CARD_KEPT_KEYS)
@@ -602,6 +604,7 @@ class SettingsPersistenceService:
             raise KeyError(line_id)
         if not isinstance(cards, list) or any(not isinstance(card, dict) for card in cards):
             raise ValueError("PLC action cards must be a list of objects")
+        check_output_action_ids(cards)
         from app.services.plc_failsafe_service import validate_confirmation, validate_safe_state, validate_write_value
         cards = keep_card_fields(cards, line.get("plc_actions"), PLC_CARD_KEPT_KEYS)
         for card in cards:
@@ -1091,6 +1094,43 @@ class SettingsPersistenceService:
         return changed
 
     @classmethod
+    def _ip_camera_matches(cls, cam_id: str, source: str = "", name: str = ""):
+        """What delete_ip_camera(cam_id, source, name) removes: (camera entry test, channel test, the camera's name).
+
+        Besides the id itself, every entry with the same address (source) goes, and every
+        network camera channel with the same name: copies of one camera.
+        """
+        cameras: List[Dict[str, Any]] = cls._state.get("ip_cameras", [])
+        target_cam = next((c for c in cameras if c.get("id") == cam_id or c.get("name") == cam_id), None)
+        target_source = (source or (target_cam.get("source") if target_cam else "") or "").strip()
+        target_name = (name or (target_cam.get("name") if target_cam else "") or "").strip()
+
+        def camera_hit(c: Dict[str, Any]) -> bool:
+            return c.get("id") == cam_id or c.get("name") == cam_id or bool(target_source and c.get("source") == target_source)
+
+        def channel_hit(ep: Dict[str, Any]) -> bool:
+            return ep.get("protocol") == "ipcam" and (
+                ep.get("id") == cam_id
+                or ep.get("name") == cam_id
+                or bool(target_source and ep.get("source") == target_source)
+                or bool(target_name and ep.get("name") == target_name)
+            )
+
+        return camera_hit, channel_hit, target_name
+
+    @classmethod
+    def ip_camera_ids_removed_with(cls, cam_id: str, source: str = "", name: str = "") -> List[str]:
+        """The camera ids delete_ip_camera(cam_id, source, name) would remove, cam_id first."""
+        if not cls._state:
+            cls.load()
+        camera_hit, channel_hit, _ = cls._ip_camera_matches(cam_id, source, name)
+        ids = [cam_id]
+        for entry in [c for c in cls._state.get("ip_cameras", []) if camera_hit(c)] +                 [ep for ep in cls._state.get("communication_endpoints", []) if channel_hit(ep)]:
+            if entry.get("id") and entry["id"] not in ids:
+                ids.append(entry["id"])
+        return ids
+
+    @classmethod
     def delete_ip_camera(
         cls,
         cam_id: str,
@@ -1105,35 +1145,15 @@ class SettingsPersistenceService:
             cls.load()
         cameras: List[Dict[str, Any]] = cls._state.get("ip_cameras", [])
         original_len = len(cameras)
+        camera_hit, channel_hit, target_name = cls._ip_camera_matches(cam_id, source, name)
 
-        # Find target camera info if not provided
-        target_cam = next((c for c in cameras if c.get("id") == cam_id or c.get("name") == cam_id), None)
-        target_source = (source or (target_cam.get("source") if target_cam else "") or "").strip()
-        target_name = (name or (target_cam.get("name") if target_cam else "") or "").strip()
-
-        cls._state["ip_cameras"] = [
-            c for c in cameras
-            if c.get("id") != cam_id
-            and c.get("name") != cam_id
-            and (not target_source or c.get("source") != target_source)
-        ]
+        cls._state["ip_cameras"] = [c for c in cameras if not camera_hit(c)]
         removed = len(cls._state["ip_cameras"]) < original_len
 
         # Also remove from communication_endpoints list
         comm_endpoints = cls._state.setdefault("communication_endpoints", [])
         orig_comm_len = len(comm_endpoints)
-        cls._state["communication_endpoints"] = [
-            ep for ep in comm_endpoints
-            if not (
-                ep.get("protocol") == "ipcam"
-                and (
-                    ep.get("id") == cam_id
-                    or ep.get("name") == cam_id
-                    or (target_source and ep.get("source") == target_source)
-                    or (target_name and ep.get("name") == target_name)
-                )
-            )
-        ]
+        cls._state["communication_endpoints"] = [ep for ep in comm_endpoints if not channel_hit(ep)]
         if len(cls._state["communication_endpoints"]) < orig_comm_len:
             removed = True
 
@@ -1337,6 +1357,13 @@ class SettingsPersistenceService:
             if kind == "gige":
                 if source and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:\-]{0,127}", source):
                     raise ValueError("The camera's serial number may hold letters, digits and . _ : - (128 at most)")
+                # One camera, one channel: a second channel (a double click on Save) would open it twice.
+                # Checked before anything awaits, so two saves at the same moment cannot both pass.
+                twin = next((ep for ep in endpoints if ep is not existing and str(ep.get("protocol", "")).lower() == "ipcam"
+                             and ep.get("camera_kind") == "gige" and ep.get("source") == source), None) if source else None
+                if twin is not None:
+                    raise ValueError(f"The camera {source} is already the network camera '{twin.get('name')}'. "
+                                     "Edit that one, or delete it first.")
             else:
                 if existing and isinstance(existing.get("source"), str):
                     source = _restore_redacted_url(source, existing["source"])

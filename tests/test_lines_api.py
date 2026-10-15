@@ -225,9 +225,20 @@ def test_dashboard_loads_its_stylesheet_font_and_logo(client):
     assert css.headers["cache-control"] == "no-cache"
     font = client.get("/assets/fonts/inter-latin.woff2")
     assert font.status_code == 200 and font.headers["content-type"] == "font/woff2"
-    assert 'src="/assets/zajel_logo_small.png"' in page.text
-    logo = client.get("/assets/zajel_logo_small.png")
-    assert logo.status_code == 200 and logo.headers["content-type"] == "image/png"
+    # The Universalz logo for each theme, and its Z mark as the page icon.
+    for asset in ("universalz_logo.png", "universalz_logo_dark.png", "universalz_mark.png"):
+        assert f'"/assets/{asset}"' in page.text, asset
+        logo = client.get(f"/assets/{asset}")
+        assert logo.status_code == 200 and logo.headers["content-type"] == "image/png", asset
+    icon = client.get("/favicon.ico")
+    assert icon.status_code == 200 and icon.headers["content-type"] == "image/png"
+
+
+@pytest.mark.parametrize("path", ["/dashboard", "/terms-of-use"])
+def test_the_pages_carry_the_universalz_brand_and_not_the_old_one(client, path):
+    page = client.get(path).text
+    assert "Universalz" in page
+    assert "Zagel Vision" not in page and "zajel" not in page.lower()
 
 
 def test_line_dashboard_has_the_alarms_panel(client):

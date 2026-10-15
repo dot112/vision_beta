@@ -139,6 +139,43 @@ async def disconnect_camera(camera_id: str, db: AsyncSession = Depends(get_db)) 
     return {"status": "disconnected", "camera_id": camera_id}
 
 
+@router.post("/{camera_id}/trigger", summary="Take one test picture by software trigger; nothing is counted (Level 2+ Supervisor)")
+async def test_trigger_camera(camera_id: str, _user=Depends(require_supervisor)) -> dict:
+    """An industrial camera on Software trigger takes one picture now, to see that it answers.
+
+    The picture becomes the camera's latest one (video, snapshot) and is not inspected,
+    counted or sent. 409 says why the camera cannot be triggered; a running line's
+    camera is left to its line, whose triggers take its pictures.
+    """
+    import asyncio
+    import time
+
+    from app.services.line_service import line_manager
+    from app.services.settings_persistence_service import SettingsPersistenceService
+
+    driver = app_state.cameras.get(camera_id)
+    if driver is None or not getattr(driver, "is_connected", False):
+        raise HTTPException(status_code=409, detail="The camera is not connected: connect it first")
+    if not hasattr(driver, "take_picture"):
+        raise HTTPException(status_code=409, detail="Only an industrial camera (GigE / USB3 Vision) has a software trigger")
+    line_id = SettingsPersistenceService.line_for_camera(camera_id)
+    runtime = line_manager.get(line_id) if line_id else None
+    if runtime is not None and runtime.enabled:
+        raise HTTPException(status_code=409, detail=f"Line '{runtime.name}' is running and its triggers take this camera's "
+                                                    "pictures. Stop the line to take a test picture.")
+    started = time.monotonic()
+    try:
+        shot = await asyncio.to_thread(driver.take_picture)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if shot is None:
+        raise HTTPException(status_code=504, detail="The camera took the trigger, but no picture came within "
+                                                    f"{driver.TRIGGER_WAIT_S:g} s")
+    _, frame_id, arrived = shot
+    return {"status": "picture", "camera_id": camera_id, "frame_id": frame_id, "arrived_at": arrived,
+            "waited_ms": round((time.monotonic() - started) * 1000.0, 1)}
+
+
 @router.get("/{camera_id}/status", response_model=CameraStatusResponse, summary="Get live camera status")
 async def get_camera_status(camera_id: str, db: AsyncSession = Depends(get_db)) -> CameraStatusResponse:
     status_resp = await CameraService.get_camera_status(db, camera_id)

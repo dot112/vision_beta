@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="dark light">
-    <title>Zagel Vision — Line control</title>
+    <title>Universalz Vision — Line control</title>
+    <link rel="icon" type="image/png" href="/assets/universalz_mark.png">
     <link rel="preload" href="/assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="stylesheet" href="/assets/dashboard.css?v=3.3.0">
     <script>
@@ -681,7 +682,7 @@
             <button type="button" class="btn-action btn-outline" onclick="closeCommModal()">Cancel</button>
             <div class="comm-modal-footer-actions">
                 <button type="button" class="btn-action btn-red" id="commBtnDelete" style="display:none" onclick="deleteCurrentCommEndpoint()">Delete</button>
-                <button type="button" class="btn-action btn-blue" onclick="saveCommEndpoint()">Save connection</button>
+                <button type="button" class="btn-action btn-blue" id="commSaveBtn" onclick="saveCommEndpoint()">Save connection</button>
             </div>
         </div>
     </div>
@@ -797,8 +798,9 @@
 <div id="loginScreen">
     <div class="login-card">
         <div class="login-brand">
-            <img src="/assets/zajel_logo.png" alt="" onerror="this.style.display='none'">
-            <div class="login-title">Zagel Vision</div>
+            <img class="brand-logo brand-on-dark" src="/assets/universalz_logo_dark.png" width="930" height="116" alt="Universalz">
+            <img class="brand-logo brand-on-light" src="/assets/universalz_logo.png" width="930" height="116" alt="Universalz">
+            <div class="login-tagline">Universal OT · IT platform</div>
             <div class="login-subtitle">Sign in to line control</div>
         </div>
         <label class="sr-only" for="loginUser">Username</label>
@@ -829,10 +831,10 @@
     <aside class="sidebar" id="appSidebar" aria-label="Main menu">
         <div class="sidebar-header">
             <div class="pro-brand">
-                <img class="pro-brand-logo" src="/assets/zajel_logo_small.png" width="54" height="32" alt="Zajel" onerror="this.style.display='none'">
                 <div>
-                    <div class="pro-brand-name">Zagel Vision</div>
-                    <div class="pro-brand-sub">Line control</div>
+                    <img class="pro-brand-logo brand-on-dark" src="/assets/universalz_logo_dark.png" width="930" height="116" alt="Universalz">
+                    <img class="pro-brand-logo brand-on-light" src="/assets/universalz_logo.png" width="930" height="116" alt="Universalz">
+                    <div class="pro-brand-sub">Vision · line control</div>
                 </div>
             </div>
             <button class="btn-sidebar-collapse" onclick="toggleSidebar()" title="Hide menu" aria-label="Hide menu">
@@ -2109,7 +2111,7 @@ function switchTab(id) {
 
     document.body.dataset.tab = id;
     document.getElementById("pageTitle").innerText = TAB_TITLES[id] || "Line dashboard";
-    document.title = `${TAB_TITLES[id] || "Line dashboard"} · Zagel Vision`;
+    document.title = `${TAB_TITLES[id] || "Line dashboard"} · Universalz Vision`;
     closeMenus();
     document.querySelector(".main-content")?.scrollTo(0, 0);
     setTimeout(initCustomSelects, 50);
@@ -3301,10 +3303,12 @@ async function scanGigeCameras() {
         const editing = editingCommEndpointId;
         const own = editing ? (allCommsEndpoints.find((e) => e.id === editing) || {}).source : "";
         box.innerHTML = data.length ? data.map((c) => {
-            const taken = c.in_use && c.serial !== own;
+            // Taken by another network camera. A camera in the camera list without one is free:
+            // the new channel takes it over (its settings and line places stay).
+            const taken = Boolean(c.channel) && c.serial !== own;
             return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px">
                 <span style="min-width:0;overflow-wrap:anywhere;font-size:13px"><b>${escapeHtml(c.model || "Camera")}</b> · ${escapeHtml(c.serial)}${c.interface ? ` · ${escapeHtml(c.interface)}` : ""}${c.vendor ? ` · ${escapeHtml(c.vendor)}` : ""}</span>
-                <button type="button" class="btn-action btn-sm btn-outline" data-serial="${escapeHtml(c.serial)}" data-model="${escapeHtml(c.model || "")}" onclick="pickGigeCamera(this)" ${taken ? "disabled" : ""}>${taken ? "In use" : "Use this camera"}</button>
+                <button type="button" class="btn-action btn-sm btn-outline" data-serial="${escapeHtml(c.serial)}" data-model="${escapeHtml(c.model || "")}" onclick="pickGigeCamera(this)" ${taken ? `disabled title="Already the network camera '${escapeHtml(c.channel)}'"` : ""}>${taken ? `In use: ${escapeHtml(c.channel)}` : "Use this camera"}</button>
             </div>`;
         }).join("") : `<div style="font-size:12px;color:var(--text-muted)">No camera was found. Is it powered, on the same network as the server, and not open in another program?</div>`;
     } catch (e) {
@@ -3423,7 +3427,12 @@ async function handleCertFileUpload(event, targetInputId="mqttCaCertInput") {
     }
 }
 
+// A second click while a save is on its way would add the channel twice (a GigE camera then
+// appeared twice, 2026-10-14): the button is off until the answer comes.
+let _commSaving = false;
+
 async function saveCommEndpoint() {
+    if (_commSaving) return;
     const name = document.getElementById("commInputName").value.trim();
     if (!name) {
         return showModal("Name Required", "Please provide a name for this communication channel.");
@@ -3569,6 +3578,9 @@ async function saveCommEndpoint() {
         payload.fins_unit = parseInt(document.getElementById("plcFinsUnit").value) || 0;
     }
 
+    const saveButton = document.getElementById("commSaveBtn");
+    _commSaving = true;
+    if (saveButton) saveButton.disabled = true;
     try {
         const isEdit = Boolean(editingCommEndpointId);
         const url = isEdit ? `/api/v1/system/endpoints/${editingCommEndpointId}` : "/api/v1/system/endpoints";
@@ -3598,6 +3610,9 @@ async function saveCommEndpoint() {
         }
     } catch {
         showModal("Network Error", "Could not connect to API server to save channel.");
+    } finally {
+        _commSaving = false;
+        if (saveButton) saveButton.disabled = false;
     }
 }
 
@@ -4505,7 +4520,7 @@ function refreshSendModalBody() {
         </div>` : ""}
 
         <!-- 3. When: the same trigger and condition as a PLC action -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="card-pair">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11.5px;font-weight:600">Trigger:</label>
                 <select class="form-input" onchange="onSendModalTriggerChange(this.value)">${cardTriggerOptionsHtml(card, true)}</select>
@@ -4937,7 +4952,7 @@ async function testPlcActionCard(cardId) {
         const headers = { "Content-Type": "application/json" };
         if (currentAuthToken) headers["Authorization"] = `Bearer ${currentAuthToken}`;
 
-        const res = await fetch(`/api/v1/plc/actions/${cardId}/test`, {
+        const res = await fetch(`/api/v1/plc/actions/${encodeURIComponent(cardId)}/test`, {
             method: "POST",
             headers: headers,
             body: JSON.stringify({ confirm: true, card: card })
@@ -5027,18 +5042,21 @@ function plcAlarmPickerHtml(card, toggleFn = "togglePlcAlarmCode") {
         .map(code => ({ code, label: code, group: "Other", severity: "", scope: "", description: "" }));
     const groups = {};
     [..._alarmCatalog, ...extra].forEach(a => (groups[a.group || "Other"] = groups[a.group || "Other"] || []).push(a));
+    // The id goes in a data attribute, never into the handler's code: escaping
+    // does not protect a quoted string inside onchange="..." (the browser
+    // decodes &#39; back to ' before it runs the handler).
     const cid = escapeHtml(card.id);
     const item = a => `
         <label class="plc-alarm-item" title="${escapeHtml(a.description || "")}">
             <input type="checkbox" value="${escapeHtml(a.code)}" ${any || picked.has(a.code) ? "checked" : ""} ${any ? "disabled" : ""}
-                onchange="${toggleFn}('${cid}', this.value, this.checked)" />
+                data-card-id="${cid}" onchange="${toggleFn}(this.dataset.cardId, this.value, this.checked)" />
             <span class="plc-alarm-name">${escapeHtml(a.label)}</span>
             ${a.severity ? `<span class="plc-alarm-sev sev-${escapeHtml(a.severity)}">${a.severity === "critical" ? "Critical" : "Warning"}</span>` : ""}
             ${a.scope ? `<span class="plc-alarm-scope">${a.scope === "line" ? "This line" : "All lines"}</span>` : ""}
         </label>`;
     return `
         <label class="plc-alarm-item plc-alarm-any">
-            <input type="checkbox" ${any ? "checked" : ""} onchange="${toggleFn}('${cid}', '*', this.checked)" />
+            <input type="checkbox" ${any ? "checked" : ""} data-card-id="${cid}" onchange="${toggleFn}(this.dataset.cardId, '*', this.checked)" />
             <span class="plc-alarm-name">Any alarm</span>
             <span class="plc-alarm-scope">Every alarm below, and alarms added later</span>
         </label>
@@ -5337,7 +5355,7 @@ function refreshPlcModalBody(cardId) {
         </div>
 
         <!-- 3. Trigger & Condition (2 cols) -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="card-pair">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11.5px;font-weight:600">Trigger:</label>
                 <select class="form-input" onchange="onPlcModalTriggerChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)">
@@ -5379,7 +5397,7 @@ function refreshPlcModalBody(cardId) {
         </div>
 
         <!-- 5. Target Type & Address (Protocol-Aware, 2 cols) -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="card-pair">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11.5px;font-weight:600">Target Type (${escapeHtml(protoDef.label)}):</label>
                 <select class="form-input" onchange="onPlcModalTargetTypeChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)">
@@ -5394,7 +5412,7 @@ function refreshPlcModalBody(cardId) {
         </div>
 
         <!-- 6. Operation & Pulse Duration (2 cols) -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="card-pair">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11.5px;font-weight:600">Operation:</label>
                 <select class="form-input" onchange="onPlcModalOperationChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)">
@@ -5443,7 +5461,7 @@ function refreshPlcModalBody(cardId) {
         </div>` : ''}
 
         <!-- 8. Industrial Timing: Conveyor Travel Delay & Re-arm Lockout -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="card-pair">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11px;font-weight:600" title="Physical transit time from inspection line to rejector actuator">Conveyor Travel Delay (ms):</label>
                 <input type="number" class="form-input" value="${escapeHtml(card.delay_ms ?? 450)}" min="0" max="60000" step="50" oninput="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'delay_ms', parseInt(this.value)||0); renderPlcActionCards()" />
@@ -5457,7 +5475,7 @@ function refreshPlcModalBody(cardId) {
         </div>
 
         <!-- 9. Execution Policy -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="card-pair">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11px;font-weight:600">Execution Policy:</label>
                 <select class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'exec_policy', this.value); renderPlcActionCards()">
@@ -5470,7 +5488,7 @@ function refreshPlcModalBody(cardId) {
 
         <!-- 10. Confirmation: a PLC signal that says the action really happened -->
         <div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div class="card-pair">
                 <div class="form-group" style="margin:0">
                     <label class="form-label" style="font-size:11px;font-weight:600" for="plcConfirmSignalInput">Confirmation signal:</label>
                     <select id="plcConfirmSignalInput" class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'confirm_input_id', this.value); refreshPlcModalBody(document.getElementById('plcModalBodyContainer').dataset.cardId); renderPlcActionCards()">
@@ -6460,7 +6478,8 @@ function revokeApiKey(apiKeyId, name) {
 async function provisionUser() {
     const u = document.getElementById("newUsername").value.trim();
     const p = document.getElementById("newPassword").value.trim();
-    if (!u || !p) return showModal("Missing Details", "Enter username and password (min 6 chars)");
+    if (!u || !p) return showModal("Missing Details", "Enter a username and a password (at least 6 characters).");
+    if (p.length < 6) return showModal("Weak Password", "The password must be at least 6 characters.");
     try {
         const res = await fetch("/api/v1/auth/users", {
             method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${currentAuthToken}` },

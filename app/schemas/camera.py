@@ -98,6 +98,7 @@ class DiscoveredIndustrialCamera(BaseModel):
     interface: str = ""       # GigE or USB3
     name: str = ""            # the name saved in the camera itself, if any
     in_use: bool = False      # a saved camera already has this serial number
+    channel: Optional[str] = None   # the network camera channel (Connections) that has it, if any
 
 
 class DiscoveredUSBCamera(BaseModel):

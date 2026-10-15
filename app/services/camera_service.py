@@ -231,9 +231,25 @@ class CameraService:
         return result.scalar_one_or_none()
 
     @staticmethod
+    async def cameras_with_source(db: AsyncSession, source: str, types: Tuple[str, ...] = ("ip", "gige")) -> List[Camera]:
+        """The cameras of these types with this address (an industrial camera's address is its serial number)."""
+        result = await db.execute(select(Camera).where(Camera.source == source, Camera.type.in_(types)))
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def check_serial_free(db: AsyncSession, serial: str, own_id: Optional[str] = None) -> None:
+        """ValueError naming the camera that already has this industrial camera's serial number."""
+        for camera in await CameraService.cameras_with_source(db, serial, ("gige",)):
+            if camera.id != own_id:
+                raise ValueError(f"The camera {serial} is already in the camera list as '{camera.name}'")
+
+    @staticmethod
     async def create_camera(db: AsyncSession, data: CameraCreate) -> Camera:
-        """Raises ValueError that names the setting when an industrial camera's setting is wrong."""
+        """Raises ValueError that names the setting when an industrial camera's setting is wrong,
+        or the camera when an industrial camera's serial number is already in the list."""
         cam_type_val = data.type.value if hasattr(data.type, "value") else str(data.type)
+        if cam_type_val == "gige":
+            await CameraService.check_serial_free(db, str(data.source or "").strip())
         camera = Camera(
             name=data.name,
             type=cam_type_val,
@@ -255,6 +271,9 @@ class CameraService:
         # Checked before anything is changed. Raises ValueError that names the setting.
         new_settings = None if data.settings is None else \
             clean_camera_settings(data.settings, camera.type, saved=camera.settings)
+
+        if data.source is not None and camera.type == "gige" and data.source != camera.source:
+            await CameraService.check_serial_free(db, str(data.source).strip(), own_id=camera_id)
 
         previous_source = camera.source
         if data.name is not None:
@@ -353,7 +372,11 @@ class CameraService:
         rows = await asyncio.to_thread(backend.list_devices)      # a network scan can take a second or two
         result = await db.execute(select(Camera.source).where(Camera.type == "gige"))
         used = {str(source) for source in result.scalars().all()}
-        return [{**row, "in_use": row.get("serial") in used} for row in rows]
+        # The network camera channel that has it: a camera in the list without one is taken over by a new channel.
+        from app.services.settings_persistence_service import SettingsPersistenceService
+        channels = {str(ep.get("source")): ep.get("name") for ep in SettingsPersistenceService.get_endpoints("ipcam")
+                    if ep.get("camera_kind") == "gige"}
+        return [{**row, "in_use": row.get("serial") in used, "channel": channels.get(str(row.get("serial")))} for row in rows]
 
     @staticmethod
     async def discover_hardware_cameras(db: AsyncSession) -> List[DiscoveredUSBCamera]:

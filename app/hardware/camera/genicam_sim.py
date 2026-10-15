@@ -52,6 +52,7 @@ class SimulatedBackend:
         self.choices_of: Dict[str, List[str]] = {k: list(v) for k, v in _DEFAULT_CHOICES.items()}
         self.commands: Set[str] = {"TriggerSoftware"}
         self.missing: Set[str] = set()          # features this camera does not have
+        self.stream_drivers_offered: List[str] = []     # the stand-in's producer offers no choice of stream driver
         self.refuses: Set[str] = set()          # features it has but takes no value for
         self.fail: Dict[str, BaseException] = {}        # "open" | "ping" | "execute" | "fetch" -> raised every time
         self.fail_once: Dict[str, BaseException] = {}   # ... raised once
@@ -129,6 +130,17 @@ class SimulatedBackend:
     def ping(self) -> None:
         self.calls.append(("ping",))
         self._raise("ping")
+
+    def stream_drivers(self) -> List[str]:
+        return list(self.stream_drivers_offered)
+
+    def use_stream_driver(self, name: str) -> None:
+        self.calls.append(("stream_driver", name))
+        if self.acquiring:
+            raise ValueError(f"Stream driver {name}: it cannot be changed while pictures are coming")
+        if name not in self.stream_drivers_offered:
+            raise ValueError(f"Stream driver {name}: the producer offers "
+                             f"{', '.join(self.stream_drivers_offered) or 'no choice of stream driver'}")
 
     def start(self) -> None:
         self.calls.append(("start",))
