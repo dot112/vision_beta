@@ -43,10 +43,12 @@
           note: "Tells the line that an output action really happened, for example a sensor that sees the rejected product leave the belt." },
         { id: "alarm", label: "Raise an alarm", edge: false,
           note: "An alarm is active while the value is on and clears when it goes off. Output actions and send cards with the Alarm trigger can react to it." },
+        { id: "none", label: "Only fires cards", edge: false,
+          note: "The line does nothing itself. Output actions and send cards with the trigger Input changed react to this input, and its value name gives its value to formulas and rules." },
     ];
     const actionOf = (id) => ACTIONS.find((a) => a.id === id) || ACTIONS[0];
 
-    // How the value is read (line_config.PLC_INPUT_DATA_TYPES). only: the one action that may use the type.
+    // How the value is read (line_config.PLC_INPUT_DATA_TYPES). only: the actions that may use the type.
     const DATA_TYPES = [
         { id: "auto", label: "Auto (the address's own type)" },
         { id: "bool", label: "Bit (on / off)" },
@@ -54,8 +56,8 @@
         { id: "uint16", label: "UINT16 (0 to 65535)" },
         { id: "int32", label: "INT32 (two words)" },
         { id: "real", label: "REAL (32-bit float)" },
-        { id: "string", label: "Text (string)", only: "set_batch" },
-        { id: "counter", label: "PLC counter (16-bit, counts up)", only: "product_sensor" },
+        { id: "string", label: "Text (string)", only: ["set_batch", "none"] },
+        { id: "counter", label: "PLC counter (16-bit, counts up)", only: ["product_sensor"] },
     ];
     const EDGES = [
         { id: "rising", label: "Off → on (rising)", short: "Off → on" },
@@ -604,7 +606,7 @@
         draft[prop] = value;
         if (prop === "action") {
             const type = DATA_TYPES.find((t) => t.id === draft.data_type);
-            if (type && type.only && type.only !== value) draft.data_type = "auto";
+            if (type && type.only && !type.only.includes(value)) draft.data_type = "auto";
             if (value === "capture" && !(Number(draft.trigger_no) >= 1)) draft.trigger_no = nextTriggerNo(draft.id);
             if (value === "alarm" && !draft.alarm_severity) draft.alarm_severity = "warning";
         }
@@ -642,7 +644,7 @@
             const refused = a.id === "product_sensor" && visionLine && draft.action !== "product_sensor";
             return option(a.id, a.label + (refused ? " · only on a line without a vision camera" : ""), action.id, refused ? "disabled" : "");
         }).join("");
-        const typeOptions = DATA_TYPES.filter((t) => !t.only || t.only === action.id || t.id === draft.data_type)
+        const typeOptions = DATA_TYPES.filter((t) => !t.only || t.only.includes(action.id) || t.id === draft.data_type)
             .map((t) => option(t.id, t.label, draft.data_type || "auto")).join("");
         const usesEdge = action.edge && draft.data_type !== "counter";
 

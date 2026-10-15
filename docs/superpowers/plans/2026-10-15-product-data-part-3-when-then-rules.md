@@ -228,7 +228,7 @@
   - Input event: `{"event_type": "input", "event_id": f"input_{line_id}_{input_id}_{time.time_ns()}", "line_id", "input_id", "input_name", "value", "previous", "timestamp"}`.
   - `PLCInputService._publish_input(card, old, new) -> None`. It runs on the event loop and calls `PLCDispatcherService.evaluate(event)` as a task and `SendDispatcherService.evaluate(event, input_payload(event))`.
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
 
   ```python
   def _input_card(cond, input_id="lane3"):
@@ -270,13 +270,13 @@
           normalize_send_card({"trigger": "input", "input_id": "lane3", "condition": "rising"})
   ```
 
-- [ ] **Step 2: Run the tests and make sure they fail.** Expected: FAIL.
+- [x] **Step 2: Run the tests and make sure they fail.** Expected: FAIL.
 
-- [ ] **Step 3: Implement it** with decisions R1 to R3. In `_took`, publish after `change` is known and before the existing edge or action check, so both happen.
+- [x] **Step 3: Implement it** with decisions R1 to R3. In `_took`, publish after `change` is known and before the existing edge or action check, so both happen.
 
-- [ ] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_input_trigger.py tests/test_plc_inputs.py tests/test_inputs_see_output_pulses.py tests/test_send_cards.py`. Expected: PASS.
+- [x] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_input_trigger.py tests/test_plc_inputs.py tests/test_inputs_see_output_pulses.py tests/test_send_cards.py`. Expected: PASS.
 
-- [ ] **Step 5: Commit.** Message: "Input changed: a PLC input can fire any card".
+- [x] **Step 5: Commit.** Message: "Input changed: a PLC input can fire any card".
 
 ### Task 4: Product checks
 

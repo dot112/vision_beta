@@ -445,8 +445,32 @@ class PLCInputService:
         if change is None:
             return
         old, new = change
+        # Every accepted change goes to the cards with the trigger "Input changed", whatever the input's own action.
+        cls._publish_input(card, old, new)
+        if action == "none":
+            return
         if action in ("run_level", "set_batch", "alarm") or edge_matches(str(card.get("edge") or "rising"), old, new):
             cls._spawn(card, state, old, new)
+
+    @classmethod
+    def _publish_input(cls, card: Dict[str, Any], old: Any, new: Any) -> None:
+        """Send an input's change to its line's output actions and send cards (called on the event loop)."""
+        from app.services.card_triggers import input_event
+        from app.services.plc_dispatcher_service import PLCDispatcherService
+        from app.services.send_dispatcher_service import SendDispatcherService, input_payload
+
+        event = input_event(card, old, new)
+        try:
+            task = asyncio.get_running_loop().create_task(PLCDispatcherService.evaluate(event), name=f"plc_input_event_{card.get('id')}")
+            cls._actions.add(task)
+            task.add_done_callback(cls._actions.discard)
+        except RuntimeError:
+            pass        # no loop: nothing to fire the output actions on
+        try:
+            SendDispatcherService.evaluate(event, input_payload(event))
+        except Exception as exc:
+            logger.warning("PLC signal '%s' of line '%s': its change could not be sent: %s",
+                           card.get("name"), card.get("line_name"), exc)
 
     @classmethod
     def _spawn(cls, card: Dict[str, Any], state: _InputState, old: Any, new: Any, count: int = 1) -> None:

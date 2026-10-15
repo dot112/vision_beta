@@ -68,6 +68,8 @@ MESSAGE_FIELDS: Dict[str, Tuple[str, ...]] = {
     "alarm": ("alarm_code", "alarm_message", "alarm_severity", "alarm_source", "alarm_raised"),
     # The product of a known code: its code, name, list and values ({"code", "name", "list", "list_id", "fields"}).
     "product": ("product",),
+    # The input that changed (the trigger "Input changed").
+    "input": ("input_id", "input_name", "value", "previous"),
 }
 
 
@@ -143,10 +145,17 @@ def template_values(payload: Dict[str, Any]) -> Dict[str, Any]:
         "batch": pick("batch"),
         "alarm_code": pick("alarm_code"),
         "alarm_message": pick("alarm_message"),
+        "input_name": pick("input_name"),
     }
     found = {name: values.get(name) for name in TEMPLATE_FIELDS}
     # {product.name}, {product.lane}...: the product of a known code and its values.
     found.update(flat_product_values(payload.get("product") if isinstance(payload.get("product"), dict) else None))
+    # {input.<value name>}: the last value of the line's inputs; {input.value}, {input.previous}: the input that changed.
+    if payload.get("line_id"):
+        from app.services.plc_input_service import PLCInputService
+        found.update({f"input.{name}": value for name, value in PLCInputService.values(str(payload["line_id"])).items()})
+    if payload.get("event") == "INPUT_CHANGED":
+        found["input.value"], found["input.previous"] = payload.get("value"), payload.get("previous")
     return found
 
 
@@ -191,6 +200,20 @@ def line_state_payload(event: dict) -> Dict[str, Any]:
         "line_name": event.get("line_name"),
         "line_state": "started" if running else "stopped",
     }
+
+
+def input_payload(event: dict) -> Dict[str, Any]:
+    """The message of an input change: which input, its new and its old value, and the line's totals."""
+    payload = {
+        "event": "INPUT_CHANGED",
+        "timestamp": datetime.fromtimestamp(float(event.get("timestamp") or time.time()), timezone.utc).isoformat(),
+        "line_id": event.get("line_id"),
+        "input_id": event.get("input_id"),
+        "input_name": event.get("input_name"),
+        "value": event.get("value"),
+        "previous": event.get("previous"),
+    }
+    return SendDispatcherService._with_totals(payload, event.get("line_id"))
 
 
 def timer_payload(line_id: str) -> Dict[str, Any]:

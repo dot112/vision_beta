@@ -114,6 +114,15 @@ def rules_pass(only_when: Optional[Mapping[str, Any]], values: Mapping[str, Any]
 
 
 def validate_card_rules(card: Dict[str, Any], label: str) -> None:
-    """Check an output action's only-when rules and save them as checked (in ``card``). Raises ValueError."""
+    """Check an output action's input trigger and its only-when rules; save the rules as checked (in ``card``).
+    Raises ValueError."""
+    from app.services.line_config import CARD_ID_RE, INPUT_CONDITIONS
+
+    if str(card.get("trigger") or card.get("trigger_type") or "").strip().lower() == "input":
+        if not CARD_ID_RE.fullmatch(str(card.get("input_id") or "")):
+            raise ValueError(f"{label}: choose the input whose change fires this action")
+        condition = str(card.get("condition") or card.get("trigger_condition") or "on").strip().lower()
+        if condition not in INPUT_CONDITIONS:
+            raise ValueError(f"{label}: an input change is 'on', 'off' or 'change', not '{condition}'")
     if "only_when" in card:
         card["only_when"] = normalize_only_when(card.get("only_when"), label)

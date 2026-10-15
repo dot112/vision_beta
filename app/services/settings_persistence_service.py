@@ -563,7 +563,9 @@ class SettingsPersistenceService:
         """Replace one line's send cards; returns a detached copy of what was saved. Raises ValueError."""
         holder = cls._send_holder(line_id)
         cards = [{k: v for k, v in c.items() if k != "line_id"} if isinstance(c, dict) else c for c in cards]
-        holder["send_actions"] = normalize_send_cards(keep_card_fields(cards, holder.get("send_actions"), SEND_CARD_KEPT_KEYS))
+        checked = normalize_send_cards(keep_card_fields(cards, holder.get("send_actions"), SEND_CARD_KEPT_KEYS))
+        cls._check_input_links(checked, (cls._find_line(line_id) or {}).get("plc_inputs"))
+        holder["send_actions"] = checked
         return copy.deepcopy(holder["send_actions"])
 
     @classmethod
@@ -657,8 +659,18 @@ class SettingsPersistenceService:
         saved, so an input whose value an action writes cannot be deleted or renamed.
         """
         names = {card.get("value_name") for card in inputs or [] if isinstance(card, dict) and card.get("value_name")}
+        ids = {card.get("id") for card in inputs or [] if isinstance(card, dict)}
         for card in cards or []:
-            if not isinstance(card, dict) or str(card.get("value_source") or "").strip().lower() != "input":
+            if not isinstance(card, dict):
+                continue
+            if str(card.get("trigger") or card.get("trigger_type") or "").strip().lower() == "input":
+                wanted = str(card.get("input_id") or "").strip()
+                if wanted not in ids:
+                    raise ValueError(
+                        f"'{card.get('name') or card.get('id')}' fires when the input '{wanted}' changes, but this line "
+                        f"has no such input. Choose another input or trigger for it first."
+                    )
+            if str(card.get("value_source") or "").strip().lower() != "input":
                 continue
             wanted = str(card.get("value_input") or "").strip()
             if wanted not in names:
@@ -724,6 +736,10 @@ class SettingsPersistenceService:
         will_save = keep_card_fields(cards, saved_cards, PLC_CARD_KEPT_KEYS) if cards is not None else saved_cards
         cls._check_confirmation_links(will_save, line.get("plc_inputs"))
         cls._check_input_links(will_save, line.get("plc_inputs"))
+        # The send cards as they will be saved, against the inputs as they will be saved.
+        saved_send = cls.get_line_send_actions(line["id"]) if existing is not None else []
+        send_will_save = keep_card_fields(send_cards, saved_send, SEND_CARD_KEPT_KEYS) if send_cards is not None else saved_send
+        cls._check_input_links(send_will_save, line.get("plc_inputs"))
 
         if line["id"] == PRIMARY_LINE_ID:
             if isinstance(trigger, dict):

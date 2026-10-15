@@ -10,6 +10,7 @@ Events:
   code_product   a product on a line whose code reader decides on its own
   qr_read        a code read (or a missing code) that is not part of a product's event
   line_state     the line was started or stopped
+  input          an input of the line changed (input_id, value, previous)
   alarm          an alarm was raised or cleared
 
 Event fields used here: event_type, line_id, camera_id, counting_camera,
@@ -29,6 +30,7 @@ from app.services.line_config import PRIMARY_LINE_ID
 QR_TRIGGERS = ("qr_read", "qr_known", "qr_unknown", "qr_no_read")
 LINE_STATE_EVENT = "line_state"
 ALARM_EVENT = "alarm"
+INPUT_EVENT = "input"
 ANY_LINE = ALL_LINES  # an alarm event for every line's cards
 
 # Dashboard trigger names and the names used here.
@@ -46,6 +48,7 @@ _TRIGGER_ALIASES = {
     "line_state": "line_state",
     "alarm": "alarm",
     "timer": "timer",
+    "input": "input",
 }
 # A send card that sends on its own clock (SendDispatcherService's timers), never for an event.
 TIMER_TRIGGER = "timer"
@@ -159,6 +162,24 @@ def trigger_matches(card: dict, event: dict) -> bool:
             for active in event.get("active_alarms", [])
         )
 
+    # ── An input changed ──────────────────────────────────────────────────────
+    # A change of one of the line's inputs only fires the cards that name that
+    # input, and these cards fire on nothing else. "on" = off to on, "off" = on
+    # to off, "change" = either, or any other new value.
+    is_input = event.get("event_type") == INPUT_EVENT
+    if trigger == "input" or is_input:
+        if not (trigger == "input" and is_input):
+            return False
+        if str(card.get("input_id") or "") != str(event.get("input_id") or ""):
+            return False
+        from app.services.plc_input_service import truthy
+        was, now = truthy(event.get("previous")), truthy(event.get("value"))
+        if condition == "on":
+            return now and not was
+        if condition == "off":
+            return was and not now
+        return condition == "change" and event.get("value") != event.get("previous")
+
     # ── QR code triggers ──────────────────────────────────────────────────────
     # A code read on its own only fires code cards; a product's event carries
     # its code (or "no_read") and fires both kinds. With the condition
@@ -220,8 +241,8 @@ def camera_matches(card: dict, event: dict) -> bool:
     vision camera, so adding one does not double-fire existing cards. A vision
     camera that joins the counting camera's result sends no event of its own:
     a card naming it fires for the products it takes part in."""
-    if event.get("event_type") in (LINE_STATE_EVENT, ALARM_EVENT):
-        return True  # a line starts or stops, or an alarm goes on or off, as a whole
+    if event.get("event_type") in (LINE_STATE_EVENT, ALARM_EVENT, INPUT_EVENT):
+        return True  # a line starts or stops, an alarm goes on or off, an input changes: the line as a whole
     wanted = str(card.get("camera_id") or "").strip()
     if wanted:
         return str(event.get("camera_id") or "") == wanted or wanted in (event.get("joined_cameras") or ())
@@ -281,6 +302,21 @@ def line_state_event(line_id: str, line_name: str, running: bool) -> dict:
         "line_name": line_name,
         "line_running": running,
         "result": "started" if running else "stopped",
+        "timestamp": time.time(),
+    }
+
+
+def input_event(card: dict, old: Any, new: Any) -> dict:
+    """The event one accepted change of an input card sends to the cards with the trigger "Input changed"."""
+    line_id = str(card.get("line_id") or PRIMARY_LINE_ID)
+    return {
+        "event_type": INPUT_EVENT,
+        "event_id": f"input_{line_id}_{card.get('id', '')}_{time.time_ns()}",
+        "line_id": line_id,
+        "input_id": card.get("id"),
+        "input_name": card.get("name") or card.get("id"),
+        "value": new,
+        "previous": old,
         "timestamp": time.time(),
     }
 

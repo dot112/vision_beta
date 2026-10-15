@@ -74,8 +74,13 @@ def values_for(event: Dict[str, Any]) -> Dict[str, Any]:
 
     product = event.get("product")
     values.update(flat_product_values(product if isinstance(product, dict) else None))
+    if event.get("event_type") == "input":
+        # The input that changed: its new and its old value.
+        for name in ("value", "previous"):
+            if event.get(name) is not None:
+                values[f"input.{name}"] = event[name]
     from app.services.plc_input_service import PLCInputService
     for name, value in PLCInputService.values(line_id).items():
         if value is not None:
-            values[f"input.{name}"] = value
+            values.setdefault(f"input.{name}", value)
     return values

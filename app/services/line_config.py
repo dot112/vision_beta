@@ -99,7 +99,7 @@ REJECT_REASON_CODES = {REASON_VISION: 1, REASON_NOT_LISTED: 2, REASON_LISTED: 3,
 OTHER_REJECT_REASON_CODE = 9
 # PLC card settings an older client does not know of: kept when it leaves them out.
 PLC_CARD_KEPT_KEYS = ("value_source", "strobe_address", "strobe_pulse_ms", "confirm_input_id", "confirm_timeout_ms",
-                      "value_field", "value_input", "formula", "if_missing", "default_value", "only_when")
+                      "value_field", "value_input", "formula", "if_missing", "default_value", "only_when", "input_id")
 # Reject confirmation: a PLC card may name a signal card of its line with the action
 # "confirm_card" (confirm_input_id) and how long it waits for that signal's edge after
 # its output was sent (confirm_timeout_ms).
@@ -158,8 +158,10 @@ SEND_PROTOCOLS = ("mqtt", "tcp", "webhook")
 # (card_triggers decides what each means).
 CARD_TRIGGERS = (
     "cross_line", "good_counter", "reject_counter", "class",
-    "qr_read", "qr_known", "qr_unknown", "qr_no_read", "line_state", "alarm", "timer",
+    "qr_read", "qr_known", "qr_unknown", "qr_no_read", "line_state", "alarm", "timer", "input",
 )
+# "input": an input of the line changed (input_id): off to on, on to off, or any change.
+INPUT_CONDITIONS = ("on", "off", "change")
 # "timer" (send cards only): a message every set_value ms, while the line runs or always.
 TIMER_CONDITIONS = ("while_running", "always")
 TIMER_MIN_MS = 100
@@ -578,6 +580,7 @@ TEMPLATE_FIELDS: Dict[str, str] = {
     "batch": "Batch number",
     "alarm_code": "Alarm code",
     "alarm_message": "Alarm message",
+    "input_name": "Input that changed",
 }
 
 _TEMPLATE_TOKEN = re.compile(r"\{\{|\}\}|\{([^{}]*)\}|\\[rnt\\]|[{}]")
@@ -603,11 +606,13 @@ def parse_template(template: str) -> Tuple[Tuple[bool, str], ...]:
             text.append(_TEMPLATE_ESCAPES[token])
         elif match.group(1) is not None:
             name = match.group(1).strip()
-            if name.lower().startswith("product."):
-                # The product's own values and fields: "product." in any case, the key as it is written.
-                if not VALUE_NAME_RE.fullmatch(name[len("product."):]):
+            root = name.split(".", 1)[0].lower()
+            if "." in name and root in ("product", "input"):
+                # A product's values, an input's value: the root in any case, the name as it is written.
+                key = name.split(".", 1)[1]
+                if not VALUE_NAME_RE.fullmatch(key):
                     raise ValueError(f"{{{match.group(1)}}} is not a placeholder")
-                name = "product." + name[len("product."):]
+                name = f"{root}.{key}"
             else:
                 name = name.lower()
                 if name not in TEMPLATE_FIELDS:
@@ -701,6 +706,14 @@ def normalize_send_card(raw: Any, index: int = 0) -> Dict[str, Any]:
     set_value = str(raw.get("set_value") if raw.get("set_value") is not None else "").strip()[:128]
     if trigger == "timer":
         condition, set_value = _timer_setting(raw, label)
+    input_id = ""
+    if trigger == "input":
+        condition = str(raw.get("condition") or "on").strip().lower()
+        input_id = str(raw.get("input_id") or "").strip()
+        if not CARD_ID_RE.fullmatch(input_id):
+            raise ValueError(f"{label}: choose the input whose change sends this message")
+        if condition not in INPUT_CONDITIONS:
+            raise ValueError(f"{label}: an input change is 'on', 'off' or 'change', not '{condition}'")
     card: Dict[str, Any] = {
         "id": card_id,
         "name": name,
@@ -724,6 +737,8 @@ def normalize_send_card(raw: Any, index: int = 0) -> Dict[str, Any]:
         card["camera_id"] = camera_id[:64]
     if trigger == "alarm":
         card["alarm_codes"] = [str(code).strip() for code in codes if str(code).strip()]
+    if input_id:
+        card["input_id"] = input_id
     # "Only when": rules on the event's values (app.services.rules).
     from app.services.rules import normalize_only_when
     only_when = normalize_only_when(raw.get("only_when"), label)
@@ -756,7 +771,7 @@ def timer_interval_ms(card: Dict[str, Any]) -> int:
 
 
 # Send card settings an older client does not know of: kept when it leaves them out.
-SEND_CARD_KEPT_KEYS = ("format", "template", "only_when")
+SEND_CARD_KEPT_KEYS = ("format", "template", "only_when", "input_id")
 
 
 def keep_card_fields(cards: Any, saved: Any, keys: Iterable[str]) -> Any:
@@ -799,8 +814,9 @@ def normalize_send_cards(raw: Any) -> List[Dict[str, Any]]:
 #   set_batch               the value becomes the line's batch number
 #   confirm_card            confirms the PLC action cards that name this card
 #   alarm                   an alarm while the value is on
+#   none                    nothing: the input only fires the cards with the trigger "Input changed"
 PLC_INPUT_ACTIONS = ("start_line", "stop_line", "run_level", "reset_counters", "product_sensor",
-                     "capture", "set_batch", "confirm_card", "alarm")
+                     "capture", "set_batch", "confirm_card", "alarm", "none")
 # How the value is read (PLCDriver.read), plus "counter": a 16-bit counter in the PLC.
 PLC_INPUT_DATA_TYPES = ("auto", "bool", "int16", "uint16", "int32", "real", "string", "counter")
 # Which change of the value a card reacts to: off to on, on to off, or either.
@@ -879,8 +895,8 @@ def normalize_plc_input(raw: Any, index: int = 0) -> Dict[str, Any]:
         raise ValueError(f"{label}: '{data_type}' is not a data type; use one of {', '.join(PLC_INPUT_DATA_TYPES)}")
     if data_type == "counter" and action != "product_sensor":
         raise ValueError(f"{label}: the PLC counter type is only for a product sensor")
-    if data_type == "string" and action != "set_batch":
-        raise ValueError(f"{label}: a string can only be read to set the batch number")
+    if data_type == "string" and action not in ("set_batch", "none"):
+        raise ValueError(f"{label}: a string can only be read to set the batch number, or by an input that only fires cards")
     edge = str(raw.get("edge") or "rising").strip().lower()
     if edge not in PLC_INPUT_EDGES:
         raise ValueError(f"{label}: the edge must be 'rising', 'falling' or 'change'")
