@@ -101,7 +101,7 @@
   - `normalize_only_when(raw: Any, label: str, required: bool = False) -> Optional[Dict]`: `None` when absent or empty, unless `required`.
   - `rules_pass(only_when: Optional[Dict], values: Mapping[str, Any]) -> bool`: `True` when `only_when` is `None`.
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
 
   ```python
   VALUES = {"result": "good", "class": "Apple", "code": "J-1", "input.speed": 12,
@@ -145,17 +145,17 @@
                                                 {"left": "code", "op": "empty", "right": "", "right_kind": "constant"}]}
   ```
 
-- [ ] **Step 2: Run the tests and make sure they fail.**
+- [x] **Step 2: Run the tests and make sure they fail.**
 
   Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_rules.py`
 
   Expected: FAIL (`ModuleNotFoundError`).
 
-- [ ] **Step 3: Implement it.** `rules_pass` maps `=` to `==` for `compare`, and treats a `MISSING` result as false.
+- [x] **Step 3: Implement it.** `rules_pass` maps `=` to `==` for `compare`, and treats a `MISSING` result as false.
 
-- [ ] **Step 4: Run the tests and make sure they pass.** Expected: PASS.
+- [x] **Step 4: Run the tests and make sure they pass.** Expected: PASS.
 
-- [ ] **Step 5: Commit.** Message: "Only-when rules: one check for cards and product checks".
+- [x] **Step 5: Commit.** Message: "Only-when rules: one check for cards and product checks".
 
 ### Task 2: "Only when" on every card
 
