@@ -6,6 +6,7 @@ are independent: the same code may be in more than one.
 """
 from __future__ import annotations
 
+import copy
 import csv
 import io
 import re
@@ -17,6 +18,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.product import DEFAULT_LIST_ID, DEFAULT_LIST_NAME, Product, ProductList, new_list_id
+from app.services.product_fields import clean_data, normalize_fields, refit_data
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -53,27 +55,51 @@ class ProductCatalog:
     def __init__(self) -> None:
         self._lists: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self._names: Dict[str, str] = {}
+        # Each list's own fields (app.services.product_fields).
+        self._fields: Dict[str, List[Dict[str, str]]] = {}
         self._lock = threading.Lock()
         self.loaded = False
 
-    def replace_all(self, lists: Dict[str, Tuple[str, List[Dict[str, Any]]]]) -> None:
-        """Every list at once: {list_id: (name, products)}, in the order the lists were created."""
+    def replace_all(self, lists: Dict[str, Tuple[str, List[Dict[str, Any]]]],
+                    fields: Optional[Dict[str, List[Dict[str, str]]]] = None) -> None:
+        """Every list at once: {list_id: (name, products)}, in the order the lists were created,
+        and {list_id: fields}."""
         tables = {list_id: {p["code"]: p for p in products} for list_id, (_, products) in lists.items()}
         names = {list_id: name for list_id, (name, _) in lists.items()}
         with self._lock:
             self._lists, self._names = tables, names
+            self._fields = {list_id: list(fields.get(list_id) or []) for list_id in lists} if fields else {}
             self.loaded = True
 
-    def replace_list(self, list_id: str, name: str, products: List[Dict[str, Any]]) -> None:
+    def replace_list(self, list_id: str, name: str, products: List[Dict[str, Any]],
+                     fields: Optional[List[Dict[str, str]]] = None) -> None:
         table = {p["code"]: p for p in products}
         with self._lock:
             self._lists = {**self._lists, list_id: table}
             self._names = {**self._names, list_id: name}
+            if fields is not None:
+                self._fields = {**self._fields, list_id: list(fields)}
 
     def remove_list(self, list_id: str) -> None:
         with self._lock:
             self._lists = {k: v for k, v in self._lists.items() if k != list_id}
             self._names = {k: v for k, v in self._names.items() if k != list_id}
+            self._fields = {k: v for k, v in self._fields.items() if k != list_id}
+
+    def fields(self, list_id: Optional[str]) -> List[Dict[str, str]]:
+        """A list's fields ([] for a list without fields, or no list)."""
+        with self._lock:
+            return copy.deepcopy(self._fields.get(list_id) or []) if list_id else []
+
+    def product_info(self, product: Dict[str, Any], list_id: Optional[str]) -> Dict[str, Any]:
+        """What goes with an item whose code is this product: its code, name, list and its values."""
+        return {
+            "code": product.get("code"),
+            "name": product.get("name"),
+            "list": self.list_name(list_id),
+            "list_id": list_id,
+            "fields": dict(product.get("data") or {}),
+        }
 
     def lookup(self, code: str, list_id: Optional[str]) -> Optional[Dict[str, Any]]:
         """The product a code stands for in one list. None when it is not listed, or no list is named."""
@@ -125,6 +151,7 @@ def _row(product: Product) -> Dict[str, Any]:
         "code": product.code,
         "name": product.name,
         "description": product.description,
+        "data": product.data or None,
         "created_at": product.created_at.isoformat() if product.created_at else None,
         "updated_at": product.updated_at.isoformat() if product.updated_at else None,
     }
@@ -134,6 +161,7 @@ def _list_row(product_list: ProductList, count: int) -> Dict[str, Any]:
     return {
         "id": product_list.id,
         "name": product_list.name,
+        "fields": list(product_list.fields or []),
         "count": count,
         "created_at": product_list.created_at.isoformat() if product_list.created_at else None,
         "updated_at": product_list.updated_at.isoformat() if product_list.updated_at else None,
@@ -166,10 +194,11 @@ def _list_name(name: Any) -> str:
     return text
 
 
-def _new_list(name: str, list_id: Optional[str] = None) -> ProductList:
+def _new_list(name: str, list_id: Optional[str] = None, fields: Optional[List[Dict[str, str]]] = None) -> ProductList:
     # The time is set here, to the microsecond: the lists are shown oldest
     # first, and the database's own clock only counts whole seconds.
-    return ProductList(id=list_id or new_list_id(), name=name, created_at=datetime.now(timezone.utc))
+    return ProductList(id=list_id or new_list_id(), name=name, fields=list(fields or []),
+                       created_at=datetime.now(timezone.utc))
 
 
 def list_name_from_file(filename: Optional[str]) -> str:
@@ -191,14 +220,14 @@ class ProductService:
         for product in (await db.execute(select(Product))).scalars().all():
             if product.list_id in by_list:
                 by_list[product.list_id][1].append(_row(product))
-        product_catalog.replace_all(by_list)
+        product_catalog.replace_all(by_list, {pl.id: list(pl.fields or []) for pl in lists})
         return len(product_catalog)
 
     @staticmethod
     async def _refresh_list(db: AsyncSession, product_list: ProductList) -> int:
         result = await db.execute(select(Product).where(Product.list_id == product_list.id))
         rows = [_row(p) for p in result.scalars().all()]
-        product_catalog.replace_list(product_list.id, product_list.name, rows)
+        product_catalog.replace_list(product_list.id, product_list.name, rows, list(product_list.fields or []))
         return len(rows)
 
     # ── Lists ─────────────────────────────────────────────────────────────────
@@ -253,33 +282,55 @@ class ProductService:
         raise ValueError(f"A product list named '{wanted}' already exists")
 
     @staticmethod
-    async def create_list(db: AsyncSession, name: Any) -> Dict[str, Any]:
+    async def create_list(db: AsyncSession, name: Any, fields: Any = None) -> Dict[str, Any]:
         lists = await ProductService._lists(db)
         if len(lists) >= MAX_PRODUCT_LISTS:
             raise ProductListLimit(f"There are already {MAX_PRODUCT_LISTS} product lists. Delete one first.")
         wanted = _list_name(name)
         if any(pl.name.lower() == wanted.lower() for pl in lists):
             raise ValueError(f"A product list named '{wanted}' already exists")
-        product_list = _new_list(wanted)
+        product_list = _new_list(wanted, fields=normalize_fields(fields))
         db.add(product_list)
         await db.commit()
         await db.refresh(product_list)
-        product_catalog.replace_list(product_list.id, product_list.name, [])
+        product_catalog.replace_list(product_list.id, product_list.name, [], list(product_list.fields or []))
         return _list_row(product_list, 0)
 
     @staticmethod
     async def rename_list(db: AsyncSession, list_id: str, name: Any) -> Optional[Dict[str, Any]]:
+        return await ProductService.update_list(db, list_id, name=name)
+
+    @staticmethod
+    async def update_list(db: AsyncSession, list_id: str, name: Any = None, fields: Any = None) -> Optional[Dict[str, Any]]:
+        """Rename a list, change its fields, or both. With new fields every product's values are
+        checked again: what no longer fits is dropped, and the answer's ``dropped`` says how many."""
+        if name is None and fields is None:
+            raise ValueError("Send a new name for the list, or its fields")
         product_list = await db.get(ProductList, list_id)
         if product_list is None:
             return None
-        wanted = _list_name(name)
-        if any(pl.name.lower() == wanted.lower() for pl in await ProductService._lists(db) if pl.id != list_id):
-            raise ValueError(f"A product list named '{wanted}' already exists")
-        product_list.name = wanted
+        if name is not None:
+            wanted = _list_name(name)
+            if any(pl.name.lower() == wanted.lower() for pl in await ProductService._lists(db) if pl.id != list_id):
+                raise ValueError(f"A product list named '{wanted}' already exists")
+            product_list.name = wanted
+        dropped = 0
+        if fields is not None:
+            new_fields = normalize_fields(fields)
+            product_list.fields = new_fields
+            result = await db.execute(select(Product).where(Product.list_id == list_id))
+            for product in result.scalars().all():
+                data, lost = refit_data(new_fields, product.data)
+                if lost or data != product.data:
+                    product.data = data
+                dropped += lost
         await db.commit()
         await db.refresh(product_list)
         count = await ProductService._refresh_list(db, product_list)
-        return _list_row(product_list, count)
+        row = _list_row(product_list, count)
+        if fields is not None:
+            row["dropped"] = dropped
+        return row
 
     @staticmethod
     async def delete_list(db: AsyncSession, list_id: str, used_by: Optional[List[str]] = None) -> bool:
@@ -327,9 +378,10 @@ class ProductService:
     async def create(db: AsyncSession, data: Dict[str, Any]) -> Dict[str, Any]:
         code, name, description = _validate(data.get("code"), data.get("name"), data.get("description"))
         product_list = await ProductService.resolve_list(db, data.get("list_id"), create=True)
+        values = clean_data(list(product_list.fields or []), data.get("data"))
         if await ProductService._code_taken(db, product_list.id, code):
             raise ValueError(f"Product code '{code}' is already in '{product_list.name}'")
-        product = Product(list_id=product_list.id, code=code, name=name, description=description)
+        product = Product(list_id=product_list.id, code=code, name=name, description=description, data=values)
         db.add(product)
         await db.commit()
         await db.refresh(product)
@@ -346,12 +398,18 @@ class ProductService:
             data.get("name", product.name),
             data.get("description", product.description),
         )
+        product_list = await db.get(ProductList, product.list_id)
+        # Left out, the product keeps its values; null empties them.
+        values = product.data
+        if "data" in data:
+            values = clean_data(list(product_list.fields or []) if product_list else [], data["data"])
         if code != product.code and await ProductService._code_taken(db, product.list_id, code):
             raise ValueError(f"Product code '{code}' is already in this list")
         product.code, product.name, product.description = code, name, description
+        if values != product.data:
+            product.data = values
         await db.commit()
         await db.refresh(product)
-        product_list = await db.get(ProductList, product.list_id)
         if product_list is not None:
             await ProductService._refresh_list(db, product_list)
         return _row(product)

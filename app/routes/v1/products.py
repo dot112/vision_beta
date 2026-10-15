@@ -85,7 +85,7 @@ async def list_product_lists(db: AsyncSession = Depends(get_db), user: User = De
 @router.post("/lists", status_code=201, summary="Create an empty product list (Level 2+ Supervisor)")
 async def create_product_list(body: Dict[str, Any], db: AsyncSession = Depends(get_db), user: User = Depends(require_supervisor)) -> Dict[str, Any]:
     try:
-        product_list = await ProductService.create_list(db, body.get("name"))
+        product_list = await ProductService.create_list(db, body.get("name"), fields=body.get("fields"))
     except ProductListLimit as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
@@ -94,15 +94,22 @@ async def create_product_list(body: Dict[str, Any], db: AsyncSession = Depends(g
     return {**product_list, "used_by": []}
 
 
-@router.put("/lists/{list_id}", summary="Rename a product list (Level 2+ Supervisor)")
+@router.put("/lists/{list_id}", summary="Rename a product list or change its fields (Level 2+ Supervisor)")
 async def rename_product_list(list_id: str, body: Dict[str, Any], db: AsyncSession = Depends(get_db), user: User = Depends(require_supervisor)) -> Dict[str, Any]:
+    """``name``: the list's new name. ``fields``: the list's fields, ``[{"key", "label", "type"}]``
+    with the type number, text or yes_no. Values that no longer fit their field are removed;
+    ``dropped`` says how many."""
     try:
-        product_list = await ProductService.rename_list(db, list_id, body.get("name"))
+        product_list = await ProductService.update_list(db, list_id, name=body.get("name"), fields=body.get("fields"))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if product_list is None:
         raise HTTPException(status_code=404, detail="Product list not found")
-    _audit(user, "RENAME_PRODUCT_LIST", f"Renamed a product list to '{product_list['name']}'")
+    if body.get("name") is not None:
+        _audit(user, "RENAME_PRODUCT_LIST", f"Renamed a product list to '{product_list['name']}'")
+    if body.get("fields") is not None:
+        _audit(user, "CHANGE_PRODUCT_FIELDS",
+               f"Changed the fields of '{product_list['name']}' ({product_list['dropped']} value(s) removed)")
     return {**product_list, "used_by": await _readers(db, list_id)}
 
 

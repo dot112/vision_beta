@@ -267,7 +267,7 @@ Places where the spec leaves a choice open:
     - `POST /products` and `PUT /products/{id}` take `data`.
     - Bad fields or bad data give 422, with a message naming the field.
 
-- [ ] **Step 1: Write the failing tests.** Use the `lists` fixture from `tests/test_product_lists.py` (import it as other tests do).
+- [x] **Step 1: Write the failing tests.** Use the `lists` fixture from `tests/test_product_lists.py` (import it as other tests do).
 
   ```python
   def test_a_list_gets_fields_and_its_products_carry_data(client, admin_headers, lists):
@@ -298,16 +298,16 @@ Places where the spec leaves a choice open:
 
   `operator_headers` is the fixture at `tests/test_plc_inputs.py:1098`; import it the same way.
 
-- [ ] **Step 2: Run the tests and make sure they fail.** Expected: FAIL (no `fields` in the answer).
+- [x] **Step 2: Run the tests and make sure they fail.** Expected: FAIL (no `fields` in the answer).
 
-- [ ] **Step 3: Implement it.**
+- [x] **Step 3: Implement it.**
   - `update_list` changes the fields and refits every product of the list in one commit.
   - Refresh the catalog after the commit, as `_refresh_list` does today.
   - The audit text says what changed: "Changed the fields of 'Juices' (2 values removed)".
 
-- [ ] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_product_data.py tests/test_product_lists.py`. Expected: PASS.
+- [x] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_product_data.py tests/test_product_lists.py`. Expected: PASS.
 
-- [ ] **Step 5: Commit.** Message: "Product lists have fields and products carry their data (API)".
+- [x] **Step 5: Commit.** Message: "Product lists have fields and products carry their data (API)".
 
 ### Task 4: CSV import and export with fields
 
