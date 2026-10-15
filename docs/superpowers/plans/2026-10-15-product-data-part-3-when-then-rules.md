@@ -386,11 +386,11 @@
 **Files:**
 - Modify: `README.md` (when-then rules: the input trigger, Only when, product checks, reason code 7, and the juice example), `FILE_TREE.md`, `PROJECT_DESCRIPTION.md`, `API_KEY_QUICKSTART.md` (the `product_checks` line key, which needs `configuration:write`)
 
-- [ ] **Step 1: Write the docs.** Use the spec's juice line as the worked example.
+- [x] **Step 1: Write the docs.** Use the spec's juice line as the worked example.
 
-- [ ] **Step 2: Run the full checks.** Run `bash backup/scratch-tools/pt.sh` and ruff. Expected: no failures, and ruff clean.
+- [x] **Step 2: Run the full checks.** Run `bash backup/scratch-tools/pt.sh` and ruff. Expected: no failures, and ruff clean.
 
-- [ ] **Step 3: Run the mutation checks.** Expected: every mutation is CAUGHT.
+- [x] **Step 3: Run the mutation checks.** Expected: every mutation is CAUGHT.
   - the rules check placed before re-arm;
   - a missing left being false;
   - `empty` being true on missing;
@@ -400,7 +400,7 @@
   - checks only for a known code;
   - R7 turning Sync on.
 
-- [ ] **Step 4: Live check on the scratch copy.** Use `opcua_sim.py` from part 2, with a Bool `Lane3Full` added, and a test MQTT broker on a spare port. Set up the full juice example:
+- [x] **Step 4: Live check on the scratch copy.** Use `opcua_sim.py` from part 2, with a Bool `Lane3Full` added, and a test MQTT broker on a spare port. Set up the full juice example:
   - the list "Juices", with `recipe`, `lane` and `expected_class`;
   - the check "Wrong bottle";
   - the cards Send recipe, Sort (`if(result == "good", product.lane, 9)`), Kicker, Report (text, MQTT) and Lane 3 full (input changed → message).
@@ -411,10 +411,10 @@
 
   Against PLCSIM, test **only with the owner's OK**.
 
-- [ ] **Step 5: Update the vault.**
+- [x] **Step 5: Update the vault.**
   - The decision note: all three parts done, with counts.
   - Status and branches.
   - The session note.
   - Open questions: what was not tried on real hardware.
 
-- [ ] **Step 6: Commit.** Message: "Docs for when-then rules".
+- [x] **Step 6: Commit.** Message: "Docs for when-then rules".

@@ -105,7 +105,9 @@ def test_a_wrong_bottle_is_rejected(apples, recorder):  # noqa: F811
 
 
 def test_checks_need_a_known_code(apples, recorder):  # noqa: F811
-    runtime = _check_line(apples, [{"camera_id": "top"}, {"camera_id": "qr", "role": "qr", "product_list_id": LIST}], [CHECK])
+    any_code = {"name": "Any code", "only_when": {"rules": [{"left": "code", "op": "not_empty"}]}}
+    runtime = _check_line(apples, [{"camera_id": "top"}, {"camera_id": "qr", "role": "qr", "product_list_id": LIST}],
+                          [CHECK, any_code])
 
     async def steps():
         runtime.on_qr_read("qr", "NOPE", "QR_CODE")               # a code in no list: no product to check
@@ -147,3 +149,19 @@ def test_the_export_has_a_product_check_column():
     rows = list(csv.reader(io.StringIO(csv_rows([record({"product_check": "Wrong bottle"}), record(None)], timezone.utc))))
     column = header.index("product_check")
     assert rows[0][column] == "Wrong bottle" and rows[1][column] == ""
+
+
+def test_checks_never_see_the_result(apples, recorder):  # noqa: F811
+    # A check decides the result, so a rule on the result is never true for it (the value is missing).
+    on_result = {"name": "On the result", "only_when": {"rules": [{"left": "result", "op": "not_empty"}]}}
+    runtime = _check_line(apples, [{"camera_id": "top"}, {"camera_id": "qr", "role": "qr", "product_list_id": LIST}],
+                          [on_result], name="Result check")
+
+    async def steps():
+        runtime.on_qr_read("qr", "LISTED", "QR_CODE")
+        await asyncio.sleep(0.01)
+        _cross(runtime.counter, "top", class_name="Apple")
+        await asyncio.sleep(0.12)
+
+    _run(steps)
+    assert [payload["result"] for payload, _ in runtime.sent] == ["PASSED"]

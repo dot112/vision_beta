@@ -188,6 +188,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │   ├── production_records_service.py   # recorder (queue + batch writer, retention), filters, summary, restored counters
 │   │   ├── qr_service.py
 │   │   ├── records_export.py   # CSV and .xlsx (zipfile + XML) files of the records
+│   │   ├── rules.py   # only-when rules of cards and product checks
 │   │   ├── rule_service.py
 │   │   ├── send_dispatcher_service.py
 │   │   ├── settings_persistence_service.py
@@ -276,13 +277,18 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_camera_orientation.py
     ├── test_camera_roi_and_qr.py
     ├── test_camera_trigger_modes.py # triggered cameras on a line: products and code reads from each picture
+    ├── test_card_rules.py        # Only when on output actions and send cards
+    ├── test_card_values_js.py    # assets/card_values.js, run with node
     ├── test_code_types.py
     ├── test_detect_hardware.py
     ├── test_error_alarms.py
+    ├── test_event_values.py      # one set of value names per event; input value names
     ├── test_flow_engine.py
+    ├── test_formula.py           # the formula language: what it computes and what it refuses
     ├── test_health.py
     ├── test_ip_camera_http.py
     ├── test_industrial_camera.py    # the GigE / USB3 Vision driver and its API, on a stand-in camera
+    ├── test_input_trigger.py     # the trigger Input changed
     ├── test_inputs_see_output_pulses.py # an input reads what an output action's pulse switches on
     ├── test_joined_cameras.py
     ├── test_lines.py
@@ -302,8 +308,8 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_plc_inputs_e2e.py   # a real Modbus TCP driver against test codes/plc_simulator.py
     ├── test_plc_protocols.py
     ├── test_plc_read.py
+    ├── test_product_checks.py    # product checks: settings, reason product_check, Sync, export column
     ├── test_product_data.py      # migration 0007, fields and data in the API and CSV, the product with the item
-    ├── test_write_any_value.py   # value sources, If no value, text writes, the formula check, Test with a code
     ├── test_product_fields.py
     ├── test_product_fields_js.py # assets/product_fields.js, run with node
     ├── test_product_lists.py
@@ -314,6 +320,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_request_load_protection.py
     ├── test_resilience.py
     ├── test_rule_engine.py
+    ├── test_rules.py             # only-when rules
     ├── test_segment_masks.py        # segmentation masks worked out inside each object's box
     ├── test_send_cards.py
     ├── test_send_timer.py           # send cards with the Timer trigger: a message every N ms
@@ -329,7 +336,8 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_trigger_inspection.py
     ├── test_trigger_numbers.py      # a Take a picture input's trigger number; the triggers a camera ticks
     ├── test_video_overlay.py        # the video's status bar: same size on screen; a stopped line says so
-    └── test_vision_pipeline.py
+    ├── test_vision_pipeline.py
+    └── test_write_any_value.py   # value sources, If no value, text writes, the formula check, Test with a code
 ```
 
 ## Environment and runtime files not listed
