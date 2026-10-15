@@ -7,7 +7,7 @@
     <title>Universalz Vision — Line control</title>
     <link rel="icon" type="image/png" href="/assets/universalz_mark.png">
     <link rel="preload" href="/assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="stylesheet" href="/assets/dashboard.css?v=3.3.0">
+    <link rel="stylesheet" href="/assets/dashboard.css?v=3.4.0">
     <script>
         // Apply the saved theme before the first paint (no dark-to-light flash).
         try { document.documentElement.setAttribute("data-theme", localStorage.getItem("theme") === "light" ? "light" : "dark"); } catch (_) {}
@@ -4801,9 +4801,10 @@ function setPlcActionRuntime(cards) {
 
 // A card with a confirmation signal: whether the PLC confirmed its last fire.
 function plcConfirmTagHtml(card) {
-    if (!card.confirm_input_id) return "";
     const live = _plcActionRuntime[card.id] || {};
     const title = escapeHtml((live.result || {}).message || "");
+    if (live.status === "skipped") return `<span class="tag neutral" title="${title}">Skipped</span>`;
+    if (!card.confirm_input_id) return "";
     if (live.status === "confirmed") return `<span class="tag ok" title="${title}">Confirmed</span>`;
     if (live.status === "not_confirmed") return `<span class="tag bad" title="${title}">Not confirmed</span>`;
     return `<span class="tag neutral" title="After each fire, this action waits for its confirmation signal">Waits for a signal</span>`;
@@ -4812,9 +4813,10 @@ function plcConfirmTagHtml(card) {
 // While Line setup is open, the cards that wait for a confirmation follow the server.
 async function refreshPlcActionRuntime() {
     if (document.hidden || !currentAuthToken || !document.getElementById("tabActionTrigger")?.classList.contains("active")) return;
-    if (!_plcActionCards.some(c => c.confirm_input_id)) return;
+    if (!_plcActionCards.some(c => c.confirm_input_id || PLC_OPTIONAL_SOURCES.includes(c.value_source))) return;
     try {
-        const res = await fetch("/api/v1/plc/actions", { cache: "no-store" });
+        const lineId = window.ProductionLines ? ProductionLines.lineId : "";
+        const res = await fetch(`/api/v1/plc/actions${lineId ? `?line_id=${encodeURIComponent(lineId)}` : ""}`, { cache: "no-store" });
         if (!res.ok) return;
         const cards = await res.json();
         if (!Array.isArray(cards)) return;
@@ -4938,6 +4940,15 @@ async function testPlcActionCard(cardId) {
         renderPlcActionCards();
     }
 
+    // A card that writes a value of the item's product is tested with the product of a code.
+    let code;
+    if (PLC_OPTIONAL_SOURCES.includes(card.value_source) && String(card.operation || "").toLowerCase() === "write") {
+        code = window.prompt("Test with the product of which code? Leave it empty to test with no product (the action then skips, or writes its default).", card._testCode || "");
+        if (code === null) return;
+        code = code.trim();
+        card._testCode = code;
+    }
+
     // Immediate visual feedback
     const cardEl = document.getElementById(`plcCard_${cardId}`);
     if (cardEl) {
@@ -4952,13 +4963,16 @@ async function testPlcActionCard(cardId) {
         const headers = { "Content-Type": "application/json" };
         if (currentAuthToken) headers["Authorization"] = `Bearer ${currentAuthToken}`;
 
-        const res = await fetch(`/api/v1/plc/actions/${encodeURIComponent(cardId)}/test`, {
+        const lineId = window.ProductionLines ? ProductionLines.lineId : "";
+        const res = await fetch(`/api/v1/plc/actions/${encodeURIComponent(cardId)}/test${lineId ? `?line_id=${encodeURIComponent(lineId)}` : ""}`, {
             method: "POST",
             headers: headers,
-            body: JSON.stringify({ confirm: true, card: card })
+            body: JSON.stringify({ confirm: true, card: card, code: code || undefined })
         });
         const data = await res.json();
-        if (res.ok && data.success) {
+        if (res.ok && data.status === "skipped") {
+            if (stEl) stEl.innerText = `Test: ${data.message}`;
+        } else if (res.ok && data.success) {
             card.fired_count = (card.fired_count || 0) + 1;
             card.last_fired = new Date().toLocaleTimeString();
             savePlcActionCards();
@@ -5079,7 +5093,14 @@ const PLC_VALUE_SOURCES = [
     { id: "class_index", label: "Class number", short: "class number" },
     { id: "reject_reason_code", label: "Reject reason code", short: "reject reason" },
     { id: "batch", label: "Batch number (a number only)", short: "batch number" },
+    { id: "product_field", label: "A field of the item's product", short: "product field" },
+    { id: "code", label: "The code read (text: OPC UA only)", short: "code" },
+    { id: "product_name", label: "The product's name (text: OPC UA only)", short: "product name" },
+    { id: "input", label: "The value of an input", short: "input value" },
+    { id: "formula", label: "A formula", short: "formula" },
 ];
+// Sources whose value can be missing (an unknown code, an empty field): the card skips the write or writes a default.
+const PLC_OPTIONAL_SOURCES = ["product_field", "code", "product_name", "input", "formula"];
 const PLC_VALUE_SOURCE_HINTS = {
     fixed: "",
     result_code: "1 for a good product, 2 for a rejected one.",
@@ -5089,7 +5110,133 @@ const PLC_VALUE_SOURCE_HINTS = {
     class_index: "The product's class as a number: its place in the camera's \"Products to count\" list followed by \"Defects to reject\", from 1. 0 when it is in neither.",
     reject_reason_code: "0 not rejected, 1 vision class, 2 code not in the list, 3 code in the reject list, 4 no code read, 5 a joined camera gave no result, 6 nothing detected (a camera in trigger mode), 9 other.",
     batch: "The line's batch number. It must be a number; until a batch is set, the action fails and says why.",
+    product_field: "A field of the product whose code was read (Products page, Fields). Yes / no is written as 1 / 0; a text field only to an OPC UA String tag.",
+    code: "The code read on the item, as text. Only an OPC UA controller takes text (a String tag).",
+    product_name: "The name of the product whose code was read, as text. Only an OPC UA controller takes text (a String tag).",
+    input: "The last value an input of this line read. Give the input a value name in its dialog.",
+    formula: "Worked out from the item's values when the action fires. Press Check to see that it is right.",
 };
+
+// The product lists (GET /products/lists), for the field picker; read again each time the dialog opens.
+let _cardProductLists = null;
+async function loadCardProductLists() {
+    try {
+        const headers = currentAuthToken ? { "Authorization": `Bearer ${currentAuthToken}` } : {};
+        const res = await fetch("/api/v1/products/lists", { headers, cache: "no-store" });
+        if (res.ok) _cardProductLists = (await res.json()).lists || [];
+    } catch (_) { /* the picker then shows no fields */ }
+}
+function cardFieldChoices() {
+    const cameras = window.ProductionLines ? ProductionLines.lineCameras() : [];
+    return window.CardValues ? CardValues.fieldChoices(cameras, _cardProductLists || []) : [];
+}
+function cardValueInputs() {
+    return window.PlcSignals && PlcSignals.valueInputs ? PlcSignals.valueInputs() : [];
+}
+const PLC_CARD_ID = "document.getElementById('plcModalBodyContainer').dataset.cardId";
+
+function plcFieldPickerHtml(card) {
+    const fields = cardFieldChoices();
+    const current = card.value_field || "";
+    let options = `<option value="" ${current ? "" : "selected"}>Choose a field</option>`
+        + fields.map(f => `<option value="${escapeHtml(f.key)}" ${f.key === current ? "selected" : ""}>${escapeHtml(f.label)} (product.${escapeHtml(f.key)}, ${escapeHtml(f.list)})</option>`).join("");
+    if (current && !fields.some(f => f.key === current)) {
+        options += `<option value="${escapeHtml(current)}" selected>product.${escapeHtml(current)} (in no list of this line)</option>`;
+    }
+    return `<div class="form-group" style="margin:0">
+        <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcValueFieldInput">Product field:</label>
+        <select id="plcValueFieldInput" class="form-input" onchange="updatePlcCardProp(${PLC_CARD_ID}, 'value_field', this.value); refreshPlcModalBody(${PLC_CARD_ID}); renderPlcActionCards()">${options}</select>
+        ${fields.length ? "" : `<div style="font-size:10px;color:var(--text-muted);margin-top:3px">The product lists of this line's code readers have no fields yet. Add them on the Products page with Fields.</div>`}
+    </div>`;
+}
+
+function plcInputPickerHtml(card) {
+    const inputs = cardValueInputs();
+    const current = card.value_input || "";
+    let options = `<option value="" ${current ? "" : "selected"}>Choose an input</option>`
+        + inputs.map(i => `<option value="${escapeHtml(i.value_name)}" ${i.value_name === current ? "selected" : ""}>${escapeHtml(i.name)} (input.${escapeHtml(i.value_name)})</option>`).join("");
+    if (current && !inputs.some(i => i.value_name === current)) {
+        options += `<option value="${escapeHtml(current)}" selected>input.${escapeHtml(current)} (no input has this name)</option>`;
+    }
+    return `<div class="form-group" style="margin:0">
+        <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcValueInputInput">Input:</label>
+        <select id="plcValueInputInput" class="form-input" onchange="updatePlcCardProp(${PLC_CARD_ID}, 'value_input', this.value); renderPlcActionCards()">${options}</select>
+        ${inputs.length ? "" : `<div style="font-size:10px;color:var(--text-muted);margin-top:3px">No input of this line has a value name yet. Give one in the input's dialog (Inputs).</div>`}
+    </div>`;
+}
+
+function plcFormulaHtml(card) {
+    const examples = (window.CardValues ? CardValues.FORMULA_EXAMPLES : [])
+        .map(([formula, what]) => `<code>${escapeHtml(formula)}</code> ${escapeHtml(what)}`).join("; ");
+    return `<div class="form-group" style="margin:0;grid-column:1/-1">
+        <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcFormulaInput">Formula:</label>
+        <div style="display:flex;gap:8px">
+            <input type="text" id="plcFormulaInput" class="form-input" maxlength="200" value="${escapeHtml(card.formula || "")}" placeholder='if(result == "good", product.lane, 9)' oninput="updatePlcCardProp(${PLC_CARD_ID}, 'formula', this.value); renderPlcActionCards()" />
+            <button type="button" class="btn-action btn-outline" onclick="checkPlcFormula()">Check</button>
+        </div>
+        <div id="plcFormulaCheck" class="plc-formula-check"></div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:4px">Values: result, class, confidence, code, code_status, the counts, batch, product.&lt;field&gt;, input.&lt;value name&gt;. Text in double quotes. Functions: if(), round(), min(), max(), abs(), int(), text(). Examples: ${examples}.</div>
+    </div>`;
+}
+
+async function checkPlcFormula() {
+    const out = document.getElementById("plcFormulaCheck");
+    const input = document.getElementById("plcFormulaInput");
+    const lineId = window.ProductionLines ? ProductionLines.lineId : null;
+    if (!out || !input || !lineId) return;
+    out.className = "plc-formula-check";
+    out.textContent = "Checking…";
+    try {
+        const headers = { "Content-Type": "application/json" };
+        if (currentAuthToken) headers["Authorization"] = `Bearer ${currentAuthToken}`;
+        const res = await fetch(`/api/v1/lines/${encodeURIComponent(lineId)}/formula/check`, { method: "POST", headers, body: JSON.stringify({ formula: input.value }) });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        if (data.ok) {
+            out.className = `plc-formula-check ${data.warnings.length ? "warn" : "ok"}`;
+            out.textContent = data.warnings.length ? `Correct, but: ${data.warnings.join(" ")}`
+                : `Correct. It uses: ${data.names.length ? data.names.join(", ") : "no values"}.`;
+        } else {
+            out.className = "plc-formula-check bad";
+            out.textContent = data.error;
+        }
+    } catch (e) {
+        out.className = "plc-formula-check bad";
+        out.textContent = `Could not check the formula: ${e.message}`;
+    }
+}
+
+// A default value typed in the box: a number when it reads as one, else text.
+function plcDefaultValue(text) {
+    const value = String(text || "").trim();
+    return /^[+-]?(\d+(\.\d*)?|\.\d+)$/.test(value) ? Number(value) : value;
+}
+function setPlcIfMissing(value) {
+    const cardId = document.getElementById("plcModalBodyContainer").dataset.cardId;
+    const card = getEditablePlcActionCard(cardId);
+    if (!card) return;
+    card.if_missing = value;
+    if (value === "default" && (card.default_value === undefined || card.default_value === "")) card.default_value = 0;
+    refreshPlcModalBody(cardId);
+    renderPlcActionCards();
+}
+function plcIfMissingHtml(card) {
+    const mode = card.if_missing === "default" ? "default" : "skip";
+    return `<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px;margin-top:12px">
+        <div class="form-group" style="margin:0">
+            <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcIfMissingInput">If there is no value:</label>
+            <select id="plcIfMissingInput" class="form-input" onchange="setPlcIfMissing(this.value)">
+                <option value="skip" ${mode === "skip" ? "selected" : ""}>Skip the write</option>
+                <option value="default" ${mode === "default" ? "selected" : ""}>Write this value</option>
+            </select>
+        </div>
+        ${mode === "default" ? `<div class="form-group" style="margin:0">
+            <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcDefaultValueInput">Value to write instead:</label>
+            <input type="text" id="plcDefaultValueInput" class="form-input" maxlength="256" value="${escapeHtml(String(card.default_value ?? 0))}" oninput="updatePlcCardProp(${PLC_CARD_ID}, 'default_value', plcDefaultValue(this.value))" />
+        </div>` : ""}
+    </div>
+    <div style="font-size:10px;color:var(--text-muted);margin-top:4px">No value: an unknown code, an empty field, an input not read yet, or a formula that cannot be worked out. A skipped write shows on the card as <b>Skipped</b> and raises no alarm.</div>`;
+}
 
 function plcCardSummary(c, plcEndpoints) {
     const targetEp = plcEndpoints.find(e => e.id === c.plc_endpoint_id);
@@ -5107,7 +5254,8 @@ function plcCardSummary(c, plcEndpoints) {
     if (opName === "PULSE") actionSummary = `PULSE ${c.duration_ms ?? 150}ms`;
     else if (opName === "WRITE") {
         const source = PLC_VALUE_SOURCES.find(v => v.id === (c.value_source || "fixed"));
-        actionSummary = source && source.id !== "fixed" ? `WRITE ${source.short}` : `WRITE ${c.write_value ?? 1}`;
+        const writes = window.CardValues ? CardValues.valueSourceText(c) : null;
+        actionSummary = writes ? `WRITE ${writes}` : source && source.id !== "fixed" ? `WRITE ${source.short}` : `WRITE ${c.write_value ?? 1}`;
         if (String(c.strobe_address || "").trim()) actionSummary += ` + strobe ${String(c.strobe_address).trim()}`;
     }
     if (c.delay_ms && c.delay_ms > 0) actionSummary += ` (Delay ${c.delay_ms}ms)`;
@@ -5240,6 +5388,15 @@ function openPlcActionSettingsModal(cardId) {
     if (!card) return;
     _activeEditingPlcCardId = cardId;
     _plcActionEditingDraft = JSON.parse(JSON.stringify(card));
+    // The lists' fields can have changed since the dialog was last open. Only the field picker
+    // shows them: the dialog is drawn again only for a card that writes a product field.
+    loadCardProductLists().then(() => {
+        const draft = getEditablePlcActionCard(cardId);
+        if (_activeEditingPlcCardId === cardId && draft && draft.value_source === "product_field"
+            && document.getElementById("plcActionSettingsModal")?.classList.contains("active")) {
+            refreshPlcModalBody(cardId);
+        }
+    });
 
     const titleEl = document.getElementById("plcModalActionTitle");
     if (titleEl) titleEl.innerText = card.name || "Output action";
@@ -5445,8 +5602,13 @@ function refreshPlcModalBody(cardId) {
                     <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcWriteValueInput">Number to write:</label>
                     <input type="number" id="plcWriteValueInput" class="form-input" value="${escapeHtml(card.write_value ?? 1)}" oninput="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'write_value', parseFloat(this.value)||0); renderPlcActionCards()" />
                 </div>` : ''}
+                ${valueSource === 'product_field' ? plcFieldPickerHtml(card) : ''}
+                ${valueSource === 'input' ? plcInputPickerHtml(card) : ''}
+                ${valueSource === 'formula' ? plcFormulaHtml(card) : ''}
             </div>
-            ${PLC_VALUE_SOURCE_HINTS[valueSource] ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px">${escapeHtml(PLC_VALUE_SOURCE_HINTS[valueSource])} The value is taken when the action fires; the Test button writes example values (a rejected product, counts of 1, class 1, batch 1).</div>` : ''}
+            ${PLC_VALUE_SOURCE_HINTS[valueSource] ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px">${escapeHtml(PLC_VALUE_SOURCE_HINTS[valueSource])} The value is taken when the action fires; the Test button writes example values (a rejected product, counts of 1, class 1, batch 1)${PLC_OPTIONAL_SOURCES.includes(valueSource) ? ", and asks for a product code to test with" : ""}.</div>` : ''}
+            ${window.CardValues && CardValues.writesText(card, cardFieldChoices()) && protoDef.label !== "OPC UA" ? `<div class="plc-text-warn">This action writes text, and only an OPC UA controller takes text (a String tag). Choose an OPC UA channel, or a value that is a number.</div>` : ''}
+            ${PLC_OPTIONAL_SOURCES.includes(valueSource) ? plcIfMissingHtml(card) : ''}
             <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px;margin-top:12px">
                 <div class="form-group" style="margin:0">
                     <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcStrobeInput">Then pulse strobe address:</label>
@@ -7175,8 +7337,9 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
     setInterval(tick, 1000);
 })();
 </script>
+<script src="/assets/card_values.js?v=2.8.0"></script>
 <script src="/assets/camera_settings.js?v=2.5.0"></script>
-<script src="/assets/plc_signals.js?v=2.6.0"></script>
+<script src="/assets/plc_signals.js?v=2.8.0"></script>
 <script src="/assets/product_fields.js?v=2.7.0"></script>
 <script src="/assets/production_lines.js?v=2.7.0"></script>
 <script>

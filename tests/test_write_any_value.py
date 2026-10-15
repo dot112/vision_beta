@@ -202,3 +202,25 @@ def test_the_test_button_can_use_a_code(plc, monkeypatch):  # noqa: F811
     assert result["status"] == "skipped"
     result = asyncio.run(PLCDispatcherService.dispatch_manual(card))
     assert result["status"] == "skipped"
+
+
+def test_the_test_route_hands_the_card_its_line_and_code(client, admin_headers, monkeypatch):
+    seen = {}
+
+    async def fake(cls, card, code=None):
+        seen.update(card=card, code=code)
+        return {"success": True, "message": "ok", "status": "sent"}
+
+    monkeypatch.setattr(PLCDispatcherService, "dispatch_manual", classmethod(fake))
+    line = client.post("/api/v1/lines", json={"name": "Test route line"}, headers=admin_headers)
+    assert line.status_code in (200, 201), line.text
+    line_id = line.json()["id"]
+    card = {"id": "route_card", "name": "Sort", "operation": "WRITE", "value_source": "code", "plc_endpoint_id": "ep-x",
+            "target_address": "DB1.Code"}
+    try:
+        res = client.post(f"/api/v1/plc/actions/route_card/test?line_id={line_id}",
+                          json={"confirm": True, "card": card, "code": "J-1"}, headers=admin_headers)
+        assert res.status_code == 200, res.text
+        assert seen["card"]["line_id"] == line_id and seen["code"] == "J-1"
+    finally:
+        client.delete(f"/api/v1/lines/{line_id}", headers=admin_headers)

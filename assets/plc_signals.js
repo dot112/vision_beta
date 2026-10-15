@@ -184,6 +184,8 @@
             debounce_ms: clamp(card.debounce_ms, 0, 5000, 0),
             action: action.id,
         };
+        const valueName = String(card.value_name || "").trim();
+        if (valueName && card.data_type !== "counter") out.value_name = valueName;
         if (action.id === "capture") {
             out.trigger_no = clamp(card.trigger_no, 1, MAX_TRIGGER_NO, nextTriggerNo(card.id));
             // A card saved before cameras chose their triggers still names its camera; the server turns that into a tick.
@@ -710,6 +712,13 @@
                     <input type="number" id="plcSigDebounce" class="form-input" min="0" max="5000" step="10" value="${esc(draft.debounce_ms ?? 0)}" oninput="PlcSignals.set('debounce_ms', this.value)" />
                 </div>
             </div>
+            ${draft.data_type !== "counter" ? `
+            <div class="form-group" style="margin:0">
+                <label class="form-label" for="plcSigValueName">Value name (optional)</label>
+                <input type="text" id="plcSigValueName" class="form-input" maxlength="32" value="${esc(draft.value_name || "")}" placeholder="for example speed" oninput="PlcSignals.set('value_name', this.value.trim())">
+                <div class="sig-note">Use the value this input reads in formulas and output actions as <b>input.&lt;value name&gt;</b>: letters, digits and _, starting with a letter.</div>
+            </div>` : ""}
+
             <div class="sig-note" style="margin-top:-8px">The signals of one channel are read together, at the shortest time among them (50 to 10000 ms). A new value counts once it has lasted the debounce time (0 to 5000 ms). A sensor that switches faster than the read time is missed: let the PLC count the products and read its counter with <b>Product sensor</b> and the type <b>PLC counter</b>.</div>
 
             ${action.id === "capture" ? `
@@ -773,8 +782,15 @@
         }));
     }
 
+    // The line's inputs that name their value, for the output action dialog's "Input" value.
+    function valueInputs() {
+        return state.cards.filter((card) => String(card.value_name || "").trim())
+            .map((card) => ({ value_name: String(card.value_name).trim(), name: card.name || card.id }));
+    }
+
     window.PlcSignals = {
         load,
+        valueInputs,
         render,
         add,
         apply,

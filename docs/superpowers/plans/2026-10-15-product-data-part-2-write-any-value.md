@@ -459,7 +459,7 @@ When there is no value, it skips the write or writes a default. Text goes to OPC
 
   Part 3 reuses `valueChoices` for "Only when".
 
-- [ ] **Step 1: Write the failing node test.**
+- [x] **Step 1: Write the failing node test.**
 
   ```
   CardValues.valueChoices({fields:[{key:"lane",label:"Lane",type:"number",list:"Juices"}], inputs:[{value_name:"speed",name:"Belt speed"}]}).map(c => c.name)
@@ -467,9 +467,9 @@ When there is no value, it skips the write or writes a default. Text goes to OPC
 
   It ends with `["product.name","product.code","product.list","product.lane","input.speed"]`, and it starts with `"result"`. Also test `fieldChoices` with two cameras on the same list (the key appears once), and `valueSourceText`.
 
-- [ ] **Step 2: Run the test and make sure it fails.** Expected: FAIL.
+- [x] **Step 2: Run the test and make sure it fails.** Expected: FAIL.
 
-- [ ] **Step 3: Implement it.** In the output action dialog, when the operation is Write:
+- [x] **Step 3: Implement it.** In the output action dialog, when the operation is Write:
   - **Source choice.** "Value to write" adds the choices: Product field, Code, Product name, Input value, Formula.
   - **Extra settings.** Product field shows a field dropdown, and Input value shows an input dropdown; each says when it is empty. Formula shows a text box (at most 200), a **Check** button that calls the formula check and shows the error with its position or the warnings, and the examples.
   - **If no value.** "Skip the write" or "Write this value" plus a box.
@@ -478,11 +478,11 @@ When there is no value, it skips the write or writes a default. Text goes to OPC
   - **Skipped status.** `skipped` shows as a neutral chip, "Skipped", with the message as its title.
   - **Input dialog.** It gets "Value name (optional)", with the note "Use it in formulas and rules as input.<name>."
 
-- [ ] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_card_values_js.py tests/test_lines_api.py`. Expected: PASS.
+- [x] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_card_values_js.py tests/test_lines_api.py`. Expected: PASS.
 
-- [ ] **Step 5: Check it in a browser** with a git-ignored `backup/scratch-tools/shots_write_values.py`. Open the dialog for each source at 1440 and at 375 px. Check: no page errors, no CSP violations, the Check button shows an error and then a good result, and the card summary reads well. Look at the screenshots.
+- [x] **Step 5: Check it in a browser** with a git-ignored `backup/scratch-tools/shots_write_values.py`. Open the dialog for each source at 1440 and at 375 px. Check: no page errors, no CSP violations, the Check button shows an error and then a good result, and the card summary reads well. Look at the screenshots.
 
-- [ ] **Step 6: Commit.** Message: "Dashboard: choose any value to write; inputs can name their value".
+- [x] **Step 6: Commit.** Message: "Dashboard: choose any value to write; inputs can name their value".
 
 ### Task 7: Docs, full checks and the live check
 

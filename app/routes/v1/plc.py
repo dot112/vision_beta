@@ -279,13 +279,17 @@ async def test_plc_action(
         )
 
     svc = _get_svc()
-    _, card = _find_card(card_id, line_id)
+    found_line, card = _find_card(card_id, line_id)
     if not card and req.card:
         card = dict(req.card)
     if not card:
         card = next((c for c in _get_dispatcher()._cards if c.get("id") == card_id), None)
     if not card:
         raise HTTPException(status_code=404, detail=f"PLC action card '{card_id}' not found. Please save cards first.")
+    # The card's line: the one it is saved in, else the one asked for. A test with a product
+    # code looks the code up in that line's lists.
+    asked = _line_id(line_id) if isinstance(line_id, str) and line_id else None
+    card = {**card, "line_id": found_line or asked or card.get("line_id") or _line_id(None)}
     from app.services.plc_failsafe_service import validate_write_value
     try:
         validate_write_value(card)
