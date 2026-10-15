@@ -78,8 +78,10 @@ REASON_NO_CODE = "no_code"
 REASON_STATION_NO_RESULT = "station_no_result"
 # A camera in trigger mode found nothing in its picture, and is set to reject then.
 REASON_NOTHING_DETECTED = "nothing_detected"
+# A product check of the line matched the product of the item's code (product_checks).
+REASON_PRODUCT_CHECK = "product_check"
 REJECT_REASONS = (REASON_VISION, REASON_NOT_LISTED, REASON_LISTED, REASON_NO_CODE, REASON_STATION_NO_RESULT,
-                  REASON_NOTHING_DETECTED)
+                  REASON_NOTHING_DETECTED, REASON_PRODUCT_CHECK)
 # The reasons that come from a product's code.
 CODE_REASONS = (REASON_NOT_LISTED, REASON_LISTED, REASON_NO_CODE)
 
@@ -95,7 +97,10 @@ PLC_VALUE_SOURCES = ("fixed", "result_code", "good_count", "reject_count", "tota
 IF_MISSING = ("skip", "default")
 # A rejected product's reason as a number for the PLC (0: not rejected, 9: any other reason).
 REJECT_REASON_CODES = {REASON_VISION: 1, REASON_NOT_LISTED: 2, REASON_LISTED: 3, REASON_NO_CODE: 4,
-                       REASON_STATION_NO_RESULT: 5, REASON_NOTHING_DETECTED: 6}
+                       REASON_STATION_NO_RESULT: 5, REASON_NOTHING_DETECTED: 6, REASON_PRODUCT_CHECK: 7}
+# Product checks: up to MAX_PRODUCT_CHECKS per line, each "reject when these rules pass".
+MAX_PRODUCT_CHECKS = 10
+MAX_PRODUCT_CHECK_NAME_LENGTH = 64
 OTHER_REJECT_REASON_CODE = 9
 # PLC card settings an older client does not know of: kept when it leaves them out.
 PLC_CARD_KEPT_KEYS = ("value_source", "strobe_address", "strobe_pulse_ms", "confirm_input_id", "confirm_timeout_ms",
@@ -315,8 +320,13 @@ def product_result(vision_reject: bool, read: Optional[Dict[str, Any]],
                    checks: Dict[str, Dict[str, str]],
                    stations: Optional[Dict[str, Optional[Dict[str, Any]]]] = None,
                    missing: Optional[Dict[str, str]] = None,
-                   counting_camera_id: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[str]]:
-    """(reject, reason, the camera whose result rejected the product) for one product; see product_verdict()."""
+                   counting_camera_id: Optional[str] = None,
+                   product_check: Optional[str] = None) -> Tuple[bool, Optional[str], Optional[str]]:
+    """(reject, reason, the camera whose result rejected the product) for one product; see product_verdict().
+
+    ``product_check``: the name of the line's product check that matched the product of the
+    item's code, if one did. It rejects only when nothing before it did.
+    """
     if vision_reject:
         return True, REASON_VISION, counting_camera_id
     stations = stations or {}
@@ -336,6 +346,8 @@ def product_result(vision_reject: bool, read: Optional[Dict[str, Any]],
     for camera_id, seen in stations.items():
         if seen is None and missing.get(camera_id) == "reject":
             return True, REASON_STATION_NO_RESULT, camera_id
+    if product_check:
+        return True, REASON_PRODUCT_CHECK, read.get("camera_id") if read else None
     return False, None, None
 
 
@@ -581,6 +593,7 @@ TEMPLATE_FIELDS: Dict[str, str] = {
     "alarm_code": "Alarm code",
     "alarm_message": "Alarm message",
     "input_name": "Input that changed",
+    "product_check": "Product check that rejected the product",
 }
 
 _TEMPLATE_TOKEN = re.compile(r"\{\{|\}\}|\{([^{}]*)\}|\\[rnt\\]|[{}]")
@@ -956,6 +969,43 @@ def normalize_plc_input(raw: Any, index: int = 0) -> Dict[str, Any]:
     return card
 
 
+def new_product_check_id() -> str:
+    return f"check_{uuid.uuid4().hex[:8]}"
+
+
+def normalize_product_checks(raw: Any) -> List[Dict[str, Any]]:
+    """A line's product checks: each rejects a product whose code is known when its rules pass."""
+    from app.services.rules import normalize_only_when
+
+    if not isinstance(raw, list):
+        raise ValueError("Product checks must be a list")
+    if len(raw) > MAX_PRODUCT_CHECKS:
+        raise ValueError(f"A line can have at most {MAX_PRODUCT_CHECKS} product checks")
+    checks = []
+    for index, entry in enumerate(raw, start=1):
+        if not isinstance(entry, dict):
+            raise ValueError(f"Product check {index} must be an object")
+        check_id = str(entry.get("id") or "").strip() or new_product_check_id()
+        if not CARD_ID_RE.fullmatch(check_id):
+            raise ValueError(f"Product check {index} has an id that is not valid")
+        name = re.sub(r"\s+", " ", str(entry.get("name") or "")).strip()
+        if not name:
+            raise ValueError(f"Product check {index} needs a name")
+        if len(name) > MAX_PRODUCT_CHECK_NAME_LENGTH or any(ord(ch) < 32 for ch in name):
+            raise ValueError(f"Product check {index}: the name must be {MAX_PRODUCT_CHECK_NAME_LENGTH} characters or fewer")
+        label = f"Product check '{name}'"
+        checks.append({
+            "id": check_id,
+            "name": name,
+            "enabled": _bool(entry.get("enabled"), f"{label} on/off", True),
+            "only_when": normalize_only_when(entry.get("only_when"), label, required=True),
+        })
+    ids = [check["id"] for check in checks]
+    if len(set(ids)) != len(ids):
+        raise ValueError("Two product checks have the same id")
+    return checks
+
+
 def normalize_plc_inputs(raw: Any) -> List[Dict[str, Any]]:
     if not isinstance(raw, list):
         raise ValueError("Inputs must be a list")
@@ -1160,7 +1210,13 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
         "enabled": _bool(raw_sync.get("enabled"), "Sync", False),
         "window_ms": int(_number(raw_sync.get("window_ms"), "Sync window", DEFAULT_SYNC_WINDOW_MS, 50, 10000)),
     }
+    # Product checks. A client that leaves them out keeps the saved ones.
+    raw_checks = raw.get("product_checks") if raw.get("product_checks") is not None else base.get("product_checks")
+    product_checks = normalize_product_checks(raw_checks) if raw_checks is not None else None
     checking = [c for c in cameras if code_check(c)]
+    if product_checks and any(c["enabled"] for c in product_checks) and has_source and any(reads_codes(c) for c in cameras):
+        # A product check needs each product paired with its code, like a code check.
+        sync["enabled"] = True
     if checking and has_source:
         # A product gets one result, from the vision camera (or the sensor) and its
         # code together: the line has to pair each product with its code, which is
@@ -1190,6 +1246,8 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
     }
     if inputs is not None:
         line["plc_inputs"] = inputs
+    if product_checks is not None:
+        line["product_checks"] = product_checks
     for key in COUNTS_RESET_KEYS:
         if key in base:
             line[key] = copy.deepcopy(base[key])

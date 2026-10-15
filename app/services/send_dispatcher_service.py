@@ -55,6 +55,8 @@ MESSAGE_FIELDS: Dict[str, Tuple[str, ...]] = {
     "result": ("result",),
     "is_defect": ("is_defect",),
     "reject_reason": ("reject_reason",),
+    # The name of the line's product check that rejected the product.
+    "product_check": ("product_check",),
     # What each vision camera that joins the product result saw of the product, and which camera rejected it.
     "stations": ("stations",),
     "reject_camera_id": ("reject_camera_id",),
@@ -146,6 +148,7 @@ def template_values(payload: Dict[str, Any]) -> Dict[str, Any]:
         "alarm_code": pick("alarm_code"),
         "alarm_message": pick("alarm_message"),
         "input_name": pick("input_name"),
+        "product_check": pick("product_check"),
     }
     found = {name: values.get(name) for name in TEMPLATE_FIELDS}
     # {product.name}, {product.lane}...: the product of a known code and its values.

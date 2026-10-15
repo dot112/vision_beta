@@ -26,6 +26,7 @@ from app.services.line_config import (
     CODE_REASONS,
     DEFAULT_SYNC_WINDOW_MS,
     PRIMARY_LINE_ID,
+    REASON_PRODUCT_CHECK,
     REASON_VISION,
     camera_station,
     code_checks,
@@ -355,6 +356,8 @@ class LineRuntime:
         self.sync_enabled = False
         # Cameras whose codes decide good or reject: {camera_id: {"action", "no_read"}}.
         self.code_checks: Dict[str, Dict[str, str]] = {}
+        # The line's product checks that are switched on: reject a product whose rules pass.
+        self.product_checks: List[Dict[str, Any]] = []
         # A crossing is the counter's record of a product that crossed the count
         # line and is not counted yet; a triggered capture's read carries the
         # track of the product that triggered it.
@@ -441,6 +444,7 @@ class LineRuntime:
         self.set_batch(str(line.get("batch") or ""))
 
         self.code_checks = code_checks(self.cameras)
+        self.product_checks = [c for c in copy.deepcopy(line.get("product_checks") or []) if c.get("enabled", True)]
         sync = line.get("sync") or {}
         was_on = self.sync_enabled
         # Sync pairs each product with its code: the products come from a vision camera or a PLC sensor.
@@ -846,19 +850,22 @@ class LineRuntime:
         saw, on a line that has them.
         """
         # One result per product: the vision camera's, the joined cameras' and,
-        # where a camera checks codes, the paired code's (or the missing code's).
+        # where a camera checks codes, the paired code's (or the missing code's);
+        # last, the line's product checks on the product of a known code.
+        check = self._failed_check(read, crossing) if kind == "paired" else None
         reject, reason, reject_camera = product_result(
             bool(crossing["is_defect"]), read if kind == "paired" else None, self.code_checks,
             product.results() if product else None, product.missing() if product else None,
-            crossing.get("camera_id"),
+            crossing.get("camera_id"), product_check=check,
         )
+        check = check if reason == REASON_PRODUCT_CHECK else None
         if reason == REASON_VISION:
             # What that camera's own picture said, when it said more than "a defect class"
             # (a triggered picture in which nothing was found).
             seen = crossing if reject_camera == crossing.get("camera_id") else \
                 (product.seen.get(reject_camera) if product else None)
             reason = (seen or {}).get("reject_reason") or reason
-        result = self._result(reject) if self.code_checks else None
+        result = self._result(reject) if self.code_checks or self.product_checks else None
         fields: Dict[str, Any] = {}
         plc_fields: Dict[str, Any] = {}
         if kind == "paired":
@@ -871,7 +878,7 @@ class LineRuntime:
                 "qr_paired": True,
             }
             self._remember(read, status, paired=True, class_name=crossing.get("class_name"),
-                           result=result, reason=reason)
+                           result=result, reason=reason, product_check=check)
         elif kind == "no_read":
             status = "no_read"
             fields = {"qr_code": None, "qr_format": None, "qr_status": "no_read", "product_name": None, "qr_paired": False}
@@ -883,6 +890,8 @@ class LineRuntime:
             plc_fields = {"qr_code": fields["qr_code"], "qr_status": status, "qr_paired": fields["qr_paired"]}
         if kind == "paired" and read.get("product"):
             fields["product"] = plc_fields["product"] = read["product"]
+        if check:
+            fields["product_check"] = plc_fields["product_check"] = check
         if reject and reason in CODE_REASONS:
             with self._lock:
                 self.qr_stats["code_rejects"] += 1
@@ -926,9 +935,40 @@ class LineRuntime:
     def _result(reject: bool) -> str:
         return "reject" if reject else "good"
 
+    def _failed_check(self, read: Optional[Dict[str, Any]], crossing: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """The name of the first product check whose rules pass for this item, or None.
+
+        Only an item whose code is known has a product to check. The rules see what
+        is known before the result: the class and confidence the camera saw, the code,
+        the product's values, the inputs, the counts before this product, the batch.
+        """
+        if not self.product_checks or not read or not read.get("known") or not read.get("product"):
+            return None
+        from app.services.event_values import values_for
+        from app.services.rules import rules_pass
+
+        event: Dict[str, Any] = {
+            "event_type": "product_check",
+            "line_id": self.id,
+            "camera_id": (crossing or {}).get("camera_id") or read.get("camera_id"),
+            "qr_code": read.get("code"),
+            "qr_status": "known",
+            "product": read["product"],
+        }
+        if crossing:
+            event["class_name"] = crossing.get("class_name")
+            if crossing.get("confidence") is not None:
+                event["confidence"] = round(float(crossing["confidence"]), 4)
+        values = values_for(event)
+        for check in self.product_checks:
+            if check.get("only_when") and rules_pass(check["only_when"], values):
+                return check.get("name") or check.get("id")
+        return None
+
     def _remember(self, read: Optional[Dict[str, Any]], status: str, paired: Optional[bool],
                   class_name: Optional[str] = None, camera_id: Optional[str] = None,
-                  result: Optional[str] = None, reason: Optional[str] = None) -> None:
+                  result: Optional[str] = None, reason: Optional[str] = None,
+                  product_check: Optional[str] = None) -> None:
         entry = {
             "timestamp": read["timestamp"] if read else datetime.now(timezone.utc).isoformat(),
             "code": read["code"] if read else None,
@@ -943,6 +983,8 @@ class LineRuntime:
             "result": result,
             "reject_reason": reason,
         }
+        if product_check:
+            entry["product_check"] = product_check
         with self._lock:
             self.qr_recent.appendleft(entry)
 
@@ -1002,9 +1044,12 @@ class LineRuntime:
         """A code read on a line without a vision camera, by a camera that checks codes:
         the read is one product, good or reject, counted like any other product."""
         reason = code_verdict(self.code_checks[read["camera_id"]]["action"], read["known"])
+        check = self._failed_check(read) if reason is None else None
+        if check:
+            reason = REASON_PRODUCT_CHECK
         reject = reason is not None
         status = "known" if read["known"] else "unknown"
-        self._remember(read, status, paired=None, result=self._result(reject), reason=reason)
+        self._remember(read, status, paired=None, result=self._result(reject), reason=reason, product_check=check)
         if reject:
             with self._lock:
                 self.qr_stats["code_rejects"] += 1
@@ -1020,6 +1065,8 @@ class LineRuntime:
         })
         # One event for the product: it fires the good / reject and counter cards
         # like a product seen by a vision camera, and the code cards as a read does.
+        if check:
+            payload["product_check"] = plc_event["product_check"] = check
         plc_event.update({
             "event_type": "code_product",
             "result": self._result(reject),

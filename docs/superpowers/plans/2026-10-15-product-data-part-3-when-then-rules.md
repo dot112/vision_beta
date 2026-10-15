@@ -292,7 +292,7 @@
 - Consumes: Task 1 `rules_pass` and `normalize_only_when(required=True)`; part 2 `values_for`.
 - Produces: the `product_checks` line key; `payload["product_check"]` and `plc_event["product_check"]` (the check name).
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
 
   ```python
   CHECK = {"name": "Wrong bottle", "only_when": {"match": "all", "rules": [
@@ -332,14 +332,14 @@
   def test_the_export_has_a_product_check_column(): ...
   ```
 
-- [ ] **Step 2: Run the tests and make sure they fail.** Expected: FAIL.
+- [x] **Step 2: Run the tests and make sure they fail.** Expected: FAIL.
 
-- [ ] **Step 3: Implement it** with decisions R6 to R9.
+- [x] **Step 3: Implement it** with decisions R6 to R9.
   - `_failed_check` builds an event-like dict from the read and the crossing. It holds `class_name`, `confidence`, `qr_code`, `qr_status`, `product`, `camera_id` and `line_id`, and **no** `result`. It returns the name of the first enabled check whose rules pass.
 
-- [ ] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_product_checks.py tests/test_reader_actions.py tests/test_joined_cameras.py tests/test_production_records.py tests/test_lines_api.py`. Expected: PASS.
+- [x] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_product_checks.py tests/test_reader_actions.py tests/test_joined_cameras.py tests/test_production_records.py tests/test_lines_api.py`. Expected: PASS.
 
-- [ ] **Step 5: Commit.** Message: "Product checks: reject an item when its product's rules match".
+- [x] **Step 5: Commit.** Message: "Product checks: reject an item when its product's rules match".
 
 ### Task 5: Dashboard (input trigger, Only when, product checks)
 

@@ -109,7 +109,7 @@ def build_row(payload: Dict[str, Any], kind: str, counted: bool, **extra: Any) -
     vision_result = payload.get("vision_result")
     if vision_result is not None:
         details["vision_result"] = "reject" if str(vision_result).upper() == "REJECTED" else "good"
-    for key in ("stations", "bbox", "reject_camera_id", "product"):
+    for key in ("stations", "bbox", "reject_camera_id", "product", "product_check"):
         if payload.get(key) is not None:
             details[key] = payload[key]
     row = {
