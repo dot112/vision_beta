@@ -84,6 +84,9 @@ class OPCUADriver(PLCDriver):
       username / password     optional user-name identity token
     """
 
+    # Text goes to a String node.
+    writes_text = True
+
     _INTEGER_RANGES = {
         "SByte": (-128, 127),
         "Byte": (0, 255),

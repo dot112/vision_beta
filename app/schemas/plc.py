@@ -78,6 +78,8 @@ class PLCActionTestRequest(BaseModel):
     """Body for manual test execution."""
     confirm: bool = Field(False, description="Must be true to execute the physical PLC output")
     card: Optional[Dict[str, Any]] = Field(None, description="Optional card configuration to test directly")
+    code: Optional[str] = Field(None, max_length=256,
+                                description="A product code: the test writes that code's product values (from the lists of the line's code readers)")
 
 
 class PLCActionTestResult(BaseModel):

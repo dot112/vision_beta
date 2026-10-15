@@ -3,11 +3,25 @@ or a formula; with no value it skips the write or writes a default; text goes to
 """
 from __future__ import annotations
 
+import asyncio
+import types
+
 import pytest
 
+import app.services.line_service as line_module
+from app.events.alarm_events import alarm_manager
+from app.services.plc_dispatcher_service import PLCDispatcherService, _CardState
 from app.services.plc_failsafe_service import validate_write_value
+from app.services.plc_input_service import PLCInputService
+from app.services.product_service import product_catalog
 from app.services.settings_persistence_service import SettingsPersistenceService
+from tests.test_plc_failsafe import _card, plc  # noqa: F401  (a fixture)
 from tests.test_send_cards import lines  # noqa: F401  (a fixture)
+
+WIDGET = {"code": "J-1", "name": "Widget", "list": "Juices", "list_id": "list-j",
+          "fields": {"lane": 3, "recipe": "R-12", "fragile": True}}
+EVENT = {"event_id": "e1", "line_id": "line-1", "result": "good", "good_count": 7, "reject_count": 1,
+         "qr_code": "J-1", "qr_status": "known", "product": WIDGET}
 
 W = {"id": "w1", "name": "Sort", "operation": "WRITE"}
 
@@ -102,3 +116,89 @@ def test_the_formula_check(client, admin_headers):
     finally:
         client.delete(f"/api/v1/lines/{line_id}", headers=admin_headers)
         client.delete(f"/api/v1/products/lists/{list_id}", headers=admin_headers)
+
+
+# ── Writing the value ─────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("extra, want", [
+    ({"value_source": "product_field", "value_field": "lane"}, 3.0),
+    ({"value_source": "product_field", "value_field": "fragile"}, 1.0),
+    ({"value_source": "formula", "formula": 'if(result == "good", product.lane, 9)'}, 3.0),
+    ({"value_source": "formula", "formula": "good_count / 2"}, 3.5),
+    ({"value_source": "product_field", "value_field": "recipe"}, "R-12"),
+    ({"value_source": "code"}, "J-1"),
+    ({"value_source": "product_name"}, "Widget"),
+    ({"value_source": "formula", "formula": 'product.recipe + "/" + code'}, "R-12/J-1"),
+])
+def test_each_new_source_writes_its_value(extra, want):
+    value = PLCDispatcherService.write_value(_card("w1", "DB1.X", operation="WRITE", **extra), EVENT)
+    assert value == want and type(value) is type(want)
+
+
+def _dispatch(card, event):
+    state = _CardState(card["id"])
+    asyncio.run(PLCDispatcherService._dispatch(card, state, event))
+    return state
+
+
+def test_a_missing_value_skips_the_write_without_an_alarm(plc):  # noqa: F811
+    _, driver = plc
+    alarm_manager.reset()
+    for extra, name in (({"value_source": "product_field", "value_field": "lane"}, "product.lane"),
+                        ({"value_source": "code"}, "the code"), ({"value_source": "product_name"}, "the product name"),
+                        ({"value_source": "formula", "formula": "product.lane * 2"}, "the formula")):
+        state = _dispatch(_card("w1", "DB1.Lane", operation="WRITE", **extra), {**EVENT, "product": None, "qr_code": None})
+        assert state.status == "skipped" and state.last_result["skipped"] is True
+        assert state.last_result["message"] == f"Skipped: no value for {name}"
+    assert driver.ops == [] and alarm_manager.active() == []
+
+
+def test_if_missing_default_writes_the_default(plc):  # noqa: F811
+    _, driver = plc
+    card = _card("w1", "DB1.Lane", operation="WRITE", value_source="product_field", value_field="lane",
+                 if_missing="default", default_value=0)
+    assert _dispatch(card, {**EVENT, "product": None}).status == "sent"
+    assert driver.ops == [("WRITE", "DB1.Lane", 0.0)]
+
+
+def test_an_unread_input_is_missing(plc, monkeypatch):  # noqa: F811
+    _, driver = plc
+    card = _card("w1", "DB1.Speed", operation="WRITE", value_source="input", value_input="speed")
+    monkeypatch.setattr(PLCInputService, "values", classmethod(lambda cls, line_id: {}))
+    assert _dispatch(card, EVENT).last_result["message"] == "Skipped: no value for input.speed"
+    monkeypatch.setattr(PLCInputService, "values", classmethod(lambda cls, line_id: {"speed": 12.5}))
+    assert _dispatch(card, EVENT).status == "sent" and driver.ops == [("WRITE", "DB1.Speed", 12.5)]
+
+
+def test_text_goes_only_to_a_controller_that_writes_text(plc):  # noqa: F811
+    _, driver = plc
+    card = _card("w1", "DB1.Recipe", operation="WRITE", value_source="code", on_failure="retry", retry_attempts=2)
+    state = _dispatch(card, EVENT)
+    assert driver.ops == [] and state.status == "failed" and "writes numbers only" in state.last_result["message"]
+    assert state.last_result["attempts"] == 1
+    driver.writes_text = True
+    assert _dispatch(card, EVENT).status == "sent"
+    assert driver.ops == [("WRITE", "DB1.Recipe", "J-1")]
+
+
+def test_the_existing_sources_fail_as_before(plc):  # noqa: F811
+    _, driver = plc
+    state = _dispatch(_card("w1", "DB1.Batch", operation="WRITE", value_source="batch"), {**EVENT, "batch": "A-1"})
+    assert state.status == "failed" and "not a number" in state.last_result["message"] and driver.ops == []
+
+
+def test_the_test_button_can_use_a_code(plc, monkeypatch):  # noqa: F811
+    _, driver = plc
+    runtime = types.SimpleNamespace(cameras=[{"camera_id": "vis", "role": "vision"},
+                                             {"camera_id": "qr", "role": "qr", "product_list_id": "list-j"}],
+                                    name="Juice", batch="", counter=types.SimpleNamespace(good_count=0, rejected_count=0))
+    monkeypatch.setattr(line_module.line_manager, "get", lambda line_id: runtime)
+    monkeypatch.setattr(product_catalog, "_lists", {"list-j": {"J-1": {"code": "J-1", "name": "Widget", "data": {"lane": 3}}}})
+    monkeypatch.setattr(product_catalog, "_names", {"list-j": "Juices"})
+    card = _card("w1", "DB1.Lane", operation="WRITE", value_source="product_field", value_field="lane")
+    result = asyncio.run(PLCDispatcherService.dispatch_manual(card, code="J-1"))
+    assert result["status"] == "sent" and driver.ops == [("WRITE", "DB1.Lane", 3.0)]
+    result = asyncio.run(PLCDispatcherService.dispatch_manual(card, code="NOPE"))
+    assert result["status"] == "skipped"
+    result = asyncio.run(PLCDispatcherService.dispatch_manual(card))
+    assert result["status"] == "skipped"

@@ -15,7 +15,7 @@ import collections
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Deque, Dict, List, Optional, Set
+from typing import Any, Deque, Dict, List, Optional, Set, Union
 
 # When a card fires is decided in card_triggers, the same for PLC cards and
 # send cards. The names below are what this module called them before that.
@@ -33,11 +33,35 @@ from app.services.card_triggers import (  # noqa: F401  (re-exported)
     normalize_trigger,
     trigger_matches as _eval_condition,
 )
-from app.services.line_config import OTHER_REJECT_REASON_CODE, PRIMARY_LINE_ID, REJECT_REASON_CODES
+from app.services.line_config import OTHER_REJECT_REASON_CODE, PRIMARY_LINE_ID, REJECT_REASON_CODES, reads_codes
 from app.services.plc_failsafe_service import PLCFailsafeService, confirm_timeout_ms
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+class MissingValue(ValueError):
+    """The event has no value for what a card writes (an unknown code, an empty field, a formula that gives none)."""
+
+
+# The value sources whose missing value is skipped or replaced by the card's default value.
+_OPTIONAL_SOURCES = ("product_field", "code", "product_name", "input", "formula")
+
+
+def _written(value: Any, name: str) -> Union[float, str]:
+    """A value as it is written: a number as a float (yes / no as 1 / 0), text as text."""
+    from app.services.formula import MISSING
+
+    if value is MISSING or value is None:
+        raise MissingValue(f"no value for {name}")
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if number != number or number in (float("inf"), float("-inf")):
+            raise MissingValue(f"no value for {name}")
+        return number
+    return str(value)
 
 
 # ── Card Runtime State ────────────────────────────────────────────────────────
@@ -332,27 +356,61 @@ class PLCDispatcherService:
         await cls.evaluate(event)
 
     @classmethod
-    async def dispatch_manual(cls, card: dict) -> Dict[str, Any]:
+    async def dispatch_manual(cls, card: dict, code: Optional[str] = None) -> Dict[str, Any]:
         """
         Manually fire a card's PLC action (test button).
         Returns the execution result dict synchronously.
 
         A card that writes a value of the product writes example values:
-        a rejected product, counts of 1, class number 1, batch 1.
+        a rejected product, counts of 1, class number 1, batch 1. With ``code``
+        the example product is that code's product, from the lists of the
+        line's code readers.
         """
         cid = card.get("id", "")
         state = cls._states.setdefault(cid, _CardState(card_id=cid))
         event = {"event_id": f"manual_{int(time.time())}", "manual": True, "result": "reject", "reject_reason": "vision_class",
-                 "good_count": 1, "reject_count": 1, "total_count": 1, "class_index": 1, "batch": "1"}
+                 "good_count": 1, "reject_count": 1, "total_count": 1, "class_index": 1, "batch": "1",
+                 "line_id": _card_line(card)}
+        if code:
+            product = cls._product_for_code(card, str(code))
+            event.update({"qr_code": str(code), "qr_status": "known" if product else "unknown"})
+            if product:
+                event["product"] = product
         await cls._dispatch(card, state, event=event)
         return {**state.last_result, "status": state.status}
 
     @staticmethod
-    def write_value(card: dict, event: dict) -> float:
-        """What a card writes for an event (its value_source). Raises ValueError when the event has no such value."""
+    def _product_for_code(card: dict, code: str) -> Optional[Dict[str, Any]]:
+        """The product a code stands for in the first list of the card's line's code readers that has it."""
+        from app.services.line_service import line_manager
+        from app.services.product_service import product_catalog
+
+        runtime = line_manager.get(_card_line(card))
+        for camera in getattr(runtime, "cameras", None) or []:
+            if reads_codes(camera):
+                product = product_catalog.lookup(code, camera.get("product_list_id"))
+                if product is not None:
+                    return product_catalog.product_info(product, camera.get("product_list_id"))
+        return None
+
+    @staticmethod
+    def write_value(card: dict, event: dict) -> Union[float, str]:
+        """What a card writes for an event (its value_source). Raises ValueError when the event has no such value;
+        MissingValue for a source whose missing value the card skips or replaces (if_missing)."""
         source = str(card.get("value_source") or "fixed").strip().lower()
         if source == "fixed":
             return float(card.get("write_value", 0.0) or 0.0)
+        if source in _OPTIONAL_SOURCES:
+            from app.services.event_values import values_for
+            from app.services.formula import MISSING, parse
+
+            values = values_for(event)
+            if source == "formula":
+                return _written(parse(str(card.get("formula") or "")).evaluate(values), "the formula")
+            name = {"product_field": f"product.{card.get('value_field')}", "code": "code",
+                    "product_name": "product.name", "input": f"input.{card.get('value_input')}"}[source]
+            shown = {"code": "the code", "product.name": "the product name"}.get(name, name)
+            return _written(values.get(name, MISSING), shown)
         result = str(event.get("result") or "").lower()
         if source == "result_code":
             if result not in ("good", "reject"):
@@ -515,6 +573,19 @@ class PLCDispatcherService:
         # The value is worked out now, after the travel delay: what the event says at the moment of the write.
         try:
             write_val = cls.write_value(card, event) if operation == "WRITE" else 0.0
+        except MissingValue as missing:
+            # No value (an unknown code, an empty field): the card's default value, or nothing is written.
+            default = card.get("default_value")
+            if str(card.get("if_missing") or "skip").strip().lower() == "default" and isinstance(default, (int, float, str)) \
+                    and not isinstance(default, bool):
+                write_val = default if isinstance(default, str) else float(default)
+            else:
+                state.status = "skipped"
+                state.last_result = {"success": False, "skipped": True, "message": f"Skipped: {missing}",
+                                     "endpoint": endpoint.get("name", ep_id)}
+                logger.info("PLCDispatcher: card '%s' skipped: %s", card.get("name", cid), missing)
+                cls._notify_status_change()
+                return
         except ValueError as value_err:
             state.status = "failed"
             state.last_result = {"success": False, "message": f"Nothing was written: {value_err}", "endpoint": endpoint.get("name", ep_id)}

@@ -314,7 +314,7 @@ async def test_plc_action(
     )
 
     dispatcher = _get_dispatcher()
-    result = await dispatcher.dispatch_manual(card)
+    result = await dispatcher.dispatch_manual(card, code=req.code)
 
     # Resolve endpoint name for the response
     ep_id = card.get("plc_endpoint_id", "")

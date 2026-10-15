@@ -352,7 +352,7 @@ When there is no value, it skips the write or writes a default. Text goes to OPC
   - `dispatch_manual(card, code: Optional[str] = None)`.
   - The card status `"skipped"` (decision W7).
 
-- [ ] **Step 1: Write the failing tests.** Use `plc`, `FakeDriver`, `_card` and `ENDPOINT` from `tests/test_plc_failsafe.py`. Run a write with `asyncio.run(PLCDispatcherService._dispatch(card, _CardState("w1"), event))`.
+- [x] **Step 1: Write the failing tests.** Use `plc`, `FakeDriver`, `_card` and `ENDPOINT` from `tests/test_plc_failsafe.py`. Run a write with `asyncio.run(PLCDispatcherService._dispatch(card, _CardState("w1"), event))`.
 
   ```python
   EVENT = {"event_id": "e1", "line_id": "line-1", "result": "good", "good_count": 7, "reject_count": 1,
@@ -396,16 +396,16 @@ When there is no value, it skips the write or writes a default. Text goes to OPC
   def test_the_test_button_can_use_a_code(...): ...                # dispatch_manual(card, code="LISTED") writes lane 3
   ```
 
-- [ ] **Step 2: Run the tests and make sure they fail.** Expected: FAIL.
+- [x] **Step 2: Run the tests and make sure they fail.** Expected: FAIL.
 
-- [ ] **Step 3: Implement it.**
+- [x] **Step 3: Implement it.**
   - In `_dispatch`, catch `MissingValue` before the existing `ValueError` branch. With `if_missing == "default"`, write `default_value` (a number becomes `float`, text stays `str`). Otherwise the card is skipped.
   - In `get_status`, pass `"skipped"` through unchanged.
   - The route's test result shows the skipped message.
 
-- [ ] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_write_any_value.py tests/test_plc_failsafe.py tests/test_plc_protocols.py tests/test_batch.py tests/test_messages_and_plc_values.py`. Expected: PASS.
+- [x] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_write_any_value.py tests/test_plc_failsafe.py tests/test_plc_protocols.py tests/test_batch.py tests/test_messages_and_plc_values.py`. Expected: PASS.
 
-- [ ] **Step 5: Commit.** Message: "Output actions write product values, codes, inputs and formulas; skip when there is none".
+- [x] **Step 5: Commit.** Message: "Output actions write product values, codes, inputs and formulas; skip when there is none".
 
 ### Task 5: OPC UA String writes
 

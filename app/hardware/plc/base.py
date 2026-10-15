@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import asyncio
-from typing import Any, Tuple
+from typing import Any, Tuple, Union
 
 from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
 from app.utils.logger import get_logger
@@ -23,6 +23,9 @@ class PLCDriver(ABC):
     implements this interface.  The PLCDispatcherService talks *only* to this
     interface — it never touches protocol-specific details.
     """
+
+    # Whether WRITE takes text as well as numbers (an OPC UA String node).
+    writes_text = False
 
     def __init__(self, endpoint: dict):
         self._ep = endpoint
@@ -211,13 +214,18 @@ class PLCDriver(ABC):
         self,
         operation: str,
         address: str,
-        write_value: float = 0.0,
+        write_value: Union[float, str] = 0.0,
         pulse_duration_ms: int = 150,
     ) -> Tuple[bool, str]:
         """
         Dispatch a named operation string (SET/RESET/PULSE/TOGGLE/WRITE) to the
         correct method.  Called by PLCDispatcherService.
+
+        Text can only be written by a driver whose ``writes_text`` is true;
+        every other driver refuses it with ValueError, before anything is sent.
         """
+        if str(operation).upper() == "WRITE" and isinstance(write_value, str) and not self.writes_text:
+            raise ValueError("This controller type writes numbers only")
         async with self._operation_lock:
             self._lock_holder = asyncio.current_task()
             try:
