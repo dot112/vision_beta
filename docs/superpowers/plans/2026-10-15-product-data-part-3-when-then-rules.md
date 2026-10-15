@@ -175,7 +175,7 @@
   - `validate_card_rules`; Task 3 adds the input trigger to it.
   - A timer card's rules see `values_for({"event_type": "timer", "line_id": <its line>})`.
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
 
   ```python
   LANE3 = {"match": "all", "rules": [{"left": "product.lane", "op": "=", "right": "3", "right_kind": "constant"}]}
@@ -202,13 +202,13 @@
       # Timer card with rule batch = "B-7": send_timer(card) is False before set_batch("B-7"), True after.
   ```
 
-- [ ] **Step 2: Run the tests and make sure they fail.** Expected: FAIL.
+- [x] **Step 2: Run the tests and make sure they fail.** Expected: FAIL.
 
-- [ ] **Step 3: Implement it.** Import `event_values` inside `card_fires`, which avoids an import cycle. The test above patches `event_values.values_for`, so call it through the module.
+- [x] **Step 3: Implement it.** Import `event_values` inside `card_fires`, which avoids an import cycle. The test above patches `event_values.values_for`, so call it through the module.
 
-- [ ] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_card_rules.py tests/test_send_cards.py tests/test_send_timer.py tests/test_plc_action_persistence.py tests/test_joined_cameras.py`. Expected: PASS.
+- [x] **Step 4: Run the tests.** Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_card_rules.py tests/test_send_cards.py tests/test_send_timer.py tests/test_plc_action_persistence.py tests/test_joined_cameras.py`. Expected: PASS.
 
-- [ ] **Step 5: Commit.** Message: "Cards can act only when their rules pass".
+- [x] **Step 5: Commit.** Message: "Cards can act only when their rules pass".
 
 ### Task 3: The "Input changed" trigger
 

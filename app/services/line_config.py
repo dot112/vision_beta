@@ -99,7 +99,7 @@ REJECT_REASON_CODES = {REASON_VISION: 1, REASON_NOT_LISTED: 2, REASON_LISTED: 3,
 OTHER_REJECT_REASON_CODE = 9
 # PLC card settings an older client does not know of: kept when it leaves them out.
 PLC_CARD_KEPT_KEYS = ("value_source", "strobe_address", "strobe_pulse_ms", "confirm_input_id", "confirm_timeout_ms",
-                      "value_field", "value_input", "formula", "if_missing", "default_value")
+                      "value_field", "value_input", "formula", "if_missing", "default_value", "only_when")
 # Reject confirmation: a PLC card may name a signal card of its line with the action
 # "confirm_card" (confirm_input_id) and how long it waits for that signal's edge after
 # its output was sent (confirm_timeout_ms).
@@ -724,6 +724,11 @@ def normalize_send_card(raw: Any, index: int = 0) -> Dict[str, Any]:
         card["camera_id"] = camera_id[:64]
     if trigger == "alarm":
         card["alarm_codes"] = [str(code).strip() for code in codes if str(code).strip()]
+    # "Only when": rules on the event's values (app.services.rules).
+    from app.services.rules import normalize_only_when
+    only_when = normalize_only_when(raw.get("only_when"), label)
+    if only_when is not None:
+        card["only_when"] = only_when
     return card
 
 
@@ -751,7 +756,7 @@ def timer_interval_ms(card: Dict[str, Any]) -> int:
 
 
 # Send card settings an older client does not know of: kept when it leaves them out.
-SEND_CARD_KEPT_KEYS = ("format", "template")
+SEND_CARD_KEPT_KEYS = ("format", "template", "only_when")
 
 
 def keep_card_fields(cards: Any, saved: Any, keys: Iterable[str]) -> Any:

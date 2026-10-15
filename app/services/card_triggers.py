@@ -234,11 +234,20 @@ def card_fires(card: dict, event: dict) -> bool:
     """Does this card react to this event? The one check both dispatchers use.
 
     A line's events only ever run that line's cards; a server-wide alarm runs every line's.
+    After the trigger and its condition, a card's "only_when" rules must pass.
     """
     line_id = str(event.get("line_id") or PRIMARY_LINE_ID)
     if line_id != ANY_LINE and card_line(card) != line_id:
         return False
-    return camera_matches(card, event) and trigger_matches(card, event)
+    if not (camera_matches(card, event) and trigger_matches(card, event)):
+        return False
+    # "Only when": the card's rules on the event's values (worked out only for a card that has rules).
+    only_when = card.get("only_when")
+    if not only_when:
+        return True
+    from app.services import event_values
+    from app.services.rules import rules_pass
+    return rules_pass(only_when, event_values.values_for(event))
 
 
 def eval_counter(condition: str, count: int, n: int) -> bool:

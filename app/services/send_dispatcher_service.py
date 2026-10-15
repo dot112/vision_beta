@@ -528,6 +528,11 @@ class SendDispatcherService:
         """Queue one message of a timer card now: the line's state and totals."""
         line_id = card_line(card)
         try:
+            if card.get("only_when"):
+                from app.services.event_values import values_for
+                from app.services.rules import rules_pass
+                if not rules_pass(card["only_when"], values_for({"event_type": "timer", "line_id": line_id})):
+                    return False
             payload = cls._with_line_state(cls._with_totals(timer_payload(line_id), line_id), {"line_id": line_id})
             return cls._queue(card, build_message(card, payload))
         except Exception as exc:

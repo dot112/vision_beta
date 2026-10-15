@@ -111,3 +111,9 @@ def rules_pass(only_when: Optional[Mapping[str, Any]], values: Mapping[str, Any]
         return True
     results = (_rule_passes(rule, values) for rule in rules if isinstance(rule, Mapping))
     return any(results) if (only_when or {}).get("match") == "any" else all(results)
+
+
+def validate_card_rules(card: Dict[str, Any], label: str) -> None:
+    """Check an output action's only-when rules and save them as checked (in ``card``). Raises ValueError."""
+    if "only_when" in card:
+        card["only_when"] = normalize_only_when(card.get("only_when"), label)

@@ -485,12 +485,14 @@ class SettingsPersistenceService:
         check_output_action_ids(cards)
 
         from app.services.plc_failsafe_service import validate_confirmation, validate_safe_state, validate_write_value
+        from app.services.rules import validate_card_rules
         cards = keep_card_fields(cards, cls._state.get("plc_actions"), PLC_CARD_KEPT_KEYS)
         endpoints = cls.get_endpoints(protocol="plc")
         for card in cards:
             validate_safe_state(card)
             validate_write_value(card, endpoints)
             validate_confirmation(card)
+            validate_card_rules(card, f"Output action '{card.get('name') or card.get('id')}'")
         # These are Line 1's cards; its PLC signal cards are in its own entry.
         primary = next((ln for ln in cls._state.get("lines") or [] if ln.get("id") == PRIMARY_LINE_ID), None) or {}
         cls._check_confirmation_links(cards, primary.get("plc_inputs"))
@@ -608,12 +610,14 @@ class SettingsPersistenceService:
             raise ValueError("PLC action cards must be a list of objects")
         check_output_action_ids(cards)
         from app.services.plc_failsafe_service import validate_confirmation, validate_safe_state, validate_write_value
+        from app.services.rules import validate_card_rules
         cards = keep_card_fields(cards, line.get("plc_actions"), PLC_CARD_KEPT_KEYS)
         endpoints = cls.get_endpoints(protocol="plc")
         for card in cards:
             validate_safe_state(card)
             validate_write_value(card, endpoints)
             validate_confirmation(card)
+            validate_card_rules(card, f"Output action '{card.get('name') or card.get('id')}'")
         cls._check_confirmation_links(cards, line.get("plc_inputs"))
         cls._check_input_links(cards, line.get("plc_inputs"))
         line["plc_actions"] = [{k: v for k, v in c.items() if k != "line_id"} for c in copy.deepcopy(cards)]
@@ -705,6 +709,7 @@ class SettingsPersistenceService:
         cards = line.pop("plc_actions", None)
         if cards is not None:
             from app.services.plc_failsafe_service import validate_confirmation, validate_safe_state, validate_write_value
+            from app.services.rules import validate_card_rules
             endpoints = cls.get_endpoints(protocol="plc")
             for card in cards:
                 if not isinstance(card, dict):
@@ -712,6 +717,7 @@ class SettingsPersistenceService:
                 validate_safe_state(card)
                 validate_write_value(card, endpoints)
                 validate_confirmation(card)
+                validate_card_rules(card, f"Output action '{card.get('name') or card.get('id')}'")
         # The cards as they will be saved (what an older client left out is kept),
         # against the signal cards as they will be saved: checked before anything changes.
         saved_cards = cls.get_line_plc_actions(line["id"]) if existing is not None else []
