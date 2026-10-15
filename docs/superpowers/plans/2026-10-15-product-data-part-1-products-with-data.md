@@ -96,7 +96,7 @@ Places where the spec leaves a choice open:
   - `Product.data: Optional[dict]` (JSON, nullable);
   - revision id `"0007_product_data"`, `down_revision = "0006_product_records"`.
 
-- [ ] **Step 1: Write the failing test.**
+- [x] **Step 1: Write the failing test.**
 
   Copy the `_alembic` helper from `tests/test_product_lists.py:319`.
 
@@ -126,24 +126,24 @@ Places where the spec leaves a choice open:
           assert _shape(conn) == upgraded
   ```
 
-- [ ] **Step 2: Run it and make sure it fails.**
+- [x] **Step 2: Run it and make sure it fails.**
 
   Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_product_data.py`
 
   Expected: FAIL (no revision `0007`, or no `fields` column).
 
-- [ ] **Step 3: Write the migration and the model columns.**
+- [x] **Step 3: Write the migration and the model columns.**
   - `upgrade()` adds each column only when `sa.inspect` shows it is missing. On a new database, 0001 already builds `products` from the model, while 0005 builds `product_lists` without `fields`.
   - `downgrade()` drops both with `op.batch_alter_table`.
   - Follow the style of the docstring in `0005_product_lists.py`.
 
-- [ ] **Step 4: Run the new test and the two older migration tests.**
+- [x] **Step 4: Run the new test and the two older migration tests.**
 
   Run: `.venv/Scripts/python.exe -m pytest -q -p no:cacheprovider tests/test_product_data.py tests/test_product_lists.py tests/test_production_records.py -k "0007 or upgrade or 0005"`
 
   Expected: PASS.
 
-- [ ] **Step 5: Commit.** Message: "Product lists get fields and products get data (migration 0007)".
+- [x] **Step 5: Commit.** Message: "Product lists get fields and products get data (migration 0007)".
 
 ### Task 2: Fields and values (`product_fields.py`)
 
