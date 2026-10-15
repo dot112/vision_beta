@@ -187,7 +187,10 @@ class Formula:
         self.names = names
 
     def evaluate(self, values: Mapping[str, Any]) -> Any:
-        return _Walker(values).run(self._tree.body)
+        try:
+            return _Walker(values).run(self._tree.body)
+        except (ArithmeticError, ValueError, TypeError, RecursionError):
+            return MISSING      # a value that cannot be worked out is missing, never an error
 
     def __repr__(self) -> str:
         return f"Formula({self.text!r})"
@@ -212,6 +215,8 @@ class _Checker:
         if isinstance(node, ast.Constant):
             if isinstance(node.value, bool) or not isinstance(node.value, (int, float, str)):
                 self.fail("this value is not allowed", node)
+            if isinstance(node.value, float) and not math.isfinite(node.value):
+                self.fail("this number is too large", node)
         elif isinstance(node, ast.Name):
             name = _plain(node.id)
             if name in _LITERALS:
@@ -293,9 +298,11 @@ def parse(text: str) -> Formula:
 # ── Computing a formula ───────────────────────────────────────────────────────
 
 def _number(value: Any) -> Optional[Union[int, float]]:
-    """A value as a number for arithmetic: yes / no count as 1 / 0."""
+    """A value as a number for arithmetic: yes / no count as 1 / 0. Infinity and NaN are no numbers."""
     if isinstance(value, bool):
         return int(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
     if isinstance(value, (int, float)):
         return value
     return None
@@ -385,13 +392,15 @@ class _Walker:
         if any(value is MISSING for value in values):
             return MISSING
         if name == "text":
+            if isinstance(values[0], float) and not math.isfinite(values[0]):
+                return MISSING
             return as_text(values[0])
         if name == "int":
             value = values[0]
             if isinstance(value, str):
                 value = _as_number(value)
             number = _number(value)
-            return MISSING if number is None or not math.isfinite(number) else int(number)
+            return MISSING if number is None else _result(int(number))
         numbers = [_number(value) for value in values]
         if any(number is None for number in numbers):
             return MISSING

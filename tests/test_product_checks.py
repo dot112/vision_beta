@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app.db.models.production_record import ProductRecord
+from app.services import event_values
 from app.services.line_config import REJECT_REASON_CODES, normalize_product_checks, product_result
 from app.services.product_service import product_catalog
 from app.services.records_export import csv_header, csv_rows
@@ -153,9 +154,12 @@ def test_the_export_has_a_product_check_column():
 
 def test_checks_never_see_the_result(apples, recorder):  # noqa: F811
     # A check decides the result, so a rule on the result is never true for it (the value is missing).
-    on_result = {"name": "On the result", "only_when": {"rules": [{"left": "result", "op": "not_empty"}]}}
+    # Such a check is refused when it is saved (test_a_check_cannot_use_the_result); this one is put on the
+    # running line directly, as a hand-edited settings file would.
     runtime = _check_line(apples, [{"camera_id": "top"}, {"camera_id": "qr", "role": "qr", "product_list_id": LIST}],
-                          [on_result], name="Result check")
+                          [CHECK], name="Result check")
+    runtime.product_checks = [{"id": "c1", "name": "On the result", "enabled": True, "only_when": {
+        "match": "all", "rules": [{"left": "result", "op": "not_empty", "right": "", "right_kind": "constant"}]}}]
 
     async def steps():
         runtime.on_qr_read("qr", "LISTED", "QR_CODE")
@@ -165,3 +169,31 @@ def test_checks_never_see_the_result(apples, recorder):  # noqa: F811
 
     _run(steps)
     assert [payload["result"] for payload, _ in runtime.sent] == ["PASSED"]
+
+
+def test_a_check_cannot_use_the_result():
+    for name in ("result", "result_code", "reject_reason"):
+        with pytest.raises(ValueError, match=f"Product check 'R'.*{name}"):
+            normalize_product_checks([{"name": "R", "only_when": {"rules": [{"left": name, "op": "empty"}]}}])
+    with pytest.raises(ValueError, match="result"):
+        normalize_product_checks([{"name": "R", "only_when": {"rules": [
+            {"left": "class", "op": "=", "right": "result", "right_kind": "value"}]}}])
+
+
+def test_a_check_that_fails_to_run_does_not_drop_the_product(apples, recorder, monkeypatch):  # noqa: F811
+    runtime = _check_line(apples, [{"camera_id": "top"}, {"camera_id": "qr", "role": "qr", "product_list_id": LIST}],
+                          [CHECK], name="Broken check")
+
+    def boom(event):
+        raise RuntimeError("broken values")
+
+    monkeypatch.setattr(event_values, "values_for", boom)
+
+    async def steps():
+        runtime.on_qr_read("qr", "LISTED", "QR_CODE")
+        await asyncio.sleep(0.01)
+        _cross(runtime.counter, "top", class_name="orange")
+        await asyncio.sleep(0.12)
+
+    _run(steps)
+    assert [payload["result"] for payload, _ in runtime.sent] == ["PASSED"]      # counted, the check is left out

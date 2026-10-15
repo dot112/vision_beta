@@ -944,7 +944,15 @@ class LineRuntime:
         """
         if not self.product_checks or not read or not read.get("known") or not read.get("product"):
             return None
-        from app.services.event_values import values_for
+        try:
+            return self._run_checks(read, crossing)
+        except Exception:
+            # The product is still counted, on its other results: a check that cannot run rejects nothing.
+            logger.exception("Line %s: the product checks could not run", self.id)
+            return None
+
+    def _run_checks(self, read: Dict[str, Any], crossing: Optional[Dict[str, Any]]) -> Optional[str]:
+        from app.services import event_values
         from app.services.rules import rules_pass
 
         event: Dict[str, Any] = {
@@ -959,7 +967,7 @@ class LineRuntime:
             event["class_name"] = crossing.get("class_name")
             if crossing.get("confidence") is not None:
                 event["confidence"] = round(float(crossing["confidence"]), 4)
-        values = values_for(event)
+        values = event_values.values_for(event)
         for check in self.product_checks:
             if check.get("only_when") and rules_pass(check["only_when"], values):
                 return check.get("name") or check.get("id")

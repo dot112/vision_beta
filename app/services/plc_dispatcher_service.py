@@ -256,7 +256,13 @@ class PLCDispatcherService:
             if not cid:
                 continue
             # ── Does the card fire for this event? (shared with send cards) ────
-            if not card_fires(card, event):
+            try:
+                fires = card_fires(card, event)
+            except Exception as exc:
+                # A card whose rules cannot be checked does not fire; the other cards still do.
+                logger.warning("PLCDispatcher: card '%s' could not be checked: %s: %s", card.get("name", cid), type(exc).__name__, exc)
+                continue
+            if not fires:
                 continue
             card_line = _card_line(card)
 

@@ -100,6 +100,8 @@ REJECT_REASON_CODES = {REASON_VISION: 1, REASON_NOT_LISTED: 2, REASON_LISTED: 3,
                        REASON_STATION_NO_RESULT: 5, REASON_NOTHING_DETECTED: 6, REASON_PRODUCT_CHECK: 7}
 # Product checks: up to MAX_PRODUCT_CHECKS per line, each "reject when these rules pass".
 MAX_PRODUCT_CHECKS = 10
+# A product check decides the result, so its rules cannot use it.
+CHECK_FORBIDDEN_NAMES = ("result", "result_code", "reject_reason")
 MAX_PRODUCT_CHECK_NAME_LENGTH = 64
 OTHER_REJECT_REASON_CODE = 9
 # PLC card settings an older client does not know of: kept when it leaves them out.
@@ -998,7 +1000,7 @@ def normalize_product_checks(raw: Any) -> List[Dict[str, Any]]:
             "id": check_id,
             "name": name,
             "enabled": _bool(entry.get("enabled"), f"{label} on/off", True),
-            "only_when": normalize_only_when(entry.get("only_when"), label, required=True),
+            "only_when": normalize_only_when(entry.get("only_when"), label, required=True, forbidden=CHECK_FORBIDDEN_NAMES),
         })
     ids = [check["id"] for check in checks]
     if len(set(ids)) != len(ids):

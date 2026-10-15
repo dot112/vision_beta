@@ -62,9 +62,11 @@ class CsvRow:
 
 @dataclass
 class CsvTable:
-    """A CSV file's products, and its extra column headers (as written) after code, name, description."""
+    """A CSV file's products, its extra column headers (as written) after code, name, description,
+    and the headers that repeat an earlier one (their cells are not read)."""
     rows: List[CsvRow]
     columns: List[str]
+    repeated: List[str] = field(default_factory=list)
 
 
 def _typed_rows(rows: List[CsvRow], columns: Dict[str, Dict[str, str]]) -> List[Dict[str, Any]]:
@@ -475,24 +477,36 @@ class ProductService:
     def parse_csv(text: str) -> CsvTable:
         """Rows from CSV text with a header naming ``code`` and ``name`` (``description`` optional).
         Any other column holds a field's values."""
-        reader = csv.DictReader(io.StringIO(text.lstrip("\ufeff")))
-        headers = {h.strip().lower(): h for h in (reader.fieldnames or []) if h}
-        if "code" not in headers or "name" not in headers:
+        reader = csv.reader(io.StringIO(text.lstrip("\ufeff")))
+        header_row = next(reader, [])
+        # Each header's column; a header that comes again is not read (the first one counts).
+        index: Dict[str, int] = {}
+        extra: List[Tuple[str, int]] = []
+        repeated: List[str] = []
+        for position, header in enumerate(header_row):
+            name = (header or "").strip()
+            if not name:
+                continue
+            if name.lower() in index:
+                repeated.append(name)
+                continue
+            index[name.lower()] = position
+            if name.lower() not in ("code", "name", "description"):
+                extra.append((name, position))
+        if "code" not in index or "name" not in index:
             raise ValueError("The CSV file needs a header row with 'code' and 'name' columns")
-        extra = [h for h in (reader.fieldnames or []) if h and h.strip().lower() not in ("code", "name", "description")]
-        seen_headers: Dict[str, str] = {}
-        for header in extra:
-            if header.strip().lower() in seen_headers:
-                raise ValueError(f"The column '{header.strip()}' appears twice in the CSV file")
-            seen_headers[header.strip().lower()] = header
+
+        def cell(values: List[str], position: Optional[int]) -> Optional[str]:
+            return values[position] if position is not None and position < len(values) else None
+
         rows: List[CsvRow] = []
         seen: Dict[str, int] = {}
         for line_no, raw in enumerate(reader, start=2):
             if len(rows) >= MAX_IMPORT_ROWS:
                 raise ValueError(f"The CSV file has more than {MAX_IMPORT_ROWS} rows")
-            code_raw = _csv_unescape(raw.get(headers["code"]))
-            name_raw = _csv_unescape(raw.get(headers["name"]))
-            desc_raw = _csv_unescape(raw.get(headers["description"])) if "description" in headers else None
+            code_raw = _csv_unescape(cell(raw, index["code"]))
+            name_raw = _csv_unescape(cell(raw, index["name"]))
+            desc_raw = _csv_unescape(cell(raw, index.get("description"))) if "description" in index else None
             if not normalize_code(code_raw) and not str(name_raw or "").strip():
                 continue  # blank line
             try:
@@ -502,24 +516,39 @@ class ProductService:
             if code in seen:
                 raise ValueError(f"Line {line_no}: code '{code}' also appears on line {seen[code]}")
             seen[code] = line_no
-            cells = {header.strip(): _csv_unescape(raw.get(header)) or "" for header in extra}
+            cells = {header: _csv_unescape(cell(raw, position)) or "" for header, position in extra}
             rows.append(CsvRow(line_no, code, name, description, cells))
-        return CsvTable(rows, [header.strip() for header in extra])
+        return CsvTable(rows, [header for header, _ in extra], repeated)
 
     @staticmethod
     async def import_csv(db: AsyncSession, text: str, name: Any = None) -> Dict[str, Any]:
         """Make a new list from a CSV file. Refused when there are already MAX_PRODUCT_LISTS lists."""
         table = ProductService.parse_csv(text)
-        if len(table.columns) > MAX_FIELDS:
-            raise ValueError(f"The CSV file has {len(table.columns)} data columns; a list has at most {MAX_FIELDS} fields")
         # Each extra column becomes a field: its key made from the header, its type from its cells.
+        # A column that cannot be one (more than MAX_FIELDS, a header that comes again, a cell no
+        # field can hold) is left out, as every extra column was before lists had fields.
         taken: set = set()
-        fields = normalize_fields([
-            {"key": key_from_header(header, taken), "label": header[:MAX_FIELD_LABEL_LENGTH],
-             "type": guess_type([row.cells.get(header) for row in table.rows])}
-            for header in table.columns
-        ])
-        typed = _typed_rows(table.rows, dict(zip(table.columns, fields)))
+        fields: List[Dict[str, str]] = []
+        columns: Dict[str, Dict[str, str]] = {}
+        ignored: List[str] = []
+        for header in table.columns:
+            cells = [row.cells.get(header) for row in table.rows]
+            candidate = {"key": key_from_header(header, set(taken)), "label": header[:MAX_FIELD_LABEL_LENGTH],
+                         "type": guess_type(cells)}
+            try:
+                if len(fields) >= MAX_FIELDS:
+                    raise ValueError("too many fields")
+                for value in cells:
+                    parse_cell(candidate, value)
+            except ValueError:
+                ignored.append(header)
+                continue
+            taken.add(candidate["key"])
+            fields.append(candidate)
+            columns[header] = candidate
+        fields = normalize_fields(fields)
+        ignored = ignored + table.repeated      # the columns not made fields, then the headers that came again
+        typed = _typed_rows(table.rows, columns)
         if len(await ProductService._lists(db)) >= MAX_PRODUCT_LISTS:
             raise ProductListLimit(
                 f"There are already {MAX_PRODUCT_LISTS} product lists. Delete one first, "
@@ -534,7 +563,8 @@ class ProductService:
         await db.commit()
         await db.refresh(product_list)
         total = await ProductService._refresh_list(db, product_list)
-        return {"list": _list_row(product_list, total), "added": len(table.rows), "updated": 0, "removed": 0, "total": total}
+        return {"list": _list_row(product_list, total), "added": len(table.rows), "updated": 0, "removed": 0, "total": total,
+                "ignored_columns": ignored}
 
     @staticmethod
     async def replace_contents(db: AsyncSession, list_id: str, text: str) -> Optional[Dict[str, Any]]:
@@ -553,12 +583,16 @@ class ProductService:
             by_name.setdefault(fld["key"].lower(), fld)
             by_name.setdefault(fld["label"].lower(), fld)
         unknown = [header for header in table.columns if header.lower() not in by_name]
+        # A list without fields reads only code, name and description, as before lists had fields.
+        ignored = (unknown if not fields else []) + table.repeated
+        if not fields:
+            unknown = []
         if unknown:
             raise ValueError(
                 f"The file has columns this list has no fields for: {', '.join(unknown)}. "
                 f"Add them as fields first, or leave them out of the file."
             )
-        columns = {header: by_name[header.lower()] for header in table.columns}
+        columns = {header: by_name[header.lower()] for header in table.columns if header.lower() in by_name}
         typed = _typed_rows(table.rows, columns)
         result = await db.execute(select(Product).where(Product.list_id == list_id))
         existing = {p.code: p for p in result.scalars().all()}
@@ -586,7 +620,8 @@ class ProductService:
         await db.refresh(product_list)
         # The lookup readers use changes here, in one step, after the database has the new rows.
         total = await ProductService._refresh_list(db, product_list)
-        return {"list": _list_row(product_list, total), "added": added, "updated": updated, "removed": len(stale), "total": total}
+        return {"list": _list_row(product_list, total), "added": added, "updated": updated, "removed": len(stale), "total": total,
+                "ignored_columns": ignored}
 
     @staticmethod
     async def export_csv(db: AsyncSession, list_id: str) -> str:

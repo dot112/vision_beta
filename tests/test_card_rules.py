@@ -1,14 +1,18 @@
 """Only when: every output action and send card can have up to 5 rules, and acts only when they pass."""
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 import app.services.line_service as line_module
 from app.services import event_values
 from app.services.card_triggers import card_fires, normalize_trigger
 from app.services.line_config import normalize_send_card, timer_interval_ms  # noqa: F401
+from app.services.plc_dispatcher_service import PLCDispatcherService, _normalize_card
 from app.services.send_dispatcher_service import SendDispatcherService
 from app.services.settings_persistence_service import SettingsPersistenceService
+from tests.test_plc_failsafe import plc  # noqa: F401  (a fixture)
 from tests.test_send_cards import lines  # noqa: F401  (a fixture)
 
 LANE3 = {"match": "all", "rules": [{"left": "product.lane", "op": "=", "right": "3", "right_kind": "constant"}]}
@@ -83,3 +87,20 @@ def test_a_timer_card_sends_only_when_its_rules_pass(lines, monkeypatch):  # noq
     assert SendDispatcherService.send_timer(card) is False
     line_module.line_manager.get(line["id"]).set_batch("B-7")
     assert SendDispatcherService.send_timer(card) is True
+
+
+def test_a_card_whose_rules_fail_does_not_stop_the_others(plc, monkeypatch):  # noqa: F811
+    def boom(event):
+        raise RuntimeError("broken values")
+
+    monkeypatch.setattr(event_values, "values_for", boom)
+    cards = [_plc_card(id="a", name="A", plc_endpoint_id="ep1", only_when=LANE3),
+             _plc_card(id="b", name="B", plc_endpoint_id="ep1")]
+    monkeypatch.setattr(PLCDispatcherService, "_cards", [_normalize_card(c) for c in cards])
+
+    async def run():
+        await PLCDispatcherService.evaluate({"event_type": "crossing", "event_id": "e1", "line_id": "line-1", "result": "good"})
+
+    asyncio.run(run())
+    assert "a" not in PLCDispatcherService._states or not PLCDispatcherService._states["a"].last_fired_at
+    assert PLCDispatcherService._states["b"].last_fired_at > 0

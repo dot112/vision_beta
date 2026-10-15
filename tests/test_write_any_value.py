@@ -224,3 +224,10 @@ def test_the_test_route_hands_the_card_its_line_and_code(client, admin_headers, 
         assert seen["card"]["line_id"] == line_id and seen["code"] == "J-1"
     finally:
         client.delete(f"/api/v1/lines/{line_id}", headers=admin_headers)
+
+
+def test_a_formula_that_cannot_be_worked_out_skips(plc, monkeypatch):  # noqa: F811
+    _, driver = plc
+    monkeypatch.setattr(PLCInputService, "values", classmethod(lambda cls, line_id: {"speed": float("inf")}))
+    state = _dispatch(_card("w1", "DB1.Speed", operation="WRITE", value_source="formula", formula="round(input.speed)"), EVENT)
+    assert state.status == "skipped" and driver.ops == []

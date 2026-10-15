@@ -91,3 +91,23 @@ def test_values_gives_the_last_accepted_value(signals, acts):  # noqa: F811
     assert PLCInputService.values(line["id"]) == {"speed": 7}
     assert PLCInputService.values("other-line") == {}
     assert line_module.line_manager.get(line["id"]) is not None
+
+
+def test_values_forgets_an_input_whose_read_fails(signals, acts):  # noqa: F811
+    line = _line_with(_signal("start_line", value_name="speed"))
+
+    async def steps():
+        signals.values["10001"] = 5
+        await _pass()
+        assert PLCInputService.values(line["id"]) == {"speed": 5}
+        signals.unreadable.add("10001")                     # the address cannot be read
+        await _pass()
+        assert PLCInputService.values(line["id"]) == {}
+        signals.unreadable.discard("10001")
+        await _pass()
+        assert PLCInputService.values(line["id"]) == {"speed": 5}
+        signals.reachable = False                           # the PLC is down
+        await _pass()
+        assert PLCInputService.values(line["id"]) == {}
+
+    _run(steps)

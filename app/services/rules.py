@@ -13,7 +13,7 @@ value is missing is false; ``empty`` is true for a missing value.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from app.services.formula import MISSING, PLAIN_NAMES, ROOTS, as_text, compare
 from app.services.product_fields import VALUE_NAME_RE
@@ -35,8 +35,12 @@ def is_value_name(text: Any) -> bool:
     return bool(dot) and root in ROOTS and bool(VALUE_NAME_RE.fullmatch(key))
 
 
-def normalize_only_when(raw: Any, label: str, required: bool = False) -> Optional[Dict[str, Any]]:
-    """Only-when rules as they are saved; None when there are none. Raises ValueError naming ``label``."""
+def normalize_only_when(raw: Any, label: str, required: bool = False,
+                        forbidden: Tuple[str, ...] = ()) -> Optional[Dict[str, Any]]:
+    """Only-when rules as they are saved; None when there are none. Raises ValueError naming ``label``.
+
+    ``forbidden``: value names the rules may not use (a product check cannot use the result it decides).
+    """
     rules = raw.get("rules") if isinstance(raw, dict) else None
     if raw is not None and not isinstance(raw, dict):
         raise ValueError(f"{label}: Only when must be an object with its rules")
@@ -58,6 +62,8 @@ def normalize_only_when(raw: Any, label: str, required: bool = False) -> Optiona
         left = str(rule.get("left") or "").strip()
         if not is_value_name(left):
             raise ValueError(f"{label}: rule {number}: '{left}' is not a value name")
+        if left in forbidden:
+            raise ValueError(f"{label}: rule {number}: a product check decides the result, so it cannot use '{left}'")
         op = str(rule.get("op") or "").strip().lower()
         if op not in RULE_OPS:
             raise ValueError(f"{label}: rule {number}: '{op}' is not an operator; use one of {', '.join(RULE_OPS)}")
@@ -77,6 +83,10 @@ def normalize_only_when(raw: Any, label: str, required: bool = False) -> Optiona
         right = right.strip()
         if kind == "value" and not is_value_name(right):
             raise ValueError(f"{label}: rule {number}: '{right}' is not a value name")
+        if kind == "value" and right in forbidden:
+            raise ValueError(f"{label}: rule {number}: a product check decides the result, so it cannot use '{right}'")
+        if kind == "constant" and not right:
+            raise ValueError(f"{label}: rule {number}: enter a value to compare with, or use 'is empty' / 'is not empty'")
         if len(right) > MAX_CONSTANT_LENGTH:
             raise ValueError(f"{label}: rule {number}: a constant has at most {MAX_CONSTANT_LENGTH} characters")
         cleaned.append({"left": left, "op": op, "right": right, "right_kind": kind})
@@ -124,5 +134,7 @@ def validate_card_rules(card: Dict[str, Any], label: str) -> None:
         condition = str(card.get("condition") or card.get("trigger_condition") or "on").strip().lower()
         if condition not in INPUT_CONDITIONS:
             raise ValueError(f"{label}: an input change is 'on', 'off' or 'change', not '{condition}'")
+        if not card.get("condition") and not card.get("trigger_condition"):
+            card["condition"] = condition       # saved, so the card fires on what was checked
     if "only_when" in card:
         card["only_when"] = normalize_only_when(card.get("only_when"), label)

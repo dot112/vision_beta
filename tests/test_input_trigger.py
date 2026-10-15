@@ -99,3 +99,14 @@ def test_the_new_input_settings_are_checked():
     card = normalize_send_card({"trigger": "input", "input_id": "lane3"})
     assert (card["trigger"], card["input_id"], card["condition"]) == ("input", "lane3", "on")
     assert "input_id" not in normalize_send_card({"trigger": "cross_line", "input_id": "lane3"})
+
+
+def test_an_input_card_saved_without_a_condition_fires_off_to_on(lines):  # noqa: F811
+    lane3 = {"id": "in_lane3", "name": "Lane 3 full", "action": "none", "plc_endpoint_id": "", "address": ""}
+    action = {"id": "act_lane3", "name": "Lane 3 lamp", "enabled": True, "plc_endpoint_id": "", "trigger": "input",
+              "input_id": "in_lane3", "operation": "pulse", "target_address": "Q0.3"}
+    line = SettingsPersistenceService.save_line({"name": "No condition", "plc_inputs": [lane3], "plc_actions": [action]})
+    saved = SettingsPersistenceService.get_line_plc_actions(line["id"])[0]
+    assert saved["condition"] == "on"
+    rise = {"event_type": "input", "line_id": line["id"], "input_id": "in_lane3", "value": True, "previous": False}
+    assert card_fires(normalize_trigger({**saved, "line_id": line["id"]}), rise)

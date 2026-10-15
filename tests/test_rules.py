@@ -71,3 +71,9 @@ def test_empty_and_trimmed():
 ])
 def test_value_names(name, ok):
     assert is_value_name(name) is ok
+
+
+@pytest.mark.parametrize("op", ["=", "!=", "<", ">=", "contains"])
+def test_a_comparison_needs_a_value_to_compare_with(op):
+    with pytest.raises(ValueError, match="Card 'x'.*is empty"):
+        normalize_only_when({"rules": [{"left": "class", "op": op, "right": "  "}]}, "Card 'x'")

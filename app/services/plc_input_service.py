@@ -664,14 +664,18 @@ class PLCInputService:
 
     @classmethod
     def values(cls, line_id: str) -> Dict[str, Any]:
-        """{value name: last accepted value} of a line's inputs that have a value name and have been read."""
+        """{value name: last accepted value} of a line's inputs that have a value name and have been read.
+
+        An input whose last read failed (its PLC is down, the address cannot be read) has no
+        value until it is read again: an old value must not stand in for one nobody can see.
+        """
         found: Dict[str, Any] = {}
         for card in cls._all:
             name = card.get("value_name")
             if card.get("line_id") != line_id or not name:
                 continue
             state = cls._states.get((line_id, card["id"]))
-            if state is not None and state.filter.has_value:
+            if state is not None and state.filter.has_value and state.error is None:
                 found[name] = state.filter.value
         return found
 

@@ -324,3 +324,24 @@ def test_the_export_has_a_product_data_column():
     rows = list(csv.reader(io.StringIO(csv_rows([record({"product": WIDGET}), record(None)], timezone.utc))))
     column = header.index("product_data")
     assert rows[0][column] == "lane=3; recipe=R-12" and rows[1][column] == ""
+
+
+def test_a_list_without_fields_ignores_extra_columns_as_before(client, admin_headers, lists):
+    made = lists("Plain.csv", "A-1")
+    res = client.post(f"{API}/lists/{made['id']}/replace",
+                      files=_upload("code,name,Price,Notes\nA-1,Widget,9.50,x\nA-2,Gadget,3,y\n"), headers=admin_headers)
+    assert res.status_code == 200, res.text
+    assert res.json()["added"] == 1 and res.json()["ignored_columns"] == ["Price", "Notes"]
+    assert _data(client, admin_headers, made["id"]) == {"A-1": None, "A-2": None}
+
+
+def test_import_never_refuses_a_file_for_its_extra_columns(client, admin_headers, lists):
+    extra = [f"C{i}" for i in range(22)]
+    header = "code,name,description," + ",".join(extra) + ",C3,Notes"
+    row = "J-1,Apple,," + ",".join(str(i) for i in range(22)) + ",dup," + '"line one\nline two"'
+    res = client.post(f"{API}/import", files=_upload(f"{header}\n{row}\n", "Wide.csv"), headers=admin_headers)
+    assert res.status_code == 200, res.text
+    assert [f["key"] for f in res.json()["list"]["fields"]] == [f"c{i}" for i in range(20)]
+    assert res.json()["ignored_columns"] == ["C20", "C21", "Notes", "C3"]
+    data = _data(client, admin_headers, res.json()["list"]["id"])["J-1"]
+    assert data["c3"] == 3 and len(data) == 20

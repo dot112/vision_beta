@@ -64,7 +64,7 @@ def test_a_type_change_drops_only_what_no_longer_fits():
 
 @pytest.mark.parametrize("cells, kind", [
     (["1", "2.5", ""], "number"), (["1", "0"], "number"), (["yes", "No", "TRUE", "0"], "yes_no"),
-    (["1,5", "2"], "text"), (["", ""], "text"), (["=1+1"], "text"), (["-3", "+4.5"], "number"), (["1e3"], "text"),
+    (["1,5", "2"], "text"), (["", ""], "text"), (["=1+1"], "text"), (["-3", "4.5"], "number"), (["-3", "+4.5"], "text"), (["1e3"], "text"),
 ])
 def test_guess_type(cells, kind):
     assert guess_type(cells) == kind
@@ -84,3 +84,9 @@ def test_flat_values_and_export_text():
     assert flat_product_values(None) == {}
     assert data_text({"lane": 3.0, "fragile": True, "recipe": "R-1"}) == "lane=3; fragile=yes; recipe=R-1"
     assert data_text(None) == "" and data_text({}) == ""
+
+
+@pytest.mark.parametrize("cells, kind", [(["0042", "17"], "text"), (["+44", "1"], "text"), (["0", "0.5", "10"], "number"),
+                                         (["-0.5", "-3"], "number"), (["00.5"], "text")])
+def test_leading_zeros_and_plus_signs_keep_a_column_text(cells, kind):
+    assert guess_type(cells) == kind

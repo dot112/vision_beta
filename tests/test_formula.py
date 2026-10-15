@@ -118,3 +118,14 @@ def test_one_comparison_rule(left, op, right, want):
 
 def test_a_missing_side_compares_as_missing():
     assert compare(MISSING, "==", 1) is MISSING and compare(1, "!=", MISSING) is MISSING
+
+
+def test_huge_and_not_finite_numbers_never_raise():
+    with pytest.raises(FormulaError, match="too large"):
+        parse("round(1e999)")
+    for value in (float("inf"), float("-inf"), float("nan")):
+        for text in ("round(input.speed)", "round(input.speed, 1)", "int(input.speed)", "abs(input.speed)",
+                     "input.speed * 2", "min(input.speed, 1)", "text(input.speed)", "-input.speed"):
+            assert parse(text).evaluate({"input.speed": value}) is MISSING, (text, value)
+    assert parse("int(input.speed)").evaluate({"input.speed": 1e300}) is MISSING
+    assert parse("round(input.speed)").evaluate({"input.speed": 1e300}) is MISSING

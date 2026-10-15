@@ -28,6 +28,8 @@ NO_WORDS = ("no", "false", "0")
 
 # A number as people write it in a cell: digits with an optional sign and "." decimals.
 _NUMBER_RE = re.compile(r"[+-]?(\d+(\.\d*)?|\.\d+)")
+# A cell that looks like a number but is not written like one: a leading + or a leading zero.
+_KEEP_AS_TEXT = re.compile(r"\+|-?0\d")
 
 
 def _has_control(text: str) -> bool:
@@ -178,7 +180,9 @@ def guess_type(cells: Iterable[Optional[str]]) -> str:
     filled = [cell.strip() for cell in cells if cell and cell.strip()]
     if not filled:
         return "text"
-    if all(_NUMBER_RE.fullmatch(cell) for cell in filled):
+    # "0042" or "+44" are written as text on purpose (article numbers, phone numbers): reading them
+    # as numbers would lose the zeros and the sign for good.
+    if all(_NUMBER_RE.fullmatch(cell) and not _KEEP_AS_TEXT.match(cell) for cell in filled):
         return "number"
     if all(cell.lower() in YES_WORDS + NO_WORDS for cell in filled):
         return "yes_no"
