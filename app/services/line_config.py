@@ -1178,7 +1178,11 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
     if len(set(ids)) != len(ids):
         raise ValueError("The same camera is listed twice on this line")
 
-    for index, cam in enumerate(cameras):
+    # The checks of what a camera that reads Continuously cannot do run when the line's setup is
+    # sent. A save of only "enabled" or the name (start, stop, rename: the dashboard, a PLC input,
+    # Sparkplug) keeps working on a line the version 9 upgrade left that way.
+    setup_save = any(key in raw for key in ("cameras", "sync", "product_checks"))
+    for index, cam in enumerate(cameras if setup_save else []):
         if code_check(cam) and not reads_codes_triggered(cam):
             raise ValueError(
                 f"Camera {index + 1} checks codes, but Read codes 'Continuously' only shows them. "
@@ -1260,7 +1264,7 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
             "Sync needs a vision camera (or a PLC product sensor) and a camera that reads codes "
             "(a QR / barcode reader, or a Vision + QR / barcode camera)"
         )
-    if sync["enabled"] and not any(reads_codes_triggered(c) for c in cameras):
+    if setup_save and sync["enabled"] and not any(reads_codes_triggered(c) for c in cameras):
         # A camera that reads Continuously only shows its codes: none would pair with a product.
         raise ValueError("Sync needs a camera that reads codes when a product crosses a wire line or when an input asks.")
 

@@ -348,3 +348,28 @@ def test_keep_show_only_clears_the_flag(lines, alarms):
                                                   "cameras": [{**READER, "qr_trigger_review": False}]})
     lines.apply_state()
     assert "qr_trigger_review" not in saved["cameras"][0] and _show_only_alarms() == []
+
+
+def test_an_upgraded_line_can_still_be_started_stopped_and_renamed(lines, alarms):
+    # The line of the Review Focus: a code check on a Continuous reader, Sync on, no code: reject.
+    state = _v8_state({"id": "l9", "name": "Upgraded", "enabled": True, "sync": {"enabled": True, "window_ms": WINDOW_MS},
+                       "cameras": [{**VISION, "model_id": "model-test"},
+                                   {**READER, "qr_action": "accept_listed", "qr_no_read": "reject"}]},
+                      {"id": "l10", "name": "Synced", "enabled": True, "sync": {"enabled": True, "window_ms": WINDOW_MS},
+                       "cameras": [{"camera_id": "vis2", "role": "vision", "counting": True, "model_id": "model-test"},
+                                   {**READER, "camera_id": "qr2"}]})
+    upgrade_state(state)
+    SettingsPersistenceService._state["lines"] = SettingsPersistenceService._state["lines"] + state["lines"]
+    for line_id in ("l9", "l10"):
+        # Stop and start (the dashboard, a PLC input, Sparkplug: each saves {"id", "enabled"}), rename, inputs.
+        assert SettingsPersistenceService.save_line({"id": line_id, "enabled": False})["enabled"] is False
+        assert SettingsPersistenceService.save_line({"id": line_id, "enabled": True})["enabled"] is True
+        assert SettingsPersistenceService.save_line({"id": line_id, "name": f"Renamed {line_id}"})["name"] == f"Renamed {line_id}"
+        SettingsPersistenceService.save_line({"id": line_id, "plc_inputs": []})
+    # Line setup sends the cameras: there the user has to choose a trigger first.
+    saved = SettingsPersistenceService.get_line("l9", with_logic=False)
+    with pytest.raises(ValueError, match="Camera 2 checks codes"):
+        SettingsPersistenceService.save_line({"id": "l9", "cameras": saved["cameras"]})
+    saved = SettingsPersistenceService.get_line("l10", with_logic=False)
+    with pytest.raises(ValueError, match="Sync needs a camera that reads codes when"):
+        SettingsPersistenceService.save_line({"id": "l10", "cameras": saved["cameras"], "sync": {"enabled": True}})
