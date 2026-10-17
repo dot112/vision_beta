@@ -1984,7 +1984,7 @@
                         <select class="form-input" id="plHsCapture">${inputOptions(hs.capture_input_id || "", takes, "Choose a 'Take a picture' input")}</select></div>
                     <div class="form-group pl-hs"><label class="form-label">Acknowledge input</label>
                         <select class="form-input" id="plHsAck">${inputOptions(hs.ack_input_id || "", (i) => i.action !== "capture", "Choose an input")}</select>
-                        <div class="pl-note">For example an input with the action "Only fires cards".</div></div>
+                        <div class="pl-note">For example an input with the action "Only fires cards". Its edge decides: Off to on, or On to off for a PLC that drops its request as the acknowledge.</div></div>
                     <div class="form-group pl-hs"><label class="form-label">Result timeout (ms)</label>
                         <input type="number" class="form-input" id="plHsResultMs" min="100" max="60000" step="100" value="${hs.result_timeout_ms || 3000}">
                         <div class="pl-note">Longer than the camera's picture and the Sync window.</div></div>

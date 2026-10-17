@@ -149,7 +149,10 @@ Three features, all optional per line; a line without the new settings behaves e
 - "Handshake fault" fires for: a result timeout under "fault" (`fault: inspection_timeout`),
   an ack timeout (`ack_timeout`), a capture that skipped the ack (`skipped_ack`) or came
   before the last result (`no_result`). The event carries `fault` and `sequence`.
-- `line.sorting_mismatch` is cleared by any "on" edge of the handshake's ack input
+- "Ack on" means the acknowledge input's own edge setting: Off→on by default; a card set to
+  On→off acknowledges when the value goes off (a PLC that drops its CaptureRequest as the ack;
+  used for the PLCSIM run, which has only two tags).
+- `line.sorting_mismatch` is cleared by any acknowledge edge of the handshake's ack input
   (also a stale one), not only a completed cycle.
 - A sorting camera's picture without a code (triggered) sends nothing (no `QR_CODE_NO_READ`).
 - The timeout reject shows in the recent reads as status `no_result`.

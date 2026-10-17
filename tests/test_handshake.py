@@ -489,6 +489,31 @@ def test_after_a_restart_the_handshake_starts_idle(carton, line_with_handshake, 
     assert restarted.get(runtime.id).handshake.view()["state"] == "idle"
 
 
+def test_a_plc_that_drops_its_request_as_the_ack(carton, line_with_handshake, monkeypatch):
+    """The ack input's own edge decides: an "On to off" input on the capture request's own address
+    acknowledges when the PLC drops the request."""
+    import tests.test_handshake as this
+
+    dropped = {**ACK_INPUT, "address": CAP, "edge": "falling"}
+    monkeypatch.setattr(this, "ACK_INPUT", dropped)
+    runtime = line_with_handshake()
+    states = []
+
+    async def steps():
+        await _poll()
+        carton["plc"].values.update({SEQ: 1, CAP: True})
+        await _poll()
+        await asyncio.sleep(0.08)
+        states.append(runtime.handshake.view()["state"])
+        carton["plc"].values[CAP] = False                  # the PLC drops its request: the acknowledge
+        await _poll()
+        states.append(runtime.handshake.view()["state"])
+
+    _run(steps)
+    assert states == ["result_ready", "idle"]
+    assert runtime.handshake.view()["stale_acks"] == 0
+
+
 def test_a_line_without_a_handshake_does_what_it_did(carton, line_with_handshake):
     runtime = line_with_handshake(enabled=False)
 

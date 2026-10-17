@@ -1217,11 +1217,14 @@ class LineRuntime:
             self._handshake_fault(answer["fault"], sequence)
         return answer
 
-    def on_input_change(self, input_id: Optional[str], old: Any, new: Any) -> None:
-        """An accepted change of one of the line's inputs (the PLC input service, on the loop)."""
-        from app.services.plc_input_service import truthy
+    def on_input_change(self, input_id: Optional[str], old: Any, new: Any, edge: str = "rising") -> None:
+        """An accepted change of one of the line's inputs (the PLC input service, on the loop).
 
-        if not input_id or input_id != self.handshake.ack_input_id or not truthy(new) or truthy(old):
+        The acknowledge input's own edge decides what acknowledges: Off to on (the default), or
+        On to off for a PLC that drops its capture request as the acknowledge."""
+        from app.services.plc_input_service import edge_matches
+
+        if not input_id or input_id != self.handshake.ack_input_id or not edge_matches(edge or "rising", old, new):
             return
         from app.events.alarm_events import AlarmCode, alarm_manager
 

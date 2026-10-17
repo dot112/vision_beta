@@ -451,7 +451,7 @@ class PLCInputService:
         runtime = cls._runtime(card)
         if runtime is not None and hasattr(runtime, "on_input_change"):
             try:
-                runtime.on_input_change(card.get("id"), old, new)
+                runtime.on_input_change(card.get("id"), old, new, str(card.get("edge") or "rising"))
             except Exception:
                 logger.exception("Input '%s' of line '%s': the line could not take its change",
                                  card.get("name"), card.get("line_name"))
