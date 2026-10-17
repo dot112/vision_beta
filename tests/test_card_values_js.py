@@ -28,6 +28,8 @@ def test_the_value_names_a_card_can_use():
     assert names[0] == "result"
     assert names[-5:] == ["product.name", "product.code", "product.list", "product.lane", "input.speed"]
     assert {"class", "code", "code_status", "good_count", "batch", "line", "camera"} <= set(names)
+    # The product ID a code holds (a list with a code format), as the server names it.
+    assert names.index("product_id") == names.index("code_status") + 1
     labels = _node("C.valueChoices({fields: [{key: 'lane', label: 'Lane', type: 'number', list: 'Juices'}], inputs: []})"
                    ".filter(c => c.name === 'product.lane').map(c => c.label)")
     assert labels == ["Lane (Juices)"]

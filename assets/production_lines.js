@@ -1045,6 +1045,8 @@
                 <div class="pl-note pl-action-note"></div></div>
             <div class="form-group"><label class="form-label">Product list</label><select class="form-input" data-f="qr_list">${listOptions(listId)}</select>
                 <div class="pl-note">The list this camera checks its codes against. The lists are on the Products page.</div></div>
+            <div class="form-group"><label class="pl-inline pl-check"><input type="checkbox" data-f="code_sets_batch" ${cam.code_sets_batch ? "checked" : ""}> The code's batch sets the line's batch</label>
+                <div class="pl-note">For listed products only. Each change is written to the audit log.</div></div>
             <div class="form-group pl-no-read" style="margin-bottom:0"><label class="form-label">When no code is read</label><select class="form-input" data-f="qr_no_read">
                 ${option("reject", "Reject", cam.qr_no_read || "ignore")}${option("ignore", "Ignore", cam.qr_no_read || "ignore")}</select>
                 <div class="pl-note">Ignore: the product is good or bad according to the vision camera alone.</div></div>`;
@@ -2157,6 +2159,7 @@
                 qr_no_read: cardValue(card, "qr_no_read") || "ignore",
                 // Sent back as it is: "Keep show only" clears it, a trigger drops it on the server.
                 qr_trigger_review: card.dataset.review === "1",
+                code_sets_batch: Boolean(cardField(card, "code_sets_batch") && cardField(card, "code_sets_batch").checked),
             });
         }
         // The triggers ticked on the card, while the camera takes one picture per trigger.
@@ -2575,8 +2578,8 @@
                 ${reader ? `<div class="video-box pl-inline-capture" id="plInlineCapture" hidden>
                     <img class="video-img" id="plInlineImg" alt="Last picture taken for codes">
                     <div class="pl-feed-caption" id="plInlineCaption"></div></div>` : ""}
-                <div class="table-responsive"><table class="pl-table"><thead><tr><th>Time</th><th>Code</th><th>Code check</th><th>Product</th><th>Class</th><th>Product result</th></tr></thead>
-                <tbody id="plQrBody"><tr><td colspan="6">No reads yet.</td></tr></tbody></table></div></div>`
+                <div class="table-responsive"><table class="pl-table"><thead><tr><th>Time</th><th>Code</th><th>Code check</th><th>Product</th><th>Batch</th><th>Class</th><th>Product result</th></tr></thead>
+                <tbody id="plQrBody"><tr><td colspan="7">No reads yet.</td></tr></tbody></table></div></div>`
             : "";
         byId("plInlineTest")?.addEventListener("click", testCapture);
     }
@@ -2605,9 +2608,11 @@
                 const verdict = !r.result ? `<span style="color:var(--text-muted)">—</span>`
                     : r.result === "reject" ? `<b style="color:var(--danger-color)">Rejected</b>${r.reject_reason ? ` · ${esc(REJECT_REASON[r.reject_reason] || r.reject_reason)}${r.product_check ? `: ${esc(r.product_check)}` : ""}` : ""}`
                         : `<b style="color:var(--success-color)">Good</b>`;
-                return `<tr><td class="pl-code">${esc(new Date(r.timestamp).toLocaleTimeString())}</td><td class="pl-code">${esc(r.code || "—")}</td>
-                    <td><b style="color:${color}">${esc(label)}</b>${esc(paired)}${shown}</td><td>${esc(r.product_name || "—")}</td><td>${esc(r.class_name || "—")}</td><td>${verdict}</td></tr>`;
-            }).join("") || `<tr><td colspan="6">No reads yet.</td></tr>`;
+                // The product ID, where the code holds more than it (a list with a code format).
+                const productId = r.product_id && r.product_id !== r.code ? `<div style="color:var(--text-muted);font-size:11px">${esc(r.product_id)}</div>` : "";
+                return `<tr><td class="pl-code">${esc(new Date(r.timestamp).toLocaleTimeString())}</td><td class="pl-code">${esc(r.code || "—")}${productId}</td>
+                    <td><b style="color:${color}">${esc(label)}</b>${esc(paired)}${shown}</td><td>${esc(r.product_name || "—")}</td><td class="pl-code">${esc(r.batch || "—")}</td><td>${esc(r.class_name || "—")}</td><td>${verdict}</td></tr>`;
+            }).join("") || `<tr><td colspan="7">No reads yet.</td></tr>`;
             const capture = data.last_capture;
             if (capture) {
                 const tile = stripCameras().find((c) => c.camera_id === capture.camera_id);
@@ -2705,9 +2710,11 @@
                     <select id="plProdList" class="form-input" aria-label="Product list shown"></select>
                     <button class="btn-action btn-outline" id="plListRename">Rename</button>
                     <button class="btn-action btn-outline" id="plListFields" title="The list's own fields: a value per product">Fields</button>
+                    <button class="btn-action btn-outline" id="plListFormat" title="How the codes of this list are built: product ID and batch">Code format</button>
                     <label class="btn-action btn-outline" id="plReplaceLabel" style="cursor:pointer">Replace contents<input type="file" id="plReplaceFile" accept=".csv,text/csv" style="display:none"></label>
                     <button class="btn-action btn-red" id="plListDelete">Delete this list</button>
                 </div>
+                <div class="pl-note" id="plListFormatNote" style="margin-bottom:4px"></div>
                 <div class="pl-note" id="plListUsedBy" style="margin-bottom:14px"></div>
                 <div class="pl-inline" style="margin-bottom:14px">
                     <input type="text" id="plProdCode" class="form-input" maxlength="256" placeholder="Code">
@@ -2727,6 +2734,7 @@
         byId("plReplaceFile").addEventListener("change", replaceProductList);
         byId("plListRename").addEventListener("click", renameProductList);
         byId("plListFields").addEventListener("click", editProductFields);
+        byId("plListFormat").addEventListener("click", editCodeFormat);
         byId("plListDelete").addEventListener("click", deleteProductList);
         byId("plProdList").addEventListener("change", (e) => { showProductList(e.target.value); refreshProducts(); });
         let timer = null;
@@ -2776,7 +2784,8 @@
         importLabel.style.cursor = full ? "not-allowed" : "pointer";
         importLabel.title = full ? `There are already ${state.maxProductLists} lists. Delete a list first, or use Replace contents.` : "Each imported file becomes a new list";
         byId("plImportFile").disabled = full;
-        ["plListRename", "plListFields", "plListDelete"].forEach((id) => { byId(id).disabled = !shown || !canEdit; byId(id).style.display = canEdit ? "" : "none"; });
+        ["plListRename", "plListFields", "plListFormat", "plListDelete"].forEach((id) => { byId(id).disabled = !shown || !canEdit; byId(id).style.display = canEdit ? "" : "none"; });
+        byId("plListFormatNote").textContent = shown ? `Codes: ${codeFormatText(shown.code_format)}` : "";
         byId("plReplaceLabel").style.display = canEdit && shown ? "" : "none";
         byId("plExport").disabled = !shown;
         const used = (shown && shown.used_by) || [];
@@ -2871,6 +2880,73 @@
         modal.querySelector(".pf-subtitle").textContent = subtitle;
         modal.querySelector(".pf-error").textContent = "";
         return modal;
+    }
+
+    // A list's code format in words: "whole code", "parts split by ';' (product ID: part 1, batch: part 2)", "GS1".
+    function codeFormatText(fmt) {
+        const f = fmt || { mode: "whole" };
+        if (f.mode === "gs1") return "GS1: product ID from (01), batch from (10)";
+        if (f.mode === "split") {
+            return `parts split by '${f.separator}' (product ID: part ${f.product_part}${f.batch_part ? `, batch: part ${f.batch_part}` : ", no batch"})`;
+        }
+        return "the whole code is the product ID";
+    }
+
+    // How the codes of the list shown are built, with a box to try a code before saving.
+    function editCodeFormat() {
+        const shown = shownProductList();
+        if (!shown) return;
+        const modal = productsDialog("plCodeFormatModal", `Code format of '${shown.name}'`,
+            "How the codes of this list are built: the product ID finds the product; a batch goes with each item.");
+        const f = shown.code_format || { mode: "whole" };
+        const parts = (selected, none) => (none ? `<option value="" ${selected ? "" : "selected"}>None</option>` : "")
+            + Array.from({ length: 10 }, (_, i) => `<option value="${i + 1}" ${selected === i + 1 ? "selected" : ""}>Part ${i + 1}</option>`).join("");
+        const body = modal.querySelector(".pf-body");
+        body.innerHTML = `
+            <div class="form-group"><label class="form-label">Codes</label><select class="form-input" data-cf="mode">
+                <option value="whole" ${f.mode === "whole" ? "selected" : ""}>Whole code: the code is the product ID</option>
+                <option value="split" ${f.mode === "split" ? "selected" : ""}>Parts with a separator, such as P-100;B-2026-07</option>
+                <option value="gs1" ${f.mode === "gs1" ? "selected" : ""}>GS1: (01) product ID (GTIN), (10) batch</option></select></div>
+            <div class="pl-form-grid pl-form-tight" data-cf-split>
+                <div class="form-group"><label class="form-label">Separator</label><input type="text" class="form-input" data-cf="separator" maxlength="3" value="${esc(f.separator || ";")}"></div>
+                <div class="form-group"><label class="form-label">Product ID</label><select class="form-input" data-cf="product_part">${parts(f.product_part || 1, false)}</select></div>
+                <div class="form-group"><label class="form-label">Batch</label><select class="form-input" data-cf="batch_part">${parts(f.mode === "split" ? f.batch_part : 2, true)}</select></div>
+            </div>
+            <div class="form-group" style="margin-bottom:0"><label class="form-label">Try a code</label>
+                <div class="pl-inline"><input type="text" class="form-input" data-cf="try" maxlength="512" placeholder="P-100;B-2026-07"><button type="button" class="btn-action btn-outline" data-cf="try-btn">Try</button></div>
+                <div class="pl-note" data-cf="result"></div></div>`;
+        const field = (name) => body.querySelector(`[data-cf="${name}"]`);
+        const read = () => {
+            const mode = field("mode").value;
+            if (mode !== "split") return { mode };
+            return { mode, separator: field("separator").value, product_part: Number(field("product_part").value),
+                batch_part: field("batch_part").value ? Number(field("batch_part").value) : null };
+        };
+        const sync = () => { body.querySelector("[data-cf-split]").hidden = field("mode").value !== "split"; };
+        field("mode").addEventListener("change", sync);
+        sync();
+        field("try-btn").addEventListener("click", async () => {
+            const out = field("result");
+            const code = field("try").value;
+            if (!code.trim()) { out.textContent = "Type a code to try."; return; }
+            try {
+                const r = await api(`/api/v1/products/lists/${encodeURIComponent(shown.id)}/code/check`, { method: "POST", body: { code, code_format: read() } });
+                const found = r.product ? `product: ${esc(r.product.name)}` : `<b style="color:var(--danger-color)">not in this list</b>`;
+                out.innerHTML = `Product ID: <span class="pl-code">${esc(r.product_id || "—")}</span> · Batch: <span class="pl-code">${esc(r.batch || "—")}</span> · ${found}`
+                    + (r.problem ? ` · <b style="color:var(--danger-color)">${esc(r.problem)}</b>` : "");
+            } catch (e) { out.innerHTML = `<b style="color:var(--danger-color)">${esc(e.message)}</b>`; }
+        });
+        modal.onSave = async () => {
+            const error = modal.querySelector(".pf-error");
+            try {
+                await api(`/api/v1/products/lists/${encodeURIComponent(shown.id)}`, { method: "PUT", body: { code_format: read() } });
+                modal.classList.remove("active");
+                toast("Code format saved", "success");
+                refreshProducts();
+            } catch (e) { error.textContent = e.message; }
+        };
+        modal.classList.add("active");
+        refreshSelects();
     }
 
     // The fields of the list shown: add, rename (label), change type, reorder, delete.
