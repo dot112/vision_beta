@@ -176,3 +176,70 @@ def test_a_vision_camera_that_reads_codes_still_counts(lines, monkeypatch):
     assert payload.get("qr_code") is None                      # the shown code did not pair with the product
     assert [r.get("shown_only") for r in runtime.recent_reads()] == [True]
     assert [e for e in seen["events"] if e.get("event_type") == "qr_read"] == []
+
+
+# ── Save checks, the flag and the warnings ────────────────────────────────────
+
+from app.services.line_config import line_warnings, normalize_camera, normalize_line  # noqa: E402
+
+CHECK = {"name": "Wrong", "only_when": {"rules": [{"left": "class", "op": "=", "right": "x"}]}}
+
+
+def test_a_code_check_needs_a_trigger():
+    with pytest.raises(ValueError, match=r"Camera 2 checks codes, but Read codes 'Continuously' only shows them\. "
+                                         r"Choose a wire line or 'When an input asks'\."):
+        normalize_line({"name": "L", "cameras": [VISION, {**READER, "qr_action": "accept_listed"}]})
+    with pytest.raises(ValueError, match="Camera 1 checks codes"):
+        normalize_line({"name": "L", "cameras": [{"camera_id": "qr", "role": "qr", "product_list_id": LIST,
+                                                  "qr_action": "reject_listed"}]})     # no qr_trigger: continuous
+    line = normalize_line({"name": "L", "cameras": [VISION, {**READER, "qr_action": "accept_listed", "qr_trigger": "line1"}]})
+    assert line["sync"]["enabled"] is True
+
+
+def test_sync_needs_a_triggered_reader():
+    with pytest.raises(ValueError, match=r"Sync needs a camera that reads codes when a product crosses a wire line "
+                                         r"or when an input asks\."):
+        normalize_line({"name": "L", "cameras": [VISION, READER], "sync": {"enabled": True}})
+    line = normalize_line({"name": "L", "cameras": [VISION, READER, {**READER, "camera_id": "qr2", "qr_trigger": "signal"}],
+                           "sync": {"enabled": True}})
+    assert line["sync"]["enabled"] is True
+
+
+def test_product_checks_force_sync_only_with_a_triggered_reader():
+    line = normalize_line({"name": "L", "cameras": [VISION, READER], "product_checks": [CHECK]})
+    assert line["sync"]["enabled"] is False
+    line = normalize_line({"name": "L", "cameras": [VISION, {**READER, "qr_trigger": "signal"}], "product_checks": [CHECK]})
+    assert line["sync"]["enabled"] is True
+
+
+@pytest.mark.parametrize("camera, kept", [
+    ({**READER, "qr_trigger_review": True}, True),
+    ({**READER, "qr_trigger": "signal", "qr_trigger_review": True}, False),
+    ({**READER, "qr_trigger_review": False}, False),
+    ({**READER, "qr_trigger_review": "yes"}, False),
+    ({**VISION, "qr_trigger_review": True}, False),                       # reads no codes
+    ({**VISION, "read_codes": True, "qr_trigger_review": True}, True),
+])
+def test_the_flag_is_kept_only_on_a_continuous_reader(camera, kept):
+    assert normalize_camera(camera, 0).get("qr_trigger_review") is (True if kept else None)
+
+
+def test_the_flag_survives_a_client_that_leaves_it_out(lines):
+    line = SettingsPersistenceService.save_line({"name": "Kept", "cameras": [{**READER, "qr_trigger_review": True}]})
+    again = SettingsPersistenceService.save_line({"id": line["id"], "name": "Kept", "cameras": [READER]})
+    assert again["cameras"][0]["qr_trigger_review"] is True
+    cleared = SettingsPersistenceService.save_line({"id": line["id"], "name": "Kept",
+                                                    "cameras": [{**READER, "qr_trigger_review": False}]})
+    assert "qr_trigger_review" not in cleared["cameras"][0]
+
+
+def test_hardware_trigger_on_continuous_is_warned():
+    warnings = line_warnings({"cameras": [{**READER, "camera_id": "g"}]}, trigger_modes={"g": "hardware"})
+    assert "Camera 1 takes a picture on its own input, but Read codes 'Continuously' only shows the codes. Set Read " \
+           "codes to 'When an input asks': every picture it takes is then read." in warnings
+    assert not any("own input" in w for w in line_warnings({"cameras": [{**READER, "camera_id": "g"}]}))
+
+
+def test_no_hold_time_warning_for_a_code_only_line():
+    line = {"cameras": [{**READER, "qr_action": "accept_listed", "qr_trigger": "signal"}]}
+    assert not any("hold time" in w for w in line_warnings(line))

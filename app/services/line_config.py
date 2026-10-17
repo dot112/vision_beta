@@ -214,6 +214,8 @@ CAMERA_KEPT_KEYS = CAMERA_MODEL_KEYS + (
     "name_based_defects", "direction", "tracking", "line1_position", "line2_position", "orientation",
     "confidence", "station", "count_mode", "no_product",
 ) + JOIN_KEYS
+# Settings of a camera that reads codes that a client written before them does not send.
+READER_KEPT_KEYS = ("qr_trigger_review",)
 # The count lines a vision camera copies from its line's action_trigger (version 8 step).
 COUNT_LINE_KEYS = ("line1_position", "line2_position", "orientation")
 # Once kept per line in action_trigger; an older client that still sends them is ignored.
@@ -259,6 +261,14 @@ def _position(value: Any, label: str) -> Optional[float]:
 def reads_codes(camera: Dict[str, Any]) -> bool:
     """A QR reader, or a vision camera that also reads codes."""
     return camera.get("role") == "qr" or bool(camera.get("read_codes"))
+
+
+def reads_codes_triggered(camera: Dict[str, Any]) -> bool:
+    """A camera whose code reads reach its line: it reads codes on a wire line or when an input asks.
+
+    A camera that reads Continuously (or names no capture) only shows its codes.
+    """
+    return reads_codes(camera) and (camera.get("qr_trigger") or "continuous") != "continuous"
 
 
 def code_check(camera: Dict[str, Any]) -> Optional[str]:
@@ -424,6 +434,10 @@ def normalize_camera(raw: Any, index: int) -> Dict[str, Any]:
         if no_read not in QR_NO_READ:
             raise ValueError(f"{label}: when no code is read must be 'reject' or 'ignore'")
         camera["qr_no_read"] = no_read
+        # Set by the version 9 upgrade: since then this camera only shows its codes, and the
+        # user has not chosen when it reads them. Kept until it reads on a trigger, or is cleared.
+        if trigger == "continuous" and raw.get("qr_trigger_review") is True:
+            camera["qr_trigger_review"] = True
     if role == "vision":
         # The model that runs on this camera (AI models page). None only on a
         # camera saved before models were picked per camera: nothing is detected on it.
@@ -1067,14 +1081,15 @@ def _check_signal_cameras(inputs: List[Dict[str, Any]], cameras: List[Dict[str, 
 
 
 def _keep_camera_triggers(cameras: List[Any], saved: List[Dict[str, Any]]) -> List[Any]:
-    """Cameras sent by a client, each with its saved ``triggers`` when the client left them out."""
+    """Cameras sent by a client, each with its saved ``triggers`` (and READER_KEPT_KEYS) when the client left them out."""
     by_id = {c.get("camera_id"): c for c in saved if isinstance(c, dict)}
     filled = []
     for cam in cameras:
-        if isinstance(cam, dict) and "triggers" not in cam:
+        if isinstance(cam, dict):
             kept = by_id.get(str(cam.get("camera_id") or "").strip()) or {}
-            if kept.get("triggers"):
-                cam = {**cam, "triggers": kept["triggers"]}
+            for key in ("triggers",) + READER_KEPT_KEYS:
+                if key not in cam and kept.get(key):
+                    cam = {**cam, key: kept[key]}
         filled.append(cam)
     return filled
 
@@ -1159,6 +1174,13 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
     if len(set(ids)) != len(ids):
         raise ValueError("The same camera is listed twice on this line")
 
+    for index, cam in enumerate(cameras):
+        if code_check(cam) and not reads_codes_triggered(cam):
+            raise ValueError(
+                f"Camera {index + 1} checks codes, but Read codes 'Continuously' only shows them. "
+                f"Choose a wire line or 'When an input asks'."
+            )
+
     vision = [c for c in cameras if c["role"] == "vision"]
     counting = [c for c in vision if c["counting"]]
     if len(counting) > 1:
@@ -1216,7 +1238,7 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
     raw_checks = raw.get("product_checks") if raw.get("product_checks") is not None else base.get("product_checks")
     product_checks = normalize_product_checks(raw_checks) if raw_checks is not None else None
     checking = [c for c in cameras if code_check(c)]
-    if product_checks and any(c["enabled"] for c in product_checks) and has_source and any(reads_codes(c) for c in cameras):
+    if product_checks and any(c["enabled"] for c in product_checks) and has_source             and any(reads_codes_triggered(c) for c in cameras):
         # A product check needs each product paired with its code, like a code check.
         sync["enabled"] = True
     if checking and has_source:
@@ -1234,6 +1256,9 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
             "Sync needs a vision camera (or a PLC product sensor) and a camera that reads codes "
             "(a QR / barcode reader, or a Vision + QR / barcode camera)"
         )
+    if sync["enabled"] and not any(reads_codes_triggered(c) for c in cameras):
+        # A camera that reads Continuously only shows its codes: none would pair with a product.
+        raise ValueError("Sync needs a camera that reads codes when a product crosses a wire line or when an input asks.")
 
     line: Dict[str, Any] = {
         "id": line_id,
@@ -1698,6 +1723,11 @@ def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any
                 f"on is ticked on its card, so it reads no codes. Tick a trigger under Read codes, or add an "
                 f"input with the action 'Take a picture' under Inputs."
             )
+        if mode == "hardware" and reads_codes(cam) and not reads_codes_triggered(cam):
+            warnings.append(
+                f"Camera {index + 1} takes a picture on its own input, but Read codes 'Continuously' only shows "
+                f"the codes. Set Read codes to 'When an input asks': every picture it takes is then read."
+            )
         for number in cam.get("triggers") or []:
             if number not in numbers:
                 warnings.append(
@@ -1740,14 +1770,7 @@ def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any
     joined = joined_cameras(cameras) if counting_camera(line) else []
     if not checks and not joined:
         return warnings
-    has_vision = any(c.get("role") == "vision" for c in cameras)
-    if checks and not has_vision:
-        hold = max(int(c.get("qr_hold_ms") or DEFAULT_QR_HOLD_MS) for c in cameras if c["camera_id"] in checks)
-        warnings.append(
-            f"This line has no vision camera, so each code read counts as one product. A code counts again only "
-            f"after it has been out of view for the hold time ({hold} ms): counting is reliable when products pass "
-            f"further apart than that. For exact counts, add a vision camera."
-        )
+    if checks and not any(c.get("role") == "vision" for c in cameras):
         return warnings
     window = int((line.get("sync") or {}).get("window_ms") or DEFAULT_SYNC_WINDOW_MS)
     # How long after its crossing a product's result can take, and what it waits for.

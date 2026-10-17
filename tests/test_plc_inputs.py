@@ -220,11 +220,11 @@ def test_sync_works_with_a_product_sensor_and_a_code_reader(lines):  # noqa: F81
     # Without a product source Sync has nothing to pair codes with.
     with pytest.raises(ValueError, match="Sync needs"):
         _save(name="No source", cameras=[_reader("qr0")], sync={"enabled": True})
-    line = _save(name="Sensor line", cameras=[_reader("qr1")], sync={"enabled": True},
+    line = _save(name="Sensor line", cameras=[_reader("qr1", qr_trigger="signal")], sync={"enabled": True},
                  plc_inputs=[_signal("product_sensor")])
     assert line["sync"]["enabled"] is True
     # A reader whose codes decide good or reject needs each product paired with its code...
-    checking = _reader("qr2", qr_action="accept_listed", qr_no_read="reject")
+    checking = _reader("qr2", qr_action="accept_listed", qr_no_read="reject", qr_trigger="signal")
     checked = _save(name="Checked", cameras=[checking], plc_inputs=[_signal("product_sensor", id="plcin_s2")])
     assert checked["sync"]["enabled"] is True and checked["cameras"][0]["qr_no_read"] == "reject"
     # ...and stays that way while its sensor card is switched off.
@@ -991,7 +991,7 @@ def test_a_line_fed_by_a_product_sensor_alone_is_running(signals):
 
 
 def test_a_sensor_product_pairs_with_its_code_and_gets_one_result(signals):
-    reader = _reader(qr_action="accept_listed", qr_no_read="reject")
+    reader = _reader(qr_action="accept_listed", qr_no_read="reject", qr_trigger="signal")
     line = _line_with(_signal("product_sensor"), cameras=[reader], sync={"window_ms": 80})
     runtime = _runtime(line)
     assert runtime.sync_enabled and runtime.has_product_sensor

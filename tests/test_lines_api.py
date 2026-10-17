@@ -40,7 +40,7 @@ def test_existing_endpoints_answer_for_line1_when_no_line_is_named(client, admin
 
 
 def test_line_crud_start_stop_and_clone(client, admin_headers, new_line, vision_model):
-    line = new_line("Packing 2", cameras=[{"camera_id": "cam-api-1", "model_id": vision_model}, {"camera_id": "cam-api-2", "role": "qr"}],
+    line = new_line("Packing 2", cameras=[{"camera_id": "cam-api-1", "model_id": vision_model}, {"camera_id": "cam-api-2", "role": "qr", "qr_trigger": "signal"}],
                     sync={"enabled": True, "window_ms": 300})
     assert line["enabled"] is False and line["status"]["state"] == "stopped"
     assert line["sync"] == {"enabled": True, "window_ms": 300}

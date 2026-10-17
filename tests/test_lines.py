@@ -397,7 +397,7 @@ def test_sync_pairer():
 def test_sync_on_a_line_sends_one_event_per_product(lines, monkeypatch):
     _products(monkeypatch, {"SKU-1": "Widget"})
 
-    line = _add_line("Packing 3", [{"camera_id": "vis"}, {"camera_id": "qr", "role": "qr", "product_list_id": "list-1"}],
+    line = _add_line("Packing 3", [{"camera_id": "vis"}, {"camera_id": "qr", "role": "qr", "product_list_id": "list-1", "qr_trigger": "signal"}],
                      sync={"enabled": True, "window_ms": 80}, enabled=True)
     runtime = lines.get(line["id"])
     counter = runtime.counter
@@ -553,14 +553,14 @@ def test_a_vision_camera_can_read_codes_too():
 def test_one_camera_counts_and_pairs_the_codes_it_reads(lines, monkeypatch):
     _products(monkeypatch, {"SKU-1": "Widget"})
 
-    line = _add_line("Single camera", [{"camera_id": "vis", "read_codes": True, "product_list_id": "list-1"}],
+    line = _add_line("Single camera", [{"camera_id": "vis", "read_codes": True, "product_list_id": "list-1", "qr_trigger": "signal"}],
                      sync={"enabled": True, "window_ms": 80}, enabled=True)
     runtime = lines.get(line["id"])
     assert runtime.reads_codes("vis") and runtime.has_code_reader and runtime.sync_enabled
-    assert runtime.capture_triggers == {}  # reads continuously
+    assert runtime.capture_triggers == {}  # reads when an input asks, not on a wire line
     row = lines.summary(runtime)
     assert row["has_qr"] is True and row["cameras"][0]["read_codes"] is True
-    assert row["cameras"][0]["qr_trigger"] == "continuous"
+    assert row["cameras"][0]["qr_trigger"] == "signal"   # one that reads Continuously only shows its codes
 
     crossings = []
     monkeypatch.setattr(runtime.counter, "dispatch_event", lambda payload, plc_event, is_defect: crossings.append(payload))

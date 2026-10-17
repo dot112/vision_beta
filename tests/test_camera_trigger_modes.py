@@ -278,7 +278,7 @@ def test_a_code_reader_that_reads_continuously_takes_a_hardware_camera_as_a_stre
     cam, backend = rig.camera("cam", trigger_mode="hardware")
     reader, captures = _reads(rig, runtime, "cam", {1: "AAA"})
     seen = []
-    runtime.on_qr_read = lambda cid, data, fmt, now: seen.append(data)
+    runtime.show_read = lambda cid, data, fmt: seen.append(data)          # read continuously: only shown
     backend.push(_picture(1))
     assert rig.pump(lambda: seen == ["AAA"])
     backend.push(_picture(1))
@@ -442,7 +442,10 @@ def test_a_signal_card_for_a_hardware_camera_is_warned_about():
 def test_a_software_camera_nothing_triggers_is_warned_about(camera, word):
     warnings = _warned([camera], {"cam": "software"})
     assert len(warnings) == 1 and "Camera 1" in warnings[0] and word in warnings[0]
-    assert _warned([camera], {"cam": "hardware"}) == [] and _warned([camera], {}) == []
+    assert _warned([camera], {}) == []
+    on_its_input = _warned([camera], {"cam": "hardware"})
+    # A code reader on hardware trigger that reads Continuously only shows its codes: said once.
+    assert on_its_input == [] if word == "Count mode" else (len(on_its_input) == 1 and "only shows the codes" in on_its_input[0])
 
 
 def test_the_one_picture_uses_of_a_software_camera_are_not_warned_about():

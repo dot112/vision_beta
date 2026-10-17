@@ -83,7 +83,7 @@ def test_a_line_keeps_its_checks_when_a_client_leaves_them_out(lines):  # noqa: 
 # ── On the line ───────────────────────────────────────────────────────────────
 
 def test_a_wrong_bottle_is_rejected(apples, recorder):  # noqa: F811
-    runtime = _check_line(apples, [{"camera_id": "top"}, {"camera_id": "qr", "role": "qr", "product_list_id": LIST}], [CHECK])
+    runtime = _check_line(apples, [{"camera_id": "top"}, {"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_trigger": "signal"}], [CHECK])
     assert runtime.sync_enabled                                   # checks need each product paired with its code
 
     async def steps():
@@ -107,7 +107,7 @@ def test_a_wrong_bottle_is_rejected(apples, recorder):  # noqa: F811
 
 def test_checks_need_a_known_code(apples, recorder):  # noqa: F811
     any_code = {"name": "Any code", "only_when": {"rules": [{"left": "code", "op": "not_empty"}]}}
-    runtime = _check_line(apples, [{"camera_id": "top"}, {"camera_id": "qr", "role": "qr", "product_list_id": LIST}],
+    runtime = _check_line(apples, [{"camera_id": "top"}, {"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_trigger": "signal"}],
                           [CHECK, any_code])
 
     async def steps():
@@ -123,7 +123,7 @@ def test_checks_need_a_known_code(apples, recorder):  # noqa: F811
 
 
 def test_a_code_only_line_runs_checks_without_class(apples, recorder):  # noqa: F811
-    reader = [{"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed"}]
+    reader = [{"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed", "qr_trigger": "signal"}]
     lane = _check_line(apples, reader, [LANE3], name="Code only lane")
     classes = _check_line(apples, [{**reader[0], "camera_id": "qr2"}], [CHECK], name="Code only class")
 
@@ -156,7 +156,7 @@ def test_checks_never_see_the_result(apples, recorder):  # noqa: F811
     # A check decides the result, so a rule on the result is never true for it (the value is missing).
     # Such a check is refused when it is saved (test_a_check_cannot_use_the_result); this one is put on the
     # running line directly, as a hand-edited settings file would.
-    runtime = _check_line(apples, [{"camera_id": "top"}, {"camera_id": "qr", "role": "qr", "product_list_id": LIST}],
+    runtime = _check_line(apples, [{"camera_id": "top"}, {"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_trigger": "signal"}],
                           [CHECK], name="Result check")
     runtime.product_checks = [{"id": "c1", "name": "On the result", "enabled": True, "only_when": {
         "match": "all", "rules": [{"left": "result", "op": "not_empty", "right": "", "right_kind": "constant"}]}}]
@@ -181,7 +181,7 @@ def test_a_check_cannot_use_the_result():
 
 
 def test_a_check_that_fails_to_run_does_not_drop_the_product(apples, recorder, monkeypatch):  # noqa: F811
-    runtime = _check_line(apples, [{"camera_id": "top"}, {"camera_id": "qr", "role": "qr", "product_list_id": LIST}],
+    runtime = _check_line(apples, [{"camera_id": "top"}, {"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_trigger": "signal"}],
                           [CHECK], name="Broken check")
 
     def boom(event):

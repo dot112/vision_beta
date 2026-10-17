@@ -243,7 +243,7 @@ def with_data(lines, monkeypatch):  # noqa: F811
 
 def test_a_known_code_brings_its_product_data(with_data, recorder):  # noqa: F811
     runtime = _line(with_data, [{"camera_id": "top"},
-                                {"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed"}])
+                                {"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed", "qr_trigger": "signal"}])
     sent = []
     runtime.counter.dispatch_event = lambda payload, event, is_defect: sent.append((payload, event))
 
@@ -261,7 +261,7 @@ def test_a_known_code_brings_its_product_data(with_data, recorder):  # noqa: F81
 
 
 def test_a_code_only_product_and_a_plain_read_carry_it_too(with_data, recorder):  # noqa: F811
-    reader = _line(with_data, [{"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed"}],
+    reader = _line(with_data, [{"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed", "qr_trigger": "signal"}],
                    name="Codes")
     sent = []
     reader._publish = lambda topics, payload, event: sent.append((payload, event))
@@ -282,7 +282,7 @@ def test_a_code_only_product_and_a_plain_read_carry_it_too(with_data, recorder):
 
 
 def test_an_unknown_code_has_no_product(with_data, recorder):  # noqa: F811
-    reader = _line(with_data, [{"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed"}],
+    reader = _line(with_data, [{"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed", "qr_trigger": "signal"}],
                    name="Codes")
     sent = []
     reader._publish = lambda topics, payload, event: sent.append((payload, event))

@@ -76,7 +76,9 @@ def _cross(counter, camera_id="vis", is_defect=False):
 
 
 def _reader(action="report", no_read="ignore", **extra):
-    return {"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": action, "qr_no_read": no_read, **extra}
+    # It reads on a trigger: a camera that reads Continuously only shows its codes and checks none.
+    return {"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": action, "qr_no_read": no_read,
+            "qr_trigger": "signal", **extra}
 
 
 def _line(manager, cameras, name="Checked"):
@@ -151,7 +153,7 @@ def test_existing_readers_load_as_report_only():
 
 
 def test_reader_action_validation():
-    cams = lambda **reader: [{"camera_id": "v"}, {"camera_id": "q", "role": "qr", **reader}]  # noqa: E731
+    cams = lambda **reader: [{"camera_id": "v"}, {"camera_id": "q", "role": "qr", "qr_trigger": "line1", **reader}]  # noqa: E731
     with pytest.raises(ValueError, match="action must be"):
         normalize_line({"name": "A", "cameras": cams(qr_action="save")})
     with pytest.raises(ValueError, match="choose the product list"):
@@ -166,12 +168,13 @@ def test_reader_action_validation():
     assert code_checks(checked["cameras"]) == {"q": {"action": "reject_listed", "no_read": "reject"}}
 
     # A vision camera that reads codes itself has the same choices.
-    one = normalize_line({"name": "A", "cameras": [{"camera_id": "v", "read_codes": True, "qr_action": "accept_listed", "product_list_id": LIST}]})
+    one = normalize_line({"name": "A", "cameras": [{"camera_id": "v", "read_codes": True, "qr_action": "accept_listed", "product_list_id": LIST,
+                                                    "qr_trigger": "line1"}]})
     assert one["sync"]["enabled"] is True and code_checks(one["cameras"])["v"]["action"] == "accept_listed"
 
     # Without a vision camera there is no "no code was read", and no Sync.
     alone = normalize_line({"name": "A", "cameras": [{"camera_id": "q", "role": "qr", "qr_action": "accept_listed",
-                                                      "product_list_id": LIST, "qr_no_read": "reject"}]})
+                                                      "product_list_id": LIST, "qr_no_read": "reject", "qr_trigger": "signal"}]})
     assert alone["cameras"][0]["qr_no_read"] == "ignore" and alone["sync"]["enabled"] is False
 
 
@@ -298,7 +301,8 @@ def test_reject_listed_codes(lines):
 
 
 def test_one_camera_that_inspects_and_checks_codes(lines):
-    runtime = _line(lines, [{"camera_id": "vis", "read_codes": True, "product_list_id": LIST, "qr_action": "accept_listed"}])
+    runtime = _line(lines, [{"camera_id": "vis", "read_codes": True, "product_list_id": LIST, "qr_action": "accept_listed",
+                             "qr_trigger": "signal"}])
     assert runtime.sync_enabled and "vis" in runtime.code_checks
 
     async def steps():
@@ -409,7 +413,8 @@ def test_warnings_for_a_short_travel_delay_and_for_a_reader_alone():
     gate = {"id": "g", "name": "Reject gate", "trigger": "cross_line", "condition": "reject", "delay_ms": 300}
     lamp = {"id": "l", "name": "Good lamp", "trigger": "cross_line", "condition": "good", "delay_ms": 0}
     checked = normalize_line({"name": "A", "sync": {"window_ms": 500}, "cameras": [
-        {"camera_id": "v"}, {"camera_id": "q", "role": "qr", "qr_action": "accept_listed", "product_list_id": LIST}]})
+        {"camera_id": "v"}, {"camera_id": "q", "role": "qr", "qr_action": "accept_listed", "product_list_id": LIST,
+                             "qr_trigger": "line1"}]})
     warnings = line_warnings({**checked, "plc_actions": [gate, lamp]})
     assert len(warnings) == 1 and "'Reject gate'" in warnings[0] and "300 ms" in warnings[0] and "500 ms" in warnings[0]
     assert line_warnings({**checked, "plc_actions": [{**gate, "delay_ms": 800}, lamp]}) == []
@@ -419,9 +424,10 @@ def test_warnings_for_a_short_travel_delay_and_for_a_reader_alone():
     assert line_warnings({**plain, "plc_actions": [gate]}) == []  # codes are only reported: nothing waits
 
     alone = normalize_line({"name": "A", "cameras": [{"camera_id": "q", "role": "qr", "qr_action": "reject_listed",
-                                                      "product_list_id": LIST, "qr_hold_ms": 2000}]})
-    (warning,) = line_warnings(alone)
-    assert "no vision camera" in warning and "2000 ms" in warning
+                                                      "product_list_id": LIST, "qr_hold_ms": 2000,
+                                                      "qr_trigger": "signal"}]})
+    # Each picture an input asks for is one product: the hold time no longer decides the count.
+    assert not any("hold time" in w for w in line_warnings(alone))
 
 
 # ── API ───────────────────────────────────────────────────────────────────────
@@ -438,7 +444,8 @@ def test_line_api_saves_the_reader_action(client, admin_headers, vision_model):
             "sync": {"enabled": False, "window_ms": 400},
             "cameras": [
                 {"camera_id": "act-vis", "model_id": vision_model},
-                {"camera_id": "act-qr", "role": "qr", "qr_action": "accept_listed", "product_list_id": list_id, "qr_no_read": "reject"},
+                {"camera_id": "act-qr", "role": "qr", "qr_action": "accept_listed", "product_list_id": list_id, "qr_no_read": "reject",
+                 "qr_trigger": "line1"},
             ],
             "plc_actions": [{"id": "act-gate", "name": "Gate", "trigger": "cross_line", "condition": "reject", "delay_ms": 100}],
         }, headers=admin_headers)

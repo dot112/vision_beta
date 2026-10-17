@@ -177,7 +177,7 @@ def test_a_counted_product_and_an_own_station_product(lines, recorder):
 def test_a_product_paired_with_its_code_keeps_the_code(lines, recorder):
     runtime = _line(lines, [
         {"camera_id": "top"},
-        {"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed", "qr_no_read": "reject"},
+        {"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed", "qr_trigger": "signal", "qr_no_read": "reject"},
     ])
 
     async def steps():
@@ -199,7 +199,7 @@ def test_a_product_paired_with_its_code_keeps_the_code(lines, recorder):
 
 
 def test_a_code_only_product_an_unpaired_code_and_a_no_read(lines, recorder):
-    reader = _line(lines, [{"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed"}],
+    reader = _line(lines, [{"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed", "qr_trigger": "signal"}],
                    name="Codes")
 
     async def steps():

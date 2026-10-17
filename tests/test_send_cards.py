@@ -445,7 +445,7 @@ def test_a_reject_by_code_goes_to_the_reject_card_with_its_reason(lines, listene
     rejects, codes = listeners(), listeners()
     line = SettingsPersistenceService.save_line({"name": "Checked", "enabled": True, "sync": {"window_ms": 60}, "cameras": [
         {"camera_id": "vis", "model_id": "model-test"},
-        {"camera_id": "qr", "role": "qr", "product_list_id": "list-1", "qr_action": "accept_listed"},
+        {"camera_id": "qr", "role": "qr", "product_list_id": "list-1", "qr_action": "accept_listed", "qr_trigger": "signal"},
     ]})
     lines.apply_state()
     _channel("tcp-rejects", rejects, "Rejects")

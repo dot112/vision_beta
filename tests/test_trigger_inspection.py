@@ -413,7 +413,7 @@ def test_a_trigger_on_a_stopped_line_or_a_disconnected_camera_is_refused(lines, 
 
 
 def test_a_triggered_counting_camera_waits_for_its_code(lines, workers, fake_camera):  # noqa: F811
-    reader = {"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed", "qr_no_read": "reject"}
+    reader = {"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed", "qr_trigger": "signal", "qr_no_read": "reject"}
     runtime = _line(lines, [_trigger_cam(), reader])
     fake_camera("vis")
     assert runtime.sync_enabled
