@@ -27,6 +27,9 @@ class ProductList(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
     # The list's own fields: [{"key", "label", "type"}] (app.services.product_fields).
     fields: Mapped[List[Dict[str, str]]] = mapped_column(JSON, nullable=False, default=list, server_default="[]")
+    # How the list's codes are built: {"mode": "whole" | "split" | "gs1", ...} (app.services.code_format).
+    code_format: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=lambda: {"mode": "whole"},
+                                                        server_default='{"mode": "whole"}')
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

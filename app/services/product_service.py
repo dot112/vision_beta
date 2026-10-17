@@ -19,6 +19,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.product import DEFAULT_LIST_ID, DEFAULT_LIST_NAME, Product, ProductList, new_list_id
+from app.services.code_format import DEFAULT_FORMAT, normalize_code_format, split_code
 from app.services.product_fields import (
     MAX_FIELD_LABEL_LENGTH,
     MAX_FIELDS,
@@ -89,6 +90,28 @@ def normalize_code(code: Any) -> str:
     return str(code if code is not None else "").strip()
 
 
+@dataclass(frozen=True)
+class CodeMatch:
+    """One code read against a list: the product (None: not listed), the product ID and the batch the
+    code holds, and why it does not fit (the first problem; None when it fits)."""
+    product: Optional[Dict[str, Any]]
+    product_id: Optional[str]
+    batch: Optional[str]
+    problem: Optional[str]
+
+
+_NO_MATCH = CodeMatch(None, None, None, None)
+
+
+def _readable_format(raw: Any, list_id: str) -> Dict[str, Any]:
+    """A saved format as the catalog uses it; one that cannot be read (a hand-edited database) reads whole codes."""
+    try:
+        return normalize_code_format(raw)
+    except ValueError:
+        logger.warning("Product list %s has a code format that cannot be read (%r): it reads whole codes", list_id, raw)
+        return dict(DEFAULT_FORMAT)
+
+
 class ProductCatalog:
     """Thread-safe code -> product lookup for every product list, kept in step with the database.
 
@@ -102,34 +125,44 @@ class ProductCatalog:
         self._names: Dict[str, str] = {}
         # Each list's own fields (app.services.product_fields).
         self._fields: Dict[str, List[Dict[str, str]]] = {}
+        # How each list's codes are built (app.services.code_format); a list without one reads whole codes.
+        self._formats: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
         self.loaded = False
 
     def replace_all(self, lists: Dict[str, Tuple[str, List[Dict[str, Any]]]],
-                    fields: Optional[Dict[str, List[Dict[str, str]]]] = None) -> None:
+                    fields: Optional[Dict[str, List[Dict[str, str]]]] = None,
+                    formats: Optional[Dict[str, Any]] = None) -> None:
         """Every list at once: {list_id: (name, products)}, in the order the lists were created,
-        and {list_id: fields}."""
+        {list_id: fields} and {list_id: code format}."""
         tables = {list_id: {p["code"]: p for p in products} for list_id, (_, products) in lists.items()}
         names = {list_id: name for list_id, (name, _) in lists.items()}
+        readable = {list_id: _readable_format(formats[list_id], list_id) for list_id in lists if list_id in (formats or {})}
         with self._lock:
             self._lists, self._names = tables, names
             self._fields = {list_id: list(fields.get(list_id) or []) for list_id in lists} if fields else {}
+            self._formats = readable
             self.loaded = True
 
     def replace_list(self, list_id: str, name: str, products: List[Dict[str, Any]],
-                     fields: Optional[List[Dict[str, str]]] = None) -> None:
+                     fields: Optional[List[Dict[str, str]]] = None, code_format: Any = None) -> None:
+        """One list's contents; ``fields`` and ``code_format`` left out keep what the list has."""
         table = {p["code"]: p for p in products}
+        readable = _readable_format(code_format, list_id) if code_format is not None else None
         with self._lock:
             self._lists = {**self._lists, list_id: table}
             self._names = {**self._names, list_id: name}
             if fields is not None:
                 self._fields = {**self._fields, list_id: list(fields)}
+            if readable is not None:
+                self._formats = {**self._formats, list_id: readable}
 
     def remove_list(self, list_id: str) -> None:
         with self._lock:
             self._lists = {k: v for k, v in self._lists.items() if k != list_id}
             self._names = {k: v for k, v in self._names.items() if k != list_id}
             self._fields = {k: v for k, v in self._fields.items() if k != list_id}
+            self._formats = {k: v for k, v in self._formats.items() if k != list_id}
 
     def fields(self, list_id: Optional[str]) -> List[Dict[str, str]]:
         """A list's fields ([] for a list without fields, or no list)."""
@@ -146,21 +179,44 @@ class ProductCatalog:
             "fields": dict(product.get("data") or {}),
         }
 
-    def lookup(self, code: str, list_id: Optional[str]) -> Optional[Dict[str, Any]]:
-        """The product a code stands for in one list. None when it is not listed, or no list is named."""
+    def formats(self) -> Dict[str, Dict[str, Any]]:
+        """Each list's code format ({list_id: format}); a list missing here reads whole codes."""
+        with self._lock:
+            return copy.deepcopy(self._formats)
+
+    def match(self, code: Any, list_id: Optional[str], fmt: Optional[Dict[str, Any]] = None) -> CodeMatch:
+        """A code read against one list, by the list's code format (or ``fmt``, a format to try).
+
+        A code that does not fit the format finds no product; its ``problem`` says why. A batch
+        that cannot be a batch (line_config.clean_batch) is dropped: "batch not allowed".
+        """
+        from app.services.line_config import clean_batch
+
         if not list_id:
-            return None
+            return _NO_MATCH
         with self._lock:
             table = self._lists.get(list_id)
-        return table.get(normalize_code(code)) if table else None
+            own = self._formats.get(list_id)
+        parts = split_code(normalize_code(code), fmt if fmt is not None else (own or DEFAULT_FORMAT))
+        product = table.get(parts.product_id) if table and parts.product_id else None
+        batch, problem = parts.batch, parts.problem
+        if batch is not None:
+            try:
+                batch = clean_batch(batch) or None
+            except ValueError:
+                batch, problem = None, problem or "batch not allowed"
+        return CodeMatch(product, parts.product_id, batch, problem)
+
+    def lookup(self, code: str, list_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        """The product a code stands for in one list, by the list's code format. None when it is not
+        listed, or no list is named."""
+        return self.match(code, list_id).product
 
     def lookup_any(self, code: str) -> Optional[Dict[str, Any]]:
-        """The first list that has the code, oldest list first (for callers that name no list)."""
-        code = normalize_code(code)
-        with self._lock:
-            tables = list(self._lists.values())
-        for table in tables:
-            product = table.get(code)
+        """The first list that has the code, each list reading it by its own format, oldest list first
+        (for callers that name no list)."""
+        for list_id in self.list_ids():
+            product = self.match(code, list_id).product
             if product is not None:
                 return product
         return None
@@ -207,10 +263,19 @@ def _list_row(product_list: ProductList, count: int) -> Dict[str, Any]:
         "id": product_list.id,
         "name": product_list.name,
         "fields": list(product_list.fields or []),
+        "code_format": _shown_format(product_list.code_format),
         "count": count,
         "created_at": product_list.created_at.isoformat() if product_list.created_at else None,
         "updated_at": product_list.updated_at.isoformat() if product_list.updated_at else None,
     }
+
+
+def _shown_format(raw: Any) -> Dict[str, Any]:
+    """A list's code format as the API shows it (one that cannot be read shows as whole codes, as it reads)."""
+    try:
+        return normalize_code_format(raw)
+    except ValueError:
+        return dict(DEFAULT_FORMAT)
 
 
 def _validate(code: Any, name: Any, description: Any) -> Tuple[str, str, Optional[str]]:
@@ -265,14 +330,16 @@ class ProductService:
         for product in (await db.execute(select(Product))).scalars().all():
             if product.list_id in by_list:
                 by_list[product.list_id][1].append(_row(product))
-        product_catalog.replace_all(by_list, {pl.id: list(pl.fields or []) for pl in lists})
+        product_catalog.replace_all(by_list, {pl.id: list(pl.fields or []) for pl in lists},
+                                    {pl.id: pl.code_format for pl in lists})
         return len(product_catalog)
 
     @staticmethod
     async def _refresh_list(db: AsyncSession, product_list: ProductList) -> int:
         result = await db.execute(select(Product).where(Product.list_id == product_list.id))
         rows = [_row(p) for p in result.scalars().all()]
-        product_catalog.replace_list(product_list.id, product_list.name, rows, list(product_list.fields or []))
+        product_catalog.replace_list(product_list.id, product_list.name, rows, list(product_list.fields or []),
+                                     code_format=product_list.code_format or DEFAULT_FORMAT)
         return len(rows)
 
     # ── Lists ─────────────────────────────────────────────────────────────────
@@ -327,7 +394,7 @@ class ProductService:
         raise ValueError(f"A product list named '{wanted}' already exists")
 
     @staticmethod
-    async def create_list(db: AsyncSession, name: Any, fields: Any = None) -> Dict[str, Any]:
+    async def create_list(db: AsyncSession, name: Any, fields: Any = None, code_format: Any = None) -> Dict[str, Any]:
         lists = await ProductService._lists(db)
         if len(lists) >= MAX_PRODUCT_LISTS:
             raise ProductListLimit(f"There are already {MAX_PRODUCT_LISTS} product lists. Delete one first.")
@@ -335,10 +402,12 @@ class ProductService:
         if any(pl.name.lower() == wanted.lower() for pl in lists):
             raise ValueError(f"A product list named '{wanted}' already exists")
         product_list = _new_list(wanted, fields=normalize_fields(fields))
+        product_list.code_format = normalize_code_format(code_format)
         db.add(product_list)
         await db.commit()
         await db.refresh(product_list)
-        product_catalog.replace_list(product_list.id, product_list.name, [], list(product_list.fields or []))
+        product_catalog.replace_list(product_list.id, product_list.name, [], list(product_list.fields or []),
+                                     code_format=product_list.code_format)
         return _list_row(product_list, 0)
 
     @staticmethod
@@ -346,11 +415,13 @@ class ProductService:
         return await ProductService.update_list(db, list_id, name=name)
 
     @staticmethod
-    async def update_list(db: AsyncSession, list_id: str, name: Any = None, fields: Any = None) -> Optional[Dict[str, Any]]:
-        """Rename a list, change its fields, or both. With new fields every product's values are
+    async def update_list(db: AsyncSession, list_id: str, name: Any = None, fields: Any = None,
+                          code_format: Any = None) -> Optional[Dict[str, Any]]:
+        """Rename a list, change its fields or its code format. With new fields every product's values are
         checked again: what no longer fits is dropped, and the answer's ``dropped`` says how many."""
-        if name is None and fields is None:
-            raise ValueError("Send a new name for the list, or its fields")
+        if name is None and fields is None and code_format is None:
+            raise ValueError("Send a new name for the list, its fields or its code format")
+        new_format = normalize_code_format(code_format) if code_format is not None else None
         product_list = await db.get(ProductList, list_id)
         if product_list is None:
             return None
@@ -359,6 +430,8 @@ class ProductService:
             if any(pl.name.lower() == wanted.lower() for pl in await ProductService._lists(db) if pl.id != list_id):
                 raise ValueError(f"A product list named '{wanted}' already exists")
             product_list.name = wanted
+        if new_format is not None:
+            product_list.code_format = new_format
         dropped = 0
         if fields is not None:
             new_fields = normalize_fields(fields)
