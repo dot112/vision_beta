@@ -28,6 +28,7 @@ from app.services.line_config import (
     PRIMARY_LINE_ID,
     REASON_INSPECTION_TIMEOUT,
     REASON_PRODUCT_CHECK,
+    REASON_SORTING_MISMATCH,
     REASON_VISION,
     camera_station,
     code_checks,
@@ -35,9 +36,14 @@ from app.services.line_config import (
     join_settings,
     joined_cameras,
     product_result,
+    product_reader,
     product_sensors,
     reads_codes,
+    sorting_lane,
 )
+
+# Sorting verification remembers the line's last products that had a code.
+SORTING_MEMORY = 200
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -451,6 +457,11 @@ class LineRuntime:
         self._capture_jpeg: Optional[bytes] = None
         self._capture_seq = 0
         self.qr_recent: Deque[Dict[str, Any]] = collections.deque(maxlen=100)
+        # Sorting verification: {camera_id: "accepted" / "rejected"}, the last products that had a
+        # code ({"code", "sequence", "result", "at", "verified"}), and what the cameras found.
+        self.sorting_lanes: Dict[str, str] = {}
+        self._sorting_memory: Deque[Dict[str, Any]] = collections.deque(maxlen=SORTING_MEMORY)
+        self._sorting_stats = {"verified": 0, "mismatches": 0, "unmatched": 0}
         self.qr_stats = {"codes_read": 0, "known": 0, "unknown": 0, "no_reads": 0, "unpaired": 0, "code_rejects": 0}
         # Products waiting for the vision cameras that join the counting camera's result.
         self.assembly = ProductAssembly()
@@ -510,7 +521,9 @@ class LineRuntime:
         self.sequence_input_id = line.get("sequence_input_id") or None
         self.handshake.configure(line.get("handshake"))
         # Each product's one event passes the line first when the line adds to it or waits for it.
-        self.counter.product_hook = self._product_finished if self.sequence_input_id or self.handshake.enabled else None
+        self.sorting_lanes = {c["camera_id"]: sorting_lane(c) for c in self.cameras if sorting_lane(c)}
+        self.counter.product_hook = self._product_finished \
+            if self.sequence_input_id or self.handshake.enabled or self.sorting_lanes else None
         # A product whose capture request already got its one result (a timeout) is not counted again.
         self.counter.product_gate = self._admit_product if self.handshake.enabled else None
 
@@ -569,7 +582,7 @@ class LineRuntime:
     @property
     def has_code_reader(self) -> bool:
         """A QR reader or a vision camera with Read codes on."""
-        return any(reads_codes(c) for c in self.cameras)
+        return any(product_reader(c) for c in self.cameras)
 
     def reads_codes(self, camera_id: str) -> bool:
         entry = self.camera_entry(camera_id)
@@ -690,6 +703,10 @@ class LineRuntime:
 
         ``sequence`` / ``request_id``: what the "Take a picture" input that asked for the picture carries."""
         read = self._make_read(camera_id, code, code_format, t=t, track_id=track_id)
+        if camera_id in self.sorting_lanes:
+            # A sorting verification camera: the read checks a product's outfeed, nothing else.
+            self._run_on_loop(self._verify_sorting, read)
+            return read
         for key, value in (("sequence", sequence), ("request_id", request_id)):
             if value is not None:
                 read[key] = value
@@ -700,8 +717,13 @@ class LineRuntime:
         return read
 
     def show_read(self, camera_id: str, code: str, code_format: str) -> Dict[str, Any]:
-        """A code a camera read Continuously: it is only shown (the line's recent reads), nothing else."""
+        """A code a camera read Continuously: it is only shown (the line's recent reads), nothing else.
+
+        The exception: a sorting verification camera verifies Continuously too (it reports, it never decides)."""
         read = self._make_read(camera_id, code, code_format)
+        if camera_id in self.sorting_lanes:
+            self._run_on_loop(self._verify_sorting, read)
+            return read
         self._remember(read, "known" if read["known"] else "unknown", paired=None, shown_only=True)
         return read
 
@@ -763,7 +785,7 @@ class LineRuntime:
             for code in self._deciding_first(camera_id, capture["codes"]):
                 self.on_qr_read(camera_id, code["code"], code["format"], t=capture.get("t"), track_id=capture.get("track_id"),
                                 sequence=capture.get("sequence"), request_id=capture.get("request_id"))
-        elif not self.sync_enabled:
+        elif not self.sync_enabled and camera_id not in self.sorting_lanes:
             # With Sync on, the product's crossing goes out as a no-read when
             # no code pairs with it; without Sync, say so here.
             self._run_on_loop(self._emit_no_read, camera_id, capture)
@@ -1068,6 +1090,104 @@ class LineRuntime:
         if sequence is not None:
             payload["sequence"] = plc_event["sequence"] = sequence
         self._handshake_result(crossing, plc_event.get("result"))
+        self._sorting_note(plc_event.get("qr_code"), sequence, plc_event.get("result"))
+
+    # ── Sorting verification ──────────────────────────────────────────────────
+
+    def _sorting_note(self, code: Optional[str], sequence: Any, result: Optional[str]) -> None:
+        """Remember a product that had a code, for the line's sorting verification cameras."""
+        if not self.sorting_lanes or not code or result not in ("good", "reject"):
+            return
+        with self._lock:
+            self._sorting_memory.append({"code": code, "sequence": sequence, "result": result,
+                                         "at": time.time(), "verified": None})
+
+    def sorting_counts(self) -> Dict[str, int]:
+        with self._lock:
+            return dict(self._sorting_stats)
+
+    def _verify_sorting(self, read: Dict[str, Any]) -> None:
+        """A sorting verification camera read a code at its outfeed (on the loop).
+
+        The oldest product with that code that is not verified yet (cartons leave in the order
+        they were inspected) should be in this outfeed: accepted for a good product, rejected for
+        a reject. A mismatch raises an alarm, fires the "Sorting mismatch" cards and is recorded.
+        """
+        from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
+
+        lane = self.sorting_lanes.get(read["camera_id"])
+        if lane is None:
+            return
+        with self._lock:
+            entry = next((e for e in self._sorting_memory if e["code"] == read["code"] and e["verified"] is None), None)
+            if entry is not None:
+                entry["verified"] = lane
+                expected = "accepted" if entry["result"] == "good" else "rejected"
+                outcome = "verified" if expected == lane else "mismatch"
+                self._sorting_stats["verified" if outcome == "verified" else "mismatches"] += 1
+            else:
+                expected, outcome = None, "unmatched"
+                self._sorting_stats["unmatched"] += 1
+        sequence = entry["sequence"] if entry is not None else None
+        self._remember(read, "known" if read["known"] else "unknown", paired=None, sequence=sequence,
+                       verification={"sorting_lane": lane, "verification": outcome, "expected_lane": expected})
+        payload: Dict[str, Any] = {
+            "event": {"verified": "SORTING_VERIFIED", "mismatch": "SORTING_MISMATCH"}.get(outcome, "SORTING_UNMATCHED"),
+            "timestamp": read["timestamp"],
+            "line_id": self.id,
+            "line_name": self.name,
+            "camera_id": read["camera_id"],
+            "code": read["code"],
+            "format": read["format"],
+            "seen_lane": lane,
+        }
+        if outcome == "unmatched":
+            logger.info("Line '%s': the %s outfeed camera read %r, which no product waiting for its "
+                        "verification has", self.name, lane, read["code"])
+            self._publish_bus(("sorting",), payload)
+            return
+        payload["expected_lane"] = expected
+        payload["product_result"] = "PASSED" if entry["result"] == "good" else "REJECTED"
+        if sequence is not None:
+            payload["sequence"] = sequence
+        plc_event: Dict[str, Any] = {
+            "event_type": "sorting_verified" if outcome == "verified" else "sorting_mismatch",
+            "event_id": f"sorting_{self.id}_{time.time_ns()}",
+            "line_id": self.id,
+            "camera_id": read["camera_id"],
+            "qr_code": read["code"],
+            "expected_lane": expected,
+            "seen_lane": lane,
+            "timestamp": time.time(),
+        }
+        if sequence is not None:
+            plc_event["sequence"] = sequence
+        if outcome == "mismatch":
+            logger.warning("Line '%s': carton %s (code %r, %s) is in the %s outfeed, expected the %s outfeed",
+                           self.name, sequence, read["code"], entry["result"], lane, expected)
+            alarm_manager.raise_alarm(
+                AlarmCode.LINE_SORTING_MISMATCH, self._alarm_source("sorting"),
+                f"Line '{self.name}': carton {sequence if sequence is not None else ''} (code {read['code']}) "
+                f"is in the {lane} outfeed; its result sends it to the {expected} outfeed.",
+                AlarmSeverity.CRITICAL,
+                {"line_id": self.id, "camera_id": read["camera_id"], "code": read["code"], "sequence": sequence,
+                 "expected_lane": expected, "seen_lane": lane},
+            )
+            self._record(payload, "verification", counted=False, result="reject",
+                         reject_reason=REASON_SORTING_MISMATCH, product_list_id=read.get("product_list_id"))
+        self._publish(("sorting",), payload, plc_event)
+
+    def _publish_bus(self, topics: Tuple[str, ...], payload: Dict[str, Any]) -> None:
+        """An event for the event bus only (dashboards, flows): no output action or send card fires."""
+        loop = self._loop()
+        if loop is None:
+            return
+        try:
+            from app.events.event_bus import event_bus
+            for topic in topics:
+                asyncio.run_coroutine_threadsafe(event_bus.publish(topic, payload), loop)
+        except Exception as exc:
+            logger.debug("Event bus error on line %s: %s", self.id, exc)
 
     # ── Result handshake ──────────────────────────────────────────────────────
 
@@ -1273,7 +1393,7 @@ class LineRuntime:
                   class_name: Optional[str] = None, camera_id: Optional[str] = None,
                   result: Optional[str] = None, reason: Optional[str] = None,
                   product_check: Optional[str] = None, shown_only: bool = False,
-                  sequence: Optional[Any] = None) -> None:
+                  sequence: Optional[Any] = None, verification: Optional[Dict[str, Any]] = None) -> None:
         entry = {
             "timestamp": read["timestamp"] if read else datetime.now(timezone.utc).isoformat(),
             "code": read["code"] if read else None,
@@ -1300,6 +1420,9 @@ class LineRuntime:
         if shown_only:
             # A camera that reads Continuously: the code went nowhere but this list.
             entry["shown_only"] = True
+        if verification:
+            # A sorting verification read: the outfeed it saw, what was expected, what it found.
+            entry.update(verification)
         with self._lock:
             self.qr_recent.appendleft(entry)
 
@@ -1424,6 +1547,7 @@ class LineRuntime:
         })
         # The product's class in the records is the name its count is kept under.
         self._handshake_result(read, self._result(reject))
+        self._sorting_note(read["code"], read.get("sequence"), self._result(reject))
         self._record(payload, "product", counted=True, class_name=class_name, track_id=read.get("track_id"),
                      product_list_id=read.get("product_list_id"))
         self._publish(("qr_code", "reading"), payload, plc_event)
@@ -1442,6 +1566,12 @@ class LineRuntime:
             for key in self.qr_stats:
                 self.qr_stats[key] = 0
             self.qr_recent.clear()
+            # The products waiting for their sorting verification are forgotten too.
+            self._sorting_memory.clear()
+            for key in self._sorting_stats:
+                self._sorting_stats[key] = 0
+        from app.events.alarm_events import AlarmCode, alarm_manager
+        alarm_manager.clear_alarm(AlarmCode.LINE_SORTING_MISMATCH, self._alarm_source("sorting"), "the counters were reset")
 
 
 # ── All lines ─────────────────────────────────────────────────────────────────
@@ -1982,6 +2112,8 @@ class LineManager:
                 row["product_list_id"] = cam.get("product_list_id")
                 row["qr_action"] = cam.get("qr_action", "report")
                 row["qr_no_read"] = cam.get("qr_no_read", "ignore")
+                if sorting_lane(cam):
+                    row["sorting_lane"] = sorting_lane(cam)
             camera_rows.append(row)
         alarms = [a for a in alarm_manager.active() if (a.details or {}).get("line_id") == runtime.id]
         with runtime._lock:
@@ -2008,12 +2140,14 @@ class LineManager:
             "min_fps": runtime.min_fps,
             "yield_target": runtime.yield_target,
             "batch": runtime.batch or None,
-            "has_qr": runtime.has_code_reader,
+            "has_qr": any(reads_codes(c) for c in runtime.cameras),
             "qr": qr_stats,
             "last_capture_id": last_capture_id,
             "active_alarms": len(alarms),
             # The result handshake, when the line has it switched on.
             "handshake": runtime.handshake.view() if runtime.handshake.enabled else None,
+            # Sorting verification at the outfeeds, when a camera of the line verifies one.
+            "sorting": runtime.sorting_counts() if runtime.sorting_lanes else None,
         }
 
     def overview(self) -> List[Dict[str, Any]]:

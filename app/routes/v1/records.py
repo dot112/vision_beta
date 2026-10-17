@@ -37,7 +37,7 @@ def record_filter(
     end: str = Query(..., description="Range end (not included), ISO 8601 with a time zone"),
     line_id: Optional[str] = Query(default=None, max_length=48, description="One line; empty = every line"),
     result: Optional[str] = Query(default=None, pattern="^(good|reject)$"),
-    kind: Optional[str] = Query(default=None, pattern="^(product|code)$"),
+    kind: Optional[str] = Query(default=None, pattern="^(product|code|verification)$"),
     batch: Optional[str] = Query(default=None, max_length=64),
     code: Optional[str] = Query(default=None, max_length=512, description="Rows whose code contains this"),
     camera_id: Optional[str] = Query(default=None, max_length=64),

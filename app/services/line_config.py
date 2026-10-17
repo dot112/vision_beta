@@ -224,7 +224,10 @@ CAMERA_KEPT_KEYS = CAMERA_MODEL_KEYS + (
     "confidence", "station", "count_mode", "no_product",
 ) + JOIN_KEYS
 # Settings of a camera that reads codes that a client written before them does not send.
-READER_KEPT_KEYS = ("qr_trigger_review", "code_sets_batch")
+READER_KEPT_KEYS = ("qr_trigger_review", "code_sets_batch", "sorting_lane")
+# A camera that reads codes may watch one outfeed instead (sorting verification): its reads check
+# that each product went the way its result sent it. One camera per outfeed on a line.
+SORTING_LANES = ("accepted", "rejected")
 # The count lines a vision camera copies from its line's action_trigger (version 8 step).
 COUNT_LINE_KEYS = ("line1_position", "line2_position", "orientation")
 # Once kept per line in action_trigger; an older client that still sends them is ignored.
@@ -272,6 +275,17 @@ def reads_codes(camera: Dict[str, Any]) -> bool:
     return camera.get("role") == "qr" or bool(camera.get("read_codes"))
 
 
+def sorting_lane(camera: Dict[str, Any]) -> Optional[str]:
+    """'accepted' or 'rejected' for a camera that verifies sorting at that outfeed, else None."""
+    lane = camera.get("sorting_lane")
+    return lane if reads_codes(camera) and lane in SORTING_LANES else None
+
+
+def product_reader(camera: Dict[str, Any]) -> bool:
+    """A camera whose codes belong to the products being inspected (not a sorting verification camera)."""
+    return reads_codes(camera) and sorting_lane(camera) is None
+
+
 def reads_codes_triggered(camera: Dict[str, Any]) -> bool:
     """A camera whose code reads reach its line: it reads codes on a wire line or when an input asks.
 
@@ -283,7 +297,7 @@ def reads_codes_triggered(camera: Dict[str, Any]) -> bool:
 def code_check(camera: Dict[str, Any]) -> Optional[str]:
     """'accept_listed' or 'reject_listed' when this camera's codes decide good or reject, else None."""
     action = camera.get("qr_action")
-    return action if reads_codes(camera) and action in ("accept_listed", "reject_listed") else None
+    return action if product_reader(camera) and action in ("accept_listed", "reject_listed") else None
 
 
 def code_checks(cameras: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, str]]:
@@ -450,6 +464,18 @@ def normalize_camera(raw: Any, index: int) -> Dict[str, Any]:
         # A listed product's batch (from its code, by its list's code format) becomes the line's batch.
         if _bool(raw.get("code_sets_batch"), f"{label} code sets the line's batch", False):
             camera["code_sets_batch"] = True
+        # Sorting verification: the camera watches one outfeed. It reports, it never decides,
+        # so it does not check codes, sets no batch, and reads Continuously too (no v9 flag).
+        lane = raw.get("sorting_lane")
+        if lane not in (None, ""):
+            lane = str(lane).strip().lower()
+            if lane not in SORTING_LANES:
+                raise ValueError(f"{label}: the outfeed it verifies must be 'accepted' or 'rejected' (or none)")
+            if action != "report":
+                raise ValueError(f"{label} verifies sorting, so it cannot check codes: set what its codes do to Report")
+            camera["sorting_lane"] = lane
+            camera.pop("qr_trigger_review", None)
+            camera.pop("code_sets_batch", None)
     if role == "vision":
         # The model that runs on this camera (AI models page). None only on a
         # camera saved before models were picked per camera: nothing is detected on it.
@@ -1244,6 +1270,11 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
     ids = [c["camera_id"] for c in cameras]
     if len(set(ids)) != len(ids):
         raise ValueError("The same camera is listed twice on this line")
+    for lane in SORTING_LANES:
+        watching = [index + 1 for index, cam in enumerate(cameras) if sorting_lane(cam) == lane]
+        if len(watching) > 1:
+            raise ValueError(f"Cameras {watching[0]} and {watching[1]} both verify the {lane} outfeed: "
+                             f"one camera per outfeed")
 
     # The checks of what a camera that reads Continuously cannot do run when the line's setup is
     # sent. A save of only "enabled" or the name (start, stop, rename: the dashboard, a PLC input,
@@ -1317,7 +1348,7 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
     raw_checks = raw.get("product_checks") if raw.get("product_checks") is not None else base.get("product_checks")
     product_checks = normalize_product_checks(raw_checks) if raw_checks is not None else None
     checking = [c for c in cameras if code_check(c)]
-    if product_checks and any(c["enabled"] for c in product_checks) and has_source             and any(reads_codes_triggered(c) for c in cameras):
+    if product_checks and any(c["enabled"] for c in product_checks) and has_source             and any(reads_codes_triggered(c) and product_reader(c) for c in cameras):
         # A product check needs each product paired with its code, like a code check.
         sync["enabled"] = True
     if checking and has_source:
@@ -1330,12 +1361,12 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
         # product when a code is read, so "no code was read" never happens.
         for cam in checking:
             cam["qr_no_read"] = "ignore"
-    if sync["enabled"] and not (has_source and any(reads_codes(c) for c in cameras)):
+    if sync["enabled"] and not (has_source and any(product_reader(c) for c in cameras)):
         raise ValueError(
             "Sync needs a vision camera (or a PLC product sensor) and a camera that reads codes "
             "(a QR / barcode reader, or a Vision + QR / barcode camera)"
         )
-    if setup_save and sync["enabled"] and not any(reads_codes_triggered(c) for c in cameras):
+    if setup_save and sync["enabled"] and not any(reads_codes_triggered(c) and product_reader(c) for c in cameras):
         # A camera that reads Continuously only shows its codes: none would pair with a product.
         raise ValueError("Sync needs a camera that reads codes when a product crosses a wire line or when an input asks.")
 
