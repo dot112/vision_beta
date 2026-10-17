@@ -169,6 +169,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │   ├── card_triggers.py
 │   │   ├── counting_service.py
 │   │   ├── discovery_service.py
+│   │   ├── handshake.py   # result handshake state machine: capture request -> result -> PLC acknowledge
 │   │   ├── health_service.py
 │   │   ├── line_config.py
 │   │   ├── line_service.py

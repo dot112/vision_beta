@@ -347,6 +347,8 @@ async def recent_qr_reads(
         "line_id": line_id,
         "reads": runtime.recent_reads(limit),
         "stats": stats,
+        # Sorting verification at the outfeeds, when a camera of the line verifies one.
+        "sorting": runtime.sorting_counts() if runtime.sorting_lanes else None,
         "last_capture": _capture_view(capture),
     }
 

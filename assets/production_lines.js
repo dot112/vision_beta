@@ -146,6 +146,13 @@
         .pl-cam-box { border:1px solid var(--border-color); border-radius:8px; padding:14px; }
         .pl-cam-box h4 { margin:0 0 10px; font-size:13px; color:var(--text-color); }
         .pl-note { font-size:11px; color:var(--text-muted); margin-top:4px; }
+        .pl-carton-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:14px; }
+        .pl-carton-state { display:flex; flex-wrap:wrap; align-items:baseline; gap:8px; margin-bottom:8px; font-size:13px; }
+        .pl-carton-figs { display:grid; grid-template-columns:repeat(auto-fill, minmax(110px, 1fr)); gap:8px; }
+        .pl-carton-fig { border:1px solid var(--border-color); border-radius:6px; padding:6px 8px; display:flex; flex-direction:column; gap:2px; min-width:0; }
+        .pl-carton-fig span { font-size:11px; color:var(--text-muted); }
+        .pl-carton-fig b { font-size:16px; color:var(--text-color); }
+        #plHandshakeBox .pl-hs[hidden] { display:none; }
         .pl-warn { border-left:3px solid var(--warning-color); padding:8px 12px; font-size:12px; margin-top:12px; }
         .pl-classes { max-height:172px; overflow:auto; border:1px solid var(--border-color); border-radius:6px; padding:6px 10px; display:grid; grid-template-columns:repeat(auto-fill, minmax(118px, 1fr)); gap:2px 12px; }
         .pl-class { display:flex; align-items:center; gap:6px; min-width:0; padding:2px 0; font-size:12.5px; color:var(--text-color); cursor:pointer; }
@@ -1040,12 +1047,15 @@
             <div class="form-group pl-hold"><label class="form-label">QR hold time (ms)</label>
                 <input type="number" class="form-input" data-f="qr_hold" min="100" max="60000" step="100" value="${esc(cam.qr_hold_ms || 1500)}">
                 <div class="pl-note">A code counts again only after it has been out of view this long.</div></div>
-            <div class="form-group"><label class="form-label">Action</label><select class="form-input" data-f="qr_action">
+            <div class="form-group"><label class="form-label">Sorting verification</label><select class="form-input" data-f="sorting_lane">
+                ${option("", "Off: the codes of the products being inspected", cam.sorting_lane || "")}${option("accepted", "Watches the accepted outfeed", cam.sorting_lane || "")}${option("rejected", "Watches the rejected outfeed", cam.sorting_lane || "")}</select>
+                <div class="pl-note pl-sorting-note"></div></div>
+            <div class="form-group pl-action"><label class="form-label">Action</label><select class="form-input" data-f="qr_action">
                 ${option("report", "Report only", action)}${option("accept_listed", "Accept only listed codes", action)}${option("reject_listed", "Reject listed codes", action)}</select>
                 <div class="pl-note pl-action-note"></div></div>
             <div class="form-group"><label class="form-label">Product list</label><select class="form-input" data-f="qr_list">${listOptions(listId)}</select>
                 <div class="pl-note">The list this camera checks its codes against. The lists are on the Products page.</div></div>
-            <div class="form-group"><label class="pl-inline pl-check"><input type="checkbox" data-f="code_sets_batch" ${cam.code_sets_batch ? "checked" : ""}> The code's batch sets the line's batch</label>
+            <div class="form-group pl-sets-batch"><label class="pl-inline pl-check"><input type="checkbox" data-f="code_sets_batch" ${cam.code_sets_batch ? "checked" : ""}> The code's batch sets the line's batch</label>
                 <div class="pl-note">For listed products only. Each change is written to the audit log.</div></div>
             <div class="form-group pl-no-read" style="margin-bottom:0"><label class="form-label">When no code is read</label><select class="form-input" data-f="qr_no_read">
                 ${option("reject", "Reject", cam.qr_no_read || "ignore")}${option("ignore", "Ignore", cam.qr_no_read || "ignore")}</select>
@@ -1172,10 +1182,12 @@
     };
 
     const setupHasVision = () => cardsOnPage().some((c) => isVisionJob(cardJob(c)));
-    const setupChecksCodes = () => cardsOnPage().some((c) => JOBS[cardJob(c)].codes && cardValue(c, "qr_action") !== "report");
-    const setupReadsCodes = () => cardsOnPage().some((c) => JOBS[cardJob(c)].codes);
+    // A camera that reads the codes of the products being inspected (not one that verifies an outfeed).
+    const readsProductCodes = (c) => Boolean(JOBS[cardJob(c)].codes) && !cardValue(c, "sorting_lane");
+    const setupChecksCodes = () => cardsOnPage().some((c) => readsProductCodes(c) && cardValue(c, "qr_action") !== "report");
+    const setupReadsCodes = () => cardsOnPage().some(readsProductCodes);
     // A camera whose codes reach the line: it reads on a wire line or when an input asks (Continuously only shows them).
-    const setupReadsCodesTriggered = () => cardsOnPage().some((c) => JOBS[cardJob(c)].codes && cardValue(c, "qr_trigger") !== "continuous");
+    const setupReadsCodesTriggered = () => cardsOnPage().some((c) => readsProductCodes(c) && cardValue(c, "qr_trigger") !== "continuous");
     // Where the line's products come from: a vision camera, or a product sensor input on the PLC.
     const setupHasSource = () => setupHasVision() || Boolean(window.PlcSignals && window.PlcSignals.hasProductSensor && window.PlcSignals.hasProductSensor());
 
@@ -1240,6 +1252,26 @@
         card.querySelector(".pl-no-read").hidden = !(checks && hasVision);
         card.querySelector(".pl-action-note").textContent = trigger === "continuous" ? SHOWN_ONLY_NOTE
             : (ACTION_NOTES[action] || "") + (checks && !hasVision ? READER_ONLY_NOTE : "");
+        // Sorting verification: the camera checks the outfeed each product went to; it never decides.
+        const lane = cardValue(card, "sorting_lane");
+        const sortingNote = card.querySelector(".pl-sorting-note");
+        if (sortingNote) {
+            sortingNote.textContent = lane
+                ? `Each code read here is matched to the oldest inspected product with that code that is not verified yet. A ${lane === "accepted" ? "rejected" : "good"} product here is a mismatch: an alarm, the trigger "Sorting mismatch" and a record. It counts nothing and pairs with nothing; reading Continuously verifies too.`
+                : "Off: this camera reads the codes of the products being inspected.";
+            const actionSelect = cardField(card, "qr_action");
+            if (lane && actionSelect.value !== "report") {
+                actionSelect.value = "report";
+                if (actionSelect._refreshCustomSelect) actionSelect._refreshCustomSelect();
+            }
+            actionSelect.disabled = Boolean(lane) || level() < 2;
+            card.querySelector(".pl-sets-batch").hidden = Boolean(lane);
+            if (lane) {
+                card.querySelector(".pl-no-read").hidden = true;
+                card.querySelector(".pl-action-note").textContent = "A sorting verification camera only reports.";
+                card.querySelector(".pl-review").hidden = true;
+            }
+        }
         // Counting: products tracked across the count lines, or one picture per trigger
         const triggerMode = cardValue(card, "count_mode") === "trigger";
         card.querySelector(".pl-no-product").hidden = !triggerMode;
@@ -1928,6 +1960,67 @@
 
     // ── Render ────────────────────────────────────────────────────────────────
 
+    // Product sequence and result handshake: chosen from the line's saved inputs.
+    function handshakeSetupHtml(d) {
+        const inputs = d.plc_inputs || [];
+        const hs = d.handshake || {};
+        const inputOptions = (current, filter, none) => `<option value="" ${current ? "" : "selected"}>${esc(none)}</option>`
+            + inputs.filter(filter).map((i) => `<option value="${esc(i.id)}" ${i.id === current ? "selected" : ""}>${esc(i.name || i.id)}</option>`).join("")
+            + (current && !inputs.some((i) => i.id === current) ? `<option value="${esc(current)}" selected>(input not found)</option>` : "");
+        const any = () => true;
+        const takes = (i) => i.action === "capture";
+        return `
+            <details class="pl-advanced" id="plHandshakeBox" ${d.sequence_input_id || hs.enabled ? "open" : ""}>
+                <summary>Product sequence and result handshake</summary>
+                <div class="pl-note" style="margin:6px 0 10px">Inputs are chosen from the line's saved inputs (Inputs below; apply a new input first).</div>
+                <div class="pl-form-grid pl-form-tight">
+                    <div class="form-group"><label class="form-label">Product sequence input</label>
+                        <select class="form-input" id="plSeqInput">${inputOptions(d.sequence_input_id || "", any, "None")}</select>
+                        <div class="pl-note">Read once each time a "Take a picture" input fires; each product keeps its own number (messages, PLC events, records, the value name <code>sequence</code>).</div></div>
+                    <div class="form-group"><label class="form-label">Result handshake</label>
+                        <label class="pl-inline pl-check" style="margin-top:6px"><input type="checkbox" id="plHsOn" ${hs.enabled ? "checked" : ""}> Wait for the PLC to acknowledge each result</label>
+                        <div class="pl-note">Capture request, result, acknowledge. Your output actions set the result flags and reset them on the acknowledge input.</div></div>
+                    <div class="form-group pl-hs"><label class="form-label">Capture request input</label>
+                        <select class="form-input" id="plHsCapture">${inputOptions(hs.capture_input_id || "", takes, "Choose a 'Take a picture' input")}</select></div>
+                    <div class="form-group pl-hs"><label class="form-label">Acknowledge input</label>
+                        <select class="form-input" id="plHsAck">${inputOptions(hs.ack_input_id || "", (i) => i.action !== "capture", "Choose an input")}</select>
+                        <div class="pl-note">For example an input with the action "Only fires cards".</div></div>
+                    <div class="form-group pl-hs"><label class="form-label">Result timeout (ms)</label>
+                        <input type="number" class="form-input" id="plHsResultMs" min="100" max="60000" step="100" value="${hs.result_timeout_ms || 3000}">
+                        <div class="pl-note">Longer than the camera's picture and the Sync window.</div></div>
+                    <div class="form-group pl-hs"><label class="form-label">No result in time</label>
+                        <select class="form-input" id="plHsOnTimeout">${option("reject", "Reject the product", hs.on_timeout || "reject")}${option("fault", "Raise a fault (trigger \"Handshake fault\")", hs.on_timeout || "reject")}</select>
+                        <div class="pl-note">Never a pass.</div></div>
+                    <div class="form-group pl-hs"><label class="form-label">Acknowledge timeout (ms)</label>
+                        <input type="number" class="form-input" id="plHsAckMs" min="100" max="60000" step="100" value="${hs.ack_timeout_ms || 5000}">
+                        <div class="pl-note">No acknowledge in this time raises an alarm.</div></div>
+                </div>
+            </details>`;
+    }
+
+    function syncHandshakeSetup() {
+        const on = byId("plHsOn");
+        if (!on) return;
+        document.querySelectorAll("#plHandshakeBox .pl-hs").forEach((el) => { el.hidden = !on.checked; });
+    }
+
+    // The two settings as they are saved: a handshake switched off is kept only when it was saved before.
+    function handshakeBody() {
+        const on = byId("plHsOn");
+        if (!on) return {};
+        const saved = (state.detail && state.detail.handshake) || null;
+        const num = (id, fallback) => parseInt(byId(id).value, 10) || fallback;
+        const handshake = {
+            enabled: on.checked,
+            capture_input_id: byId("plHsCapture").value || null,
+            ack_input_id: byId("plHsAck").value || null,
+            result_timeout_ms: num("plHsResultMs", 3000),
+            ack_timeout_ms: num("plHsAckMs", 5000),
+            on_timeout: byId("plHsOnTimeout").value || "reject",
+        };
+        return { sequence_input_id: byId("plSeqInput").value || null, handshake: on.checked || saved ? handshake : null };
+    }
+
     async function renderLineSetup() {
         const page = byId("tabActionTrigger");
         if (!page) return;
@@ -1976,6 +2069,7 @@
                     <div class="form-group"><label class="form-label">Sync window (ms)</label><input type="number" class="form-input" id="plSyncWindow" min="50" max="10000" step="50" value="${(d.sync && d.sync.window_ms) || 500}">
                         <div class="pl-note">Products must pass further apart than this. A reject card's travel delay must be longer.</div></div>
                 </div>
+                ${handshakeSetupHtml(d)}
                 <div id="plSetupWarnings">${warningsHtml(d)}</div>
                 <div class="pl-setup-actions">
                     <button class="btn-action btn-blue restricted-l2" id="plSaveSetup" ${readOnly ? "disabled" : ""}>Save line setup</button>
@@ -1992,10 +2086,15 @@
         bindAddCard(trigger);
         (d.cameras || []).forEach((cam) => addCard(cam, trigger, openFolds(cam.camera_id, [])));
         card.querySelector(".card-panel").addEventListener("input", markDirty);
-        card.querySelector(".card-panel").addEventListener("change", (e) => { markDirty(); if (e.target.id === "plSync") syncLineSetup(); });
+        card.querySelector(".card-panel").addEventListener("change", (e) => {
+            markDirty();
+            if (e.target.id === "plSync") syncLineSetup();
+            if (e.target.id === "plHsOn") syncHandshakeSetup();
+        });
         bindChecks();
         renderChecks();
         syncLineSetup();
+        syncHandshakeSetup();
         byId("plSaveSetup").addEventListener("click", saveLineSetup);
         // "Keep show only" on a camera the upgrade flagged: clear its flag and save the line.
         byId("plCamGrid").addEventListener("click", (e) => {
@@ -2163,7 +2262,13 @@
                 // Sent back as it is: "Keep show only" clears it, a trigger drops it on the server.
                 qr_trigger_review: card.dataset.review === "1",
                 code_sets_batch: Boolean(cardField(card, "code_sets_batch") && cardField(card, "code_sets_batch").checked),
+                // Sent as null to switch it off (a key left out keeps the saved value).
+                sorting_lane: cardValue(card, "sorting_lane") || null,
             });
+            if (entry.sorting_lane) {
+                entry.qr_action = "report";
+                entry.code_sets_batch = false;
+            }
         }
         // The triggers ticked on the card, while the camera takes one picture per trigger.
         const onTrigger = entry.count_mode === "trigger" || (spec.codes && entry.qr_trigger === "signal");
@@ -2191,6 +2296,7 @@
                 ...(c.id ? { id: c.id } : {}), name: String(c.name || "").trim(), enabled: c.enabled !== false,
                 only_when: c.only_when || { match: "all", rules: [] },
             })),
+            ...handshakeBody(),
         };
         const button = byId("plSaveSetup");
         button.disabled = true;
@@ -2479,6 +2585,7 @@
         known: ["Known", "var(--success-color)"],
         unknown: ["Unknown", "var(--danger-color)"],
         no_read: ["No read", "var(--warning-color)"],
+        no_result: ["No result in time", "var(--danger-color)"],
     };
     // Why a product was rejected (reject_reason).
     const REJECT_REASON = {
@@ -2489,6 +2596,14 @@
         station_no_result: "joined camera saw nothing",
         nothing_detected: "nothing detected",
         product_check: "product check",
+        inspection_timeout: "no result in time",
+        sorting_mismatch: "wrong outfeed",
+    };
+    const LANE = { accepted: "accepted outfeed", rejected: "rejected outfeed" };
+    const HANDSHAKE_STATE = {
+        idle: ["Idle", "var(--text-muted)"],
+        waiting_result: ["Waiting for the result", "var(--warning-color)"],
+        result_ready: ["Result sent, waiting for the acknowledge", "var(--accent-color, #3b82f6)"],
     };
 
     // Where a capture is shown: a strip tile of the camera that took it, or the
@@ -2569,13 +2684,20 @@
         const cams = lineStatusCameras();
         const hasQr = cams.some(readsCodes);
         const reader = mainCodeReader();
+        const status = (state.detail && state.detail.status) || {};
+        const hasHandshake = Boolean(status.handshake);
+        const hasSorting = Boolean(status.sorting);
         // Rebuild only when the cameras change, so the reads list does not blink.
-        const signature = JSON.stringify([state.lineId, hasQr, reader && reader.camera_id]);
+        const signature = JSON.stringify([state.lineId, hasQr, reader && reader.camera_id, hasHandshake, hasSorting]);
         if (box.dataset.signature === signature) return;
         box.dataset.signature = signature;
         if (state.captureShown) delete state.captureShown.inline;
         const testBtn = reader && level() >= 2 ? `<button class="btn-action btn-outline" id="plInlineTest" style="font-size:12px;padding:6px 12px">Test picture</button>` : "";
-        box.innerHTML = hasQr
+        const carton = hasHandshake || hasSorting
+            ? `<div class="card-panel" id="plCartonPanel"><div class="card-panel-header"><span class="card-panel-title">${hasHandshake ? "Result handshake" : ""}${hasHandshake && hasSorting ? " · " : ""}${hasSorting ? "Sorting verification" : ""}</span></div>
+                <div class="pl-carton-grid">${hasHandshake ? `<div id="plHsView"></div>` : ""}${hasSorting ? `<div id="plSortView"></div>` : ""}</div></div>`
+            : "";
+        box.innerHTML = carton + (hasQr
             ? `<div class="card-panel"><div class="card-panel-header"><span class="card-panel-title">Latest code reads</span>
                     <div class="pl-inline"><span id="plQrStats" style="font-size:12px;color:var(--text-muted)"></span>${testBtn}</div></div>
                 ${reader ? `<div class="video-box pl-inline-capture" id="plInlineCapture" hidden>
@@ -2583,8 +2705,27 @@
                     <div class="pl-feed-caption" id="plInlineCaption"></div></div>` : ""}
                 <div class="table-responsive"><table class="pl-table"><thead><tr><th>Time</th><th>Code</th><th>Code check</th><th>Product</th><th>Batch</th><th>Class</th><th>Product result</th></tr></thead>
                 <tbody id="plQrBody"><tr><td colspan="7">No reads yet.</td></tr></tbody></table></div></div>`
-            : "";
+            : "");
         byId("plInlineTest")?.addEventListener("click", testCapture);
+        renderCartonView(status.handshake, status.sorting);
+    }
+
+    // The result handshake's state and counters, and the outfeed cameras' counts.
+    function renderCartonView(hs, sorting) {
+        const figure = (label, value, color) => `<div class="pl-carton-fig"><span>${esc(label)}</span><b${color ? ` style="color:${color}"` : ""}>${esc(String(value))}</b></div>`;
+        const hsBox = byId("plHsView");
+        if (hsBox && hs) {
+            const [label, color] = HANDSHAKE_STATE[hs.state] || [hs.state, "var(--text-muted)"];
+            const since = hs.since ? new Date(hs.since).toLocaleTimeString() : "—";
+            const last = hs.last_result === "good" ? "Good" : hs.last_result === "reject" ? "Rejected" : hs.last_result === "fault" ? "Fault" : "—";
+            hsBox.innerHTML = `<div class="pl-carton-state"><b style="color:${color}">${esc(label)}</b><span class="pl-note" style="margin:0">since ${esc(since)}${hs.sequence !== null && hs.sequence !== undefined ? ` · sequence ${esc(String(hs.sequence))}` : ""}</span></div>`
+                + `<div class="pl-carton-figs">${figure("Last result", last)}${figure("Stale acks", hs.stale_acks || 0)}${figure("Result timeouts", hs.timeouts || 0, hs.timeouts ? "var(--danger-color)" : "")}${figure("Ack timeouts", hs.ack_timeouts || 0, hs.ack_timeouts ? "var(--warning-color)" : "")}${figure("Duplicates", hs.duplicates || 0)}${figure("Late results", hs.late || 0)}</div>`
+                + (hs.last_error ? `<div class="pl-note">Last problem: ${esc({ inspection_timeout: "no result in time", ack_timeout: "no acknowledge in time", skipped_ack: "a capture request skipped the acknowledge", no_result: "a capture request came before the last result" }[hs.last_error] || hs.last_error)}</div>` : "");
+        }
+        const sortBox = byId("plSortView");
+        if (sortBox && sorting) {
+            sortBox.innerHTML = `<div class="pl-carton-figs">${figure("Verified", sorting.verified || 0, "var(--success-color)")}${figure("Wrong outfeed", sorting.mismatches || 0, sorting.mismatches ? "var(--danger-color)" : "")}${figure("Unmatched codes", sorting.unmatched || 0)}</div>`;
+        }
     }
 
     // The large camera, when it reads codes: its pictures show in the reads panel.
@@ -2596,11 +2737,19 @@
     async function refreshLineExtras() {
         if (!dashboardShown() || !state.detail) return;
         ensureStripFeeds();
+        const status = state.detail.status || {};
+        if (byId("plHsView")) {
+            try {
+                renderCartonView(await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}/handshake`), null);
+            } catch (_) { /* next refresh retries */ }
+        }
+        if (byId("plSortView")) renderCartonView(null, status.sorting);
         const body = byId("plQrBody");
         if (!body) return;
         try {
             const data = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}/qr/recent?limit=25`);
             const s = data.stats || {};
+            if (data.sorting) renderCartonView(null, data.sorting);
             byId("plQrStats").textContent = `Read ${s.codes_read || 0} · Unknown ${s.unknown || 0} · No read ${s.no_reads || 0} · Unpaired ${s.unpaired || 0}${s.code_rejects ? ` · Rejected by code ${s.code_rejects}` : ""}`;
             body.innerHTML = (data.reads || []).map((r) => {
                 const [label, color] = QR_RESULT[r.status] || [r.status, "var(--text-muted)"];
@@ -2613,8 +2762,15 @@
                         : `<b style="color:var(--success-color)">Good</b>`;
                 // The product ID, where the code holds more than it (a list with a code format).
                 const productId = r.product_id && r.product_id !== r.code ? `<div style="color:var(--text-muted);font-size:11px">${esc(r.product_id)}</div>` : "";
-                return `<tr><td class="pl-code">${esc(new Date(r.timestamp).toLocaleTimeString())}</td><td class="pl-code">${esc(r.code || "—")}${productId}</td>
-                    <td><b style="color:${color}">${esc(label)}</b>${esc(paired)}${shown}</td><td>${esc(r.product_name || "—")}</td><td class="pl-code">${esc(r.batch || "—")}</td><td>${esc(r.class_name || "—")}</td><td>${verdict}</td></tr>`;
+                // The product sequence number the PLC held for the carton.
+                const sequence = r.sequence !== undefined && r.sequence !== null ? `<div style="color:var(--text-muted);font-size:11px">Sequence ${esc(String(r.sequence))}</div>` : "";
+                // A sorting verification read: the outfeed it saw, and whether the product belongs there.
+                const sorting = r.sorting_lane ? `<div style="font-size:11px">${esc(LANE[r.sorting_lane] || r.sorting_lane)}: ${
+                    r.verification === "verified" ? `<b style="color:var(--success-color)">verified</b>`
+                        : r.verification === "mismatch" ? `<b style="color:var(--danger-color)">wrong outfeed</b> (expected ${esc(LANE[r.expected_lane] || r.expected_lane || "")})`
+                            : `<span style="color:var(--text-muted)">no product waiting with this code</span>`}</div>` : "";
+                return `<tr><td class="pl-code">${esc(new Date(r.timestamp).toLocaleTimeString())}</td><td class="pl-code">${esc(r.code || "—")}${productId}${sequence}</td>
+                    <td><b style="color:${color}">${esc(label)}</b>${esc(paired)}${shown}${sorting}</td><td>${esc(r.product_name || "—")}</td><td class="pl-code">${esc(r.batch || "—")}</td><td>${esc(r.class_name || "—")}</td><td>${verdict}</td></tr>`;
             }).join("") || `<tr><td colspan="7">No reads yet.</td></tr>`;
             const capture = data.last_capture;
             if (capture) {

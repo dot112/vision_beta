@@ -39,6 +39,7 @@ FIELD_LABELS = [
     ("alarm", "Alarm (code, message, severity)"),
     ("product", "Product of the code (code, name, list and its fields)"),
     ("product_check", "Product check that rejected the product"),
+    ("sequence", "Product sequence number (from the PLC)"),
     ("input", "Input that changed (id, name, new and old value)"),
 ]
 # Placeholders for the product of a known code; {product.<field key>} names one of its fields.

@@ -3759,6 +3759,11 @@ const CARD_TRIGGERS = [
     { id: "line_state",     label: "Line started / stopped",     summary: "Line started / stopped" },
     { id: "alarm",          label: "Alarm raised / cleared",     summary: "Alarm" },
     { id: "input",          label: "Input changed",              summary: "Input changed" },
+    // A sorting verification camera saw a product in the other outfeed / in its own (Camera 3).
+    { id: "sorting_mismatch", label: "Sorting mismatch",         summary: "Sorting mismatch" },
+    { id: "sorting_verified", label: "Sorting verified",         summary: "Sorting verified" },
+    // The result handshake went wrong: no result in time (set to fault), no acknowledge, a skipped acknowledge.
+    { id: "handshake_fault",  label: "Handshake fault",          summary: "Handshake fault" },
     // Send cards only: a message every N ms (the value box), while the line runs or always.
     { id: "timer",          label: "Timer (every N ms)",         summary: "Timer", sendOnly: true },
 ];
@@ -3802,7 +3807,12 @@ const CARD_CONDITIONS = {
         ["off", "Off: on to off"],
         ["change", "Any change"],
     ],
+    sorting_mismatch: [["any", "Each product seen in the wrong outfeed"]],
+    sorting_verified: [["any", "Each product seen in the right outfeed"]],
+    handshake_fault: [["any", "Each fault (no result in time, no acknowledge, a skipped acknowledge)"]],
 };
+// Triggers that fire only on their own line event: no value box, no class, a camera only for sorting.
+const OWN_EVENT_KINDS = ["sorting_mismatch", "sorting_verified", "handshake_fault"];
 
 // The line's inputs (Inputs step of Line setup), for the trigger "Input changed".
 function cardInputChoices() {
@@ -3874,7 +3884,7 @@ function applyCardTriggerDefaults(card, trigger) {
     else if (kind === "class") card.set_value = card.set_value || "defect";
     else if (kind === "timer") card.set_value = "1000";
     else card.set_value = "";
-    if (kind === "line_state" || kind === "alarm" || kind === "timer" || kind === "input") card.camera_id = "";
+    if (kind === "line_state" || kind === "alarm" || kind === "timer" || kind === "input" || kind === "handshake_fault") card.camera_id = "";
     if (kind === "alarm") card.alarm_codes = card.alarm_codes || [];
     if (kind === "input" && !card.input_id) card.input_id = (cardInputChoices()[0] || {}).id || "";
 }
@@ -3918,6 +3928,9 @@ function cardTriggerSummary(c) {
         const names = codes.includes("*") ? ["Any alarm"] : codes.map(alarmLabel);
         condSummary = !names.length ? "(choose alarms)" : names.length > 1 ? `${names[0]} +${names.length - 1} more` : names[0];
         condFull = names.join(", ");
+    } else if (OWN_EVENT_KINDS.includes(kind)) {
+        condSummary = kind === "handshake_fault" ? "The line's result handshake"
+            : (c.camera_id ? "Selected outfeed camera" : "Any outfeed camera");
     } else if (kind === "input") {
         const input = cardInputChoices().find(i => i.id === c.input_id);
         condSummary = `${input ? input.name : "(choose an input)"}: ${{ on: "off to on", off: "on to off", change: "any change" }[c.condition] || "off to on"}`;
@@ -3933,7 +3946,9 @@ function cardTriggerSummary(c) {
 function cardCameraOptionsHtml(card) {
     const kind = cardTriggerKind(card.trigger);
     const none = kind === "line_state" ? "Not used for a line start or stop" : kind === "alarm" ? "Not used for alarms"
-        : kind === "timer" ? "Not used for a timer" : "Counting camera / any code reader of this line";
+        : kind === "timer" ? "Not used for a timer" : kind === "handshake_fault" ? "Not used for a handshake fault"
+        : kind === "sorting_mismatch" || kind === "sorting_verified" ? "Any outfeed camera of this line"
+        : "Counting camera / any code reader of this line";
     const cams = (window.ProductionLines && window.ProductionLines.lineCameras()) || [];
     return `<option value="" ${!card.camera_id ? "selected" : ""}>${none}</option>` + cams.map(cam =>
         `<option value="${escapeHtml(cam.camera_id)}" ${card.camera_id === cam.camera_id ? "selected" : ""}>${escapeHtml(cam.name)} (${cam.role === "qr" ? "QR / barcode reader" : cam.read_codes ? "Vision + QR / barcode" : "Vision"})</option>`).join("");
@@ -4361,6 +4376,7 @@ function setSendFormat(format) {
         draft.template = kind === "line_state" ? "{line_name};{line_state}"
             : kind === "timer" ? "{line_name};{line_state};{good_count};{rejected_count}"
             : kind === "alarm" ? "{alarm_code};{alarm_message}"
+            : OWN_EVENT_KINDS.includes(kind) ? "{event};{sequence};{code}"
                 : kind === "qr" ? "{code};{code_status};{product_name}"
                     : "{result_code};{class_name};{good_count};{rejected_count}";
     }
@@ -4478,6 +4494,11 @@ function sendSampleMessage(card) {
     if (kind === "alarm") {
         const raised = card.condition !== "cleared";
         return { event: raised ? "ALARM_RAISED" : "ALARM_CLEARED", timestamp: now, ...line, alarm_code: "camera.disconnected", alarm_message: "Camera 'Line camera' lost its connection", alarm_severity: "critical", alarm_source: "camera:example", alarm_raised: raised, ...totals };
+    }
+    if (kind === "handshake_fault") return { event: "HANDSHAKE_FAULT", timestamp: now, ...line, fault: "inspection_timeout", sequence: 4 };
+    if (kind === "sorting_mismatch" || kind === "sorting_verified") {
+        const wrong = kind === "sorting_mismatch";
+        return { event: wrong ? "SORTING_MISMATCH" : "SORTING_VERIFIED", timestamp: now, ...line, camera_id: "example-camera", camera_name: "Outfeed camera", code: "P-100;B-2026-07", format: "QR_CODE", sequence: 4, expected_lane: "rejected", seen_lane: wrong ? "accepted" : "rejected", product_result: "REJECTED" };
     }
     if (kind === "qr") {
         const noRead = card.trigger === "qr_no_read";
@@ -7405,11 +7426,11 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
     setInterval(tick, 1000);
 })();
 </script>
-<script src="/assets/card_values.js?v=3.1.0"></script>
+<script src="/assets/card_values.js?v=3.2.0"></script>
 <script src="/assets/camera_settings.js?v=2.5.0"></script>
 <script src="/assets/plc_signals.js?v=2.9.0"></script>
 <script src="/assets/product_fields.js?v=2.7.0"></script>
-<script src="/assets/production_lines.js?v=3.1.1"></script>
+<script src="/assets/production_lines.js?v=3.2.0"></script>
 <script>
 /* ─── Cameras: Connect / Disconnect / Settings / Delete on every row ────────
    Runs after assets/production_lines.js has added its Line and Role columns. */

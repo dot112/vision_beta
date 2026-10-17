@@ -29,8 +29,9 @@ Three features, all optional per line; a line without the new settings behaves e
     reads a channel's inputs one after the other, and the capture action starts while
     the sequence input of the same pass may not be read yet; the PLC sets
     `ProductSequence` and `CaptureRequest` in the same scan, so the polled value could
-    be the previous carton's. When the fresh read fails (PLC down), the last value
-    polled is used; when there is none, the carton has no sequence.
+    be the previous carton's. When the fresh read fails, the last polled value stands
+    in only while the input itself reads fine (an old value must not stand in for one
+    nobody can see, as `PLCInputService.values` already does); else the carton has no sequence.
 - Which value wins for a product: the vision camera's crossing (the counting camera
   made the product), else the paired code read, else (a product made without a
   trigger: a moving line, `POST /trigger` by camera) the sequence input's last polled
@@ -139,8 +140,23 @@ Three features, all optional per line; a line without the new settings behaves e
   (each fires only its own cards, like "Line started / stopped").
 - Records filter `kind` accepts `verification`.
 
+## Decisions made while building
+
+- Sync pairing: a capture request's read and the product of the same request carry the
+  handshake's request id; Sync pairs only equal request ids when both sides have one
+  (keys of different kinds, a request and a track, leave it to the time as before).
+  Without this a late product of a timed-out request could take the next carton's code.
+- "Handshake fault" fires for: a result timeout under "fault" (`fault: inspection_timeout`),
+  an ack timeout (`ack_timeout`), a capture that skipped the ack (`skipped_ack`) or came
+  before the last result (`no_result`). The event carries `fault` and `sequence`.
+- `line.sorting_mismatch` is cleared by any "on" edge of the handshake's ack input
+  (also a stale one), not only a completed cycle.
+- A sorting camera's picture without a code (triggered) sends nothing (no `QR_CODE_NO_READ`).
+- The timeout reject shows in the recent reads as status `no_result`.
+- `line.inspection_timeout` is critical, `line.sorting_mismatch` critical, `line.ack_timeout`
+  and `line.handshake_fault` warnings.
+
 ## Not changed
 
 - No settings version bump: the new keys are optional and kept for older clients.
-- Sync still pairs by time (and by track where both sides have one); the sequence
-  does not pair. With stop-and-inspect there is one carton at a time.
+- The sequence itself does not pair codes with products.
