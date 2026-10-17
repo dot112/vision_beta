@@ -354,3 +354,10 @@ def test_the_bubble_stays_inside_the_window():
     assert right["left"] == 375 - 8 - 260 and left["left"] == 8
     # Without room below it goes above the icon.
     assert low["above"] and low["top"] == 780 - 6 - 60
+
+
+def test_the_account_badge_keeps_its_icon_inside():
+    # Placed after the badge, the icon wrapped below the avatar in the top bar; inside it stays on the badge's row.
+    page = (ROOT / "dashboard.html").read_text(encoding="utf-8")
+    badge = re.search(r'<button[^>]*class="user-profile-badge"[^>]*>', page).group(0)
+    assert 'data-help-at="inside"' in badge
