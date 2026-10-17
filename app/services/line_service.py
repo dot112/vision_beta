@@ -630,11 +630,13 @@ class LineRuntime:
 
     def _make_read(self, camera_id: str, code: str, code_format: str, t: Optional[float] = None,
                    track_id: Optional[int] = None) -> Dict[str, Any]:
-        """One read: the code, and the product it stands for in the camera's list."""
+        """One read: the code, and what it says by its list's code format: the product it stands
+        for, its product ID and batch, and why it does not fit (``code_problem``)."""
         from app.services.product_service import product_catalog
 
         list_id = self.product_list_id(camera_id)
-        product = product_catalog.lookup(code, list_id)
+        found = product_catalog.match(code, list_id)
+        product = found.product
         return {
             "code": code,
             "format": code_format,
@@ -647,6 +649,9 @@ class LineRuntime:
             "t": time.monotonic() if t is None else t,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "track_id": track_id,
+            "product_id": found.product_id,
+            "code_batch": found.batch,
+            "code_problem": found.problem,
         }
 
     # ── Captures on a wire line crossing ──────────────────────────────────────
@@ -901,6 +906,11 @@ class LineRuntime:
             plc_fields = {"qr_code": fields["qr_code"], "qr_status": status, "qr_paired": fields["qr_paired"]}
         if kind == "paired" and read.get("product"):
             fields["product"] = plc_fields["product"] = read["product"]
+        if kind == "paired":
+            # The carton's product ID, and its batch in place of the line's (applied after it).
+            code_fields, code_plc_fields = self._code_fields(read)
+            fields.update(code_fields)
+            plc_fields.update(code_plc_fields)
         if check:
             fields["product_check"] = plc_fields["product_check"] = check
         if reject and reason in CODE_REASONS:
@@ -974,6 +984,8 @@ class LineRuntime:
             "qr_status": "known",
             "product": read["product"],
         }
+        # The carton's own product ID and batch (the line's batch stays for a carton without one).
+        event.update(self._code_fields(read)[1])
         if crossing:
             event["class_name"] = crossing.get("class_name")
             if crossing.get("confidence") is not None:
@@ -1004,6 +1016,10 @@ class LineRuntime:
         }
         if product_check:
             entry["product_check"] = product_check
+        if read and read.get("product_id") is not None:
+            entry["product_id"] = read["product_id"]
+        if read and read.get("code_batch"):
+            entry["batch"] = read["code_batch"]
         if shown_only:
             # A camera that reads Continuously: the code went nowhere but this list.
             entry["shown_only"] = True
@@ -1039,7 +1055,32 @@ class LineRuntime:
         if read.get("product"):
             payload["product"] = plc_event["product"] = read["product"]
         self._with_batch(payload, plc_event)
+        code_fields, code_plc_fields = self._code_fields(read)
+        payload.update(code_fields)
+        plc_event.update(code_plc_fields)
         return payload, plc_event
+
+    @staticmethod
+    def _code_fields(read: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """What a code says of its carton, for its message and its PLC event: the product ID, the
+        carton's own batch (it replaces the line's for this carton), and, in the message, why the
+        code does not fit its list's format. Applied after the line's batch.
+
+        The PLC event always has the product ID (rules and writes use it); a message only where it
+        is not the whole code, so a list that reads whole codes sends the messages it sent.
+        """
+        fields: Dict[str, Any] = {}
+        plc_fields: Dict[str, Any] = {}
+        product_id = read.get("product_id")
+        if product_id is not None:
+            plc_fields["product_id"] = product_id
+            if product_id != str(read.get("code") or "").strip():
+                fields["product_id"] = product_id
+        if read.get("code_batch"):
+            fields["batch"] = plc_fields["batch"] = read["code_batch"]
+        if read.get("code_problem"):
+            fields["code_problem"] = read["code_problem"]
+        return fields, plc_fields
 
     def _publish(self, topics: Tuple[str, ...], payload: Dict[str, Any], plc_event: Dict[str, Any]) -> None:
         """Send one code event to the event bus, the line's PLC cards and its send cards."""

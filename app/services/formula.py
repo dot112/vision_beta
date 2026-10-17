@@ -36,7 +36,7 @@ from app.services.product_fields import NO_WORDS, VALUE_NAME_RE, YES_WORDS
 MAX_FORMULA_LENGTH = 200
 MAX_NODES = 64
 # The value names that need no root (section 1 of the product data design).
-PLAIN_NAMES = ("result", "result_code", "reject_reason", "class", "confidence", "code", "code_status",
+PLAIN_NAMES = ("result", "result_code", "reject_reason", "class", "confidence", "code", "code_status", "product_id",
                "good_count", "reject_count", "total_count", "batch", "line", "camera")
 ROOTS = ("product", "input")
 # Function -> (fewest, most) values it takes; None = any number.

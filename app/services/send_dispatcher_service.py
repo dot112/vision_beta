@@ -64,7 +64,8 @@ MESSAGE_FIELDS: Dict[str, Tuple[str, ...]] = {
     "bbox": ("bbox",),
     "smooth_center": ("smooth_center",),
     "velocity": ("velocity",),
-    "qr": ("code", "format", "known", "paired", "qr_code", "qr_format", "qr_status", "qr_paired", "product_name"),
+    "qr": ("code", "format", "known", "paired", "qr_code", "qr_format", "qr_status", "qr_paired", "product_name",
+           "product_id", "code_problem"),
     "counts": ("counts",),
     "metrics": ("metrics",),
     "alarm": ("alarm_code", "alarm_message", "alarm_severity", "alarm_source", "alarm_raised"),
@@ -139,6 +140,8 @@ def template_values(payload: Dict[str, Any]) -> Dict[str, Any]:
         "code_format": pick("format", "qr_format"),
         "code_status": pick("qr_status"),
         "product_name": pick("product_name"),
+        # A message has it where the code holds more than the product; otherwise it is the code.
+        "product_id": pick("product_id") or (None if payload.get("code_problem") else pick("code", "qr_code")),
         "good_count": metric("good_count"),
         "rejected_count": metric("rejected_count"),
         "total_inspected": metric("total_inspected"),

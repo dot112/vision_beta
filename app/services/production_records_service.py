@@ -109,9 +109,12 @@ def build_row(payload: Dict[str, Any], kind: str, counted: bool, **extra: Any) -
     vision_result = payload.get("vision_result")
     if vision_result is not None:
         details["vision_result"] = "reject" if str(vision_result).upper() == "REJECTED" else "good"
-    for key in ("stations", "bbox", "reject_camera_id", "product", "product_check"):
+    for key in ("stations", "bbox", "reject_camera_id", "product", "product_check", "code_problem"):
         if payload.get(key) is not None:
             details[key] = payload[key]
+    # The product ID a code holds, where it is not the whole code (a list with a code format).
+    if payload.get("product_id") is not None and payload.get("product_id") != values.get("code"):
+        details["product_id"] = payload["product_id"]
     row = {
         "recorded_at": datetime.now(timezone.utc),
         "line_id": values.get("line_id"),

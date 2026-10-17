@@ -600,6 +600,7 @@ TEMPLATE_FIELDS: Dict[str, str] = {
     "code_format": "Code type",
     "code_status": "Code status (known / unknown / no_read)",
     "product_name": "Product of the code",
+    "product_id": "Product ID in the code",
     "good_count": "Good count",
     "rejected_count": "Rejected count",
     "total_inspected": "Inspected count",

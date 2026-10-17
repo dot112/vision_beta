@@ -15,7 +15,7 @@ import collections
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Deque, Dict, List, Optional, Set, Union
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple, Union
 
 # When a card fires is decided in card_triggers, the same for PLC cards and
 # send cards. The names below are what this module called them before that.
@@ -378,26 +378,35 @@ class PLCDispatcherService:
                  "good_count": 1, "reject_count": 1, "total_count": 1, "class_index": 1, "batch": "1",
                  "line_id": _card_line(card)}
         if code:
-            product = cls._product_for_code(card, str(code))
+            product, found = cls._product_for_code(card, str(code))
             event.update({"qr_code": str(code), "qr_status": "known" if product else "unknown"})
             if product:
                 event["product"] = product
+            # What the code holds by its list's code format: the product ID, and the carton's batch.
+            if found is not None and found.product_id is not None:
+                event["product_id"] = found.product_id
+            if found is not None and found.batch:
+                event["batch"] = found.batch
         await cls._dispatch(card, state, event=event)
         return {**state.last_result, "status": state.status}
 
     @staticmethod
-    def _product_for_code(card: dict, code: str) -> Optional[Dict[str, Any]]:
-        """The product a code stands for in the first list of the card's line's code readers that has it."""
+    def _product_for_code(card: dict, code: str) -> Tuple[Optional[Dict[str, Any]], Any]:
+        """(product, match): the product a code stands for in the first list of the card's line's code
+        readers that has it, and what the code holds by that list's format (product.CodeMatch). Without
+        a product: (None, the first reader's match), or (None, None) when the line reads no codes."""
         from app.services.line_service import line_manager
         from app.services.product_service import product_catalog
 
         runtime = line_manager.get(_card_line(card))
+        first = None
         for camera in getattr(runtime, "cameras", None) or []:
             if reads_codes(camera):
-                product = product_catalog.lookup(code, camera.get("product_list_id"))
-                if product is not None:
-                    return product_catalog.product_info(product, camera.get("product_list_id"))
-        return None
+                found = product_catalog.match(code, camera.get("product_list_id"))
+                if found.product is not None:
+                    return product_catalog.product_info(found.product, camera.get("product_list_id")), found
+                first = first or found
+        return None, first
 
     @staticmethod
     def write_value(card: dict, event: dict) -> Union[float, str]:
