@@ -2563,12 +2563,14 @@
             body.innerHTML = (data.reads || []).map((r) => {
                 const [label, color] = QR_RESULT[r.status] || [r.status, "var(--text-muted)"];
                 const paired = r.paired === false && r.status !== "no_read" ? " (unpaired)" : "";
+                // A camera that reads Continuously only shows its codes: they went nowhere else.
+                const shown = r.shown_only ? ` <span style="color:var(--text-muted);font-size:11px">shown only</span>` : "";
                 // The product's one result, where a camera accepts or rejects by code.
                 const verdict = !r.result ? `<span style="color:var(--text-muted)">—</span>`
                     : r.result === "reject" ? `<b style="color:var(--danger-color)">Rejected</b>${r.reject_reason ? ` · ${esc(REJECT_REASON[r.reject_reason] || r.reject_reason)}${r.product_check ? `: ${esc(r.product_check)}` : ""}` : ""}`
                         : `<b style="color:var(--success-color)">Good</b>`;
                 return `<tr><td class="pl-code">${esc(new Date(r.timestamp).toLocaleTimeString())}</td><td class="pl-code">${esc(r.code || "—")}</td>
-                    <td><b style="color:${color}">${esc(label)}</b>${esc(paired)}</td><td>${esc(r.product_name || "—")}</td><td>${esc(r.class_name || "—")}</td><td>${verdict}</td></tr>`;
+                    <td><b style="color:${color}">${esc(label)}</b>${esc(paired)}${shown}</td><td>${esc(r.product_name || "—")}</td><td>${esc(r.class_name || "—")}</td><td>${verdict}</td></tr>`;
             }).join("") || `<tr><td colspan="6">No reads yet.</td></tr>`;
             const capture = data.last_capture;
             if (capture) {

@@ -180,7 +180,11 @@ class _QRReaderWorker:
         return self._camera_entry().get("product_list_id")
 
     def process(self, mat: Any, now: Optional[float] = None) -> List[str]:
-        """Decode one frame and report new reads to the camera's line. Returns the new codes."""
+        """Decode one frame and show its new reads on the camera's line. Returns the new codes.
+
+        A camera that reads Continuously only shows its codes: only a triggered
+        picture (capture()) feeds the line, its output actions, messages and records.
+        """
         from app.services.line_service import line_manager
         from app.services.product_service import product_catalog
 
@@ -213,7 +217,7 @@ class _QRReaderWorker:
             self.reads += 1
             fmt = next((c.code_type for c, _ in latest if (c.data or "").strip() == data), "UNKNOWN")
             if routed and routed[0].reads_codes(self.camera_id):
-                routed[0].on_qr_read(self.camera_id, data, fmt, now)
+                routed[0].show_read(self.camera_id, data, fmt)
         return new_codes
 
     def request_capture(self, track_id: Optional[int] = None, class_name: Optional[str] = None,

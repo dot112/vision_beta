@@ -614,12 +614,28 @@ class LineRuntime:
 
     def on_qr_read(self, camera_id: str, code: str, code_format: str, t: Optional[float] = None,
                    track_id: Optional[int] = None) -> Dict[str, Any]:
-        """Called by a QR reader's thread for each new read. Returns the read record."""
+        """Called by a QR reader's thread for each new read of a triggered picture. Returns the read record."""
+        read = self._make_read(camera_id, code, code_format, t=t, track_id=track_id)
+        with self._lock:
+            self.qr_stats["codes_read"] += 1
+            self.qr_stats["known" if read["known"] else "unknown"] += 1
+        self._run_on_loop(self._handle_read, read)
+        return read
+
+    def show_read(self, camera_id: str, code: str, code_format: str) -> Dict[str, Any]:
+        """A code a camera read Continuously: it is only shown (the line's recent reads), nothing else."""
+        read = self._make_read(camera_id, code, code_format)
+        self._remember(read, "known" if read["known"] else "unknown", paired=None, shown_only=True)
+        return read
+
+    def _make_read(self, camera_id: str, code: str, code_format: str, t: Optional[float] = None,
+                   track_id: Optional[int] = None) -> Dict[str, Any]:
+        """One read: the code, and the product it stands for in the camera's list."""
         from app.services.product_service import product_catalog
 
         list_id = self.product_list_id(camera_id)
         product = product_catalog.lookup(code, list_id)
-        read = {
+        return {
             "code": code,
             "format": code_format,
             "known": product is not None,
@@ -632,11 +648,6 @@ class LineRuntime:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "track_id": track_id,
         }
-        with self._lock:
-            self.qr_stats["codes_read"] += 1
-            self.qr_stats["known" if read["known"] else "unknown"] += 1
-        self._run_on_loop(self._handle_read, read)
-        return read
 
     # ── Captures on a wire line crossing ──────────────────────────────────────
 
@@ -976,7 +987,7 @@ class LineRuntime:
     def _remember(self, read: Optional[Dict[str, Any]], status: str, paired: Optional[bool],
                   class_name: Optional[str] = None, camera_id: Optional[str] = None,
                   result: Optional[str] = None, reason: Optional[str] = None,
-                  product_check: Optional[str] = None) -> None:
+                  product_check: Optional[str] = None, shown_only: bool = False) -> None:
         entry = {
             "timestamp": read["timestamp"] if read else datetime.now(timezone.utc).isoformat(),
             "code": read["code"] if read else None,
@@ -993,6 +1004,9 @@ class LineRuntime:
         }
         if product_check:
             entry["product_check"] = product_check
+        if shown_only:
+            # A camera that reads Continuously: the code went nowhere but this list.
+            entry["shown_only"] = True
         with self._lock:
             self.qr_recent.appendleft(entry)
 
