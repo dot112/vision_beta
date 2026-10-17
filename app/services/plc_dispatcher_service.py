@@ -388,7 +388,12 @@ class PLCDispatcherService:
             if found is not None and found.batch:
                 event["batch"] = found.batch
         await cls._dispatch(card, state, event=event)
-        return {**state.last_result, "status": state.status}
+        answer = {**state.last_result, "status": state.status}
+        if code:
+            # What the code holds by its list's code format, for the dialog to show.
+            answer["product_id"] = found.product_id if found is not None else None
+            answer["batch"] = found.batch if found is not None else None
+        return answer
 
     @staticmethod
     def _product_for_code(card: dict, code: str) -> Tuple[Optional[Dict[str, Any]], Any]:

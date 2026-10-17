@@ -269,3 +269,32 @@ def test_warning_when_the_list_has_no_batch_part():
     assert not any(text in w for w in line_warnings(line, list_formats={LIST: SPLIT}))
     assert not any(text in w for w in line_warnings(line, list_formats={LIST: {"mode": "gs1"}}))
     assert not any(text in w for w in line_warnings(line))                                       # formats not known
+
+
+def test_test_with_a_code_says_what_the_code_holds(cartons, monkeypatch):
+    runtime = _line(cartons, [VISION, READER])
+
+    async def quiet(cls, card, state, event=None):
+        return None
+
+    monkeypatch.setattr(PLCDispatcherService, "_dispatch", classmethod(quiet))
+    card = {"id": "w2", "line_id": runtime.id, "name": "Lane", "trigger": "cross_line", "operation": "write"}
+    result = asyncio.run(PLCDispatcherService.dispatch_manual(card, code="P-100;B-2026-07"))
+    assert (result["product_id"], result["batch"]) == ("P-100", "B-2026-07")
+    result = asyncio.run(PLCDispatcherService.dispatch_manual(card, code="P-100"))
+    assert (result["product_id"], result["batch"]) == (None, None)
+    result = asyncio.run(PLCDispatcherService.dispatch_manual(card))
+    assert "product_id" not in result and "batch" not in result
+
+
+def test_the_test_route_answers_the_product_id_and_batch(client, admin_headers, monkeypatch):
+    async def fake(cls, card, code=None):
+        return {"success": True, "message": "ok", "status": "sent", "product_id": "P-100", "batch": "B-2026-07"}
+
+    monkeypatch.setattr(PLCDispatcherService, "dispatch_manual", classmethod(fake))
+    card = {"id": "route_card2", "name": "Sort", "operation": "WRITE", "value_source": "code", "plc_endpoint_id": "ep-x",
+            "target_address": "DB1.Code"}
+    res = client.post("/api/v1/plc/actions/route_card2/test", json={"confirm": True, "card": card, "code": "P-100;B-2026-07"},
+                      headers=admin_headers)
+    assert res.status_code == 200, res.text
+    assert (res.json()["product_id"], res.json()["batch"]) == ("P-100", "B-2026-07")

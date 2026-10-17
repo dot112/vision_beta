@@ -338,6 +338,8 @@ async def test_plc_action(
         status=result.get("status") or ("sent" if result.get("success") else "failed"),
         endpoint_name=ep_name,
         protocol=ep_proto,
+        product_id=result.get("product_id"),
+        batch=result.get("batch"),
     )
 
 

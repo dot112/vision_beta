@@ -5031,13 +5031,15 @@ async function testPlcActionCard(cardId) {
             body: JSON.stringify({ confirm: true, card: card, code: code || undefined })
         });
         const data = await res.json();
+        // Tested with a code: what it holds by its list's code format.
+        const held = code && res.ok ? ` (product ID ${data.product_id || "none"}, batch ${data.batch || "none"})` : "";
         if (res.ok && data.status === "skipped") {
-            if (stEl) stEl.innerText = `Test: ${data.message}`;
+            if (stEl) stEl.innerText = `Test: ${data.message}${held}`;
         } else if (res.ok && data.success) {
             card.fired_count = (card.fired_count || 0) + 1;
             card.last_fired = new Date().toLocaleTimeString();
             savePlcActionCards();
-            if (stEl) stEl.innerText = `Test OK: ${card.last_fired}`;
+            if (stEl) stEl.innerText = `Test OK: ${card.last_fired}${held}`;
             const cntEl = document.getElementById(`plcCardCount_${cardId}`);
             if (cntEl) cntEl.innerText = `Fired: ${card.fired_count}`;
         } else {

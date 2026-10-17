@@ -90,6 +90,9 @@ class PLCActionTestResult(BaseModel):
     status: str
     endpoint_name: Optional[str] = None
     protocol: Optional[str] = None
+    # Tested with a code: the product ID and the batch it holds (by its list's code format).
+    product_id: Optional[str] = None
+    batch: Optional[str] = None
 
 
 class OPCUAScanRequest(BaseModel):
