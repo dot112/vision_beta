@@ -35,11 +35,11 @@
         const lists = `cs-lines-${esc(cam.id)}`;
         return `
         <div class="cam-settings-section">Trigger (industrial camera)</div>
-        ${field("trigger_mode", "Trigger", `<select class="form-input">${opt("off", "Off: runs freely", mode)}${opt("hardware", "Hardware: the camera's own input", mode)}${opt("software", "Software: the server triggers it", mode)}</select>`)}
+        ${field("trigger_mode", "Trigger", `<select class="form-input" data-help="How the camera takes pictures: freely, on its own input wire, or when the server triggers it.">${opt("off", "Off: runs freely", mode)}${opt("hardware", "Hardware: the camera's own input", mode)}${opt("software", "Software: the server triggers it", mode)}</select>`)}
         <div class="form-hint cs-trigger-note" style="margin:6px 0 10px"></div>
         <div class="cam-settings-row cs-hardware-only">
             ${field("trigger_line", "Trigger input", `<input type="text" class="form-input" maxlength="32" placeholder="Line0" list="${lists}-in" value="${esc(s.trigger_line || "")}">`)}
-            ${field("trigger_edge", "Edge", `<select class="form-input">${opt("rising", "Rising", edge)}${opt("falling", "Falling", edge)}</select>`)}
+            ${field("trigger_edge", "Edge", `<select class="form-input" data-help="Which edge of the trigger signal takes a picture.">${opt("rising", "Rising", edge)}${opt("falling", "Falling", edge)}</select>`)}
         </div>
         <div class="cam-settings-row cs-triggered-only">
             ${field("trigger_delay_us", "Trigger delay (µs)", `<input type="number" class="form-input" min="0" max="10000000" placeholder="0" value="${esc(s.trigger_delay_us || "")}">`)}
@@ -60,7 +60,7 @@
         <datalist id="${lists}-in"></datalist><datalist id="${lists}-out"></datalist><datalist id="${lists}-drv"></datalist>
         <div class="form-hint cs-camera-state" style="margin:4px 0 10px">Connect the camera to see its inputs and its last picture.</div>
         <div class="cs-trigger-test" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px" hidden>
-            <button type="button" class="btn-action btn-sm btn-outline restricted-l2 cs-trigger-btn">Software trigger</button>
+            <button type="button" class="btn-action btn-sm btn-outline restricted-l2 cs-trigger-btn" data-help="Takes one test picture by software trigger now; nothing is counted.">Software trigger</button>
             <span class="form-hint cs-trigger-result" style="margin:0">One test picture now; nothing is counted.</span>
         </div>
         <div class="pl-warn cs-camera-problems" style="margin:0 0 12px" hidden></div>`;
@@ -163,7 +163,7 @@
         </div>
         <div class="cam-settings-section">Rotation &amp; flip</div>
         <div class="cam-settings-row">
-            ${field("rotation", "Rotation", `<select class="form-input">${rotOption("", "No rotation")}${rotOption("90", "90° clockwise")}${rotOption("180", "180°")}${rotOption("270", "270° (counter-clockwise)")}</select>`)}
+            ${field("rotation", "Rotation", `<select class="form-input" data-help="Turns the picture before it is used.">${rotOption("", "No rotation")}${rotOption("90", "90° clockwise")}${rotOption("180", "180°")}${rotOption("270", "270° (counter-clockwise)")}</select>`)}
             <div class="form-group" style="margin:0;padding-top:20px;display:flex;gap:16px;align-items:center">
                 <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" data-cs="flip_h" ${s.flip_h ? "checked" : ""}> Flip H</label>
                 <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" data-cs="flip_v" ${s.flip_v ? "checked" : ""}> Flip V</label>
@@ -174,7 +174,7 @@
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
             <span class="form-label" style="margin:0">Enable ROI</span>
             <label class="switch"><input type="checkbox" data-cs="roi_enabled" ${s.roi_enabled ? "checked" : ""}><span class="slider"></span></label>
-            <button type="button" class="btn-action btn-sm btn-outline cs-roi-reset" style="margin-left:auto">Whole picture</button>
+            <button type="button" class="btn-action btn-sm btn-outline cs-roi-reset" style="margin-left:auto" data-help="Sets the region of interest back to the whole picture.">Whole picture</button>
         </div>
         <div class="cs-roi-fields">
             <div class="cam-settings-row">
@@ -208,7 +208,7 @@
         ${ip ? `
         <div class="cam-settings-section">IP stream</div>
         <div class="cam-settings-row">
-            ${field("transport", "Transport protocol", `<select class="form-input"><option value="tcp" ${(s.transport || "tcp") === "tcp" ? "selected" : ""}>TCP (reliable)</option><option value="udp" ${s.transport === "udp" ? "selected" : ""}>UDP (low latency)</option></select>`)}
+            ${field("transport", "Transport protocol", `<select class="form-input" data-help="How the IP stream travels: TCP is reliable, UDP has the lowest delay."><option value="tcp" ${(s.transport || "tcp") === "tcp" ? "selected" : ""}>TCP (reliable)</option><option value="udp" ${s.transport === "udp" ? "selected" : ""}>UDP (low latency)</option></select>`)}
             ${field("buffer_size", "Buffer size", `<input type="number" class="form-input" min="1" max="10" value="${esc(s.buffer_size || 1)}">`)}
         </div>` : ""}`;
     }

@@ -7,7 +7,7 @@
     <title>Universalz Vision — Line control</title>
     <link rel="icon" type="image/png" href="/assets/universalz_mark.png">
     <link rel="preload" href="/assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="stylesheet" href="/assets/dashboard.css?v=3.5.0">
+    <link rel="stylesheet" href="/assets/dashboard.css?v=3.6.0">
     <script>
         // Apply the saved theme before the first paint (no dark-to-light flash).
         try { document.documentElement.setAttribute("data-theme", localStorage.getItem("theme") === "light" ? "light" : "dark"); } catch (_) {}
@@ -63,19 +63,19 @@
         <div class="comm-modal-body">
             <!-- Protocol Selector -->
             <div class="comm-proto-selector">
-                <button type="button" class="proto-btn active" id="protoBtnPlc" onclick="selectCommProto('plc')">
+                <button type="button" class="proto-btn active" id="protoBtnPlc" onclick="selectCommProto('plc')" data-help="Makes this connection a PLC, for output actions and inputs.">
                     <span>Controller</span>
                 </button>
-                <button type="button" class="proto-btn" id="protoBtnTcp" onclick="selectCommProto('tcp')">
+                <button type="button" class="proto-btn" id="protoBtnTcp" onclick="selectCommProto('tcp')" data-help="Makes this connection a TCP socket that send cards write messages to.">
                     <span>TCP Socket</span>
                 </button>
-                <button type="button" class="proto-btn" id="protoBtnMqtt" onclick="selectCommProto('mqtt')">
+                <button type="button" class="proto-btn" id="protoBtnMqtt" onclick="selectCommProto('mqtt')" data-help="Makes this connection an MQTT broker that send cards publish messages to.">
                     <span>MQTT Broker</span>
                 </button>
-                <button type="button" class="proto-btn" id="protoBtnIpcam" onclick="selectCommProto('ipcam')">
+                <button type="button" class="proto-btn" id="protoBtnIpcam" onclick="selectCommProto('ipcam')" data-help="Makes this connection a network camera: an IP stream, or an industrial camera found by its serial number.">
                     <span>Network camera</span>
                 </button>
-                <button type="button" class="proto-btn" id="protoBtnWebhook" onclick="selectCommProto('webhook')">
+                <button type="button" class="proto-btn" id="protoBtnWebhook" onclick="selectCommProto('webhook')" data-help="Makes this connection a web address (webhook) that send cards post messages to.">
                     <span>API / Webhook</span>
                 </button>
             </div>
@@ -100,7 +100,7 @@
                 <div class="cam-settings-section">TCP Socket Parameters</div>
                 <div class="cam-settings-row">
                     <div class="form-group" style="margin:0"><label class="form-label" for="tcpModeInput">Connection Mode</label>
-                        <select id="tcpModeInput" class="form-input" onchange="updateTcpPanel()">
+                        <select id="tcpModeInput" class="form-input" onchange="updateTcpPanel()" data-help="Whether this server connects to the device, or the device connects to this server.">
                             <option value="client">Client: connect to the device</option>
                             <option value="server">Server: devices connect to this server</option>
                         </select></div>
@@ -123,7 +123,7 @@
                 </div>
                 <div class="cam-settings-row" style="margin-top:10px">
                     <div class="form-group" style="margin:0"><label class="form-label" for="tcpDelimiterInput">End of each message (delimiter)</label>
-                        <select id="tcpDelimiterInput" class="form-input" onchange="updateTcpPanel()">
+                        <select id="tcpDelimiterInput" class="form-input" onchange="updateTcpPanel()" data-help="The characters that end each message, so the device knows where one message stops.">
                             <option value="\n">\n (newline, LF)</option>
                             <option value="\r\n">\r\n (Windows, CRLF)</option>
                             <option value="\0">\0 (null byte)</option>
@@ -149,7 +149,7 @@
                     <div class="form-group" style="margin:0"><label class="form-label">Client ID</label>
                         <input type="text" id="mqttClientIdInput" class="form-input" placeholder="Auto-generated if empty" /></div>
                     <div class="form-group" style="margin:0"><label class="form-label">Protocol Version</label>
-                        <select id="mqttProtocolVersionInput" class="form-input">
+                        <select id="mqttProtocolVersionInput" class="form-input" data-help="The MQTT version the broker speaks; 3.1.1 works with almost every broker.">
                             <option value="3.1.1" selected>MQTT v3.1.1 (Standard)</option>
                             <option value="5.0">MQTT v5.0 (Advanced)</option>
                         </select></div>
@@ -186,7 +186,7 @@
                     <div class="form-group">
                         <label class="form-label">CA Certificate (Server Verification)</label>
                         <div class="cert-upload-box">
-                            <select id="mqttCaCertInput" class="form-input" style="flex:1">
+                            <select id="mqttCaCertInput" class="form-input" style="flex:1" data-help="The CA certificate that checks the broker's certificate; Browse uploads one.">
                                 <option value="">-- None / Select uploaded CA certificate --</option>
                             </select>
                             <label class="btn-action btn-outline" style="cursor:pointer;white-space:nowrap;margin:0;font-size:11px;padding:7px 10px;display:flex;align-items:center;gap:4px" title="Upload new CA certificate">
@@ -198,7 +198,7 @@
                     <div class="form-group">
                         <label class="form-label">Client Certificate (mTLS)</label>
                         <div class="cert-upload-box">
-                            <select id="mqttClientCertInput" class="form-input" style="flex:1">
+                            <select id="mqttClientCertInput" class="form-input" style="flex:1" data-help="The certificate this server shows a broker that asks for one (mutual TLS); Browse uploads one.">
                                 <option value="">-- None / Select uploaded client certificate --</option>
                             </select>
                             <label class="btn-action btn-outline" style="cursor:pointer;white-space:nowrap;margin:0;font-size:11px;padding:7px 10px;display:flex;align-items:center;gap:4px" title="Upload new client certificate">
@@ -210,7 +210,7 @@
                     <div class="form-group">
                         <label class="form-label">Client Private Key (mTLS)</label>
                         <div class="cert-upload-box">
-                            <select id="mqttClientKeyInput" class="form-input" style="flex:1">
+                            <select id="mqttClientKeyInput" class="form-input" style="flex:1" data-help="The private key that belongs to the client certificate; Browse uploads one.">
                                 <option value="">-- None / Select uploaded private key --</option>
                             </select>
                             <label class="btn-action btn-outline" style="cursor:pointer;white-space:nowrap;margin:0;font-size:11px;padding:7px 10px;display:flex;align-items:center;gap:4px" title="Upload new private key">
@@ -226,7 +226,7 @@
                 <div class="form-group" style="font-size:11px;color:var(--text-muted);padding:0 2px">The topic is set on each send card (Line setup, Send results), so one broker can take several topics.</div>
                 <div class="cam-settings-row">
                     <div class="form-group" style="margin:0"><label class="form-label">QoS Level</label>
-                        <select id="mqttQosInput" class="form-input">
+                        <select id="mqttQosInput" class="form-input" data-help="How sure the delivery of each message is: 0 is fastest, 1 at least once, 2 exactly once.">
                             <option value="0">0 (At most once - Fastest)</option>
                             <option value="1" selected>1 (At least once - Reliable)</option>
                             <option value="2">2 (Exactly once)</option>
@@ -252,7 +252,7 @@
                         </div>
                         <div class="cam-settings-row">
                             <div class="form-group" style="margin:0"><label class="form-label">QoS</label>
-                                <select id="mqttBirthQosInput" class="form-input"><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option></select>
+                                <select id="mqttBirthQosInput" class="form-input" data-help="The delivery level of the birth message, sent when the server connects."><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option></select>
                             </div>
                             <div class="form-group" style="margin:0;display:flex;align-items:center;justify-content:space-between;padding-top:16px">
                                 <label class="form-label" style="margin:0">Retain</label>
@@ -276,7 +276,7 @@
                         </div>
                         <div class="cam-settings-row">
                             <div class="form-group" style="margin:0"><label class="form-label">QoS</label>
-                                <select id="mqttCloseQosInput" class="form-input"><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option></select>
+                                <select id="mqttCloseQosInput" class="form-input" data-help="The delivery level of the close message, sent when the server shuts down cleanly."><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option></select>
                             </div>
                             <div class="form-group" style="margin:0;display:flex;align-items:center;justify-content:space-between;padding-top:16px">
                                 <label class="form-label" style="margin:0">Retain</label>
@@ -300,7 +300,7 @@
                         </div>
                         <div class="cam-settings-row">
                             <div class="form-group" style="margin:0"><label class="form-label">QoS</label>
-                                <select id="mqttWillQosInput" class="form-input"><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option></select>
+                                <select id="mqttWillQosInput" class="form-input" data-help="The delivery level of the last-will message, which the broker sends if the server drops off."><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option></select>
                             </div>
                             <div class="form-group" style="margin:0;display:flex;align-items:center;justify-content:space-between;padding-top:16px">
                                 <label class="form-label" style="margin:0">Retain</label>
@@ -344,7 +344,7 @@
                 <div class="cam-settings-section">Network camera</div>
                 <div class="form-group">
                     <label class="form-label" for="ipcamKindInput">Camera type</label>
-                    <select id="ipcamKindInput" class="form-input" onchange="syncIpcamKind()">
+                    <select id="ipcamKindInput" class="form-input" onchange="syncIpcamKind()" data-help="An IP camera with a stream address, or an industrial camera found by its serial number.">
                         <option value="ip">IP camera (RTSP or HTTP stream)</option>
                         <option value="gige">GigE Vision (industrial camera)</option>
                     </select>
@@ -366,13 +366,13 @@
                     <div id="ipcamLoginNote" style="font-size:11px;color:var(--text-muted);margin:4px 0 12px">Only for a camera that asks for a sign-in. They are saved inside the stream URL.</div>
                     <div class="cam-settings-row">
                         <div class="form-group" style="margin:0"><label class="form-label" for="ipcamTransportInput">RTSP transport</label>
-                            <select id="ipcamTransportInput" class="form-input">
+                            <select id="ipcamTransportInput" class="form-input" data-help="How the RTSP stream travels: TCP is reliable, UDP has the lowest delay.">
                                 <option value="tcp">TCP (reliable)</option>
                                 <option value="udp">UDP (lowest delay)</option>
                                 <option value="http">RTSP over HTTP (tunnel)</option>
                             </select></div>
                         <div class="form-group" style="margin:0"><label class="form-label" for="ipcamResolutionInput">Picture size</label>
-                            <select id="ipcamResolutionInput" class="form-input">
+                            <select id="ipcamResolutionInput" class="form-input" data-help="The stream's own picture size, or a size the server scales each picture to.">
                                 <option value="native" selected>The stream's own size</option>
                                 <option value="640x480">640 × 480</option>
                                 <option value="1280x720">1280 × 720</option>
@@ -392,7 +392,7 @@
                         <label class="form-label" for="ipcamSerialInput">Serial number *</label>
                         <div style="display:flex;gap:8px">
                             <input type="text" id="ipcamSerialInput" class="form-input" maxlength="128" placeholder="Press Scan, or type the camera's serial number" style="flex:1" />
-                            <button type="button" id="ipcamScanBtn" class="btn-action btn-outline" onclick="scanGigeCameras()" style="white-space:nowrap">Scan</button>
+                            <button type="button" id="ipcamScanBtn" class="btn-action btn-outline" onclick="scanGigeCameras()" style="white-space:nowrap" data-help="Looks for industrial cameras on the network and the USB3 ports, to pick one.">Scan</button>
                         </div>
                         <div id="ipcamScanResult" style="margin-top:8px"></div>
                     </div>
@@ -409,7 +409,7 @@
                 </div>
                 <div class="cam-settings-row">
                     <div class="form-group" style="margin:0"><label class="form-label">HTTP Method</label>
-                        <select id="webhookMethodInput" class="form-input">
+                        <select id="webhookMethodInput" class="form-input" data-help="The HTTP method each message is sent with.">
                             <option value="POST">POST (JSON Body)</option>
                             <option value="PUT">PUT</option>
                             <option value="PATCH">PATCH</option>
@@ -435,7 +435,7 @@
                 <div class="cam-settings-row">
                     <div class="form-group" style="margin:0">
                         <label class="form-label">Controller protocol *</label>
-                        <select id="plcProtocolTypeInput" class="form-input" onchange="onPlcProtocolTypeChange(this.value)">
+                        <select id="plcProtocolTypeInput" class="form-input" onchange="onPlcProtocolTypeChange(this.value)" data-help="The protocol the PLC speaks; choosing one also sets its usual port.">
                             <option value="modbus_tcp">Modbus TCP (Universal / Port 502)</option>
                             <option value="modbus_rtu">Modbus RTU (RS-485 Serial / RTU over TCP)</option>
                             <option value="s7">Siemens S7comm (1200 / 1500 / 300 / 400)</option>
@@ -449,7 +449,7 @@
                         <label class="form-label">Controller IP address</label>
                         <div style="display:flex;gap:7px;align-items:stretch">
                             <input type="text" id="plcHostInput" class="form-input" placeholder="192.168.1.10" value="192.168.1.10" style="flex:1;min-width:0" />
-                            <button type="button" id="plcOpcuaScanBtn" class="btn-action btn-outline" onclick="openOpcuaScanModal()" style="display:none;white-space:nowrap;padding:7px 10px" title="Find OPC UA servers on a private subnet">Scan UA</button>
+                            <button type="button" id="plcOpcuaScanBtn" class="btn-action btn-outline" onclick="openOpcuaScanModal()" style="display:none;white-space:nowrap;padding:7px 10px" data-help="Opens a search for OPC UA servers on a private network, to pick one.">Scan UA</button>
                         </div>
                     </div>
                 </div>
@@ -478,14 +478,14 @@
                         </div>
                         <div class="form-group" style="margin:0">
                             <label class="form-label">Address Zero-Base</label>
-                            <select id="plcModbusZeroBase" class="form-input">
+                            <select id="plcModbusZeroBase" class="form-input" data-help="Whether the addresses you type start at 0 (PLC native) or at 1 (Modbus 40001 style).">
                                 <option value="0">0-based (PLC Native Addressing)</option>
                                 <option value="1">1-based (Standard Modbus 40001)</option>
                             </select>
                         </div>
                         <div class="form-group" style="margin:0">
                             <label class="form-label">32-bit Word Order (DINT / REAL)</label>
-                            <select id="plcModbusWordOrder" class="form-input">
+                            <select id="plcModbusWordOrder" class="form-input" data-help="Which half comes first in a 32-bit number (DINT or REAL); it must match the PLC.">
                                 <option value="high_first">High word first (ABCD)</option>
                                 <option value="low_first">Low word first (CDAB)</option>
                             </select>
@@ -498,7 +498,7 @@
                     <div class="cam-settings-row">
                         <div class="form-group" style="margin:0">
                             <label class="form-label">Link Type</label>
-                            <select id="plcRtuTransport" class="form-input" onchange="onPlcRtuTransportChange(this.value)">
+                            <select id="plcRtuTransport" class="form-input" onchange="onPlcRtuTransportChange(this.value)" data-help="A serial port of this computer, or a serial gateway reached over TCP.">
                                 <option value="serial">Serial Port (RS-485 / RS-232)</option>
                                 <option value="tcp">RTU over TCP (Serial Gateway)</option>
                             </select>
@@ -511,7 +511,7 @@
                     <div class="cam-settings-row triple" style="margin-top:10px">
                         <div class="form-group" style="margin:0">
                             <label class="form-label">Baud Rate</label>
-                            <select id="plcRtuBaudrate" class="form-input">
+                            <select id="plcRtuBaudrate" class="form-input" data-help="The serial speed; it must match the PLC.">
                                 <option value="1200">1200</option>
                                 <option value="2400">2400</option>
                                 <option value="4800">4800</option>
@@ -524,7 +524,7 @@
                         </div>
                         <div class="form-group" style="margin:0">
                             <label class="form-label">Parity (8 data bits)</label>
-                            <select id="plcRtuParity" class="form-input">
+                            <select id="plcRtuParity" class="form-input" data-help="The parity of the serial line; it must match the PLC (Modbus uses Even by default).">
                                 <option value="E">Even (8E1 — Modbus default)</option>
                                 <option value="N">None (8N1 / 8N2)</option>
                                 <option value="O">Odd (8O1)</option>
@@ -532,7 +532,7 @@
                         </div>
                         <div class="form-group" style="margin:0">
                             <label class="form-label">Stop Bits</label>
-                            <select id="plcRtuStopbits" class="form-input">
+                            <select id="plcRtuStopbits" class="form-input" data-help="The number of stop bits of the serial line; it must match the PLC.">
                                 <option value="1">1</option>
                                 <option value="2">2</option>
                             </select>
@@ -545,7 +545,7 @@
                         </div>
                         <div class="form-group" style="margin:0">
                             <label class="form-label">32-bit Word Order (DINT / REAL)</label>
-                            <select id="plcRtuWordOrder" class="form-input">
+                            <select id="plcRtuWordOrder" class="form-input" data-help="Which half comes first in a 32-bit number (DINT or REAL); it must match the PLC.">
                                 <option value="high_first">High word first (ABCD)</option>
                                 <option value="low_first">Low word first (CDAB)</option>
                             </select>
@@ -558,7 +558,7 @@
                     <div class="cam-settings-row">
                         <div class="form-group" style="margin:0">
                             <label class="form-label">S7 PLC Family</label>
-                            <select id="plcS7Model" class="form-input" onchange="onPlcS7ModelChange(this.value)">
+                            <select id="plcS7Model" class="form-input" onchange="onPlcS7ModelChange(this.value)" data-help="The Siemens PLC family; choosing one fills in its usual rack and slot.">
                                 <option value="s7-1200">S7-1200 (Rack 0, Slot 1)</option>
                                 <option value="s7-1500">S7-1500 (Rack 0, Slot 1)</option>
                                 <option value="s7-300">S7-300 (Rack 0, Slot 2)</option>
@@ -600,7 +600,7 @@
                         </div>
                         <div class="form-group" style="margin:0">
                             <label class="form-label">Security Policy</label>
-                            <select id="plcOpcuaSecurity" class="form-input" onchange="syncOpcuaCertFields()">
+                            <select id="plcOpcuaSecurity" class="form-input" onchange="syncOpcuaCertFields()" data-help="Whether messages to the OPC UA server are signed or encrypted; both need a client certificate and key.">
                                 <option value="None">None (No channel security)</option>
                                 <option value="Basic256Sha256_Sign">Basic256Sha256 (Sign — requires client certificate/key configuration)</option>
                                 <option value="Basic256Sha256_SignAndEncrypt">Basic256Sha256 (Sign &amp; Encrypt — requires client certificate/key configuration)</option>
@@ -612,7 +612,7 @@
                         <div class="form-group">
                             <label class="form-label" for="plcOpcuaCertInput">Client certificate *</label>
                             <div class="cert-upload-box">
-                                <select id="plcOpcuaCertInput" class="form-input" style="flex:1"><option value="">-- Choose an uploaded certificate --</option></select>
+                                <select id="plcOpcuaCertInput" class="form-input" style="flex:1" data-help="The client certificate of a secured OPC UA connection; Upload adds one."><option value="">-- Choose an uploaded certificate --</option></select>
                                 <label class="btn-action btn-outline" style="cursor:pointer;white-space:nowrap;margin:0;font-size:11px;padding:7px 10px" title="Upload a client certificate (PEM or DER)">
                                     <span>Upload</span>
                                     <input type="file" accept=".pem,.der,.crt,.cer,*/*" style="display:none" onchange="handleOpcuaCertUpload(event, 'client_cert', 'plcOpcuaCertInput')" />
@@ -622,7 +622,7 @@
                         <div class="form-group">
                             <label class="form-label" for="plcOpcuaKeyInput">Private key *</label>
                             <div class="cert-upload-box">
-                                <select id="plcOpcuaKeyInput" class="form-input" style="flex:1"><option value="">-- Choose an uploaded private key --</option></select>
+                                <select id="plcOpcuaKeyInput" class="form-input" style="flex:1" data-help="The private key that belongs to the client certificate; Upload adds one."><option value="">-- Choose an uploaded private key --</option></select>
                                 <label class="btn-action btn-outline" style="cursor:pointer;white-space:nowrap;margin:0;font-size:11px;padding:7px 10px" title="Upload the certificate's private key (PEM or DER, without a password)">
                                     <span>Upload</span>
                                     <input type="file" accept=".pem,.der,.key,*/*" style="display:none" onchange="handleOpcuaCertUpload(event, 'private_key', 'plcOpcuaKeyInput')" />
@@ -632,7 +632,7 @@
                         <div class="form-group">
                             <label class="form-label" for="plcOpcuaServerCertInput">Server certificate (optional)</label>
                             <div class="cert-upload-box">
-                                <select id="plcOpcuaServerCertInput" class="form-input" style="flex:1"><option value="">-- None: trust the server's certificate --</option></select>
+                                <select id="plcOpcuaServerCertInput" class="form-input" style="flex:1" data-help="The server's certificate, to accept only that server; None trusts the server's own."><option value="">-- None: trust the server's certificate --</option></select>
                                 <label class="btn-action btn-outline" style="cursor:pointer;white-space:nowrap;margin:0;font-size:11px;padding:7px 10px" title="Upload the server's certificate to accept only that server">
                                     <span>Upload</span>
                                     <input type="file" accept=".pem,.der,.crt,.cer,*/*" style="display:none" onchange="handleOpcuaCertUpload(event, 'server_cert', 'plcOpcuaServerCertInput')" />
@@ -681,7 +681,7 @@
         <div class="comm-modal-footer">
             <button type="button" class="btn-action btn-outline" onclick="closeCommModal()">Cancel</button>
             <div class="comm-modal-footer-actions">
-                <button type="button" class="btn-action btn-red" id="commBtnDelete" style="display:none" onclick="deleteCurrentCommEndpoint()">Delete</button>
+                <button type="button" class="btn-action btn-red" id="commBtnDelete" style="display:none" onclick="deleteCurrentCommEndpoint()" data-help="Deletes this connection after you confirm.">Delete</button>
                 <button type="button" class="btn-action btn-blue" id="commSaveBtn" onclick="saveCommEndpoint()">Save connection</button>
             </div>
         </div>
@@ -707,7 +707,7 @@
                 <label class="form-label" for="opcuaScanPort">Port</label>
                 <input type="number" id="opcuaScanPort" class="form-input" value="4840" min="1" max="65535" />
             </div>
-            <button type="button" id="opcuaScanRunBtn" class="btn-action btn-blue" onclick="performOpcuaScan()" style="min-width:100px">Scan</button>
+            <button type="button" id="opcuaScanRunBtn" class="btn-action btn-blue" onclick="performOpcuaScan()" style="min-width:100px" data-help="Scans the subnet above for OPC UA servers and lists what it finds.">Scan</button>
         </div>
         <div id="opcuaScanStatus" role="status" aria-live="polite" style="font-size:12px;color:var(--text-muted);margin:2px 0 10px">Scan results will appear here.</div>
         <div id="opcuaScanResults" style="overflow-y:auto;min-height:100px;display:flex;flex-direction:column;gap:9px;padding:1px 4px 4px 1px"></div>
@@ -844,30 +844,30 @@
 
         <ul class="sidebar-menu">
             <li class="pro-nav-label" id="navGroupRun">Run</li>
-            <li class="menu-item active" onclick="switchTab('tabDashboard')">
+            <li class="menu-item active" onclick="switchTab('tabDashboard')" data-help="Opens the live view of the line: its state, counts, video and alarms.">
                 <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg></span><span>Line dashboard</span>
             </li>
-            <li class="menu-item" onclick="switchTab('tabActionTrigger')">
+            <li class="menu-item" onclick="switchTab('tabActionTrigger')" data-help="Opens the setup of the line: cameras, counting, messages, output actions and inputs.">
                 <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></span><span>Line setup</span>
             </li>
             <li class="pro-nav-label" id="navGroupSetup">Setup</li>
-            <li class="menu-item" onclick="switchTab('tabCameras')">
+            <li class="menu-item" onclick="switchTab('tabCameras')" data-help="Opens the USB and network cameras this server can use.">
                 <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></span><span>Cameras</span>
             </li>
-            <li class="menu-item" onclick="switchTab('tabModels')">
+            <li class="menu-item" onclick="switchTab('tabModels')" data-help="Opens the AI models on this server, where new ones are uploaded.">
                 <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg></span><span>AI models</span>
             </li>
-            <li class="menu-item" onclick="switchTab('tabComms')">
+            <li class="menu-item" onclick="switchTab('tabComms')" data-help="Opens the PLCs, MQTT brokers, TCP sockets, network cameras and webhooks the server talks to.">
                 <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></svg></span><span>Connections</span>
             </li>
             <li class="pro-nav-label">Admin</li>
-            <li class="menu-item" id="adminMenuTab" onclick="switchTab('tabUsers')">
+            <li class="menu-item" id="adminMenuTab" onclick="switchTab('tabUsers')" data-help="Opens the user accounts and the API keys of other systems.">
                 <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span><span>Users &amp; API keys</span>
             </li>
-            <li class="menu-item" onclick="switchTab('tabLogs')">
+            <li class="menu-item" onclick="switchTab('tabLogs')" data-help="Opens the record of who changed what on this server.">
                 <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span><span>Audit log</span>
             </li>
-            <li class="menu-item" onclick="switchTab('tabAccount')">
+            <li class="menu-item" onclick="switchTab('tabAccount')" data-help="Opens your profile, where you change your password or sign out.">
                 <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span><span>My account</span>
             </li>
         </ul>
@@ -875,8 +875,8 @@
             <div class="theme-switch-container">
                 <span>Theme</span>
                 <div class="seg" role="group" aria-label="Theme">
-                    <button type="button" id="themeDarkBtn" class="on" aria-pressed="true" onclick="setTheme('dark')">Dark</button>
-                    <button type="button" id="themeLightBtn" aria-pressed="false" onclick="setTheme('light')">Light</button>
+                    <button type="button" id="themeDarkBtn" class="on" aria-pressed="true" onclick="setTheme('dark')" data-help="Shows the dashboard in dark colours.">Dark</button>
+                    <button type="button" id="themeLightBtn" aria-pressed="false" onclick="setTheme('light')" data-help="Shows the dashboard in light colours.">Light</button>
                 </div>
             </div>
             <div class="sidebar-version" title="Vision server version">Version <span class="app-version">1.0.0 beta</span></div>
@@ -898,14 +898,14 @@
                     <span class="pro-status-cell optional"><span class="pro-status-val num" id="proClock">--:--:--</span></span>
                 </div>
                 <div class="user-menu" id="userMenu">
-                    <button type="button" class="user-profile-badge" onclick="toggleMenu('userMenu', event)" aria-haspopup="menu" aria-expanded="false" title="Account">
+                    <button type="button" class="user-profile-badge" onclick="toggleMenu('userMenu', event)" aria-haspopup="menu" aria-expanded="false" data-help="Opens your account menu: My account and Sign out.">
                         <span class="user-avatar" id="barAvatar">A</span>
                         <span class="user-label-full"><b id="barUsername">admin</b><span id="barClearance">Level 3 · Admin</span></span>
                     </button>
                     <div class="user-menu-panel" role="menu">
-                        <button type="button" class="menu-panel-item" role="menuitem" onclick="closeMenus(); switchTab('tabAccount')">My account</button>
+                        <button type="button" class="menu-panel-item" role="menuitem" onclick="closeMenus(); switchTab('tabAccount')" data-help="Opens your profile, where you change your password.">My account</button>
                         <div class="menu-panel-sep"></div>
-                        <button type="button" class="menu-panel-item danger" role="menuitem" onclick="closeMenus(); handleLogout()">Sign out</button>
+                        <button type="button" class="menu-panel-item danger" role="menuitem" onclick="closeMenus(); handleLogout()" data-help="Signs you out of this dashboard.">Sign out</button>
                     </div>
                 </div>
             </div>
@@ -927,21 +927,21 @@
             <label for="lineBatchInput">Batch</label>
             <b id="lineBatchText"></b>
             <input type="text" id="lineBatchInput" class="form-input" maxlength="64" placeholder="None" autocomplete="off" onkeydown="if(event.key==='Enter')setLineBatch()" hidden />
-            <button type="button" class="btn-action btn-sm btn-outline" id="lineBatchSet" onclick="setLineBatch()" title="Products counted from now on carry this batch number" hidden>Set</button>
+            <button type="button" class="btn-action btn-sm btn-outline" id="lineBatchSet" onclick="setLineBatch()" hidden data-help="Sets the batch number; the products counted from now on carry it.">Set</button>
         </div>
         <div class="line-status-meta" id="lineStatusMeta"></div>
         <div class="line-status-actions">
-            <button type="button" class="status-pill neutral" id="lineAlarmPill" onclick="showAlarmPanel()" title="Show the alarms" hidden></button>
-            <button type="button" class="btn-action btn-outline restricted-l2" id="lineRunBtn" onclick="toggleLineRunning()" hidden>Start line</button>
+            <button type="button" class="status-pill neutral" id="lineAlarmPill" onclick="showAlarmPanel()" title="Show the alarms" hidden data-help="Jumps to the alarms of this line below."></button>
+            <button type="button" class="btn-action btn-outline restricted-l2" id="lineRunBtn" onclick="toggleLineRunning()" hidden data-help="Starts the line, or stops it after you confirm; it counts and acts only while it runs.">Start line</button>
             <div class="more-menu" id="lineMoreMenu">
-                <button type="button" class="btn-action btn-outline btn-icon" onclick="toggleMenu('lineMoreMenu', event)" aria-label="More line actions" aria-haspopup="menu" aria-expanded="false">
+                <button type="button" class="btn-action btn-outline btn-icon" onclick="toggleMenu('lineMoreMenu', event)" aria-label="More line actions" aria-haspopup="menu" aria-expanded="false" data-help="Opens more actions for this line: Line setup, Cameras and Reset all counts.">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
                 </button>
                 <div class="user-menu-panel" role="menu">
-                    <button type="button" class="menu-panel-item" role="menuitem" onclick="closeMenus(); switchTab('tabActionTrigger')">Open line setup</button>
-                    <button type="button" class="menu-panel-item" role="menuitem" onclick="closeMenus(); switchTab('tabCameras')">Cameras</button>
+                    <button type="button" class="menu-panel-item" role="menuitem" onclick="closeMenus(); switchTab('tabActionTrigger')" data-help="Opens the setup of this line.">Open line setup</button>
+                    <button type="button" class="menu-panel-item" role="menuitem" onclick="closeMenus(); switchTab('tabCameras')" data-help="Opens the Cameras page.">Cameras</button>
                     <div class="menu-panel-sep"></div>
-                    <button type="button" class="menu-panel-item danger restricted-l2" role="menuitem" onclick="closeMenus(); confirmResetAllCounts()">Reset all counts…</button>
+                    <button type="button" class="menu-panel-item danger restricted-l2" role="menuitem" onclick="closeMenus(); confirmResetAllCounts()" data-help="Sets the counts of this line back to 0 after you confirm.">Reset all counts…</button>
                 </div>
             </div>
         </div>
@@ -983,8 +983,8 @@
                 </span>
                 <div class="card-actions">
                     <div class="seg" role="group" aria-label="Video view">
-                        <button type="button" id="feedModeAI" class="on" aria-pressed="true" onclick="setFeedMode(true)" title="Video with detections and count lines drawn on it">AI view</button>
-                        <button type="button" id="feedModeRaw" aria-pressed="false" onclick="setFeedMode(false)" title="The camera picture as it arrives">Raw</button>
+                        <button type="button" id="feedModeAI" class="on" aria-pressed="true" onclick="setFeedMode(true)" data-help="Shows the video with the detections and count lines drawn on it.">AI view</button>
+                        <button type="button" id="feedModeRaw" aria-pressed="false" onclick="setFeedMode(false)" data-help="Shows the camera picture as it arrives, with nothing drawn on it.">Raw</button>
                     </div>
                     <span id="feedModeLabel" class="sr-only">AI view</span>
                 </div>
@@ -1033,10 +1033,10 @@
                 <div class="card-panel-sub">Faults on this line and faults that affect every line. An alarm clears on its own once its cause is fixed.</div>
             </div>
             <div class="card-actions">
-                <button type="button" class="btn-action btn-sm btn-outline" id="alarmAckAllBtn" onclick="acknowledgeAllAlarms()" hidden>Acknowledge all</button>
+                <button type="button" class="btn-action btn-sm btn-outline" id="alarmAckAllBtn" onclick="acknowledgeAllAlarms()" hidden data-help="Acknowledges every alarm in the list that is not acknowledged yet.">Acknowledge all</button>
                 <div class="seg" role="group" aria-label="Which alarms">
-                    <button type="button" id="alarmViewActive" class="on" aria-pressed="true" onclick="setAlarmView('active')">Active</button>
-                    <button type="button" id="alarmViewCleared" aria-pressed="false" onclick="setAlarmView('cleared')">Cleared</button>
+                    <button type="button" id="alarmViewActive" class="on" aria-pressed="true" onclick="setAlarmView('active')" data-help="Shows the alarms that are on now.">Active</button>
+                    <button type="button" id="alarmViewCleared" aria-pressed="false" onclick="setAlarmView('cleared')" data-help="Shows the alarms that cleared recently.">Cleared</button>
                 </div>
             </div>
         </div>
@@ -1059,15 +1059,15 @@
             <div class="card-actions">
                 <span id="sendActionSaveState" class="feed-meta">Loading saved cards…</span>
                 <div class="seg" role="group" aria-label="Show send cards as">
-                    <button type="button" id="sendViewCards" class="on" aria-pressed="true" onclick="setSendActionsView('cards')" title="Show as cards">
+                    <button type="button" id="sendViewCards" class="on" aria-pressed="true" onclick="setSendActionsView('cards')" data-help="Shows the send cards as cards.">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Cards
                     </button>
-                    <button type="button" id="sendViewList" aria-pressed="false" onclick="setSendActionsView('list')" title="Show as a list">
+                    <button type="button" id="sendViewList" aria-pressed="false" onclick="setSendActionsView('list')" data-help="Shows the send cards as a table.">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>List
                     </button>
                 </div>
-                <button type="button" class="btn-action btn-outline restricted-l2" onclick="addSendActionCard()">Add card</button>
-                <button type="button" class="btn-action btn-blue restricted-l2" onclick="applySendActionCards()">Apply</button>
+                <button type="button" class="btn-action btn-outline restricted-l2" onclick="addSendActionCard()" data-help="Adds a send card and opens its settings; Apply puts it to work.">Add card</button>
+                <button type="button" class="btn-action btn-blue restricted-l2" onclick="applySendActionCards()" data-help="Saves the send cards of this line and puts them to work.">Apply</button>
             </div>
         </div>
         <div id="sendActionCardsContainer" class="plc-actions-grid">
@@ -1085,15 +1085,15 @@
             <div class="card-actions">
                 <span id="plcActionSaveState" class="feed-meta">Loading saved actions…</span>
                 <div class="seg" role="group" aria-label="Show output actions as">
-                    <button type="button" id="plcViewCards" class="on" aria-pressed="true" onclick="setPlcActionsView('cards')" title="Show as cards">
+                    <button type="button" id="plcViewCards" class="on" aria-pressed="true" onclick="setPlcActionsView('cards')" data-help="Shows the output actions as cards.">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Cards
                     </button>
-                    <button type="button" id="plcViewList" aria-pressed="false" onclick="setPlcActionsView('list')" title="Show as a list">
+                    <button type="button" id="plcViewList" aria-pressed="false" onclick="setPlcActionsView('list')" data-help="Shows the output actions as a table.">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>List
                     </button>
                 </div>
-                <button type="button" class="btn-action btn-outline restricted-l2" onclick="addPlcActionCard()">Add action</button>
-                <button type="button" class="btn-action btn-blue restricted-l2" onclick="applyPlcActionCards()">Apply</button>
+                <button type="button" class="btn-action btn-outline restricted-l2" onclick="addPlcActionCard()" data-help="Adds an output action; Apply puts it to work.">Add action</button>
+                <button type="button" class="btn-action btn-blue restricted-l2" onclick="applyPlcActionCards()" data-help="Saves the output actions of this line and puts them to work.">Apply</button>
             </div>
         </div>
         <div id="plcActionCardsContainer" class="plc-actions-grid">
@@ -1111,15 +1111,15 @@
             <div class="card-actions">
                 <span id="plcSignalSaveState" class="feed-meta">Loading saved signals…</span>
                 <div class="seg" role="group" aria-label="Show inputs as">
-                    <button type="button" id="plcSignalViewCards" class="on" aria-pressed="true" onclick="PlcSignals.setView('cards')" title="Show as cards">
+                    <button type="button" id="plcSignalViewCards" class="on" aria-pressed="true" onclick="PlcSignals.setView('cards')" data-help="Shows the inputs as cards.">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Cards
                     </button>
-                    <button type="button" id="plcSignalViewList" aria-pressed="false" onclick="PlcSignals.setView('list')" title="Show as a list">
+                    <button type="button" id="plcSignalViewList" aria-pressed="false" onclick="PlcSignals.setView('list')" data-help="Shows the inputs as a table.">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>List
                     </button>
                 </div>
-                <button type="button" class="btn-action btn-outline restricted-l2" onclick="PlcSignals.add()">Add input</button>
-                <button type="button" class="btn-action btn-blue restricted-l2" onclick="PlcSignals.apply()">Apply</button>
+                <button type="button" class="btn-action btn-outline restricted-l2" onclick="PlcSignals.add()" data-help="Adds an input that reads a PLC address; Apply starts reading it.">Add input</button>
+                <button type="button" class="btn-action btn-blue restricted-l2" onclick="PlcSignals.apply()" data-help="Saves the inputs of this line and starts reading them.">Apply</button>
             </div>
         </div>
         <div id="plcSignalCardsContainer" class="plc-actions-grid">
@@ -1137,7 +1137,7 @@
                 <div class="card-panel-sub">USB and network cameras this server can use. Assign them to a line under Line setup.</div>
             </div>
             <div class="card-actions">
-                <button class="btn-action btn-blue" id="camScanHeaderBtn" onclick="scanHardwareCameras(this)">Scan for cameras</button>
+                <button class="btn-action btn-blue" id="camScanHeaderBtn" onclick="scanHardwareCameras(this)" data-help="Looks for USB cameras on this computer and adds new ones to the list.">Scan for cameras</button>
             </div>
         </div>
         <div class="table-responsive">
@@ -1176,13 +1176,13 @@
                 <div class="card-panel-sub">A model is active while a camera runs it. Pick the model for each vision camera under Line setup; several models can run at the same time.</div>
             </div>
             <div class="card-actions">
-                <button class="btn-action btn-blue restricted-l2" onclick="openModelUploadModal()">Upload model</button>
+                <button class="btn-action btn-blue restricted-l2" onclick="openModelUploadModal()" data-help="Opens a dialog to upload a new AI model file (.onnx) to this server.">Upload model</button>
             </div>
         </div>
         <div class="seg" role="group" aria-label="Model type" style="margin-bottom:14px">
-            <button type="button" id="modelFilterAll" class="on" aria-pressed="true" onclick="setModelFilter('all')">All</button>
-            <button type="button" id="modelFilterDetect" aria-pressed="false" onclick="setModelFilter('detect')">Detection</button>
-            <button type="button" id="modelFilterSeg" aria-pressed="false" onclick="setModelFilter('segment')">Segmentation</button>
+            <button type="button" id="modelFilterAll" class="on" aria-pressed="true" onclick="setModelFilter('all')" data-help="Shows every model.">All</button>
+            <button type="button" id="modelFilterDetect" aria-pressed="false" onclick="setModelFilter('detect')" data-help="Shows only the detection models.">Detection</button>
+            <button type="button" id="modelFilterSeg" aria-pressed="false" onclick="setModelFilter('segment')" data-help="Shows only the segmentation models.">Segmentation</button>
         </div>
         <div class="table-responsive">
             <table class="table-compact table-mobile-cards" id="modelTable">
@@ -1257,18 +1257,18 @@
                 <div class="card-panel-sub">Controllers (PLCs), MQTT brokers, TCP sockets, network cameras and webhooks the server talks to.</div>
             </div>
             <div class="card-actions">
-                <button class="btn-action btn-blue restricted-l2" onclick="openAddCommModal()">Add connection</button>
+                <button class="btn-action btn-blue restricted-l2" onclick="openAddCommModal()" data-help="Adds a PLC, MQTT broker, TCP socket, network camera or webhook.">Add connection</button>
             </div>
         </div>
 
         <!-- Protocol Filter Pills -->
         <div class="comm-filter-bar" role="group" aria-label="Show">
-            <button class="filter-pill active" onclick="filterCommsGrid('all', this)">All</button>
-            <button class="filter-pill" onclick="filterCommsGrid('plc', this)">Controllers</button>
-            <button class="filter-pill" onclick="filterCommsGrid('tcp', this)">TCP</button>
-            <button class="filter-pill" onclick="filterCommsGrid('mqtt', this)">MQTT</button>
-            <button class="filter-pill" onclick="filterCommsGrid('ipcam', this)">Network cameras</button>
-            <button class="filter-pill" onclick="filterCommsGrid('webhook', this)">Webhooks</button>
+            <button class="filter-pill active" onclick="filterCommsGrid('all', this)" data-help="Shows every connection.">All</button>
+            <button class="filter-pill" onclick="filterCommsGrid('plc', this)" data-help="Shows only the PLC connections.">Controllers</button>
+            <button class="filter-pill" onclick="filterCommsGrid('tcp', this)" data-help="Shows only the TCP sockets.">TCP</button>
+            <button class="filter-pill" onclick="filterCommsGrid('mqtt', this)" data-help="Shows only the MQTT brokers.">MQTT</button>
+            <button class="filter-pill" onclick="filterCommsGrid('ipcam', this)" data-help="Shows only the network cameras.">Network cameras</button>
+            <button class="filter-pill" onclick="filterCommsGrid('webhook', this)" data-help="Shows only the webhooks.">Webhooks</button>
         </div>
 
         <!-- Responsive Card Grid -->
@@ -1288,7 +1288,7 @@
                 <div class="card-panel-sub">Who changed what on this server, newest first.</div>
             </div>
             <div class="card-actions">
-                <button class="btn-action btn-outline" onclick="loadAuditLogs()">Refresh</button>
+                <button class="btn-action btn-outline" onclick="loadAuditLogs()" data-help="Loads the newest entries of the audit log.">Refresh</button>
             </div>
         </div>
         <div class="table-responsive">
@@ -1324,12 +1324,12 @@
             <div class="form-group"><label class="form-label" for="newFullName">Full name</label><input type="text" id="newFullName" class="form-input" placeholder="e.g. Sara Haddad" autocomplete="off" /></div>
             <div class="form-group"><label class="form-label" for="newPassword">Password</label><input type="password" id="newPassword" class="form-input" autocomplete="new-password" /><div class="form-hint">At least 6 characters.</div></div>
             <div class="form-group"><label class="form-label" for="newRole">Access level</label>
-                <select id="newRole" class="form-input">
+                <select id="newRole" class="form-input" data-help="What the new user may do: an Operator only watches, a Supervisor also sets up and runs lines.">
                     <option value="operator">Level 1 · Operator (view only)</option>
                     <option value="supervisor">Level 2 · Supervisor (setup and control)</option>
                 </select></div>
         </div>
-        <div style="margin-top:16px"><button class="btn-action btn-blue" onclick="provisionUser()">Create user</button></div>
+        <div style="margin-top:16px"><button class="btn-action btn-blue" onclick="provisionUser()" data-help="Creates the account; the user can sign in with it at once.">Create user</button></div>
     </div>
 
     <div class="card-panel">
@@ -1341,8 +1341,8 @@
         </div>
         <div class="cam-settings-row triple">
             <div class="form-group"><label class="form-label" for="apiKeyNameInput">Key name</label><input type="text" id="apiKeyNameInput" class="form-input" maxlength="100" placeholder="e.g. Line 1 MES reader" /></div>
-            <div class="form-group"><label class="form-label" for="apiKeyOwnerSelect">Owner account</label><select id="apiKeyOwnerSelect" class="form-input"><option value="">Loading accounts...</option></select></div>
-            <div class="form-group"><label class="form-label" for="apiKeyExpirySelect">Expires after</label><select id="apiKeyExpirySelect" class="form-input"><option value="30">30 days</option><option value="90" selected>90 days</option><option value="180">180 days</option><option value="365">365 days</option></select></div>
+            <div class="form-group"><label class="form-label" for="apiKeyOwnerSelect">Owner account</label><select id="apiKeyOwnerSelect" class="form-input" data-help="The account the key belongs to; the key never gets more access than this account."><option value="">Loading accounts...</option></select></div>
+            <div class="form-group"><label class="form-label" for="apiKeyExpirySelect">Expires after</label><select id="apiKeyExpirySelect" class="form-input" data-help="How long the key works before it stops."><option value="30">30 days</option><option value="90" selected>90 days</option><option value="180">180 days</option><option value="365">365 days</option></select></div>
         </div>
         <div class="form-group" style="margin-top:8px">
             <span class="form-label">Permissions</span>
@@ -1362,8 +1362,8 @@
             </div>
         </div>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <button class="btn-action btn-blue" type="button" onclick="createApiKey()">Create API key</button>
-            <button class="btn-action btn-red" type="button" id="deleteSelectedApiKeysBtn" onclick="deleteSelectedApiKeys()" disabled>Delete selected (0)</button>
+            <button class="btn-action btn-blue" type="button" onclick="createApiKey()" data-help="Creates the key with the ticked permissions and shows it once, to copy.">Create API key</button>
+            <button class="btn-action btn-red" type="button" id="deleteSelectedApiKeysBtn" onclick="deleteSelectedApiKeys()" disabled data-help="Revokes the keys ticked in the table below after you confirm; their integrations lose access.">Delete selected (0)</button>
             <span class="feed-meta">Only admins can manage users and keys.</span>
         </div>
         <div id="apiKeyRevealPanel" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="apiKeyRevealTitle" onclick="if(event.target===this)hideNewApiKey()" style="display:none;z-index:12000">
@@ -1375,7 +1375,7 @@
                 <div class="modal-message" style="margin-bottom:12px">Store this key somewhere safe. Anyone who has it can use its permissions.</div>
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                     <input id="apiKeyRevealValue" type="text" class="form-input" readonly autocomplete="off" aria-label="Full API key" style="flex:1;min-width:240px;font-family:var(--font-mono)" />
-                    <button class="btn-action btn-blue" type="button" onclick="copyNewApiKey()">Copy</button>
+                    <button class="btn-action btn-blue" type="button" onclick="copyNewApiKey()" data-help="Copies the key to the clipboard.">Copy</button>
                 </div>
             </div>
         </div>
@@ -1406,7 +1406,7 @@
             <div class="form-group"><span class="form-label">Session</span>
                 <span class="state-text ok">Signed in</span>
             </div>
-            <button class="btn-action btn-outline" style="margin-top:6px" onclick="handleLogout()">Sign out</button>
+            <button class="btn-action btn-outline" style="margin-top:6px" onclick="handleLogout()" data-help="Signs you out of this dashboard.">Sign out</button>
         </div>
 
         <!-- Change Password -->
@@ -1415,7 +1415,7 @@
             <div class="form-group"><label class="form-label" for="pwdCurrent">Current password</label><input type="password" id="pwdCurrent" class="form-input" autocomplete="current-password" /></div>
             <div class="form-group"><label class="form-label" for="pwdNew">New password</label><input type="password" id="pwdNew" class="form-input" autocomplete="new-password" /><div class="form-hint">At least 6 characters.</div></div>
             <div class="form-group"><label class="form-label" for="pwdConfirm">Confirm new password</label><input type="password" id="pwdConfirm" class="form-input" autocomplete="new-password" /></div>
-            <button class="btn-action btn-blue" style="margin-top:4px" onclick="changeMyPassword()">Update password</button>
+            <button class="btn-action btn-blue" style="margin-top:4px" onclick="changeMyPassword()" data-help="Changes your password to the new one typed above.">Update password</button>
         </div>
     </div>
 </div>
@@ -2625,7 +2625,7 @@ function renderCommsGrid() {
             <div class="empty-state" style="grid-column:1/-1">
                 <b>${kind ? `No ${kind} connections yet` : "No connections yet"}</b>
                 <p>Add a PLC, MQTT broker, TCP socket, network camera or webhook for the server to talk to.</p>
-                <button class="btn-action btn-blue restricted-l2" onclick="openAddCommModal('${currentFilterProto === "all" ? "tcp" : currentFilterProto}')">Add connection</button>
+                <button class="btn-action btn-blue restricted-l2" onclick="openAddCommModal('${currentFilterProto === "all" ? "tcp" : currentFilterProto}')" data-help="Adds a PLC, MQTT broker, TCP socket, network camera or webhook.">Add connection</button>
             </div>
         `;
         applyRoleRestrictions(grid);
@@ -2719,9 +2719,9 @@ function renderCommsGrid() {
                         ${proto === "mqtt" && ep.sparkplug_enabled ? `<span class="badge badge-outline" title="${escapeHtml(sparkplugStateText(ep) || "Sparkplug B is switched on for this channel")}">${escapeHtml(sparkplugStateText(ep) || "Sparkplug B")}</span>` : ""}
                     </div>
                     <div class="row-actions">
-                        <button class="btn-action btn-sm btn-outline restricted-l2" onclick="testEndpointById(this.closest('[data-ep-id]').dataset.epId, event)" title="Try the connection now">Test</button>
-                        <button class="btn-action btn-sm btn-outline restricted-l2" onclick="openEditCommModal(this.closest('[data-ep-id]').dataset.epId)">Edit</button>
-                        <button class="btn-action btn-sm btn-red restricted-l2" onclick="deleteCommEndpointById(this.closest('[data-ep-id]').dataset.epId, event)" aria-label="Delete ${escapeHtml(ep.name || "connection")}">Delete</button>
+                        <button class="btn-action btn-sm btn-outline restricted-l2" onclick="testEndpointById(this.closest('[data-ep-id]').dataset.epId, event)" data-help="Tries this connection now and shows whether it answers.">Test</button>
+                        <button class="btn-action btn-sm btn-outline restricted-l2" onclick="openEditCommModal(this.closest('[data-ep-id]').dataset.epId)" data-help="Opens the settings of this connection.">Edit</button>
+                        <button class="btn-action btn-sm btn-red restricted-l2" onclick="deleteCommEndpointById(this.closest('[data-ep-id]').dataset.epId, event)" aria-label="Delete ${escapeHtml(ep.name || "connection")}" data-help="Deletes this connection after you confirm.">Delete</button>
                     </div>
                 </div>
             </div>
@@ -3826,7 +3826,7 @@ function cardInputPickerHtml(card, onchange) {
     if (current && !inputs.some(i => i.id === current)) options += `<option value="${escapeHtml(current)}" selected>(input not found)</option>`;
     return `<div class="form-group" style="margin:0">
         <label class="form-label" style="font-size:11.5px;font-weight:600">Input:</label>
-        <select class="form-input" onchange="${onchange}">${options}</select>
+        <select class="form-input" onchange="${onchange}" data-help="The input whose change fires this card.">${options}</select>
         <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${inputs.length ? "Fires on each change of this input that the condition names, whatever the input's own action does. The first value read after a start is not a change." : "This line has no inputs yet: add one under Inputs (the action Only fires cards is for an input that only does this)."}</div>
     </div>`;
 }
@@ -4231,7 +4231,7 @@ function renderSendActionCards() {
             <div class="empty-state">
                 <b>No send cards yet</b>
                 <p>A card sends a message to another system when something happens on the line, for example every rejected product to an MES over TCP. Set up the channels under Connections first.</p>
-                <button type="button" class="btn-action btn-blue restricted-l2" onclick="addSendActionCard()">Add card</button>
+                <button type="button" class="btn-action btn-blue restricted-l2" onclick="addSendActionCard()" data-help="Adds a send card and opens its settings; Apply puts it to work.">Add card</button>
             </div>`;
         applyRoleRestrictions(container);
         return;
@@ -4256,8 +4256,8 @@ function renderSendActionCards() {
                     <td data-label="Message" title="${escapeHtml(s.contentsFull)}">${escapeHtml(s.contents)}</td>
                     <td data-label="Sent" class="num">Sent: ${s.sent}</td>
                     <td class="col-actions"><div class="row-actions">
-                        <button type="button" class="btn-action btn-sm btn-outline" onclick="openSendActionSettingsModal(this.closest('[data-send-id]').dataset.sendId)">Settings</button>
-                        <button type="button" class="btn-action btn-sm btn-outline restricted-l2" onclick="testSendActionCard(this.closest('[data-send-id]').dataset.sendId)" title="Send this message once now, with example values">Test</button>
+                        <button type="button" class="btn-action btn-sm btn-outline" onclick="openSendActionSettingsModal(this.closest('[data-send-id]').dataset.sendId)" data-help="Opens the channel, trigger and message of this card.">Settings</button>
+                        <button type="button" class="btn-action btn-sm btn-outline restricted-l2" onclick="testSendActionCard(this.closest('[data-send-id]').dataset.sendId)" data-help="Sends this message once now, with example values.">Test</button>
                         <button type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deleteSendActionCard(this.closest('[data-send-id]').dataset.sendId)" title="Delete this card" aria-label="Delete this card">✕</button>
                     </div></td>
                 </tr>`;
@@ -4301,8 +4301,8 @@ function renderSendActionCards() {
                     </div>
                 </div>
                 <div class="plc-card-actions">
-                    <button type="button" class="btn-action btn-sm btn-outline" onclick="openSendActionSettingsModal(this.closest('[data-send-id]').dataset.sendId)" title="Channel, trigger and message contents">Settings</button>
-                    <button type="button" class="btn-action btn-sm btn-outline restricted-l2" onclick="testSendActionCard(this.closest('[data-send-id]').dataset.sendId)" title="Send this message once now, with example values">Test message</button>
+                    <button type="button" class="btn-action btn-sm btn-outline" onclick="openSendActionSettingsModal(this.closest('[data-send-id]').dataset.sendId)" data-help="Opens the channel, trigger and message of this card.">Settings</button>
+                    <button type="button" class="btn-action btn-sm btn-outline restricted-l2" onclick="testSendActionCard(this.closest('[data-send-id]').dataset.sendId)" data-help="Sends this message once now, with example values.">Test message</button>
                 </div>
             </div>`;
     }).join("");
@@ -4588,7 +4588,7 @@ function refreshSendModalBody() {
         <!-- 2. Where the message goes: one channel -->
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600">Send to (one MQTT, TCP or webhook channel):</label>
-            <select class="form-input" onchange="setSendDraft('endpoint_id', this.value)">${channelOptions}</select>
+            <select class="form-input" onchange="setSendDraft('endpoint_id', this.value)" data-help="The MQTT, TCP or webhook connection this card sends to.">${channelOptions}</select>
             <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${channels.length ? "The channels are set up under Connections. To send to two systems, add a card for each." : "No MQTT, TCP or webhook channel yet: add one under Connections."}</div>
         </div>
 
@@ -4603,11 +4603,11 @@ function refreshSendModalBody() {
         <div class="card-pair">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11.5px;font-weight:600">Trigger:</label>
-                <select class="form-input" onchange="onSendModalTriggerChange(this.value)">${cardTriggerOptionsHtml(card, true)}</select>
+                <select class="form-input" onchange="onSendModalTriggerChange(this.value)" data-help="The event that sends this message.">${cardTriggerOptionsHtml(card, true)}</select>
             </div>
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11.5px;font-weight:600">Condition:</label>
-                <select class="form-input" onchange="setSendDraft('condition', this.value)">${cardConditionOptionsHtml(card)}</select>
+                <select class="form-input" onchange="setSendDraft('condition', this.value)" data-help="Which results send the message, for example only rejected products.">${cardConditionOptionsHtml(card)}</select>
             </div>
         </div>
         <div style="font-size:10px;color:var(--text-muted);margin-top:-8px">${kind === "timer"
@@ -4631,7 +4631,7 @@ function refreshSendModalBody() {
 
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600">Camera:</label>
-            <select class="form-input" ${kind === "line_state" || isAlarm || kind === "timer" || isInput ? "disabled" : ""} onchange="setSendDraft('camera_id', this.value, false)">${cardCameraOptionsHtml(card)}</select>
+            <select class="form-input" ${kind === "line_state" || isAlarm || kind === "timer" || isInput ? "disabled" : ""} onchange="setSendDraft('camera_id', this.value, false)" data-help="Which camera's events send this message.">${cardCameraOptionsHtml(card)}</select>
         </div>
 
         ${cardOnlyWhenHtml(card, "sendOnlyWhenEdit")}
@@ -4639,7 +4639,7 @@ function refreshSendModalBody() {
         <!-- 4. What the message contains: JSON fields, or text from a template -->
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600" for="sendFormatInput">Message format:</label>
-            <select id="sendFormatInput" class="form-input" onchange="setSendFormat(this.value)">
+            <select id="sendFormatInput" class="form-input" onchange="setSendFormat(this.value)" data-help="JSON with the fields you tick, or your own text with the values filled in.">
                 <option value="json" ${isText ? "" : "selected"}>JSON: the fields picked below</option>
                 <option value="text" ${isText ? "selected" : ""}>Text: your own template, e.g. for a printer or an older PLC</option>
             </select>
@@ -5129,7 +5129,7 @@ function plcAlarmPickerHtml(card, toggleFn = "togglePlcAlarmCode") {
     if (!_alarmCatalog) {
         loadAlarmCatalog();
         return _alarmCatalogFailed
-            ? `<div class="plc-alarm-note">Could not load the alarm list. <button type="button" class="btn-action btn-sm btn-outline" onclick="retryAlarmCatalog()">Try again</button></div>`
+            ? `<div class="plc-alarm-note">Could not load the alarm list. <button type="button" class="btn-action btn-sm btn-outline" onclick="retryAlarmCatalog()" data-help="Loads the list of alarms again.">Try again</button></div>`
             : `<div class="plc-alarm-note">Loading alarms…</div>`;
     }
     const picked = new Set(card.alarm_codes || []);
@@ -5229,7 +5229,7 @@ function plcFieldPickerHtml(card) {
     }
     return `<div class="form-group" style="margin:0">
         <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcValueFieldInput">Product field:</label>
-        <select id="plcValueFieldInput" class="form-input" onchange="updatePlcCardProp(${PLC_CARD_ID}, 'value_field', this.value); refreshPlcModalBody(${PLC_CARD_ID}); renderPlcActionCards()">${options}</select>
+        <select id="plcValueFieldInput" class="form-input" onchange="updatePlcCardProp(${PLC_CARD_ID}, 'value_field', this.value); refreshPlcModalBody(${PLC_CARD_ID}); renderPlcActionCards()" data-help="The product field whose value is written.">${options}</select>
         ${fields.length ? "" : `<div style="font-size:10px;color:var(--text-muted);margin-top:3px">The product lists of this line's code readers have no fields yet. Add them on the Products page with Fields.</div>`}
     </div>`;
 }
@@ -5244,7 +5244,7 @@ function plcInputPickerHtml(card) {
     }
     return `<div class="form-group" style="margin:0">
         <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcValueInputInput">Input:</label>
-        <select id="plcValueInputInput" class="form-input" onchange="updatePlcCardProp(${PLC_CARD_ID}, 'value_input', this.value); renderPlcActionCards()">${options}</select>
+        <select id="plcValueInputInput" class="form-input" onchange="updatePlcCardProp(${PLC_CARD_ID}, 'value_input', this.value); renderPlcActionCards()" data-help="The input whose value is written.">${options}</select>
         ${inputs.length ? "" : `<div style="font-size:10px;color:var(--text-muted);margin-top:3px">No input of this line has a value name yet. Give one in the input's dialog (Inputs).</div>`}
     </div>`;
 }
@@ -5256,7 +5256,7 @@ function plcFormulaHtml(card) {
         <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcFormulaInput">Formula:</label>
         <div style="display:flex;gap:8px">
             <input type="text" id="plcFormulaInput" class="form-input" maxlength="200" value="${escapeHtml(card.formula || "")}" placeholder='if(result == "good", product.lane, 9)' oninput="updatePlcCardProp(${PLC_CARD_ID}, 'formula', this.value); renderPlcActionCards()" />
-            <button type="button" class="btn-action btn-outline" onclick="checkPlcFormula()">Check</button>
+            <button type="button" class="btn-action btn-outline" onclick="checkPlcFormula()" data-help="Checks the formula and lists the values it uses.">Check</button>
         </div>
         <div id="plcFormulaCheck" class="plc-formula-check"></div>
         <div style="font-size:10px;color:var(--text-muted);margin-top:4px">Values: result, class, confidence, code, code_status, the counts, batch, product.&lt;field&gt;, input.&lt;value name&gt;. Text in double quotes. Functions: if(), round(), min(), max(), abs(), int(), text(). Examples: ${examples}.</div>
@@ -5309,7 +5309,7 @@ function plcIfMissingHtml(card) {
     return `<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px;margin-top:12px">
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcIfMissingInput">If there is no value:</label>
-            <select id="plcIfMissingInput" class="form-input" onchange="setPlcIfMissing(this.value)">
+            <select id="plcIfMissingInput" class="form-input" onchange="setPlcIfMissing(this.value)" data-help="What happens when there is no value: skip the write, or write a value you choose.">
                 <option value="skip" ${mode === "skip" ? "selected" : ""}>Skip the write</option>
                 <option value="default" ${mode === "default" ? "selected" : ""}>Write this value</option>
             </select>
@@ -5375,7 +5375,7 @@ function renderPlcActionCards() {
             <div class="empty-state">
                 <b>No output actions yet</b>
                 <p>An action writes to a PLC address when something happens on the line, for example a reject pulse when a defect crosses count line B.</p>
-                <button type="button" class="btn-action btn-blue restricted-l2" onclick="addPlcActionCard()">Add action</button>
+                <button type="button" class="btn-action btn-blue restricted-l2" onclick="addPlcActionCard()" data-help="Adds an output action; Apply puts it to work.">Add action</button>
             </div>
         `;
         applyRoleRestrictions(container);
@@ -5403,8 +5403,8 @@ function renderPlcActionCards() {
                     <td data-label="Output" style="color:var(--primary-color);font-weight:600">${escapeHtml(actionSummary)}</td>
                     <td data-label="Fired" class="num" id="plcCardCount_${id}">Fired: ${Number(c.fired_count) || 0}</td>
                     <td class="col-actions"><div class="row-actions">
-                        <button type="button" class="btn-action btn-sm btn-outline" onclick="openPlcActionSettingsModal(this.closest('[data-action-id]').dataset.actionId)">Settings</button>
-                        <button type="button" class="btn-action btn-sm btn-outline" onclick="testPlcActionCard(this.closest('[data-action-id]').dataset.actionId)" title="Fire this output once now">Test</button>
+                        <button type="button" class="btn-action btn-sm btn-outline" onclick="openPlcActionSettingsModal(this.closest('[data-action-id]').dataset.actionId)" data-help="Opens the trigger, PLC address and timing of this action.">Settings</button>
+                        <button type="button" class="btn-action btn-sm btn-outline" onclick="testPlcActionCard(this.closest('[data-action-id]').dataset.actionId)" data-help="Fires this output once now.">Test</button>
                         <button type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deletePlcActionCard(this.closest('[data-action-id]').dataset.actionId)" title="Delete this action" aria-label="Delete this action">✕</button>
                     </div></td>
                 </tr>`;
@@ -5456,8 +5456,8 @@ function renderPlcActionCards() {
                 </div>
 
                 <div class="plc-card-actions">
-                    <button type="button" class="btn-action btn-sm btn-outline" onclick="openPlcActionSettingsModal(this.closest('[data-action-id]').dataset.actionId)" title="Trigger, PLC address and timing">Settings</button>
-                    <button type="button" class="btn-action btn-sm btn-outline" onclick="testPlcActionCard(this.closest('[data-action-id]').dataset.actionId)" title="Fire this output once now">Test output</button>
+                    <button type="button" class="btn-action btn-sm btn-outline" onclick="openPlcActionSettingsModal(this.closest('[data-action-id]').dataset.actionId)" data-help="Opens the trigger, PLC address and timing of this action.">Settings</button>
+                    <button type="button" class="btn-action btn-sm btn-outline" onclick="testPlcActionCard(this.closest('[data-action-id]').dataset.actionId)" data-help="Fires this output once now.">Test output</button>
                 </div>
             </div>
         `;
@@ -5592,7 +5592,7 @@ function refreshPlcModalBody(cardId) {
                 <label class="form-label" style="font-size:11.5px;font-weight:600;margin:0">Communication (Target PLC):</label>
                 <span style="font-size:10.5px;color:var(--primary-color);font-weight:600">${escapeHtml(protoDef.label)}</span>
             </div>
-            <select class="form-input" onchange="onPlcModalEndpointChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)">
+            <select class="form-input" onchange="onPlcModalEndpointChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)" data-help="The PLC this action writes to.">
                 ${channelOptions}
             </select>
         </div>
@@ -5601,13 +5601,13 @@ function refreshPlcModalBody(cardId) {
         <div class="card-pair">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11.5px;font-weight:600">Trigger:</label>
-                <select class="form-input" onchange="onPlcModalTriggerChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)">
+                <select class="form-input" onchange="onPlcModalTriggerChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)" data-help="The event that fires this action.">
                     ${cardTriggerOptionsHtml(card)}
                 </select>
             </div>
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11.5px;font-weight:600">Condition:</label>
-                <select class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'condition', this.value); refreshPlcModalBody(document.getElementById('plcModalBodyContainer').dataset.cardId); renderPlcActionCards()">
+                <select class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'condition', this.value); refreshPlcModalBody(document.getElementById('plcModalBodyContainer').dataset.cardId); renderPlcActionCards()" data-help="Which results fire the action, for example only rejected products.">
                     ${cardConditionOptionsHtml(card)}
                 </select>
             </div>
@@ -5633,7 +5633,7 @@ function refreshPlcModalBody(cardId) {
         <!-- 4b. Camera of the production line that fires this card -->
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600">Camera:</label>
-            <select class="form-input" ${isLineState ? 'disabled title="A line starts and stops as a whole"' : isAlarm ? 'disabled title="The alarms above decide"' : isInput ? 'disabled title="The input above decides"' : ''} onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'camera_id', this.value); renderPlcActionCards()">
+            <select class="form-input" ${isLineState ? 'disabled title="A line starts and stops as a whole"' : isAlarm ? 'disabled title="The alarms above decide"' : isInput ? 'disabled title="The input above decides"' : ''} onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'camera_id', this.value); renderPlcActionCards()" data-help="Which camera's events fire this action, for example the line's second vision camera.">
                 ${cardCameraOptionsHtml(card)}
             </select>
             ${isLineState || isAlarm || isInput ? '' : `<div style="font-size:10px;color:var(--text-muted);margin-top:3px">Pick a camera to fire only on its events, e.g. a line's second vision camera.</div>`}
@@ -5646,7 +5646,7 @@ function refreshPlcModalBody(cardId) {
         <div class="card-pair">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11.5px;font-weight:600">Target Type (${escapeHtml(protoDef.label)}):</label>
-                <select class="form-input" onchange="onPlcModalTargetTypeChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)">
+                <select class="form-input" onchange="onPlcModalTargetTypeChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)" data-help="The kind of PLC memory written, such as a coil, a register or a tag.">
                     ${targetTypeOptions}
                 </select>
             </div>
@@ -5661,7 +5661,7 @@ function refreshPlcModalBody(cardId) {
         <div class="card-pair">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11.5px;font-weight:600">Operation:</label>
-                <select class="form-input" onchange="onPlcModalOperationChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)">
+                <select class="form-input" onchange="onPlcModalOperationChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)" data-help="What is done at the address: a pulse, set on, reset off, write a number or toggle.">
                     <option value="pulse" ${curOp === 'pulse' ? 'selected' : ''}>PULSE (Momentary Pulse)</option>
                     <option value="set" ${curOp === 'set' ? 'selected' : ''}>SET (Turn ON / 1)</option>
                     <option value="reset" ${curOp === 'reset' ? 'selected' : ''}>RESET (Turn OFF / 0)</option>
@@ -5682,7 +5682,7 @@ function refreshPlcModalBody(cardId) {
             <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px">
                 <div class="form-group" style="margin:0">
                     <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcValueSourceInput">Value:</label>
-                    <select id="plcValueSourceInput" class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'value_source', this.value); refreshPlcModalBody(document.getElementById('plcModalBodyContainer').dataset.cardId); renderPlcActionCards()">
+                    <select id="plcValueSourceInput" class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'value_source', this.value); refreshPlcModalBody(document.getElementById('plcModalBodyContainer').dataset.cardId); renderPlcActionCards()" data-help="Where the written value comes from: a fixed number, a count, the result, a product field, an input or a formula.">
                         ${PLC_VALUE_SOURCES.map(v => `<option value="${v.id}" ${valueSource === v.id ? 'selected' : ''}>${escapeHtml(v.label)}</option>`).join("")}
                     </select>
                 </div>
@@ -5729,7 +5729,7 @@ function refreshPlcModalBody(cardId) {
         <div class="card-pair">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11px;font-weight:600">Execution Policy:</label>
-                <select class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'exec_policy', this.value); renderPlcActionCards()">
+                <select class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'exec_policy', this.value); renderPlcActionCards()" data-help="Fire once for each tracked product, or on every video frame that matches.">
                     <option value="once_per_event" ${card.exec_policy !== 'every_frame' ? 'selected' : ''}>Once per Tracked Event (Unique ID)</option>
                     <option value="every_frame" ${card.exec_policy === 'every_frame' ? 'selected' : ''}>Every Matching Frame</option>
                 </select>
@@ -5742,7 +5742,7 @@ function refreshPlcModalBody(cardId) {
             <div class="card-pair">
                 <div class="form-group" style="margin:0">
                     <label class="form-label" style="font-size:11px;font-weight:600" for="plcConfirmSignalInput">Confirmation signal:</label>
-                    <select id="plcConfirmSignalInput" class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'confirm_input_id', this.value); refreshPlcModalBody(document.getElementById('plcModalBodyContainer').dataset.cardId); renderPlcActionCards()">
+                    <select id="plcConfirmSignalInput" class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'confirm_input_id', this.value); refreshPlcModalBody(document.getElementById('plcModalBodyContainer').dataset.cardId); renderPlcActionCards()" data-help="An input that tells the action really happened, such as a sensor at the reject bin.">
                         ${confirmOptions}
                     </select>
                 </div>
@@ -7232,7 +7232,7 @@ function renderAlarmPanel() {
     } else if (_alarmPanel.view === "active") {
         html = active.length
             ? active.map(a => alarmRowHtml(a, false)).join("")
-            : `<div class="alarm-empty"><span class="alarm-empty-icon" aria-hidden="true">✓</span>No active alarms on this line. <button type="button" class="link-btn" onclick="setAlarmView('cleared')">See recently cleared</button></div>`;
+            : `<div class="alarm-empty"><span class="alarm-empty-icon" aria-hidden="true">✓</span>No active alarms on this line. <button type="button" class="link-btn" onclick="setAlarmView('cleared')" data-help="Shows the alarms that cleared recently.">See recently cleared</button></div>`;
     } else if (!_alarmPanel.cleared) {
         html = `<div class="bar-empty">Loading cleared alarms…</div>`;
     } else {
@@ -7426,11 +7426,12 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
     setInterval(tick, 1000);
 })();
 </script>
-<script src="/assets/card_values.js?v=3.2.0"></script>
-<script src="/assets/camera_settings.js?v=2.5.0"></script>
-<script src="/assets/plc_signals.js?v=2.9.0"></script>
-<script src="/assets/product_fields.js?v=2.7.0"></script>
-<script src="/assets/production_lines.js?v=3.3.0"></script>
+<script src="/assets/help_tips.js?v=3.4.0"></script>
+<script src="/assets/card_values.js?v=3.4.0"></script>
+<script src="/assets/camera_settings.js?v=3.4.0"></script>
+<script src="/assets/plc_signals.js?v=3.4.0"></script>
+<script src="/assets/product_fields.js?v=3.4.0"></script>
+<script src="/assets/production_lines.js?v=3.4.0"></script>
 <script>
 /* ─── Cameras: Connect / Disconnect / Settings / Delete on every row ────────
    Runs after assets/production_lines.js has added its Line and Role columns. */

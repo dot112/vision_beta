@@ -432,7 +432,7 @@
             wrap = document.createElement("div");
             wrap.id = "plLineSelectWrap";
             wrap.className = "pl-line-select";
-            wrap.innerHTML = `<span>Line:</span><select id="plLineSelect" class="form-input" aria-label="Production line"></select>`;
+            wrap.innerHTML = `<span>Line:</span><select id="plLineSelect" class="form-input" aria-label="Production line" data-help="The production line this page shows."></select>`;
             title.insertAdjacentElement("afterend", wrap);
             byId("plLineSelect").addEventListener("change", (e) => switchLine(e.target.value));
         }
@@ -674,7 +674,7 @@
                     <span class="card-panel-title">Production lines</span>
                     <div class="pl-inline">
                         <input type="text" id="plNewLineName" class="form-input" maxlength="64" placeholder="New line name, e.g. Packing 2">
-                        <button class="btn-action btn-blue" id="plAddLine">Add line</button>
+                        <button class="btn-action btn-blue" id="plAddLine" data-help="Adds a line with the name typed beside it; a new line starts stopped and without cameras.">Add line</button>
                     </div>
                 </div>
                 <div class="table-responsive"><table class="pl-table">
@@ -937,9 +937,20 @@
         try { localStorage.setItem(`pl_card_folds::${card.dataset.camera}`, JSON.stringify(open)); } catch (_) { /* storage off */ }
     }
 
+    // What each fold of a camera card holds (its help icon).
+    const FOLD_HELP = {
+        camera: "The device this card uses, its name and its connection.",
+        job: "What this camera does on the line and how its result joins the product.",
+        model: "The AI model this camera runs and the classes it counts or rejects.",
+        counting: "How this camera counts products: count lines, or one picture per trigger.",
+        codes: "How this camera reads codes and checks them against a product list.",
+        image: "The trigger, picture size, rotation, crop and the camera's own image settings.",
+        video: "The size and quality of the live video the dashboards get.",
+    };
+
     function foldHtml(name, title, body, open) {
         return `<section class="pl-fold${open ? " open" : ""}" data-fold="${name}">
-            <button type="button" class="pl-fold-head" aria-expanded="${open ? "true" : "false"}"><span>${title}</span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg></button>
+            <button type="button" class="pl-fold-head" aria-expanded="${open ? "true" : "false"}" data-help="${FOLD_HELP[name]}"><span>${title}</span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg></button>
             <div class="pl-fold-body">${body}</div></section>`;
     }
 
@@ -964,18 +975,18 @@
         const fold = (name, title, body) => foldHtml(name, title, body, openSet.has(name) || (name === "codes" && Boolean(cam.qr_trigger_review)));
 
         const cameraBody = `
-            <div class="form-group"><label class="form-label">Device</label><select class="form-input" data-f="device">${deviceOptions(cam.camera_id, null)}</select>
+            <div class="form-group"><label class="form-label">Device</label><select class="form-input" data-f="device" data-help="The camera device this card uses; cameras on another line are greyed out.">${deviceOptions(cam.camera_id, null)}</select>
                 <div class="pl-note">Change the device this card uses. Cameras on another line are greyed out.</div></div>
             <div class="form-group"><label class="form-label">Name</label><input type="text" class="form-input" data-f="name" maxlength="128" value="${esc(row.name || "")}">
                 <div class="pl-note">The camera's name everywhere (Cameras page, messages). Saved with the line setup.</div></div>
-            <div class="pl-inline"><button type="button" class="btn-action btn-sm btn-outline" data-act="connect">Connect</button><button type="button" class="btn-action btn-sm btn-outline" data-act="disconnect">Disconnect</button>
+            <div class="pl-inline"><button type="button" class="btn-action btn-sm btn-outline" data-act="connect" data-help="Connects this camera now.">Connect</button><button type="button" class="btn-action btn-sm btn-outline" data-act="disconnect" data-help="Disconnects this camera now.">Disconnect</button>
                 <span class="pl-note pl-conn-note" style="margin:0"></span></div>`;
 
         const jobBody = `
-            <div class="form-group"><label class="form-label">What this camera does</label><select class="form-input" data-f="job">${Object.keys(JOBS).map((j) => option(j, JOBS[j].label, job)).join("")}</select>
+            <div class="form-group"><label class="form-label">What this camera does</label><select class="form-input" data-f="job" data-help="What this camera does on the line: count products, inspect them, read codes, or both.">${Object.keys(JOBS).map((j) => option(j, JOBS[j].label, job)).join("")}</select>
                 <div class="pl-note pl-job-note"></div></div>
             <div class="form-group pl-station" style="margin-bottom:0"><label class="form-label">Inspection station result</label>
-                <select class="form-input" data-f="station">${option("own", "Own station: counts and rejects on its own", station)}${option("join", "Joins the product result", station)}</select>
+                <select class="form-input" data-f="station" data-help="Whether this camera counts and rejects on its own, or adds its result to the counted product.">${option("own", "Own station: counts and rejects on its own", station)}${option("join", "Joins the product result", station)}</select>
                 <div class="pl-note pl-station-note"></div>
                 <div class="pl-join">
                     <div class="pl-form-grid pl-form-tight">
@@ -987,14 +998,14 @@
                             <div class="pl-note">How far from that time a crossing still belongs to the product (50 to 10000).</div></div>
                     </div>
                     <div class="form-group" style="margin:10px 0 0"><label class="form-label">When no result</label>
-                        <select class="form-input" data-f="join_missing">${option("ignore", "Ignore: the other cameras decide", cam.join_missing || "ignore")}${option("reject", "Reject the product", cam.join_missing || "ignore")}</select>
+                        <select class="form-input" data-f="join_missing" data-help="What a product gets when this camera sees nothing of it within the match window.">${option("ignore", "Ignore: the other cameras decide", cam.join_missing || "ignore")}${option("reject", "Reject the product", cam.join_missing || "ignore")}</select>
                         <div class="pl-note">What a product gets when this camera sees nothing of it within the match window (reason "station_no_result").</div></div>
                     <div class="pl-note pl-join-wait"></div>
                     <div class="pl-join-late" hidden></div>
                 </div></div>`;
 
         const modelBody = `
-            <div class="form-group"><label class="form-label">Vision model</label><select class="form-input" data-f="model">${modelOptions(cam.model_id || "")}</select>
+            <div class="form-group"><label class="form-label">Vision model</label><select class="form-input" data-f="model" data-help="The AI model this camera runs.">${modelOptions(cam.model_id || "")}</select>
                 <div class="pl-model-state" data-f="model-state"></div>
                 <div class="pl-note">Cameras that pick the same model share one loaded copy. Models are uploaded on the AI models page.</div></div>
             <div class="form-group"><label class="form-label">Products to count</label><div data-kind="expected"></div>
@@ -1009,17 +1020,17 @@
         const trackingFields = Object.entries(TRACKING).map(([k, [label, min, max, step, def]]) =>
             `<div class="form-group" style="margin:0"><label class="form-label">${label}</label><input type="number" class="form-input" data-track="${k}" min="${min}" max="${max}" step="${step}" placeholder="${esc(lineTracking[k] ?? def)}" value="${esc(numOrEmpty(tracking[k]))}"></div>`).join("");
         const countingBody = `
-            <div class="form-group"><label class="form-label">Count mode</label><select class="form-input" data-f="count_mode">${option("track", "Moving products cross count lines", countMode)}${option("trigger", "One picture per trigger", countMode)}</select>
+            <div class="form-group"><label class="form-label">Count mode</label><select class="form-input" data-f="count_mode" data-help="Count products that cross the count lines, or one product per picture taken on a trigger.">${option("track", "Moving products cross count lines", countMode)}${option("trigger", "One picture per trigger", countMode)}</select>
                 <div class="pl-note pl-count-mode-note"></div>
                 <div class="pl-triggers" data-for="count" hidden></div></div>
-            <div class="form-group pl-no-product"><label class="form-label">When nothing is found</label><select class="form-input" data-f="no_product">${option("ignore", "Ignore: no product is counted", noProduct)}${option("reject", "Reject: counted as a rejected product", noProduct)}${option("good", "Good: counted as a good product", noProduct)}</select>
+            <div class="form-group pl-no-product"><label class="form-label">When nothing is found</label><select class="form-input" data-f="no_product" data-help="What a triggered picture counts as when none of this camera's classes is in it.">${option("ignore", "Ignore: no product is counted", noProduct)}${option("reject", "Reject: counted as a rejected product", noProduct)}${option("good", "Good: counted as a good product", noProduct)}</select>
                 <div class="pl-note">What a trigger gives when its picture shows none of this camera's classes. A reject then has the reason "nothing detected".</div></div>
             <div class="pl-track-fields">
                 <div class="pl-form-grid pl-form-tight">
-                    <div class="form-group"><label class="form-label">Flow direction</label><select class="form-input" data-f="flow">${Object.keys(FLOWS).map((f) => option(f, FLOWS[f].label, flowOf(orientation, direction))).join("")}</select></div>
-                    <div class="form-group"><label class="form-label">Count crossings</label><select class="form-input" data-f="mode">${option("one", "A then B (the flow above)", direction === "both" ? "both" : "one")}${option("both", "Both ways", direction === "both" ? "both" : "one")}</select></div>
+                    <div class="form-group"><label class="form-label">Flow direction</label><select class="form-input" data-f="flow" data-help="The direction the products move through the picture.">${Object.keys(FLOWS).map((f) => option(f, FLOWS[f].label, flowOf(orientation, direction))).join("")}</select></div>
+                    <div class="form-group"><label class="form-label">Count crossings</label><select class="form-input" data-f="mode" data-help="Count crossings in the flow direction only, or both ways.">${option("one", "A then B (the flow above)", direction === "both" ? "both" : "one")}${option("both", "Both ways", direction === "both" ? "both" : "one")}</select></div>
                 </div>
-                <div class="pl-lines-pic" data-f="lines-pic"><img alt="" hidden><canvas></canvas><span class="pl-lines-note">Drag line A or B. <button type="button" class="pl-link" data-act="picture">Take a picture</button></span></div>
+                <div class="pl-lines-pic" data-f="lines-pic"><img alt="" hidden><canvas></canvas><span class="pl-lines-note">Drag line A or B. <button type="button" class="pl-link" data-act="picture" data-help="Takes a still picture to draw the count lines on.">Take a picture</button></span></div>
                 <div class="pl-form-grid pl-form-tight">
                     <div class="form-group"><label class="form-label">Count line A</label><input type="number" class="form-input" data-f="line1" min="0" max="1" step="0.01" value="${esc(eff("line1_position"))}"></div>
                     <div class="form-group"><label class="form-label">Count line B</label><input type="number" class="form-input" data-f="line2" min="0" max="1" step="0.01" value="${esc(eff("line2_position"))}"></div>
@@ -1031,33 +1042,33 @@
             </div>`;
 
         const codesBody = `
-            <div class="form-group"><label class="form-label">Code type</label><select class="form-input" data-f="code_type">${codeTypeOptions(codeType)}</select>
+            <div class="form-group"><label class="form-label">Code type</label><select class="form-input" data-f="code_type" data-help="The kind of code this camera reads; any other code in the picture is ignored.">${codeTypeOptions(codeType)}</select>
                 <div class="pl-note">Only codes of this type are read; any other code in the picture is ignored. 2D and 1D read every type of that kind.</div></div>
-            <div class="form-group"><label class="form-label">Read codes</label><select class="form-input" data-f="qr_trigger">
+            <div class="form-group"><label class="form-label">Read codes</label><select class="form-input" data-f="qr_trigger" data-help="When this camera reads codes: all the time (show only), at a wire line crossing, or when an input asks.">
                 ${option("continuous", "Continuously (show only: sends and saves nothing)", trigger1)}${option("line1", "One picture when a product crosses wire line 1", trigger1)}${option("line2", "One picture when a product crosses wire line 2", trigger1)}${option("signal", "When an input asks", trigger1)}</select>
                 <div class="pl-note pl-trigger-note"></div>
                 <div class="pl-triggers" data-for="codes" hidden></div>
                 <div class="pl-warn pl-trigger-warn" hidden>The counting camera takes one picture per trigger and tracks nothing across its count lines, so no product crosses a wire line. Choose "When an input asks".</div>
                 <div class="pl-warn pl-review" hidden><span>Since the upgrade this camera only shows codes. Choose when it reads codes.</span>
                     <span class="pl-review-first"></span>
-                    <button type="button" class="btn-action btn-outline pl-review-keep" style="margin-top:6px">Keep show only</button></div></div>
+                    <button type="button" class="btn-action btn-outline pl-review-keep" style="margin-top:6px" data-help="Keeps this camera showing codes only, and saves the line.">Keep show only</button></div></div>
             <div class="form-group pl-trigger-delay"><label class="form-label pl-trigger-delay-label">Picture delay after the crossing (ms)</label>
                 <input type="number" class="form-input" data-f="qr_delay" min="0" max="10000" step="10" value="${esc(cam.qr_trigger_delay_ms || 0)}">
                 <div class="pl-note">For a code camera further along the belt: how long the product takes to reach it. 0 = at once.</div></div>
             <div class="form-group pl-hold"><label class="form-label">QR hold time (ms)</label>
                 <input type="number" class="form-input" data-f="qr_hold" min="100" max="60000" step="100" value="${esc(cam.qr_hold_ms || 1500)}">
                 <div class="pl-note">A code counts again only after it has been out of view this long.</div></div>
-            <div class="form-group"><label class="form-label">Sorting verification</label><select class="form-input" data-f="sorting_lane">
+            <div class="form-group"><label class="form-label">Sorting verification</label><select class="form-input" data-f="sorting_lane" data-help="Off, or the outfeed this camera watches to check that the products were sorted right.">
                 ${option("", "Off: the codes of the products being inspected", cam.sorting_lane || "")}${option("accepted", "Watches the accepted outfeed", cam.sorting_lane || "")}${option("rejected", "Watches the rejected outfeed", cam.sorting_lane || "")}</select>
                 <div class="pl-note pl-sorting-note"></div></div>
-            <div class="form-group pl-action"><label class="form-label">Action</label><select class="form-input" data-f="qr_action">
+            <div class="form-group pl-action"><label class="form-label">Action</label><select class="form-input" data-f="qr_action" data-help="What a code does: report only, accept only listed codes, or reject listed codes.">
                 ${option("report", "Report only", action)}${option("accept_listed", "Accept only listed codes", action)}${option("reject_listed", "Reject listed codes", action)}</select>
                 <div class="pl-note pl-action-note"></div></div>
-            <div class="form-group"><label class="form-label">Product list</label><select class="form-input" data-f="qr_list">${listOptions(listId)}</select>
+            <div class="form-group"><label class="form-label">Product list</label><select class="form-input" data-f="qr_list" data-help="The product list this camera checks its codes against.">${listOptions(listId)}</select>
                 <div class="pl-note">The list this camera checks its codes against. The lists are on the Products page.</div></div>
             <div class="form-group pl-sets-batch"><label class="pl-inline pl-check"><input type="checkbox" data-f="code_sets_batch" ${cam.code_sets_batch ? "checked" : ""}> The code's batch sets the line's batch</label>
                 <div class="pl-note">For listed products only. Each change is written to the audit log.</div></div>
-            <div class="form-group pl-no-read" style="margin-bottom:0"><label class="form-label">When no code is read</label><select class="form-input" data-f="qr_no_read">
+            <div class="form-group pl-no-read" style="margin-bottom:0"><label class="form-label">When no code is read</label><select class="form-input" data-f="qr_no_read" data-help="What a product gets when no code is read on it.">
                 ${option("reject", "Reject", cam.qr_no_read || "ignore")}${option("ignore", "Ignore", cam.qr_no_read || "ignore")}</select>
                 <div class="pl-note">Ignore: the product is good or bad according to the vision camera alone.</div></div>`;
 
@@ -1778,22 +1789,22 @@
                 <div class="pl-card-head"><div class="pl-card-title"><span class="pl-card-name">Add camera</span></div></div>
                 <div class="pl-add-full pl-note" hidden>A line can have at most ${MAX_CAMERAS_PER_LINE} cameras. Remove one to add another.</div>
                 <div class="pl-add-body">
-                    <div class="form-group"><label class="form-label">Camera</label><select class="form-input" data-f="add-device"></select>
+                    <div class="form-group"><label class="form-label">Camera</label><select class="form-input" data-f="add-device" data-help="The camera to add to this line; cameras on another line are greyed out."></select>
                         <div class="pl-note">Cameras on another line are greyed out.</div></div>
                     <div class="pl-inline" style="margin-bottom:12px">
-                        <button type="button" class="btn-action btn-sm btn-outline" data-act="scan">Scan USB</button>
-                        <button type="button" class="btn-action btn-sm btn-outline" data-act="scan-industrial">Scan industrial cameras</button>
-                        <button type="button" class="btn-action btn-sm btn-outline" data-act="network">Add network camera</button>
+                        <button type="button" class="btn-action btn-sm btn-outline" data-act="scan" data-help="Looks for USB cameras on this computer and adds new ones to the list.">Scan USB</button>
+                        <button type="button" class="btn-action btn-sm btn-outline" data-act="scan-industrial" data-help="Looks for industrial cameras on the network and the USB3 ports.">Scan industrial cameras</button>
+                        <button type="button" class="btn-action btn-sm btn-outline" data-act="network" data-help="Shows the fields to add a network camera by its stream address.">Add network camera</button>
                     </div>
                     <div class="pl-add-industrial" style="margin-bottom:12px" hidden></div>
                     <div class="pl-add-network" hidden>
                         <div class="form-group"><label class="form-label">Name</label><input type="text" class="form-input" data-f="net-name" maxlength="64" placeholder="e.g. Infeed camera"></div>
                         <div class="form-group"><label class="form-label">Stream URL</label><input type="text" class="form-input" data-f="net-url" placeholder="rtsp://user:pass@192.168.1.100:554/stream1"></div>
-                        <div class="pl-inline" style="margin-bottom:12px"><button type="button" class="btn-action btn-sm btn-blue" data-act="net-add">Add to the camera list</button></div>
+                        <div class="pl-inline" style="margin-bottom:12px"><button type="button" class="btn-action btn-sm btn-blue" data-act="net-add" data-help="Adds the network camera to the camera list.">Add to the camera list</button></div>
                     </div>
-                    <div class="form-group"><label class="form-label">Starting job</label><select class="form-input" data-f="add-job">${START_JOBS.map((j) => option(j, JOBS[j].label, "counting")).join("")}</select>
+                    <div class="form-group"><label class="form-label">Starting job</label><select class="form-input" data-f="add-job" data-help="The job the new camera starts with; its card can change it later.">${START_JOBS.map((j) => option(j, JOBS[j].label, "counting")).join("")}</select>
                         <div class="pl-note">The first vision camera is the counting camera. Everything can be changed on the card.</div></div>
-                    <button type="button" class="btn-action btn-blue" data-act="add">Add camera</button>
+                    <button type="button" class="btn-action btn-blue" data-act="add" data-help="Adds the chosen camera to this line as a new card.">Add camera</button>
                 </div>
             </div>`;
     }
@@ -1964,21 +1975,21 @@
                 <div class="pl-note" style="margin:6px 0 10px">Inputs are chosen from the line's saved inputs (Inputs below; apply a new input first).</div>
                 <div class="pl-form-grid pl-form-tight">
                     <div class="form-group"><label class="form-label">Product sequence input</label>
-                        <select class="form-input" id="plSeqInput">${inputOptions(d.sequence_input_id || "", any, "None")}</select>
+                        <select class="form-input" id="plSeqInput" data-help="The input read for each product's sequence number, or None.">${inputOptions(d.sequence_input_id || "", any, "None")}</select>
                         <div class="pl-note">Read once each time a "Take a picture" input fires; each product keeps its own number (messages, PLC events, records, the value name <code>sequence</code>).</div></div>
                     <div class="form-group"><label class="form-label">Result handshake</label>
                         <label class="pl-inline pl-check" style="margin-top:6px"><input type="checkbox" id="plHsOn" ${hs.enabled ? "checked" : ""}> Wait for the PLC to acknowledge each result</label>
                         <div class="pl-note">Capture request, result, acknowledge. Your output actions set the result flags and reset them on the acknowledge input.</div></div>
                     <div class="form-group pl-hs"><label class="form-label">Capture request input</label>
-                        <select class="form-input" id="plHsCapture">${inputOptions(hs.capture_input_id || "", takes, "Choose a 'Take a picture' input")}</select></div>
+                        <select class="form-input" id="plHsCapture" data-help="The Take a picture input that starts each handshake.">${inputOptions(hs.capture_input_id || "", takes, "Choose a 'Take a picture' input")}</select></div>
                     <div class="form-group pl-hs"><label class="form-label">Acknowledge input</label>
-                        <select class="form-input" id="plHsAck">${inputOptions(hs.ack_input_id || "", (i) => i.action !== "capture", "Choose an input")}</select>
+                        <select class="form-input" id="plHsAck" data-help="The input the PLC acknowledges each result with.">${inputOptions(hs.ack_input_id || "", (i) => i.action !== "capture", "Choose an input")}</select>
                         <div class="pl-note">For example an input with the action "Only fires cards". Its edge decides: Off to on, or On to off for a PLC that drops its request as the acknowledge.</div></div>
                     <div class="form-group pl-hs"><label class="form-label">Result timeout (ms)</label>
                         <input type="number" class="form-input" id="plHsResultMs" min="100" max="60000" step="100" value="${hs.result_timeout_ms || 3000}">
                         <div class="pl-note">Longer than the camera's picture and the Sync window.</div></div>
                     <div class="form-group pl-hs"><label class="form-label">No result in time</label>
-                        <select class="form-input" id="plHsOnTimeout">${option("reject", "Reject the product", hs.on_timeout || "reject")}${option("fault", "Raise a fault (trigger \"Handshake fault\")", hs.on_timeout || "reject")}</select>
+                        <select class="form-input" id="plHsOnTimeout" data-help="What happens when a result is not ready in time: reject the product or raise a fault.">${option("reject", "Reject the product", hs.on_timeout || "reject")}${option("fault", "Raise a fault (trigger \"Handshake fault\")", hs.on_timeout || "reject")}</select>
                         <div class="pl-note">Never a pass.</div></div>
                     <div class="form-group pl-hs"><label class="form-label">Acknowledge timeout (ms)</label>
                         <input type="number" class="form-input" id="plHsAckMs" min="100" max="60000" step="100" value="${hs.ack_timeout_ms || 5000}">
@@ -2058,11 +2069,11 @@
                 ${handshakeSetupHtml(d)}
                 <div id="plSetupWarnings">${warningsHtml(d)}</div>
                 <div class="pl-setup-actions">
-                    <button class="btn-action btn-blue restricted-l2" id="plSaveSetup" ${readOnly ? "disabled" : ""}>Save line setup</button>
+                    <button class="btn-action btn-blue restricted-l2" id="plSaveSetup" ${readOnly ? "disabled" : ""} data-help="Saves the line and every camera card.">Save line setup</button>
                     ${d.enabled
-                        ? `<button class="btn-action btn-outline restricted-l2" id="plStopLine" ${readOnly ? "disabled" : ""}>Stop line</button>`
-                        : `<button class="btn-action btn-outline restricted-l2" id="plStartLine" ${readOnly ? "disabled" : ""}>Start line</button>`}
-                    <button class="btn-action btn-red restricted-l2" id="plResetCounts" ${readOnly ? "disabled" : ""}>Reset counts…</button>
+                        ? `<button class="btn-action btn-outline restricted-l2" id="plStopLine" ${readOnly ? "disabled" : ""} data-help="Stops the line: no counting, messages or output actions until it starts again.">Stop line</button>`
+                        : `<button class="btn-action btn-outline restricted-l2" id="plStartLine" ${readOnly ? "disabled" : ""} data-help="Starts the line: its cameras count and its cards and actions run.">Start line</button>`}
+                    <button class="btn-action btn-red restricted-l2" id="plResetCounts" ${readOnly ? "disabled" : ""} data-help="Sets the counts of this line back to 0 after you confirm.">Reset counts…</button>
                     <span class="pl-note" style="margin:0">One Save for the line and every camera card. To send results to another system, add a card under Send results below.</span>
                 </div>
             </div>
@@ -2155,7 +2166,7 @@
         panel.innerHTML = `<div class="card-panel-header"><span class="card-panel-title">Product checks</span></div>
             <div class="pl-note" style="margin-top:0">Reject a product when the rules of a check pass, for example when the class the camera saw is not the product's expected class (<span class="pl-code">class ≠ product.expected_class</span>). The checks run for a product whose code is in a list, after the camera's and the code's own result. The reason is <b>product check</b> (reject reason code 7 for an output action), with the check's name. The line pairs each product with its code (Sync).</div>
             <div class="pl-checks">${items || `<div class="pl-note">No product checks.</div>`}</div>
-            <button type="button" class="btn-action btn-outline pl-check-add restricted-l2" ${readOnly || (setup.checks || []).length >= MAX_PRODUCT_CHECKS ? "disabled" : ""}>Add check</button>`;
+            <button type="button" class="btn-action btn-outline pl-check-add restricted-l2" ${readOnly || (setup.checks || []).length >= MAX_PRODUCT_CHECKS ? "disabled" : ""} data-help="Adds a product check: rules that reject a product when they pass.">Add check</button>`;
         if (typeof applyRoleRestrictions === "function") applyRoleRestrictions(panel);
         refreshSelects();
     }
@@ -2511,9 +2522,9 @@
             const name = cam.name || cameraName(cam.camera_id);
             const view = secondView(cam);
             const toggle = readsCodes(cam) ? `<div class="pl-seg" data-view-of="${esc(cam.camera_id)}">
-                    <button data-view="capture" class="${view === "capture" ? "active" : ""}">Last picture</button>
-                    <button data-view="live" class="${view === "live" ? "active" : ""}">Live</button></div>` : "";
-            const test = readsCodes(cam) && canTest ? `<button class="btn-action btn-outline pl-strip-test" data-test="${esc(cam.camera_id)}">Test picture</button>` : "";
+                    <button data-view="capture" class="${view === "capture" ? "active" : ""}" data-help="Shows the last picture this camera took, with its codes.">Last picture</button>
+                    <button data-view="live" class="${view === "live" ? "active" : ""}" data-help="Shows the live video of this camera.">Live</button></div>` : "";
+            const test = readsCodes(cam) && canTest ? `<button class="btn-action btn-outline pl-strip-test" data-test="${esc(cam.camera_id)}" data-help="Takes one test picture with the code reader now; nothing is sent or counted.">Test picture</button>` : "";
             return `<div class="card-panel pl-strip-tile" data-camera="${esc(cam.camera_id)}">
                 <div class="pl-strip-head">
                     <span class="pl-dot" style="background:${cam.connected ? "var(--success-color)" : "var(--danger-color)"}"></span>
@@ -2677,7 +2688,7 @@
         if (box.dataset.signature === signature) return;
         box.dataset.signature = signature;
         if (state.captureShown) delete state.captureShown.inline;
-        const testBtn = reader && level() >= 2 ? `<button class="btn-action btn-outline" id="plInlineTest" style="font-size:12px;padding:6px 12px">Test picture</button>` : "";
+        const testBtn = reader && level() >= 2 ? `<button class="btn-action btn-outline" id="plInlineTest" style="font-size:12px;padding:6px 12px" data-help="Takes one test picture with the code reader now; nothing is sent or counted.">Test picture</button>` : "";
         const carton = hasHandshake || hasSorting
             ? `<div class="card-panel" id="plCartonPanel"><div class="card-panel-header"><span class="card-panel-title">${hasHandshake ? "Result handshake" : ""}${hasHandshake && hasSorting ? " · " : ""}${hasSorting ? "Sorting verification" : ""}</span></div>
                 <div class="pl-carton-grid">${hasHandshake ? `<div id="plHsView"></div>` : ""}${hasSorting ? `<div id="plSortView"></div>` : ""}</div></div>`
@@ -2844,20 +2855,20 @@
                 <div class="card-panel-header">
                     <span class="card-panel-title">Product lists</span>
                     <div class="pl-inline">
-                        <button class="btn-action btn-outline" id="plExport">Export CSV</button>
+                        <button class="btn-action btn-outline" id="plExport" data-help="Downloads the list shown as a CSV file.">Export CSV</button>
                         <label class="btn-action btn-blue" id="plImportLabel" style="cursor:pointer"><span id="plImportText">Import CSV as a new list</span><input type="file" id="plImportFile" accept=".csv,text/csv" style="display:none"></label>
                     </div>
                 </div>
                 <div class="pl-note" style="margin-top:0;margin-bottom:12px">Up to <span id="plMaxLists">4</span> lists. Each camera that reads codes checks them against the list chosen for it on Line setup. CSV files need a header row: <span class="pl-code">code,name,description</span>.</div>
                 <div class="pl-inline" style="margin-bottom:6px">
                     <label class="form-label" for="plProdList" style="margin:0">List shown</label>
-                    <select id="plProdList" class="form-input" aria-label="Product list shown"></select>
-                    <button class="btn-action btn-outline" id="plListNew">New list</button>
-                    <button class="btn-action btn-outline" id="plListRename">Rename</button>
-                    <button class="btn-action btn-outline" id="plListFields" title="The list's own fields: a value per product">Fields</button>
-                    <button class="btn-action btn-outline" id="plListFormat" title="How the codes of this list are built: product ID and batch">Code format</button>
+                    <select id="plProdList" class="form-input" aria-label="Product list shown" data-help="The product list shown below."></select>
+                    <button class="btn-action btn-outline" id="plListNew" data-help="Makes a new empty list.">New list</button>
+                    <button class="btn-action btn-outline" id="plListRename" data-help="Renames the list shown.">Rename</button>
+                    <button class="btn-action btn-outline" id="plListFields" data-help="Sets the fields of the list shown: a value per product, such as a lane.">Fields</button>
+                    <button class="btn-action btn-outline" id="plListFormat" data-help="Sets how the codes of this list are built from a product ID and a batch.">Code format</button>
                     <label class="btn-action btn-outline" id="plReplaceLabel" style="cursor:pointer">Replace contents<input type="file" id="plReplaceFile" accept=".csv,text/csv" style="display:none"></label>
-                    <button class="btn-action btn-red" id="plListDelete">Delete this list</button>
+                    <button class="btn-action btn-red" id="plListDelete" data-help="Deletes the list shown and its codes after you confirm.">Delete this list</button>
                 </div>
                 <div class="pl-note" id="plListFormatNote" style="margin-bottom:4px"></div>
                 <div class="pl-note" id="plListUsedBy" style="margin-bottom:14px"></div>
@@ -2865,7 +2876,7 @@
                     <input type="text" id="plProdCode" class="form-input" maxlength="256" placeholder="Code">
                     <input type="text" id="plProdName" class="form-input" maxlength="128" placeholder="Product name">
                     <input type="text" id="plProdDesc" class="form-input" maxlength="512" placeholder="Description (optional)">
-                    <button class="btn-action btn-blue" id="plProdAdd">Add</button>
+                    <button class="btn-action btn-blue" id="plProdAdd" data-help="Adds the code typed beside it to the list shown.">Add</button>
                 </div>
                 <div class="pl-inline" style="margin-bottom:10px"><input type="search" id="plProdSearch" class="form-input" placeholder="Search code or name"><span id="plProdCount" style="font-size:12px;color:var(--text-muted)"></span></div>
                 <div class="table-responsive"><table class="pl-table">
@@ -3053,17 +3064,17 @@
             + Array.from({ length: 10 }, (_, i) => `<option value="${i + 1}" ${selected === i + 1 ? "selected" : ""}>Part ${i + 1}</option>`).join("");
         const body = modal.querySelector(".pf-body");
         body.innerHTML = `
-            <div class="form-group"><label class="form-label">Codes</label><select class="form-input" data-cf="mode">
+            <div class="form-group"><label class="form-label">Codes</label><select class="form-input" data-cf="mode" data-help="How a code is built: the whole code, parts with a separator, or GS1.">
                 <option value="whole" ${f.mode === "whole" ? "selected" : ""}>Whole code: the code is the product ID</option>
                 <option value="split" ${f.mode === "split" ? "selected" : ""}>Parts with a separator, such as P-100;B-2026-07</option>
                 <option value="gs1" ${f.mode === "gs1" ? "selected" : ""}>GS1: (01) product ID (GTIN), (10) batch</option></select></div>
             <div class="pl-form-grid pl-form-tight" data-cf-split>
                 <div class="form-group"><label class="form-label">Separator</label><input type="text" class="form-input" data-cf="separator" maxlength="3" value="${esc(f.separator || ";")}"></div>
-                <div class="form-group"><label class="form-label">Product ID</label><select class="form-input" data-cf="product_part">${parts(f.product_part || 1, false)}</select></div>
-                <div class="form-group"><label class="form-label">Batch</label><select class="form-input" data-cf="batch_part">${parts(f.mode === "split" ? f.batch_part : 2, true)}</select></div>
+                <div class="form-group"><label class="form-label">Product ID</label><select class="form-input" data-cf="product_part" data-help="Which part of the code is the product ID.">${parts(f.product_part || 1, false)}</select></div>
+                <div class="form-group"><label class="form-label">Batch</label><select class="form-input" data-cf="batch_part" data-help="Which part of the code is the batch, or None.">${parts(f.mode === "split" ? f.batch_part : 2, true)}</select></div>
             </div>
             <div class="form-group" style="margin-bottom:0"><label class="form-label">Try a code</label>
-                <div class="pl-inline"><input type="text" class="form-input" data-cf="try" maxlength="512" placeholder="P-100;B-2026-07"><button type="button" class="btn-action btn-outline" data-cf="try-btn">Try</button></div>
+                <div class="pl-inline"><input type="text" class="form-input" data-cf="try" maxlength="512" placeholder="P-100;B-2026-07"><button type="button" class="btn-action btn-outline" data-cf="try-btn" data-help="Shows how the code typed beside it is read with these settings.">Try</button></div>
                 <div class="pl-note" data-cf="result"></div></div>`;
         const field = (name) => body.querySelector(`[data-cf="${name}"]`);
         const read = () => {
@@ -3370,7 +3381,7 @@
         const panelHeader = table.closest(".card-panel")?.querySelector(".card-panel-header");
         if (panelHeader && !byId("plAuditLine")) {
             panelHeader.insertAdjacentHTML("beforeend", `<div class="pl-inline" style="font-size:12px;color:var(--text-muted)">Line
-                <select id="plAuditLine" class="form-input" style="min-width:150px" aria-label="Show the audit log of one line"></select></div>`);
+                <select id="plAuditLine" class="form-input" style="min-width:150px" aria-label="Show the audit log of one line" data-help="Shows the audit log of one line, or of every line."></select></div>`);
             byId("plAuditLine").addEventListener("change", (e) => { state.auditLine = e.target.value; window.loadAuditLogs(); });
             refreshSelects();
         }
@@ -3396,11 +3407,11 @@
         seq: 0,
     };
     const RECORD_RANGES = [
-        ["hour", "Last hour"],
-        ["shift", "This shift"],
-        ["today", "Today"],
-        ["yesterday", "Yesterday"],
-        ["week", "Last 7 days"],
+        ["hour", "Last hour", "Shows the records of the last hour."],
+        ["shift", "This shift", "Shows the records of the last 8 hours."],
+        ["today", "Today", "Shows the records of today, from midnight."],
+        ["yesterday", "Yesterday", "Shows the records of yesterday."],
+        ["week", "Last 7 days", "Shows the records of the last 7 days, today included."],
     ];
 
     // A Date as the value of a datetime-local box (browser local time, to the minute).
@@ -3429,22 +3440,22 @@
                         <div class="card-panel-sub">Every product and code read the lines decided, for the time you choose. Times are in this browser's time zone.</div>
                     </div>
                     <div class="pl-inline">
-                        <button class="btn-action btn-outline" id="recExportCsv" type="button">Export CSV</button>
-                        <button class="btn-action btn-outline" id="recExportXlsx" type="button">Export Excel</button>
+                        <button class="btn-action btn-outline" id="recExportCsv" type="button" data-help="Downloads the records shown as a CSV file.">Export CSV</button>
+                        <button class="btn-action btn-outline" id="recExportXlsx" type="button" data-help="Downloads the records shown as an Excel file.">Export Excel</button>
                     </div>
                 </div>
                 <div class="rec-quick seg" role="group" aria-label="Time range">
-                    ${RECORD_RANGES.map(([key, label]) => `<button type="button" data-range="${key}">${label}</button>`).join("")}
+                    ${RECORD_RANGES.map(([key, label, help]) => `<button type="button" data-range="${key}" data-help="${help}">${label}</button>`).join("")}
                 </div>
                 <div class="rec-filters">
-                    <div class="form-group"><label class="form-label" for="recLine">Line</label><select id="recLine" class="form-input"></select></div>
+                    <div class="form-group"><label class="form-label" for="recLine">Line</label><select id="recLine" class="form-input" data-help="Shows the records of one line, or of every line."></select></div>
                     <div class="form-group rec-time"><label class="form-label" for="recFrom">From</label><input type="datetime-local" id="recFrom" class="form-input"></div>
                     <div class="form-group rec-time"><label class="form-label" for="recTo">To</label><input type="datetime-local" id="recTo" class="form-input"></div>
-                    <div class="form-group"><label class="form-label" for="recResult">Result</label><select id="recResult" class="form-input">
+                    <div class="form-group"><label class="form-label" for="recResult">Result</label><select id="recResult" class="form-input" data-help="Shows the good products, the rejected ones, or both.">
                         <option value="">Any</option><option value="good">Good</option><option value="reject">Rejected</option></select></div>
-                    <div class="form-group"><label class="form-label" for="recKind">Kind</label><select id="recKind" class="form-input">
+                    <div class="form-group"><label class="form-label" for="recKind">Kind</label><select id="recKind" class="form-input" data-help="Shows the products, the code reads, or both.">
                         <option value="">All</option><option value="product">Products</option><option value="code">Code reads</option></select></div>
-                    <div class="form-group"><label class="form-label" for="recCamera">Camera</label><select id="recCamera" class="form-input"></select></div>
+                    <div class="form-group"><label class="form-label" for="recCamera">Camera</label><select id="recCamera" class="form-input" data-help="Shows the records of one camera, or of every camera."></select></div>
                     <div class="form-group"><label class="form-label" for="recBatch">Batch</label><input type="text" id="recBatch" class="form-input" maxlength="64" placeholder="Any batch"></div>
                     <div class="form-group"><label class="form-label" for="recCode">Code contains</label><input type="search" id="recCode" class="form-input" maxlength="512" placeholder="Any code"></div>
                 </div>
@@ -3470,8 +3481,8 @@
                 <div class="card-panel-header">
                     <span class="card-panel-title">Records <span class="feed-meta num" id="recCount"></span></span>
                     <div class="pl-inline">
-                        <button class="btn-action btn-outline" id="recPrev" type="button">Newer</button>
-                        <button class="btn-action btn-outline" id="recNext" type="button">Older</button>
+                        <button class="btn-action btn-outline" id="recPrev" type="button" data-help="Shows the newer records.">Newer</button>
+                        <button class="btn-action btn-outline" id="recNext" type="button" data-help="Shows the older records.">Older</button>
                     </div>
                 </div>
                 <div class="table-responsive"><table class="pl-table table-mobile-cards" id="recTable">
@@ -3728,11 +3739,20 @@
         tabProducts: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5v14M7 5v14M11 5v14M14 5v14M18 5v14M21 5v14"/></svg>',
     };
 
+    // What each of these pages holds (the menu item's help icon).
+    const MENU_HELP = {
+        tabOverview: "Opens an overview of every line with its state and counts.",
+        tabRecords: "Opens every product and code read, with filters and export.",
+        tabLines: "Opens the list of lines, where lines are added, renamed, copied or deleted.",
+        tabProducts: "Opens the product lists that the code readers check codes against.",
+    };
+
     function menuItem(tab, label) {
         const li = document.createElement("li");
         li.className = "menu-item";
         li.id = `plMenu_${tab}`;
         li.setAttribute("onclick", `switchTab('${tab}')`);
+        li.dataset.help = MENU_HELP[tab];
         li.innerHTML = `<span class="menu-icon">${MENU_ICONS[tab]}</span><span>${label}</span>`;
         return li;
     }

@@ -221,6 +221,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   ├── camera_settings.js     # a camera's image/video settings form (Line setup cards, Cameras dialog)
 │   ├── card_values.js         # card dialogs: the value names a card can use, what a card writes
 │   ├── dashboard.css
+│   ├── help_tips.js           # help icons: the data-help text of a button, drop-down or menu item on hover, focus or tap
 │   ├── plc_signals.js         # the PLC signals (inputs) step of Line setup: cards, dialog, live values
 │   ├── product_fields.js      # Products page: the fields editor and a product's values
 │   ├── production_lines.js    # lines, Line setup camera cards, Line dashboard camera strip
@@ -287,6 +288,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_flow_engine.py
     ├── test_formula.py           # the formula language: what it computes and what it refuses
     ├── test_health.py
+    ├── test_help_tips.py         # every button, drop-down and menu item has help text; assets/help_tips.js with node
     ├── test_ip_camera_http.py
     ├── test_industrial_camera.py    # the GigE / USB3 Vision driver and its API, on a stand-in camera
     ├── test_input_trigger.py     # the trigger Input changed

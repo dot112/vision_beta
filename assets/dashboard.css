@@ -1484,3 +1484,61 @@ button.status-pill:hover { filter: brightness(1.08); }
     .ow-row { grid-template-columns: 1fr 1fr; padding-bottom: 6px; border-bottom: 1px solid var(--border-color); }
     .ow-row .ow-del { grid-column: 1 / -1; justify-self: end; }
 }
+
+/* Help icons (assets/help_tips.js): a small circled "i" after a control, or
+   inside a menu item or segmented button; its data-help text shows in one
+   bubble on hover, keyboard focus or a tap. */
+.help-tip {
+    position: relative;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 14px;
+    height: 14px;
+    margin: 0 5px 0 3px;               /* nearer its own control than the next one */
+    border: 1.3px solid currentColor;
+    border-radius: 50%;
+    color: var(--text-faint);
+    font: italic 700 9.5px/1 Georgia, "Times New Roman", serif;
+    letter-spacing: 0;
+    text-transform: none;
+    vertical-align: middle;
+    cursor: help;
+    user-select: none;
+    -webkit-user-select: none;
+}
+.help-tip::before { content: "i"; }
+.help-tip::after { content: ""; position: absolute; inset: -6px; }   /* a finger-sized target */
+.help-tip:hover, .help-tip:focus-visible { color: var(--primary-color); outline: none; }
+.help-tip:focus-visible { box-shadow: 0 0 0 3px var(--primary-tint); }
+/* A hidden control hides its icon. */
+[hidden] + .help-tip, [style*="display: none"] + .help-tip, [style*="display:none"] + .help-tip { display: none; }
+body .pl-line-select > .help-tip { display: inline-flex; }
+/* A drop-down's box leaves room for its icon on the same row. */
+.form-group > .custom-select-wrap.has-help { display: inline-block; vertical-align: middle; width: calc(100% - 22px); }
+/* Inside: at the end of a menu item, after a segmented button's label, in a corner of a tile. */
+.menu-item > .help-tip, .menu-panel-item > .help-tip { margin-left: auto; }
+.seg button > .help-tip, .pl-seg button > .help-tip, .filter-pill > .help-tip, .btn-action > .help-tip { margin: 0 0 0 6px; color: inherit; opacity: 0.75; }
+.proto-btn { position: relative; }
+.proto-btn > .help-tip { position: absolute; top: 5px; right: 5px; margin: 0; }
+.pl-fold-head > .help-tip { order: 1; margin: 0 0 0 6px; }
+.pl-fold-head > svg { order: 2; margin-left: auto; }
+.help-tip-bubble {
+    position: fixed;
+    z-index: 2147483000;
+    max-width: min(260px, calc(100vw - 16px));
+    padding: 7px 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--card-bg);
+    color: var(--text-color);
+    box-shadow: var(--shadow-pop);
+    font: 400 12.5px/1.45 var(--font-ui);
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: break-word;
+    pointer-events: none;
+}
+.help-tip-bubble[hidden] { display: none; }

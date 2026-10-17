@@ -437,7 +437,7 @@
                 <div class="empty-state">
                     <b>Could not load the inputs</b>
                     <p>${esc(state.loadError)}</p>
-                    <button type="button" class="btn-action btn-outline" onclick="PlcSignals.load()">Try again</button>
+                    <button type="button" class="btn-action btn-outline" onclick="PlcSignals.load()" data-help="Loads the inputs of this line again.">Try again</button>
                 </div>`;
             return;
         }
@@ -446,7 +446,7 @@
                 <div class="empty-state">
                     <b>No inputs yet</b>
                     <p>A signal reads a PLC address and acts on the line, for example a start button, a product sensor or the batch number the PLC holds.</p>
-                    <button type="button" class="btn-action btn-blue restricted-l2" onclick="PlcSignals.add()">Add input</button>
+                    <button type="button" class="btn-action btn-blue restricted-l2" onclick="PlcSignals.add()" data-help="Adds an input that reads a PLC address; Apply starts reading it.">Add input</button>
                 </div>`;
             if (typeof applyRoleRestrictions === "function") applyRoleRestrictions(container);
             return;
@@ -459,8 +459,8 @@
                 <span class="slider"></span>
             </label>`;
         const deleteHtml = `<button type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="PlcSignals.remove(${ID_OF})" title="Delete this signal" aria-label="Delete this signal">✕</button>`;
-        const readHtml = `<button type="button" class="btn-action btn-sm btn-outline restricted-l2" onclick="PlcSignals.readNow(${ID_OF})" title="Read this address once, now">Read now</button>`;
-        const settingsHtml = `<button type="button" class="btn-action btn-sm btn-outline" onclick="PlcSignals.openDialog(${ID_OF})" title="Channel, address and what the signal does">Settings</button>`;
+        const readHtml = `<button type="button" class="btn-action btn-sm btn-outline restricted-l2" onclick="PlcSignals.readNow(${ID_OF})" data-help="Reads this address once now and shows its value; nothing is done with it.">Read now</button>`;
+        const settingsHtml = `<button type="button" class="btn-action btn-sm btn-outline" onclick="PlcSignals.openDialog(${ID_OF})" data-help="Opens the controller, address and action of this input.">Settings</button>`;
 
         if (shown === "list") {
             const rows = state.cards.map((card) => {
@@ -669,14 +669,14 @@
 
             <div class="form-group" style="margin:0">
                 <label class="form-label" for="plcSigChannel">Controller${channel ? ` <span style="font-weight:600;color:var(--primary-color)">· ${esc(protocolLabel(channel))}</span>` : ""}</label>
-                <select id="plcSigChannel" class="form-input" onchange="PlcSignals.set('plc_endpoint_id', this.value, true)">${channelOptions}</select>
+                <select id="plcSigChannel" class="form-input" onchange="PlcSignals.set('plc_endpoint_id', this.value, true)" data-help="The PLC this input is read from.">${channelOptions}</select>
                 ${unreadable(channel) ? `<div class="sig-note warn">This channel is Generic TCP and cannot be read. Choose another channel.</div>` : ""}
                 <div class="sig-note">${channels.length ? "" : "No controller yet: add one under Connections. "}A Generic TCP channel cannot be read: it only sends.</div>
             </div>
 
             <div class="form-group" style="margin:0">
                 <label class="form-label" for="plcSigAction">What the signal does</label>
-                <select id="plcSigAction" class="form-input" ${named ? "disabled" : ""} onchange="PlcSignals.set('action', this.value, true)">${actionOptions}</select>
+                <select id="plcSigAction" class="form-input" ${named ? "disabled" : ""} onchange="PlcSignals.set('action', this.value, true)" data-help="What the line does with this input, for example start the line or take a picture.">${actionOptions}</select>
                 <div class="sig-note">${esc(action.note)}</div>
                 ${action.id === "confirm_card" ? `<div class="sig-note">${named
                     ? `<b>Confirms:</b> ${esc(named)}. To change what this signal does or delete it, first choose another confirmation signal in ${actionsNaming(draft.id).length === 1 ? "that action" : "those actions"}.`
@@ -692,7 +692,7 @@
                 </div>
                 <div class="form-group">
                     <label class="form-label" for="plcSigType">Read as</label>
-                    <select id="plcSigType" class="form-input" onchange="PlcSignals.set('data_type', this.value, true)">${typeOptions}</select>
+                    <select id="plcSigType" class="form-input" onchange="PlcSignals.set('data_type', this.value, true)" data-help="How the value at the address is read: a bit, a number, a counter or text.">${typeOptions}</select>
                     ${draft.data_type === "string" ? `<div class="sig-note">Text can be read from OPC UA and EtherNet/IP channels.</div>` : ""}
                     ${draft.data_type === "counter" ? `<div class="sig-note">The increase of the counter since the last read is the number of products. It may wrap at 65535; a drop to a low number is taken as the PLC resetting it.</div>` : ""}
                 </div>
@@ -701,7 +701,7 @@
             ${usesEdge ? `
             <div class="form-group" style="margin:0">
                 <label class="form-label" for="plcSigEdge">Act when the value goes</label>
-                <select id="plcSigEdge" class="form-input" onchange="PlcSignals.set('edge', this.value)">${EDGES.map((e) => option(e.id, e.label, draft.edge || "rising")).join("")}</select>
+                <select id="plcSigEdge" class="form-input" onchange="PlcSignals.set('edge', this.value)" data-help="Which change of the value makes the input act.">${EDGES.map((e) => option(e.id, e.label, draft.edge || "rising")).join("")}</select>
             </div>` : ""}
 
             <div class="sig-grid">
@@ -741,12 +741,12 @@
                 </div>
                 <div class="form-group">
                     <label class="form-label" for="plcSigSeverity">Severity</label>
-                    <select id="plcSigSeverity" class="form-input" onchange="PlcSignals.set('alarm_severity', this.value)">${SEVERITIES.map((s) => option(s.id, s.label, draft.alarm_severity || "warning")).join("")}</select>
+                    <select id="plcSigSeverity" class="form-input" onchange="PlcSignals.set('alarm_severity', this.value)" data-help="How serious the alarm this input raises is.">${SEVERITIES.map((s) => option(s.id, s.label, draft.alarm_severity || "warning")).join("")}</select>
                 </div>
             </div>` : ""}
 
             <div class="sig-read">
-                <button type="button" class="btn-action btn-sm btn-outline restricted-l2" onclick="PlcSignals.readNow(PlcSignals.editingId())">Read now</button>
+                <button type="button" class="btn-action btn-sm btn-outline restricted-l2" onclick="PlcSignals.readNow(PlcSignals.editingId())" data-help="Reads this address once now and shows its value; nothing is done with it.">Read now</button>
                 <span class="sig-read-result" id="plcSigReadResult" role="status" aria-live="polite">Reads the address once and shows its value. Nothing the signal would do is done.</span>
             </div>`;
         if (typeof applyRoleRestrictions === "function") applyRoleRestrictions(body);
