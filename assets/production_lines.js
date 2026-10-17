@@ -1201,7 +1201,7 @@
         const flagged = card.dataset.review === "1" && trigger === "continuous";
         note.hidden = !flagged;
         if (!flagged) return;
-        const syncOn = Boolean(byId("plSync") && byId("plSync").checked);
+        const syncOn = syncPossible();
         const otherReader = cardsOnPage().some((c) => c !== card && JOBS[cardJob(c)].codes && cardValue(c, "qr_trigger") !== "continuous");
         const canKeep = !checks && (!syncOn || otherReader);
         note.querySelector(".pl-review-keep").hidden = !canKeep;
@@ -1337,32 +1337,21 @@
             : "";
     }
 
+    // Sync (each counted product paired with its code) is always on where the line can pair: it has a product
+    // source (a vision camera or a PLC product sensor) and a camera that reads codes on a wire line or when an
+    // input asks. Without them it is off, as the server refuses Sync there. There is no box to switch it.
+    const syncPossible = () => setupHasSource() && setupReadsCodesTriggered();
+
     function syncLineSetup() {
         cardsOnPage().forEach(syncCard);
         const checks = byId("plChecksPanel");
         // Product checks need a camera that reads codes; checks already made stay in view, so they can be removed.
         if (checks) checks.hidden = !setupReadsCodes() && !(setup.checks || []).length;
-        const sync = byId("plSync");
-        if (sync) {
-            // A camera that checks codes beside a vision camera (or a product sensor) needs Sync: it pairs each product with
-            // its code. So do the line's product checks, once a camera reads codes on a trigger.
-            const checking = (setup.checks || []).some((c) => c.enabled !== false) && setupReadsCodesTriggered();
-            const forced = (setupChecksCodes() || checking) && setupHasSource();
-            // Sync needs both a product source and a camera that reads codes on a trigger. Without them (the
-            // cameras were removed, or read Continuously) it is switched off, or the server refuses the save;
-            // it comes back on with them.
-            const possible = setupHasSource() && setupReadsCodesTriggered();
-            if (forced) sync.checked = true;
-            if (!possible && sync.checked) {
-                sync.checked = false;
-                sync.dataset.autoOff = "1";
-            } else if (possible && sync.dataset.autoOff) {
-                sync.checked = true;
-                delete sync.dataset.autoOff;
-            }
-            sync.disabled = forced || !possible || level() < 2;
-            byId("plSyncForced").style.display = forced ? "" : "none";
-            byId("plSyncOff").style.display = possible ? "none" : "";
+        const state = byId("plSyncState");
+        if (state) {
+            state.innerHTML = syncPossible()
+                ? "<b>On:</b> each counted product is paired with its code. The line waits for the code, at most the Sync window."
+                : "<b>Off:</b> pairing needs a vision camera (or a PLC product sensor) and a camera that reads codes on a wire line or when an input asks.";
         }
         const add = byId("plAddCard");
         if (add) {
@@ -2061,11 +2050,8 @@
                     <div class="form-group"><label class="form-label">Minimum processed frames/s (0 = no alarm)</label><input type="number" class="form-input" id="plMinFps" min="0" max="240" step="1" value="${d.min_fps || 0}"></div>
                     <div class="form-group"><label class="form-label">Yield target (%)</label><input type="number" class="form-input" id="plYieldTarget" min="0" max="100" step="0.1" value="${d.yield_target || 0}">
                         <div class="pl-note">The dashboard marks the yield as below target under this value. 0 = no target.</div></div>
-                    <div class="form-group"><label class="form-label">Sync products and codes</label>
-                        <label class="pl-inline pl-check" style="margin-top:6px"><input type="checkbox" id="plSync" ${d.sync && d.sync.enabled ? "checked" : ""}> Pair each counted product with its code</label>
-                        <div class="pl-note">For a vision camera and a code reader looking at the same spot, or one vision camera that also reads codes.</div>
-                        <div class="pl-note" id="plSyncOff" style="display:none"><b>Off:</b> Sync needs a vision camera (or a PLC product sensor) and a camera that reads codes on a wire line or when an input asks.</div>
-                        <div class="pl-note" id="plSyncForced" style="display:none"><b>On while a camera accepts or rejects by code, or the line has product checks and a camera that reads codes on a trigger:</b> the line waits for the code (at most the Sync window) and then gives the product one result.</div></div>
+                    <div class="form-group"><label class="form-label">Products and codes</label>
+                        <div class="pl-note" id="plSyncState" style="margin-top:6px"></div>
                     <div class="form-group"><label class="form-label">Sync window (ms)</label><input type="number" class="form-input" id="plSyncWindow" min="50" max="10000" step="50" value="${(d.sync && d.sync.window_ms) || 500}">
                         <div class="pl-note">Products must pass further apart than this. A reject card's travel delay must be longer.</div></div>
                 </div>
@@ -2088,7 +2074,6 @@
         card.querySelector(".card-panel").addEventListener("input", markDirty);
         card.querySelector(".card-panel").addEventListener("change", (e) => {
             markDirty();
-            if (e.target.id === "plSync") syncLineSetup();
             if (e.target.id === "plHsOn") syncHandshakeSetup();
         });
         bindChecks();
@@ -2291,7 +2276,7 @@
             min_fps: parseFloat(byId("plMinFps").value) || 0,
             yield_target: parseFloat(byId("plYieldTarget").value) || 0,
             cameras,
-            sync: { enabled: byId("plSync").checked, window_ms: parseInt(byId("plSyncWindow").value, 10) || 500 },
+            sync: { enabled: syncPossible(), window_ms: parseInt(byId("plSyncWindow").value, 10) || 500 },
             product_checks: (setup.checks || []).map((c) => ({
                 ...(c.id ? { id: c.id } : {}), name: String(c.name || "").trim(), enabled: c.enabled !== false,
                 only_when: c.only_when || { match: "all", rules: [] },
@@ -2867,6 +2852,7 @@
                 <div class="pl-inline" style="margin-bottom:6px">
                     <label class="form-label" for="plProdList" style="margin:0">List shown</label>
                     <select id="plProdList" class="form-input" aria-label="Product list shown"></select>
+                    <button class="btn-action btn-outline" id="plListNew">New list</button>
                     <button class="btn-action btn-outline" id="plListRename">Rename</button>
                     <button class="btn-action btn-outline" id="plListFields" title="The list's own fields: a value per product">Fields</button>
                     <button class="btn-action btn-outline" id="plListFormat" title="How the codes of this list are built: product ID and batch">Code format</button>
@@ -2891,6 +2877,7 @@
         byId("plExport").addEventListener("click", exportProducts);
         byId("plImportFile").addEventListener("change", importProducts);
         byId("plReplaceFile").addEventListener("change", replaceProductList);
+        byId("plListNew").addEventListener("click", newProductList);
         byId("plListRename").addEventListener("click", renameProductList);
         byId("plListFields").addEventListener("click", editProductFields);
         byId("plListFormat").addEventListener("click", editCodeFormat);
@@ -2944,6 +2931,10 @@
         importLabel.title = full ? `There are already ${state.maxProductLists} lists. Delete a list first, or use Replace contents.` : "Each imported file becomes a new list";
         byId("plImportFile").disabled = full;
         ["plListRename", "plListFields", "plListFormat", "plListDelete"].forEach((id) => { byId(id).disabled = !shown || !canEdit; byId(id).style.display = canEdit ? "" : "none"; });
+        const newList = byId("plListNew");
+        newList.style.display = canEdit ? "" : "none";
+        newList.disabled = full;
+        newList.title = full ? `There are already ${state.maxProductLists} lists. Delete a list first.` : "Make an empty list, then add codes or import a file into it";
         byId("plListFormatNote").textContent = shown ? `Codes: ${codeFormatText(shown.code_format)}` : "";
         byId("plReplaceLabel").style.display = canEdit && shown ? "" : "none";
         byId("plExport").disabled = !shown;
@@ -3233,16 +3224,47 @@
         });
     }
 
-    async function renameProductList() {
+    // A dialog with one name field (New list, Rename). ``save(name)`` sends it; an error stays in the dialog.
+    function listNameDialog(title, subtitle, value, okText, save) {
+        const modal = productsDialog("plListNameModal", title, subtitle);
+        modal.querySelector(".pf-body").innerHTML = `<div class="form-group" style="margin:0"><label class="form-label" for="plListNameInput">List name</label>
+            <input type="text" class="form-input" id="plListNameInput" maxlength="64" value="${esc(value)}"></div>`;
+        modal.querySelector(".pf-ok").textContent = okText;
+        const input = byId("plListNameInput");
+        modal.onSave = async () => {
+            const error = modal.querySelector(".pf-error");
+            const name = input.value.trim();
+            if (!name) { error.textContent = "Type a name for the list."; input.focus(); return; }
+            try {
+                await save(name);
+                modal.classList.remove("active");
+            } catch (e) { error.textContent = e.message; }
+        };
+        input.onkeydown = (e) => { if (e.key === "Enter") modal.onSave(); };
+        modal.classList.add("active");
+        setTimeout(() => { input.focus(); input.select(); }, 0);
+    }
+
+    function newProductList() {
+        listNameDialog("New product list", "An empty list. Add codes below, import a file with Replace contents, or set its fields and code format.",
+            "", "Create", async (name) => {
+                const made = await api("/api/v1/products/lists", { method: "POST", body: { name } });
+                showProductList(made.id);
+                toast(`List '${made.name}' made`, "success");
+                await loadProductLists();
+                refreshProducts();
+            });
+    }
+
+    function renameProductList() {
         const shown = shownProductList();
         if (!shown) return;
-        const name = window.prompt("New name for this list:", shown.name);
-        if (!name || name.trim() === shown.name) return;
-        try {
-            await api(`/api/v1/products/lists/${encodeURIComponent(shown.id)}`, { method: "PUT", body: { name: name.trim() } });
+        listNameDialog(`Rename '${shown.name}'`, "The cameras set to this list keep using it.", shown.name, "Rename", async (name) => {
+            if (name === shown.name) return;
+            await api(`/api/v1/products/lists/${encodeURIComponent(shown.id)}`, { method: "PUT", body: { name } });
             toast("List renamed", "success");
             refreshProducts();
-        } catch (e) { toast(`Could not rename the list: ${e.message}`, "warning"); }
+        });
     }
 
     function deleteProductList() {
