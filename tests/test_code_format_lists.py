@@ -49,6 +49,9 @@ def test_a_new_format_applies_to_the_next_read(catalog):
     assert catalog.lookup("P-100", "L") is not None and catalog.lookup("P-100;B-1", "L") is None
     catalog.replace_list("L", "Juices", PRODUCTS)                       # no format sent: it keeps its format
     assert catalog.lookup("P-100", "L") is not None
+    catalog.replace_list("L", "Juices", PRODUCTS, code_format=SPLIT)
+    catalog.replace_list("L", "Juices", PRODUCTS)                       # (a product added or removed)
+    assert catalog.lookup("P-100;B-1", "L") is not None and catalog.lookup("P-100", "L") is None
 
 
 def test_lookup_any_uses_each_lists_format(catalog):

@@ -66,6 +66,7 @@ def test_gs1(text, want):
     ({"mode": "regex"}, "mode"),
     ({**SPLIT, "separator": ""}, "separator"),
     ({**SPLIT, "separator": "    "}, "separator"),
+    ({**SPLIT, "separator": "  "}, "separator"),                       # only spaces, short enough
     ({**SPLIT, "separator": "\t"}, "separator"),
     ({**SPLIT, "separator": ";;;;"}, "separator"),
     ({**SPLIT, "product_part": 0}, "product"),
