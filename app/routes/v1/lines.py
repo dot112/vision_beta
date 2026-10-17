@@ -417,6 +417,19 @@ async def plc_inputs_status(line_id: str, user: User = Depends(require_operator)
     return {"line_id": line_id, "running": PLCInputService.is_running(), "inputs": PLCInputService.get_status(line_id)}
 
 
+@router.get("/{line_id}/handshake", summary="The line's result handshake: its state, sequence and counters")
+async def line_handshake(line_id: str, user: User = Depends(require_operator)) -> Dict[str, Any]:
+    """``state``: idle, waiting_result (a capture request waits for its result) or result_ready (the
+    result went out and waits for the PLC's acknowledge); ``sequence`` of the request under way;
+    ``since`` (ISO time of the last change of state); ``last_result``; ``stale_acks``, ``timeouts``,
+    ``ack_timeouts``, ``duplicates`` and ``late`` (results that came after their timeout);
+    ``last_error``; ``settings``. ``enabled`` is false when the line has no handshake switched on."""
+    runtime = _manager().get(line_id)
+    if runtime is None or _svc().get_line(line_id, with_logic=False) is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    return {"line_id": line_id, **runtime.handshake.view()}
+
+
 @router.post("/{line_id}/plc-inputs/{input_id}/read", summary="Read a PLC signal's address once, now (Level 2+ Supervisor)")
 async def read_plc_input(
     line_id: str,

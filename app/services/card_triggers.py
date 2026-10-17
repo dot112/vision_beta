@@ -12,6 +12,8 @@ Events:
   line_state     the line was started or stopped
   input          an input of the line changed (input_id, value, previous)
   alarm          an alarm was raised or cleared
+  sorting_mismatch / sorting_verified   a sorting verification camera saw a product in an outfeed
+  handshake_fault  the line's result handshake went wrong
 
 Event fields used here: event_type, line_id, camera_id, counting_camera,
 joined_cameras (the cameras that join a product's result), result ("good" /
@@ -49,7 +51,16 @@ _TRIGGER_ALIASES = {
     "alarm": "alarm",
     "timer": "timer",
     "input": "input",
+    "sorting_mismatch": "sorting_mismatch",
+    "sorting_verified": "sorting_verified",
+    "handshake_fault": "handshake_fault",
 }
+# Line events that fire only the cards with their own trigger (the trigger is the event type):
+#   sorting_mismatch  a sorting verification camera saw a product in the other outfeed
+#   sorting_verified  ... in the outfeed its result sends it to
+#   handshake_fault   the result handshake went wrong (fault, no ack, a skipped ack)
+OWN_EVENT_TRIGGERS = ("sorting_mismatch", "sorting_verified", "handshake_fault")
+HANDSHAKE_FAULT_EVENT = "handshake_fault"
 # A send card that sends on its own clock (SendDispatcherService's timers), never for an event.
 TIMER_TRIGGER = "timer"
 
@@ -180,6 +191,12 @@ def trigger_matches(card: dict, event: dict) -> bool:
             return was and not now
         return condition == "change" and event.get("value") != event.get("previous")
 
+    # ── Sorting verification, handshake faults ────────────────────────────────
+    # Each fires only the cards with its own trigger, and these cards fire on nothing else.
+    is_own = event.get("event_type") in OWN_EVENT_TRIGGERS
+    if trigger in OWN_EVENT_TRIGGERS or is_own:
+        return trigger == event.get("event_type")
+
     # ── QR code triggers ──────────────────────────────────────────────────────
     # A code read on its own only fires code cards; a product's event carries
     # its code (or "no_read") and fires both kinds. With the condition
@@ -241,7 +258,7 @@ def camera_matches(card: dict, event: dict) -> bool:
     vision camera, so adding one does not double-fire existing cards. A vision
     camera that joins the counting camera's result sends no event of its own:
     a card naming it fires for the products it takes part in."""
-    if event.get("event_type") in (LINE_STATE_EVENT, ALARM_EVENT, INPUT_EVENT):
+    if event.get("event_type") in (LINE_STATE_EVENT, ALARM_EVENT, INPUT_EVENT, HANDSHAKE_FAULT_EVENT):
         return True  # a line starts or stops, an alarm goes on or off, an input changes: the line as a whole
     wanted = str(card.get("camera_id") or "").strip()
     if wanted:

@@ -447,6 +447,14 @@ class PLCInputService:
         old, new = change
         # Every accepted change goes to the cards with the trigger "Input changed", whatever the input's own action.
         cls._publish_input(card, old, new)
+        # And to the line itself (its result handshake's acknowledge).
+        runtime = cls._runtime(card)
+        if runtime is not None and hasattr(runtime, "on_input_change"):
+            try:
+                runtime.on_input_change(card.get("id"), old, new)
+            except Exception:
+                logger.exception("Input '%s' of line '%s': the line could not take its change",
+                                 card.get("name"), card.get("line_name"))
         if action == "none":
             return
         if action in ("run_level", "set_batch", "alarm") or edge_matches(str(card.get("edge") or "rising"), old, new):
@@ -588,6 +596,12 @@ class PLCInputService:
         sequence = await cls.read_sequence(runtime)
         if sequence is not None:
             context["sequence"] = sequence
+        # The line's result handshake, when this is its capture input.
+        request = runtime.capture_request(card.get("id"), sequence) if hasattr(runtime, "capture_request") else None
+        if request is not None:
+            if request["action"] == "duplicate":
+                return [{"status": "duplicate", "trigger_no": number, "sequence": sequence}]
+            context["request_id"] = request["request_id"]
         done = await asyncio.gather(
             *(cls._capture_camera(runtime, camera_id, number, context) for camera_id in cameras), return_exceptions=True,
         )

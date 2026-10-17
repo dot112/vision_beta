@@ -194,6 +194,43 @@ def test_the_sequence_stays_with_its_carton_when_the_plc_moves_on(carton):
     assert (payload["sequence"], plc_event["sequence"]) == (7, 7)
 
 
+def test_the_capture_reads_the_value_the_plc_holds_now_not_the_last_poll(carton):
+    runtime = _save(sequence_input_id="in_seq")
+
+    async def steps():
+        carton["plc"].values[SEQ] = 1
+        await _poll()                                   # the poll saw 1
+        carton["plc"].values[SEQ] = 2                   # the PLC moved on in the same scan as its request
+        card = next(c for c in PLCInputService._all if c["line_id"] == runtime.id and c["id"] == "in_capture")
+        await PLCInputService._capture(card)
+        await asyncio.sleep(0.08)
+
+    _run(steps)
+    assert carton["readers"]["cam1"].requests[0]["sequence"] == 2
+    assert runtime.sent[0][0]["sequence"] == 2
+
+
+def test_a_moving_product_takes_the_sequence_of_its_code(carton):
+    from tests.test_joined_cameras import _cross
+
+    runtime = _save(cameras=[{"camera_id": "top", "model_id": "model-test"}, READER], sequence_input_id="in_seq")
+    carton["readers"]["cam1"] = _Reader("cam1")
+
+    async def steps():
+        await _poll()
+        carton["plc"].values.update({SEQ: 3, CAP: True})
+        await _poll()
+        await asyncio.sleep(0.03)                       # the code of carton 3 is read
+        carton["plc"].values.update({SEQ: 4, CAP: False})
+        await _poll()
+        _cross(runtime.counter, "top")                  # carton 3 crosses the count line
+        await asyncio.sleep(0.05)
+
+    _run(steps)
+    (payload, plc_event), = runtime.sent
+    assert (payload["sequence"], plc_event["sequence"], payload["qr_code"]) == (3, 3, GOOD_QR)
+
+
 def test_a_code_only_carton_carries_the_sequence_of_its_read(carton):
     runtime = _save(cameras=[{**READER, "qr_no_read": "ignore"}], sequence_input_id="in_seq")
     carton["readers"]["cam1"] = reader = _Reader("cam1")

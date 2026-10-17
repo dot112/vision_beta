@@ -80,8 +80,12 @@ REASON_STATION_NO_RESULT = "station_no_result"
 REASON_NOTHING_DETECTED = "nothing_detected"
 # A product check of the line matched the product of the item's code (product_checks).
 REASON_PRODUCT_CHECK = "product_check"
+# The line's result handshake got no result for a capture request in time, and is set to reject then.
+REASON_INSPECTION_TIMEOUT = "inspection_timeout"
 REJECT_REASONS = (REASON_VISION, REASON_NOT_LISTED, REASON_LISTED, REASON_NO_CODE, REASON_STATION_NO_RESULT,
-                  REASON_NOTHING_DETECTED, REASON_PRODUCT_CHECK)
+                  REASON_NOTHING_DETECTED, REASON_PRODUCT_CHECK, REASON_INSPECTION_TIMEOUT)
+# A sorting verification camera saw a product in the other outfeed (a record's reason; no product gets it).
+REASON_SORTING_MISMATCH = "sorting_mismatch"
 # The reasons that come from a product's code.
 CODE_REASONS = (REASON_NOT_LISTED, REASON_LISTED, REASON_NO_CODE)
 
@@ -97,7 +101,8 @@ PLC_VALUE_SOURCES = ("fixed", "result_code", "good_count", "reject_count", "tota
 IF_MISSING = ("skip", "default")
 # A rejected product's reason as a number for the PLC (0: not rejected, 9: any other reason).
 REJECT_REASON_CODES = {REASON_VISION: 1, REASON_NOT_LISTED: 2, REASON_LISTED: 3, REASON_NO_CODE: 4,
-                       REASON_STATION_NO_RESULT: 5, REASON_NOTHING_DETECTED: 6, REASON_PRODUCT_CHECK: 7}
+                       REASON_STATION_NO_RESULT: 5, REASON_NOTHING_DETECTED: 6, REASON_PRODUCT_CHECK: 7,
+                       REASON_INSPECTION_TIMEOUT: 8}
 # Product checks: up to MAX_PRODUCT_CHECKS per line, each "reject when these rules pass".
 MAX_PRODUCT_CHECKS = 10
 # A product check decides the result, so its rules cannot use it.
@@ -166,7 +171,11 @@ SEND_PROTOCOLS = ("mqtt", "tcp", "webhook")
 CARD_TRIGGERS = (
     "cross_line", "good_counter", "reject_counter", "class",
     "qr_read", "qr_known", "qr_unknown", "qr_no_read", "line_state", "alarm", "timer", "input",
+    "sorting_mismatch", "sorting_verified", "handshake_fault",
 )
+# "sorting_mismatch" / "sorting_verified": a sorting verification camera saw a product in the
+# other outfeed / in its own. "handshake_fault": the result handshake went wrong (no result in
+# time under "fault", no ack in time, a capture that skipped the ack).
 # "input": an input of the line changed (input_id): off to on, on to off, or any change.
 INPUT_CONDITIONS = ("on", "off", "change")
 # "timer" (send cards only): a message every set_value ms, while the line runs or always.
@@ -1139,6 +1148,53 @@ def counting_camera(line: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return next((c for c in line.get("cameras") or [] if c.get("role") == "vision" and c.get("counting")), None)
 
 
+# The result handshake (``handshake``): capture request -> result -> the PLC's acknowledge.
+HANDSHAKE_TIMEOUT_LIMITS_MS = (100, 60000)
+DEFAULT_RESULT_TIMEOUT_MS = 3000
+DEFAULT_ACK_TIMEOUT_MS = 5000
+# What a capture request that gets no result in time becomes: a rejected product, or a fault. Never a pass.
+HANDSHAKE_ON_TIMEOUT = ("reject", "fault")
+
+
+def normalize_handshake(raw: Any, inputs: Optional[List[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+    """A line's result handshake settings, checked against its inputs; None for none. Raises ValueError.
+
+    Switched on, it needs one of the line's "Take a picture" inputs (the capture request) and another
+    input (the acknowledge). Switched off, it keeps its settings; inputs that are gone are dropped.
+    """
+    if raw in (None, "", {}):
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("The result handshake must be an object")
+    label = "Result handshake"
+    low, high = HANDSHAKE_TIMEOUT_LIMITS_MS
+    on_timeout = str(raw.get("on_timeout") or "reject").strip().lower()
+    if on_timeout not in HANDSHAKE_ON_TIMEOUT:
+        raise ValueError(f"{label}: no result in time must be 'reject' or 'fault' (never a pass)")
+    settings = {
+        "enabled": _bool(raw.get("enabled"), f"{label} on/off", False),
+        "capture_input_id": str(raw.get("capture_input_id") or "").strip() or None,
+        "ack_input_id": str(raw.get("ack_input_id") or "").strip() or None,
+        "result_timeout_ms": int(_number(raw.get("result_timeout_ms"), f"{label} result timeout",
+                                         DEFAULT_RESULT_TIMEOUT_MS, low, high)),
+        "ack_timeout_ms": int(_number(raw.get("ack_timeout_ms"), f"{label} ack timeout", DEFAULT_ACK_TIMEOUT_MS, low, high)),
+        "on_timeout": on_timeout,
+    }
+    by_id = {card["id"]: card for card in inputs or []}
+    if not settings["enabled"]:
+        for key in ("capture_input_id", "ack_input_id"):
+            if settings[key] not in by_id:
+                settings[key] = None
+        return settings
+    capture = by_id.get(settings["capture_input_id"] or "")
+    if capture is None or capture.get("action") != "capture":
+        raise ValueError(f"{label}: choose the line's 'Take a picture' input that asks for each result")
+    if settings["ack_input_id"] not in by_id or settings["ack_input_id"] == settings["capture_input_id"]:
+        raise ValueError(f"{label}: choose the input with which the PLC acknowledges the result "
+                         f"(another input of the line, for example with the action 'Only fires cards')")
+    return settings
+
+
 def _line_input(value: Any, inputs: Optional[List[Dict[str, Any]]], label: str) -> Optional[str]:
     """The id of one of the line's inputs that a line setting names; None for none. Raises ValueError."""
     if value in (None, ""):
@@ -1245,6 +1301,8 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
     _check_signal_cameras(inputs or [], cameras)
     # The input whose value is each carton's sequence number. A client that leaves it out keeps it.
     sequence_input_id = _line_input(merged.get("sequence_input_id"), inputs, "The product sequence input")
+    # Capture request -> result -> the PLC's acknowledge. A client that leaves it out keeps it.
+    handshake = normalize_handshake(merged.get("handshake"), inputs)
     # Where the line's products come from: a vision camera, or a sensor on the PLC.
     has_source = bool(vision) or bool(sensors)
 
@@ -1298,6 +1356,8 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
         line["product_checks"] = product_checks
     if sequence_input_id:
         line["sequence_input_id"] = sequence_input_id
+    if handshake is not None:
+        line["handshake"] = handshake
     for key in COUNTS_RESET_KEYS:
         if key in base:
             line[key] = copy.deepcopy(base[key])

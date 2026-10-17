@@ -69,6 +69,10 @@ class AlarmCode:
     RECORDS_DROPPED = "records.dropped"
     RECORDS_WRITE_FAILED = "records.write_failed"
     LINE_CODES_SHOW_ONLY = "line.codes_show_only"
+    LINE_INSPECTION_TIMEOUT = "line.inspection_timeout"
+    LINE_ACK_TIMEOUT = "line.ack_timeout"
+    LINE_HANDSHAKE_FAULT = "line.handshake_fault"
+    LINE_SORTING_MISMATCH = "line.sorting_mismatch"
 
 
 # Every well-known alarm, for pick-lists such as a PLC action's "Alarm" trigger.
@@ -94,6 +98,18 @@ ALARM_CATALOG: List[Dict[str, str]] = [
     {"code": "line.codes_show_only", "label": "Codes only shown", "group": "Lines",
      "severity": "warning", "scope": "line",
      "description": "Since the settings upgrade a camera of the line reads codes Continuously, which only shows them; choose when it reads codes on Line setup."},
+    {"code": "line.inspection_timeout", "label": "No inspection result in time", "group": "Lines",
+     "severity": "critical", "scope": "line",
+     "description": "The result handshake got no result for a capture request within its result timeout, and is set to raise a fault."},
+    {"code": "line.ack_timeout", "label": "PLC did not acknowledge the result", "group": "Lines",
+     "severity": "warning", "scope": "line",
+     "description": "The result handshake sent a result, but the PLC's acknowledge input did not come within its ack timeout."},
+    {"code": "line.handshake_fault", "label": "Result handshake out of step", "group": "Lines",
+     "severity": "warning", "scope": "line",
+     "description": "The PLC asked for a new picture before it acknowledged the last result, or before that result came."},
+    {"code": "line.sorting_mismatch", "label": "Product in the wrong outfeed", "group": "Lines",
+     "severity": "critical", "scope": "line",
+     "description": "A sorting verification camera saw a product in the outfeed that does not match its result."},
     {"code": "plc.action_failed", "label": "Output action failed", "group": "PLC",
      "severity": "critical", "scope": "line",
      "description": "One of the line's output actions could not be sent."},

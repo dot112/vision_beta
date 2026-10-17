@@ -26,6 +26,7 @@ from app.services.line_config import (
     CODE_REASONS,
     DEFAULT_SYNC_WINDOW_MS,
     PRIMARY_LINE_ID,
+    REASON_INSPECTION_TIMEOUT,
     REASON_PRODUCT_CHECK,
     REASON_VISION,
     camera_station,
@@ -86,13 +87,23 @@ class SyncPairer:
         except Exception:
             return None
 
+    @staticmethod
+    def _comparable(key: Any, other: Any) -> bool:
+        """Both sides name their product, the same way. Keys of two kinds, ``(kind, value)`` with
+        different kinds (a request number and a track), do not decide: the time does."""
+        if key is None or other is None:
+            return False
+        if isinstance(key, tuple) and isinstance(other, tuple) and key[:1] != other[:1]:
+            return False
+        return True
+
     def _pick(self, queue: Deque[_Pending], t: float, key: Any, key_fn: Optional[Callable[[Any], Any]]) -> Optional[_Pending]:
         first = None
         for pending in queue:
             if abs(t - pending.t) > self.window:
                 continue
             other = self._key(key_fn, pending.item)
-            if key is not None and other is not None:
+            if self._comparable(key, other):
                 if other == key:
                     return pending
                 continue  # another product
@@ -347,6 +358,48 @@ def _camera_name(camera_id: Optional[str]) -> Optional[str]:
     return getattr(app_state.cameras.get(camera_id or ""), "name", None)
 
 
+def _pair_key(item: Dict[str, Any]) -> Any:
+    """Which product a crossing or a read belongs to, for Sync: the result handshake's request
+    both carry (one "Take a picture" request), else the track a wire line capture carries."""
+    if item.get("request_id") is not None:
+        return ("request", item["request_id"])
+    return ("track", item["track_id"]) if item.get("track_id") is not None else None
+
+
+class _LoopTimer:
+    """``loop.call_later`` that can be started and cancelled from any thread."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, delay: float, fn: Callable[[], None]) -> None:
+        self._fn = fn
+        self._cancelled = False
+        self._handle: Optional[asyncio.TimerHandle] = None
+
+        def start() -> None:
+            if not self._cancelled:
+                self._handle = loop.call_later(max(0.0, delay), self._fire)
+
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            start()
+        else:
+            loop.call_soon_threadsafe(start)
+
+    def _fire(self) -> None:
+        if not self._cancelled:
+            try:
+                self._fn()
+            except Exception:
+                logger.exception("A line timer failed")
+
+    def cancel(self) -> None:
+        self._cancelled = True
+        if self._handle is not None:
+            self._handle.cancel()
+
+
 # ── One line ──────────────────────────────────────────────────────────────────
 
 class LineRuntime:
@@ -368,12 +421,8 @@ class LineRuntime:
         self.product_checks: List[Dict[str, Any]] = []
         # A crossing is the counter's record of a product that crossed the count
         # line and is not counted yet; a triggered capture's read carries the
-        # track of the product that triggered it.
-        self.pairer = SyncPairer(
-            DEFAULT_SYNC_WINDOW_MS / 1000.0,
-            crossing_key=lambda crossing: crossing.get("track_id"),
-            read_key=lambda read: read.get("track_id"),
-        )
+        # track of the product that triggered it, or the result handshake's request.
+        self.pairer = SyncPairer(DEFAULT_SYNC_WINDOW_MS / 1000.0, crossing_key=_pair_key, read_key=_pair_key)
         # QR readers that take one picture per product: {camera_id: (wire line, delay s)}
         self.capture_triggers: Dict[str, Tuple[int, float]] = {}
         # Code readers that take one picture each time a PLC signal asks.
@@ -392,6 +441,10 @@ class LineRuntime:
         self.batch = ""
         # The input whose value is each carton's sequence number (None: the line has none).
         self.sequence_input_id: Optional[str] = None
+        # Capture request -> result -> the PLC's acknowledge (switched off unless the line sets it).
+        from app.services.handshake import Handshake
+        self.handshake = Handshake(schedule=self._schedule_timer, on_result_timeout=self._handshake_result_timeout,
+                                   on_ack_timeout=self._handshake_ack_timeout)
         # Batches from codes that the line refused (said once each).
         self._batch_errors: set = set()
         self.last_capture: Optional[Dict[str, Any]] = None
@@ -455,8 +508,11 @@ class LineRuntime:
         self.has_product_sensor = bool(product_sensors(line))
         self.set_batch(str(line.get("batch") or ""))
         self.sequence_input_id = line.get("sequence_input_id") or None
-        # Each product's one event passes the line first when the line adds to it.
-        self.counter.product_hook = self._product_finished if self.sequence_input_id else None
+        self.handshake.configure(line.get("handshake"))
+        # Each product's one event passes the line first when the line adds to it or waits for it.
+        self.counter.product_hook = self._product_finished if self.sequence_input_id or self.handshake.enabled else None
+        # A product whose capture request already got its one result (a timeout) is not counted again.
+        self.counter.product_gate = self._admit_product if self.handshake.enabled else None
 
         self.code_checks = code_checks(self.cameras)
         self.product_checks = [c for c in copy.deepcopy(line.get("product_checks") or []) if c.get("enabled", True)]
@@ -915,6 +971,8 @@ class LineRuntime:
             for key in ("sequence", "request_id"):
                 if crossing.get(key) is None and read.get(key) is not None:
                     crossing[key] = read[key]
+        if self.handshake.enabled and not self._admit_product(crossing):
+            return
         sequence = self._product_sequence(crossing)
         # One result per product: the vision camera's, the joined cameras' and,
         # where a camera checks codes, the paired code's (or the missing code's);
@@ -1009,6 +1067,142 @@ class LineRuntime:
         sequence = self._product_sequence(crossing)
         if sequence is not None:
             payload["sequence"] = plc_event["sequence"] = sequence
+        self._handshake_result(crossing, plc_event.get("result"))
+
+    # ── Result handshake ──────────────────────────────────────────────────────
+
+    def _schedule_timer(self, delay: float, fn: Callable[[], None]) -> Optional[_LoopTimer]:
+        loop = self._loop()
+        return _LoopTimer(loop, delay, fn) if loop is not None else None
+
+    def _alarm_source(self, what: str) -> str:
+        return f"line:{self.id}:{what}"
+
+    def capture_request(self, input_id: Optional[str], sequence: Any) -> Optional[Dict[str, Any]]:
+        """A "Take a picture" input fired with this sequence: its request in the line's result handshake.
+
+        None when the handshake is off or this is not its capture input. ``action`` "duplicate":
+        the sequence is still in the handshake, so no picture is taken. A capture that skipped the
+        ack, or came before the last result, is reported as a fault and goes ahead.
+        """
+        if not input_id or input_id != self.handshake.capture_input_id:
+            return None
+        answer = self.handshake.capture(sequence)
+        if answer is None:
+            return None
+        if answer["action"] == "duplicate":
+            logger.warning("Line '%s': the PLC asked again for sequence %s, which is still in the result handshake; "
+                           "ignored (no picture)", self.name, sequence)
+        elif answer["fault"]:
+            self._handshake_fault(answer["fault"], sequence)
+        return answer
+
+    def on_input_change(self, input_id: Optional[str], old: Any, new: Any) -> None:
+        """An accepted change of one of the line's inputs (the PLC input service, on the loop)."""
+        from app.services.plc_input_service import truthy
+
+        if not input_id or input_id != self.handshake.ack_input_id or not truthy(new) or truthy(old):
+            return
+        from app.events.alarm_events import AlarmCode, alarm_manager
+
+        # The PLC acknowledged: a sorting fault it was shown is acknowledged with it.
+        alarm_manager.clear_alarm(AlarmCode.LINE_SORTING_MISMATCH, self._alarm_source("sorting"), "the PLC acknowledged")
+        if self.handshake.ack() == "done":
+            for code in (AlarmCode.LINE_ACK_TIMEOUT, AlarmCode.LINE_HANDSHAKE_FAULT):
+                alarm_manager.clear_alarm(code, self._alarm_source("handshake"), "the PLC acknowledged the result")
+            return
+        logger.warning("Line '%s': the PLC acknowledged with no result waiting for its acknowledge (handshake %s); "
+                       "ignored", self.name, self.handshake.state)
+
+    def _admit_product(self, item: Dict[str, Any]) -> bool:
+        """False for a product whose capture request timed out: the timeout gave its one result."""
+        if item.get("handshake_timeout") or not self.handshake.is_closed(item.get("request_id")):
+            return True
+        self.handshake.note_late()
+        logger.warning("Line '%s': the result for sequence %s came after its result timeout; the timeout's result "
+                       "stands and this one is not counted", self.name, item.get("sequence"))
+        return False
+
+    def _handshake_result(self, item: Dict[str, Any], result: Optional[str]) -> None:
+        """A product's one result went out: the handshake waits for the PLC's acknowledge now."""
+        if not self.handshake.enabled or result not in ("good", "reject"):
+            return
+        timeout = bool(item.get("handshake_timeout"))
+        if self.handshake.result(item.get("request_id"), result, timeout=timeout) and not timeout:
+            from app.events.alarm_events import AlarmCode, alarm_manager
+            alarm_manager.clear_alarm(AlarmCode.LINE_INSPECTION_TIMEOUT, self._alarm_source("handshake"),
+                                      "a result came in time")
+
+    def _handshake_result_timeout(self, request: Any, policy: str) -> None:
+        """No result in time for a capture request (handshake timer, on the loop): a reject, or a fault."""
+        from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
+
+        timeout_ms = self.handshake.settings.get("result_timeout_ms")
+        if policy == "fault":
+            alarm_manager.raise_alarm(
+                AlarmCode.LINE_INSPECTION_TIMEOUT, self._alarm_source("handshake"),
+                f"Line '{self.name}': no inspection result for sequence {request.sequence} within {timeout_ms} ms.",
+                AlarmSeverity.CRITICAL, {"line_id": self.id, "sequence": request.sequence},
+            )
+            self._publish_handshake_fault("inspection_timeout", request.sequence)
+            return
+        logger.warning("Line '%s': no inspection result for sequence %s within %s ms; the carton is rejected",
+                       self.name, request.sequence, timeout_ms)
+        with self._trigger_seq_lock:
+            self._trigger_seq += 1
+            track_id = self._trigger_seq
+        crossing = self.counter.make_crossing("inspection timeout", True, track_id=track_id,
+                                              camera_id=self.counting_camera_id)
+        crossing.update({"reject_reason": REASON_INSPECTION_TIMEOUT, "request_id": request.id, "handshake_timeout": True})
+        if request.sequence is not None:
+            crossing["sequence"] = request.sequence
+        self._remember(None, "no_result", paired=None, class_name=crossing["class_name"], result="reject",
+                       reason=REASON_INSPECTION_TIMEOUT, sequence=request.sequence)
+        self.counter.finish_crossing(crossing, reject=True, reason=REASON_INSPECTION_TIMEOUT)
+
+    def _handshake_ack_timeout(self, request: Any) -> None:
+        from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
+
+        alarm_manager.raise_alarm(
+            AlarmCode.LINE_ACK_TIMEOUT, self._alarm_source("handshake"),
+            f"Line '{self.name}': the PLC did not acknowledge the result of sequence {request.sequence} within "
+            f"{self.handshake.settings.get('ack_timeout_ms')} ms.",
+            AlarmSeverity.WARNING, {"line_id": self.id, "sequence": request.sequence},
+        )
+        self._publish_handshake_fault("ack_timeout", request.sequence)
+
+    def _handshake_fault(self, fault: str, sequence: Any) -> None:
+        """The PLC asked for a picture out of step: an alarm and the "Handshake fault" cards."""
+        from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
+
+        what = ("before it acknowledged the last result" if fault == "skipped_ack"
+                else "before the last request had its result")
+        alarm_manager.raise_alarm(
+            AlarmCode.LINE_HANDSHAKE_FAULT, self._alarm_source("handshake"),
+            f"Line '{self.name}': the PLC asked for a picture (sequence {sequence}) {what}.",
+            AlarmSeverity.WARNING, {"line_id": self.id, "sequence": sequence, "fault": fault},
+        )
+        self._publish_handshake_fault(fault, sequence)
+
+    def _publish_handshake_fault(self, fault: str, sequence: Any) -> None:
+        """The event the "Handshake fault" output actions and send cards fire on."""
+        payload: Dict[str, Any] = {
+            "event": "HANDSHAKE_FAULT",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "line_id": self.id,
+            "line_name": self.name,
+            "fault": fault,
+        }
+        plc_event: Dict[str, Any] = {
+            "event_type": "handshake_fault",
+            "event_id": f"handshake_{self.id}_{time.time_ns()}",
+            "line_id": self.id,
+            "fault": fault,
+            "timestamp": time.time(),
+        }
+        if sequence is not None:
+            payload["sequence"] = plc_event["sequence"] = sequence
+        self._publish(("handshake",), payload, plc_event)
 
     @staticmethod
     def _station_rows(product: _Product) -> List[Dict[str, Any]]:
@@ -1191,6 +1385,8 @@ class LineRuntime:
     def _emit_code_product(self, read: Dict[str, Any]) -> None:
         """A code read on a line without a vision camera, by a camera that checks codes:
         the read is one product, good or reject, counted like any other product."""
+        if self.handshake.enabled and not self._admit_product(read):
+            return
         self._product_sequence(read)
         reason = code_verdict(self.code_checks[read["camera_id"]]["action"], read["known"])
         check = self._failed_check(read) if reason is None else None
@@ -1227,6 +1423,7 @@ class LineRuntime:
             "delay_from_crossing": True,
         })
         # The product's class in the records is the name its count is kept under.
+        self._handshake_result(read, self._result(reject))
         self._record(payload, "product", counted=True, class_name=class_name, track_id=read.get("track_id"),
                      product_list_id=read.get("product_list_id"))
         self._publish(("qr_code", "reading"), payload, plc_event)
@@ -1240,6 +1437,7 @@ class LineRuntime:
         for aux in self.aux_counters.values():
             aux.reset_counts()
         self.assembly.reset_stats()
+        self.handshake.reset_counts()
         with self._lock:
             for key in self.qr_stats:
                 self.qr_stats[key] = 0
@@ -1307,6 +1505,7 @@ class LineManager:
             for gone in set(self._lines) - set(seen):
                 runtime = self._lines.pop(gone)
                 runtime.counter.event_sink = None
+                runtime.handshake.stop()
             if PRIMARY_LINE_ID not in self._lines:
                 self._lines[PRIMARY_LINE_ID] = LineRuntime(PRIMARY_LINE_ID, "Line 1", counting_service)
                 seen.insert(0, PRIMARY_LINE_ID)
@@ -1813,6 +2012,8 @@ class LineManager:
             "qr": qr_stats,
             "last_capture_id": last_capture_id,
             "active_alarms": len(alarms),
+            # The result handshake, when the line has it switched on.
+            "handshake": runtime.handshake.view() if runtime.handshake.enabled else None,
         }
 
     def overview(self) -> List[Dict[str, Any]]:
