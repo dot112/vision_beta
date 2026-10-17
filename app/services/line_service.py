@@ -364,6 +364,11 @@ def _camera_name(camera_id: Optional[str]) -> Optional[str]:
     return getattr(app_state.cameras.get(camera_id or ""), "name", None)
 
 
+def _carton(sequence: Any) -> str:
+    """How a message names a product: by its sequence number when it has one."""
+    return f"sequence {sequence}" if sequence is not None else "the product (no sequence)"
+
+
 def _pair_key(item: Dict[str, Any]) -> Any:
     """Which product a crossing or a read belongs to, for Sync: the result handshake's request
     both carry (one "Take a picture" request), else the track a wire line capture carries."""
@@ -1163,11 +1168,11 @@ class LineRuntime:
         if sequence is not None:
             plc_event["sequence"] = sequence
         if outcome == "mismatch":
-            logger.warning("Line '%s': carton %s (code %r, %s) is in the %s outfeed, expected the %s outfeed",
-                           self.name, sequence, read["code"], entry["result"], lane, expected)
+            logger.warning("Line '%s': %s (code %r, %s) is in the %s outfeed, expected the %s outfeed",
+                           self.name, _carton(sequence), read["code"], entry["result"], lane, expected)
             alarm_manager.raise_alarm(
                 AlarmCode.LINE_SORTING_MISMATCH, self._alarm_source("sorting"),
-                f"Line '{self.name}': carton {sequence if sequence is not None else ''} (code {read['code']}) "
+                f"Line '{self.name}': {_carton(sequence)} (code {read['code']}) "
                 f"is in the {lane} outfeed; its result sends it to the {expected} outfeed.",
                 AlarmSeverity.CRITICAL,
                 {"line_id": self.id, "camera_id": read["camera_id"], "code": read["code"], "sequence": sequence,
@@ -1264,13 +1269,13 @@ class LineRuntime:
         if policy == "fault":
             alarm_manager.raise_alarm(
                 AlarmCode.LINE_INSPECTION_TIMEOUT, self._alarm_source("handshake"),
-                f"Line '{self.name}': no inspection result for sequence {request.sequence} within {timeout_ms} ms.",
+                f"Line '{self.name}': no inspection result for {_carton(request.sequence)} within {timeout_ms} ms.",
                 AlarmSeverity.CRITICAL, {"line_id": self.id, "sequence": request.sequence},
             )
             self._publish_handshake_fault("inspection_timeout", request.sequence)
             return
-        logger.warning("Line '%s': no inspection result for sequence %s within %s ms; the carton is rejected",
-                       self.name, request.sequence, timeout_ms)
+        logger.warning("Line '%s': no inspection result for %s within %s ms; it is rejected",
+                       self.name, _carton(request.sequence), timeout_ms)
         with self._trigger_seq_lock:
             self._trigger_seq += 1
             track_id = self._trigger_seq
@@ -1288,7 +1293,7 @@ class LineRuntime:
 
         alarm_manager.raise_alarm(
             AlarmCode.LINE_ACK_TIMEOUT, self._alarm_source("handshake"),
-            f"Line '{self.name}': the PLC did not acknowledge the result of sequence {request.sequence} within "
+            f"Line '{self.name}': the PLC did not acknowledge the result of {_carton(request.sequence)} within "
             f"{self.handshake.settings.get('ack_timeout_ms')} ms.",
             AlarmSeverity.WARNING, {"line_id": self.id, "sequence": request.sequence},
         )
@@ -1302,7 +1307,7 @@ class LineRuntime:
                 else "before the last request had its result")
         alarm_manager.raise_alarm(
             AlarmCode.LINE_HANDSHAKE_FAULT, self._alarm_source("handshake"),
-            f"Line '{self.name}': the PLC asked for a picture (sequence {sequence}) {what}.",
+            f"Line '{self.name}': the PLC asked for a picture ({_carton(sequence)}) {what}.",
             AlarmSeverity.WARNING, {"line_id": self.id, "sequence": sequence, "fault": fault},
         )
         self._publish_handshake_fault(fault, sequence)
