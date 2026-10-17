@@ -953,7 +953,8 @@
         const countMode = cam.count_mode === "trigger" ? "trigger" : "track";
         const noProduct = cam.no_product || "ignore";
         const readOnly = level() < 2;
-        const fold = (name, title, body) => foldHtml(name, title, body, openSet.has(name));
+        // A camera the version 9 upgrade flagged opens on its Codes, where its note is.
+        const fold = (name, title, body) => foldHtml(name, title, body, openSet.has(name) || (name === "codes" && Boolean(cam.qr_trigger_review)));
 
         const cameraBody = `
             <div class="form-group"><label class="form-label">Device</label><select class="form-input" data-f="device">${deviceOptions(cam.camera_id, null)}</select>
@@ -1026,10 +1027,13 @@
             <div class="form-group"><label class="form-label">Code type</label><select class="form-input" data-f="code_type">${codeTypeOptions(codeType)}</select>
                 <div class="pl-note">Only codes of this type are read; any other code in the picture is ignored. 2D and 1D read every type of that kind.</div></div>
             <div class="form-group"><label class="form-label">Read codes</label><select class="form-input" data-f="qr_trigger">
-                ${option("continuous", "Continuously, on every frame", trigger1)}${option("line1", "One picture when a product crosses wire line 1", trigger1)}${option("line2", "One picture when a product crosses wire line 2", trigger1)}${option("signal", "When an input asks", trigger1)}</select>
+                ${option("continuous", "Continuously (show only: sends and saves nothing)", trigger1)}${option("line1", "One picture when a product crosses wire line 1", trigger1)}${option("line2", "One picture when a product crosses wire line 2", trigger1)}${option("signal", "When an input asks", trigger1)}</select>
                 <div class="pl-note pl-trigger-note"></div>
                 <div class="pl-triggers" data-for="codes" hidden></div>
-                <div class="pl-warn pl-trigger-warn" hidden>The counting camera takes one picture per trigger and tracks nothing across its count lines, so no product crosses a wire line. Choose "When an input asks" or "Continuously".</div></div>
+                <div class="pl-warn pl-trigger-warn" hidden>The counting camera takes one picture per trigger and tracks nothing across its count lines, so no product crosses a wire line. Choose "When an input asks".</div>
+                <div class="pl-warn pl-review" hidden><span>Since the upgrade this camera only shows codes. Choose when it reads codes.</span>
+                    <span class="pl-review-first"></span>
+                    <button type="button" class="btn-action btn-outline pl-review-keep" style="margin-top:6px">Keep show only</button></div></div>
             <div class="form-group pl-trigger-delay"><label class="form-label pl-trigger-delay-label">Picture delay after the crossing (ms)</label>
                 <input type="number" class="form-input" data-f="qr_delay" min="0" max="10000" step="10" value="${esc(cam.qr_trigger_delay_ms || 0)}">
                 <div class="pl-note">For a code camera further along the belt: how long the product takes to reach it. 0 = at once.</div></div>
@@ -1046,7 +1050,7 @@
                 <div class="pl-note">Ignore: the product is good or bad according to the vision camera alone.</div></div>`;
 
         return `
-            <div class="card-panel pl-card" data-key="${key}" data-camera="${esc(cam.camera_id)}">
+            <div class="card-panel pl-card" data-key="${key}" data-camera="${esc(cam.camera_id)}" data-review="${cam.qr_trigger_review ? 1 : 0}">
                 <div class="pl-card-head">
                     <div class="pl-card-title">
                         <span class="pl-dot pl-card-dot"></span>
@@ -1155,7 +1159,8 @@
         accept_listed: "A product whose code is not in the product list is rejected. A product is good only when the vision camera found it good and its code is in the list.",
         reject_listed: "A product whose code is in the product list is rejected. A product is good only when the vision camera found it good and its code is not in the list.",
     };
-    const READER_ONLY_NOTE = " This line has no vision camera, so each code read counts as one product, good or reject. The same code counts again only after it has been out of view for the hold time: counting is reliable when products pass further apart than that. For exact counts, add a vision camera.";
+    const READER_ONLY_NOTE = " This line has no vision camera, so each picture an input asks for is one product, good or reject.";
+    const SHOWN_ONLY_NOTE = "Read codes \"Continuously\" only shows the codes: they are not reported or checked. Choose a wire line or \"When an input asks\" to use them.";
     const JOB_NOTES = {
         counting: "Line totals come from this camera. Exactly one vision camera counts.",
         counting_qr: "Counts and inspects with the AI model and reads codes on the same picture, for a line with one camera.",
@@ -1171,6 +1176,22 @@
     const setupHasSource = () => setupHasVision() || Boolean(window.PlcSignals && window.PlcSignals.hasProductSensor && window.PlcSignals.hasProductSensor());
 
     // Show the folds and fields that apply to a card's job and choices.
+    // The note on a camera the version 9 upgrade flagged: it reads Continuously, which only shows codes.
+    // "Keep show only" is offered only when the line could be saved that way (no code check on it, and
+    // Sync does not depend on it).
+    function syncReviewNote(card, trigger, checks) {
+        const note = card.querySelector(".pl-review");
+        if (!note) return;
+        const flagged = card.dataset.review === "1" && trigger === "continuous";
+        note.hidden = !flagged;
+        if (!flagged) return;
+        const syncOn = Boolean(byId("plSync") && byId("plSync").checked);
+        const otherReader = cardsOnPage().some((c) => c !== card && JOBS[cardJob(c)].codes && cardValue(c, "qr_trigger") !== "continuous");
+        const canKeep = !checks && (!syncOn || otherReader);
+        note.querySelector(".pl-review-keep").hidden = !canKeep;
+        note.querySelector(".pl-review-first").textContent = canKeep ? "" : " First choose a trigger, or switch off its code check / Sync.";
+    }
+
     function syncCard(card, index) {
         const job = cardJob(card);
         const row = cameraRow(card.dataset.camera);
@@ -1196,7 +1217,10 @@
         card.querySelector(".pl-trigger-delay-label").textContent = `Picture delay after the ${trigger === "signal" ? "signal" : "crossing"} (ms)`;
         card.querySelector(".pl-trigger-note").textContent = trigger === "signal"
             ? "A picture is taken each time an input with the action \"Take a picture\" names this camera (add it under Inputs below). It shows on the Line dashboard with every code outlined."
-            : "A picture is taken each time the counting camera sees a product cross the chosen wire line. It shows on the Line dashboard with every code outlined.";
+            : trigger === "continuous"
+                ? "Codes are only shown: on the camera's picture and in the line's recent reads. Nothing goes to the PLC, messages or records. To use the codes, choose a wire line or \"When an input asks\"."
+                : "A picture is taken each time the counting camera sees a product cross the chosen wire line. It shows on the Line dashboard with every code outlined.";
+        syncReviewNote(card, trigger, checks);
         // A counting camera in trigger mode tracks nothing, so no product crosses a wire line.
         const noCrossings = cardsOnPage().some((c) => isCountingJob(cardJob(c)) && cardValue(c, "count_mode") === "trigger");
         const triggerSelect = cardField(card, "qr_trigger");
@@ -1210,7 +1234,8 @@
         card.querySelector(".pl-hold").hidden = trigger !== "continuous";
         // "No code was read" only exists where the line knows a product was there.
         card.querySelector(".pl-no-read").hidden = !(checks && hasVision);
-        card.querySelector(".pl-action-note").textContent = (ACTION_NOTES[action] || "") + (checks && !hasVision ? READER_ONLY_NOTE : "");
+        card.querySelector(".pl-action-note").textContent = trigger === "continuous" ? SHOWN_ONLY_NOTE
+            : (ACTION_NOTES[action] || "") + (checks && !hasVision ? READER_ONLY_NOTE : "");
         // Counting: products tracked across the count lines, or one picture per trigger
         const triggerMode = cardValue(card, "count_mode") === "trigger";
         card.querySelector(".pl-no-product").hidden = !triggerMode;
@@ -1234,7 +1259,7 @@
                     : "Each ticked trigger makes the server trigger the camera, and that picture is read.";
             } else if (trigger === "continuous") {
                 readNote.textContent = camTrigger === "hardware"
-                    ? "Used like a video: a code that stays in view counts once."
+                    ? "Used like a video: its codes are only shown. Choose \"When an input asks\" to read every picture it takes."
                     : "A camera on Software trigger reads nothing continuously. Choose \"When an input asks\" or a wire line.";
             } else {
                 readNote.textContent += camTrigger === "hardware"
@@ -1967,6 +1992,15 @@
         renderChecks();
         syncLineSetup();
         byId("plSaveSetup").addEventListener("click", saveLineSetup);
+        // "Keep show only" on a camera the upgrade flagged: clear its flag and save the line.
+        byId("plCamGrid").addEventListener("click", (e) => {
+            const keep = e.target.closest(".pl-review-keep");
+            if (!keep) return;
+            const camCard = keep.closest(".pl-card");
+            camCard.dataset.review = "0";
+            camCard.querySelector(".pl-review").hidden = true;
+            saveLineSetup();
+        });
         byId("plStartLine")?.addEventListener("click", () => runLine("start"));
         byId("plStopLine")?.addEventListener("click", () => runLine("stop"));
         byId("plResetCounts").addEventListener("click", () => { if (typeof confirmResetAllCounts === "function") confirmResetAllCounts(); });
@@ -2121,6 +2155,8 @@
                 qr_action: cardValue(card, "qr_action") || "report",
                 product_list_id: cardValue(card, "qr_list") || null,
                 qr_no_read: cardValue(card, "qr_no_read") || "ignore",
+                // Sent back as it is: "Keep show only" clears it, a trigger drops it on the server.
+                qr_trigger_review: card.dataset.review === "1",
             });
         }
         // The triggers ticked on the card, while the camera takes one picture per trigger.
