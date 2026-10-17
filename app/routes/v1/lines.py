@@ -71,7 +71,8 @@ async def _view(line_id: str, with_logic: bool) -> Dict[str, Any]:
         line["warnings"] = [
             await _name_cameras(warning, line.get("cameras"))
             for warning in line_warnings(line, await _model_info(line), products_per_minute=rate,
-                                         trigger_modes=await _trigger_modes(line.get("cameras")))
+                                         trigger_modes=await _trigger_modes(line.get("cameras")),
+                                         list_formats=_list_formats())
         ]
     return line
 
@@ -224,6 +225,13 @@ async def _camera_names(cameras: Any) -> Dict[str, str]:
         if camera_id not in names and driver_name:
             names[camera_id] = driver_name
     return names
+
+
+def _list_formats() -> Dict[str, Dict[str, Any]]:
+    """Each product list's code format, for the line warnings (a list missing reads whole codes)."""
+    from app.services.product_service import product_catalog
+
+    return product_catalog.formats()
 
 
 async def _trigger_modes(cameras: Any) -> Dict[str, str]:

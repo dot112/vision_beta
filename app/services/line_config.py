@@ -215,7 +215,7 @@ CAMERA_KEPT_KEYS = CAMERA_MODEL_KEYS + (
     "confidence", "station", "count_mode", "no_product",
 ) + JOIN_KEYS
 # Settings of a camera that reads codes that a client written before them does not send.
-READER_KEPT_KEYS = ("qr_trigger_review",)
+READER_KEPT_KEYS = ("qr_trigger_review", "code_sets_batch")
 # The count lines a vision camera copies from its line's action_trigger (version 8 step).
 COUNT_LINE_KEYS = ("line1_position", "line2_position", "orientation")
 # Once kept per line in action_trigger; an older client that still sends them is ignored.
@@ -438,6 +438,9 @@ def normalize_camera(raw: Any, index: int) -> Dict[str, Any]:
         # user has not chosen when it reads them. Kept until it reads on a trigger, or is cleared.
         if trigger == "continuous" and raw.get("qr_trigger_review") is True:
             camera["qr_trigger_review"] = True
+        # A listed product's batch (from its code, by its list's code format) becomes the line's batch.
+        if _bool(raw.get("code_sets_batch"), f"{label} code sets the line's batch", False):
+            camera["code_sets_batch"] = True
     if role == "vision":
         # The model that runs on this camera (AI models page). None only on a
         # camera saved before models were picked per camera: nothing is detected on it.
@@ -1714,7 +1717,8 @@ def model_warnings(line: Dict[str, Any], models: Dict[str, Dict[str, Any]]) -> L
 
 
 def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any]]] = None,
-                  products_per_minute: float = 0.0, trigger_modes: Optional[Dict[str, str]] = None) -> List[str]:
+                  products_per_minute: float = 0.0, trigger_modes: Optional[Dict[str, str]] = None,
+                  list_formats: Optional[Dict[str, Dict[str, Any]]] = None) -> List[str]:
     """Things about a saved line the user should look at; none of them stops the line.
 
     ``models`` adds the warnings about the vision cameras' models (model_warnings).
@@ -1723,6 +1727,8 @@ def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any
     ``trigger_modes``: by camera id, the Trigger of an industrial camera ("hardware":
     a signal on its own input takes each picture, "software": the server does). It is
     the camera's own setting, which a line's settings do not hold.
+    ``list_formats``: each product list's code format (a list missing reads whole codes); with
+    it, a camera that sets the line's batch from codes that hold none is warned about.
     """
     modes = trigger_modes or {}
     warnings: List[str] = model_warnings(line, models) if models is not None else []
@@ -1741,6 +1747,13 @@ def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any
                 f"on is ticked on its card, so it reads no codes. Tick a trigger under Read codes, or add an "
                 f"input with the action 'Take a picture' under Inputs."
             )
+        if list_formats is not None and cam.get("code_sets_batch") and reads_codes(cam):
+            fmt = list_formats.get(cam.get("product_list_id") or "") or {"mode": "whole"}
+            if not (fmt.get("mode") == "gs1" or (fmt.get("mode") == "split" and fmt.get("batch_part"))):
+                warnings.append(
+                    f"Camera {index + 1} sets the line's batch from its codes, but the codes of its product list "
+                    f"have no batch part. Set the list's Code format on the Products page."
+                )
         if mode == "hardware" and reads_codes(cam) and not reads_codes_triggered(cam):
             warnings.append(
                 f"Camera {index + 1} takes a picture on its own input, but Read codes 'Continuously' only shows "

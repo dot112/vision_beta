@@ -333,6 +333,14 @@ class ProductAssembly:
                     stats[key] = 0
 
 
+@dataclass
+class CodeActor:
+    """Who the audit log names for a batch a code set: the camera (as PLCActor names a PLC channel)."""
+    username: str                # "camera:<camera name>"
+    role: str = "CAMERA"
+    clearance_level: int = 2
+
+
 def _camera_name(camera_id: Optional[str]) -> Optional[str]:
     from app.state.application_state import app_state
 
@@ -382,6 +390,8 @@ class LineRuntime:
         self._trigger_locks: Dict[str, asyncio.Lock] = {}
         # The line's batch (work order) number, "" for none.
         self.batch = ""
+        # Batches from codes that the line refused (said once each).
+        self._batch_errors: set = set()
         self.last_capture: Optional[Dict[str, Any]] = None
         self._capture_jpeg: Optional[bytes] = None
         self._capture_seq = 0
@@ -748,6 +758,7 @@ class LineRuntime:
         self._publish(("qr_code",), payload, plc_event)
 
     def _handle_read(self, read: Dict[str, Any]) -> None:
+        self._batch_from_code(read)
         if self.sync_enabled:
             self._process(self.pairer.add_read(read["t"], read))
             self._schedule_expiry()
@@ -758,6 +769,25 @@ class LineRuntime:
             self._emit_code_product(read)
         else:
             self._emit_qr(read, paired=None)
+
+    def _batch_from_code(self, read: Dict[str, Any]) -> None:
+        """A camera set to it makes a listed product's batch the line's batch (written to the audit log).
+
+        Only a triggered read comes here: a code read Continuously is only shown.
+        """
+        batch = read.get("code_batch")
+        entry = self.camera_entry(read["camera_id"]) or {}
+        if not entry.get("code_sets_batch") or not read.get("product") or not batch or batch == self.batch:
+            return
+        from app.routes.v1.lines import set_line_batch
+
+        try:
+            set_line_batch(self.id, batch, CodeActor(f"camera:{_camera_name(read['camera_id']) or read['camera_id']}"))
+        except Exception as exc:
+            # The carton keeps its own batch; the line keeps its batch. Said once per batch.
+            if batch not in self._batch_errors:
+                self._batch_errors.add(batch)
+                logger.warning("Line %s: the batch %r of a code could not become the line's batch: %s", self.id, batch, exc)
 
     def sensor_product(self) -> None:
         """A PLC sensor saw one product (a line without a vision camera). Called on the event loop.

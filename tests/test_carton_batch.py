@@ -196,3 +196,76 @@ def test_a_whole_code_list_sends_the_messages_it_sent(cartons):
     assert plc_event["product_id"] == "P-100"                                 # rules and writes still have it
     assert render_template("{product_id}", {"code": "P-100"}) == "P-100"
     assert render_template("[{product_id}]", {"code": "P-100", "code_problem": "no separator"}) == "[]"
+
+
+# ── The code's batch sets the line's batch ────────────────────────────────────
+
+from app.services.line_config import line_warnings, normalize_camera  # noqa: E402
+from app.services.settings_persistence_service import SettingsPersistenceService  # noqa: E402
+
+SETS = {**READER, "code_sets_batch": True}
+
+
+def _batch_audit(runtime):
+    logs = SettingsPersistenceService.get_audit_logs(line_id=runtime.id)
+    return [(entry["username"], entry["action"]) for entry in reversed(logs) if entry["action"] == "SET_BATCH"]
+
+
+def _reads(runtime, *codes, camera_id="qr"):
+    async def steps():
+        for code in codes:
+            runtime.on_qr_read(camera_id, code, "QR_CODE")
+            await asyncio.sleep(0.03)
+    _run(steps)
+
+
+def test_a_listed_carton_sets_the_lines_batch(cartons):
+    runtime = _line(cartons, [VISION, SETS])
+    _watch(runtime)
+    _reads(runtime, "P-100;B-2")
+    assert runtime.batch == "B-2" and SettingsPersistenceService.get_line(runtime.id)["batch"] == "B-2"
+    assert _batch_audit(runtime) == [("camera:qr", "SET_BATCH")]
+
+
+def test_the_same_batch_writes_no_audit(cartons):
+    runtime = _line(cartons, [VISION, SETS])
+    _watch(runtime)
+    _reads(runtime, "P-100;B-2", "P-100;B-2", "P-100;")
+    assert runtime.batch == "B-2" and len(_batch_audit(runtime)) == 1
+
+
+def test_unknown_or_shown_reads_never_set_it(cartons):
+    runtime = _line(cartons, [VISION, SETS])
+    runtime.set_batch("WO-1")
+    _watch(runtime)
+    _reads(runtime, "P-999;B-3")
+    runtime.show_read("qr", "P-100;B-4", "QR_CODE")
+    assert runtime.batch == "WO-1" and _batch_audit(runtime) == []
+    off = _line(cartons, [{"camera_id": "top2"}, {**READER, "camera_id": "qr2"}], name="Off")
+    _watch(off)
+    _reads(off, "P-100;B-5", camera_id="qr2")
+    assert off.batch == ""
+
+
+def test_the_option_is_off_by_default_and_kept(cartons):
+    assert "code_sets_batch" not in normalize_camera(READER, 0)
+    assert normalize_camera(SETS, 0)["code_sets_batch"] is True
+    assert "code_sets_batch" not in normalize_camera({**VISION, "code_sets_batch": True}, 0)      # reads no codes
+    with pytest.raises(ValueError, match="true or false"):
+        normalize_camera({**READER, "code_sets_batch": "maybe"}, 0)
+    line = SettingsPersistenceService.save_line({"name": "Kept", "cameras": [VISION | {"model_id": "m"}, SETS]})
+    again = SettingsPersistenceService.save_line({"id": line["id"], "name": "Kept", "cameras": [VISION | {"model_id": "m"}, READER]})
+    assert again["cameras"][1]["code_sets_batch"] is True
+    off = SettingsPersistenceService.save_line({"id": line["id"], "name": "Kept",
+                                                "cameras": [VISION | {"model_id": "m"}, {**READER, "code_sets_batch": False}]})
+    assert "code_sets_batch" not in off["cameras"][1]
+
+
+def test_warning_when_the_list_has_no_batch_part():
+    line = {"cameras": [VISION, SETS]}
+    text = "Camera 2 sets the line's batch from its codes, but the codes of its product list have no batch part."
+    assert any(text in w for w in line_warnings(line, list_formats={}))                          # whole codes
+    assert any(text in w for w in line_warnings(line, list_formats={LIST: {**SPLIT, "batch_part": None}}))
+    assert not any(text in w for w in line_warnings(line, list_formats={LIST: SPLIT}))
+    assert not any(text in w for w in line_warnings(line, list_formats={LIST: {"mode": "gs1"}}))
+    assert not any(text in w for w in line_warnings(line))                                       # formats not known
