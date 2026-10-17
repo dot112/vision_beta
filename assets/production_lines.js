@@ -1174,6 +1174,8 @@
     const setupHasVision = () => cardsOnPage().some((c) => isVisionJob(cardJob(c)));
     const setupChecksCodes = () => cardsOnPage().some((c) => JOBS[cardJob(c)].codes && cardValue(c, "qr_action") !== "report");
     const setupReadsCodes = () => cardsOnPage().some((c) => JOBS[cardJob(c)].codes);
+    // A camera whose codes reach the line: it reads on a wire line or when an input asks (Continuously only shows them).
+    const setupReadsCodesTriggered = () => cardsOnPage().some((c) => JOBS[cardJob(c)].codes && cardValue(c, "qr_trigger") !== "continuous");
     // Where the line's products come from: a vision camera, or a product sensor input on the PLC.
     const setupHasSource = () => setupHasVision() || Boolean(window.PlcSignals && window.PlcSignals.hasProductSensor && window.PlcSignals.hasProductSensor());
 
@@ -1311,12 +1313,13 @@
         const sync = byId("plSync");
         if (sync) {
             // A camera that checks codes beside a vision camera (or a product sensor) needs Sync: it pairs each product with
-            // its code. So do the line's product checks.
-            const checking = (setup.checks || []).some((c) => c.enabled !== false) && setupReadsCodes();
+            // its code. So do the line's product checks, once a camera reads codes on a trigger.
+            const checking = (setup.checks || []).some((c) => c.enabled !== false) && setupReadsCodesTriggered();
             const forced = (setupChecksCodes() || checking) && setupHasSource();
-            // Sync needs both a product source and a camera that reads codes. Without them (the cameras
-            // were removed) it is switched off, or the server refuses the save; it comes back on with them.
-            const possible = setupHasSource() && setupReadsCodes();
+            // Sync needs both a product source and a camera that reads codes on a trigger. Without them (the
+            // cameras were removed, or read Continuously) it is switched off, or the server refuses the save;
+            // it comes back on with them.
+            const possible = setupHasSource() && setupReadsCodesTriggered();
             if (forced) sync.checked = true;
             if (!possible && sync.checked) {
                 sync.checked = false;
@@ -1968,8 +1971,8 @@
                     <div class="form-group"><label class="form-label">Sync products and codes</label>
                         <label class="pl-inline pl-check" style="margin-top:6px"><input type="checkbox" id="plSync" ${d.sync && d.sync.enabled ? "checked" : ""}> Pair each counted product with its code</label>
                         <div class="pl-note">For a vision camera and a code reader looking at the same spot, or one vision camera that also reads codes.</div>
-                        <div class="pl-note" id="plSyncOff" style="display:none"><b>Off:</b> Sync needs a vision camera (or a PLC product sensor) and a camera that reads codes.</div>
-                        <div class="pl-note" id="plSyncForced" style="display:none"><b>On while a camera accepts or rejects by code, or the line has product checks:</b> the line waits for the code (at most the Sync window) and then gives the product one result.</div></div>
+                        <div class="pl-note" id="plSyncOff" style="display:none"><b>Off:</b> Sync needs a vision camera (or a PLC product sensor) and a camera that reads codes on a wire line or when an input asks.</div>
+                        <div class="pl-note" id="plSyncForced" style="display:none"><b>On while a camera accepts or rejects by code, or the line has product checks and a camera that reads codes on a trigger:</b> the line waits for the code (at most the Sync window) and then gives the product one result.</div></div>
                     <div class="form-group"><label class="form-label">Sync window (ms)</label><input type="number" class="form-input" id="plSyncWindow" min="50" max="10000" step="50" value="${(d.sync && d.sync.window_ms) || 500}">
                         <div class="pl-note">Products must pass further apart than this. A reject card's travel delay must be longer.</div></div>
                 </div>
