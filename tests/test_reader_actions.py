@@ -188,6 +188,8 @@ def test_an_upgraded_settings_file_behaves_as_before(lines):
          ]},
     ]}
     assert upgrade_state(state) and state["schema_version"] == SCHEMA_VERSION
+    # Since version 9 the continuous reader only shows its codes, and is flagged for the user to choose.
+    assert state["lines"][0]["cameras"][1]["qr_trigger_review"] is True
     SettingsPersistenceService._state["lines"] = state["lines"]
     lines.apply_state()
     runtime = lines.get(PRIMARY_LINE_ID)

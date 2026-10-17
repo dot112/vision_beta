@@ -31,7 +31,7 @@ PRIMARY_LINE_ID = "line-1"
 #   7  each send card on an MQTT channel names its own topic
 #   8  each vision camera holds its own counting settings (count lines, direction,
 #      tracking, whether defect names reject); the line's count lines are copied into it
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 MAX_CAMERAS_PER_LINE = 8
 CAMERA_ROLES = ("vision", "qr")
 # What a vision camera that is not the counting camera does with its result:
@@ -1570,6 +1570,22 @@ def _upgrade_to_v8(state: Dict[str, Any]) -> None:
             endpoint["keep_open"] = False
 
 
+def _upgrade_to_v9(state: Dict[str, Any]) -> None:
+    """A camera that reads codes Continuously now only shows them: each one is flagged.
+
+    Its reads used to reach the line (pairing, output actions, messages,
+    records). The upgrade does not choose a trigger for it: whether a picture
+    on a wire line catches the code depends on where the camera sits. The flag
+    (``qr_trigger_review``) asks the user to choose; see normalize_camera.
+    """
+    for line in state.get("lines") or []:
+        if not isinstance(line, dict):
+            continue
+        for camera in line.get("cameras") or []:
+            if isinstance(camera, dict) and reads_codes(camera) and not reads_codes_triggered(camera):
+                camera["qr_trigger_review"] = True
+
+
 def copy_count_lines(camera: Dict[str, Any], trigger: Dict[str, Any]) -> None:
     """Give a vision camera the line's count lines, direction and tracking where it has none of its own.
 
@@ -1596,6 +1612,7 @@ _UPGRADES = (
     (6, _upgrade_to_v6),
     (7, _upgrade_to_v7),
     (8, _upgrade_to_v8),
+    (9, _upgrade_to_v9),
 )
 
 

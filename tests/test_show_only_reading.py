@@ -243,3 +243,108 @@ def test_hardware_trigger_on_continuous_is_warned():
 def test_no_hold_time_warning_for_a_code_only_line():
     line = {"cameras": [{**READER, "qr_action": "accept_listed", "qr_trigger": "signal"}]}
     assert not any("hold time" in w for w in line_warnings(line))
+
+
+# ── Upgrade to version 9 and the alarm ────────────────────────────────────────
+
+from app.events.alarm_events import alarm_manager  # noqa: E402
+from app.services.line_config import PRIMARY_LINE_ID, REASON_NO_CODE, SCHEMA_VERSION  # noqa: E402
+
+SHOW_ONLY = "line.codes_show_only"
+
+
+@pytest.fixture
+def alarms():
+    yield
+    for alarm in alarm_manager.active("line:"):
+        if alarm.code == SHOW_ONLY:
+            alarm_manager.clear_alarm(alarm.code, alarm.source, "test over")
+
+
+def _show_only_alarms():
+    return [a for a in alarm_manager.active("line:") if a.code == SHOW_ONLY]
+
+
+def _v8_state(*lines_):
+    return {"schema_version": 8, "camera_auto_connect": True, "lines": [copy.deepcopy(line) for line in lines_]}
+
+
+def test_upgrade_flags_every_continuous_reader():
+    cameras = [VISION, READER, {"camera_id": "qr2", "role": "qr"}, {**READER, "camera_id": "qr3", "qr_trigger": "signal"},
+               {"camera_id": "vis2", "role": "vision", "read_codes": True}, {"camera_id": "vis3", "role": "vision"}]
+    state = _v8_state({"id": PRIMARY_LINE_ID, "name": "Line 1", "cameras": cameras},
+                      {"id": "other", "name": "Other", "cameras": [READER]})
+    before = copy.deepcopy(state)
+    assert SCHEMA_VERSION == 9
+    assert upgrade_state(state) and state["schema_version"] == 9
+    assert [c.get("qr_trigger_review") for c in state["lines"][0]["cameras"]] == [None, True, True, None, True, None]
+    assert state["lines"][1]["cameras"][0]["qr_trigger_review"] is True
+    for line in state["lines"]:
+        for camera in line["cameras"]:
+            camera.pop("qr_trigger_review", None)
+    before["schema_version"] = 9
+    assert state == before                                   # nothing else changed
+    assert not upgrade_state(state)                          # once only
+
+
+def test_an_upgraded_line_runs_on_its_no_read_setting(lines, monkeypatch, alarms):
+    state = _v8_state({"id": PRIMARY_LINE_ID, "name": "Line 1", "enabled": True, "sync": {"enabled": True, "window_ms": WINDOW_MS},
+                       "cameras": [{**VISION, "model_id": "model-test"},
+                                   {**READER, "qr_action": "accept_listed", "qr_no_read": "reject"}]})
+    upgrade_state(state)
+    SettingsPersistenceService._state["lines"] = state["lines"]
+    lines.apply_state()
+    runtime = lines.get(PRIMARY_LINE_ID)
+    sent = []
+    monkeypatch.setattr(runtime.counter, "dispatch_event", lambda payload, plc_event, is_defect: sent.append(payload))
+
+    async def steps():
+        _cross(runtime.counter)
+        await asyncio.sleep(0.25)
+
+    _run(steps)
+    assert [(p["result"], p["reject_reason"]) for p in sent] == [("REJECTED", REASON_NO_CODE)]
+    (alarm,) = _show_only_alarms()
+    assert alarm.source == f"line:{PRIMARY_LINE_ID}" and alarm.severity.value == "warning"
+    assert "Camera 2" in alarm.message and "every product is rejected" in alarm.message
+
+
+@pytest.mark.parametrize("cameras, sync, sensor, effect", [
+    ([VISION, {**READER, "qr_action": "accept_listed", "qr_no_read": "ignore"}], True, False, "pass without a code"),
+    ([{**READER, "qr_action": "accept_listed"}], False, False, "counts nothing"),    # it counted by codes
+    ([READER], False, False, "only shown"),                                          # it only reported
+    ([VISION, READER], False, False, "only shown"),
+])
+def test_the_alarm_says_what_the_line_does_meanwhile(lines, alarms, cameras, sync, sensor, effect):
+    flagged = [{**c, "qr_trigger_review": True} if c.get("role") == "qr" else {**c, "model_id": "model-test"} for c in cameras]
+    state = _v8_state({"id": "l2", "name": "L2", "enabled": True, "sync": {"enabled": sync, "window_ms": WINDOW_MS},
+                       "cameras": flagged})
+    SettingsPersistenceService._state["lines"] = SettingsPersistenceService._state["lines"] + state["lines"]
+    lines.apply_state()
+    (alarm,) = _show_only_alarms()
+    assert alarm.source == "line:l2" and effect in alarm.message
+
+
+def test_the_alarm_clears_when_the_flag_goes(lines, alarms):
+    line = SettingsPersistenceService.save_line({"name": "Flagged", "enabled": True,
+                                                 "cameras": [{**READER, "qr_trigger_review": True}]})
+    lines.apply_state()
+    assert [a.source for a in _show_only_alarms()] == [f"line:{line['id']}"]
+    SettingsPersistenceService.save_line({"id": line["id"], "name": "Flagged", "enabled": False, "cameras": [READER]})
+    lines.apply_state()
+    assert _show_only_alarms() == []                         # a stopped line raises none
+    SettingsPersistenceService.save_line({"id": line["id"], "name": "Flagged", "enabled": True,
+                                          "cameras": [{**READER, "qr_trigger": "signal"}]})
+    lines.apply_state()
+    assert _show_only_alarms() == []
+    assert "qr_trigger_review" not in SettingsPersistenceService.get_line(line["id"])["cameras"][0]
+
+
+def test_keep_show_only_clears_the_flag(lines, alarms):
+    line = SettingsPersistenceService.save_line({"name": "Kept", "enabled": True, "cameras": [{**READER, "qr_trigger_review": True}]})
+    lines.apply_state()
+    assert _show_only_alarms()
+    saved = SettingsPersistenceService.save_line({"id": line["id"], "name": "Kept",
+                                                  "cameras": [{**READER, "qr_trigger_review": False}]})
+    lines.apply_state()
+    assert "qr_trigger_review" not in saved["cameras"][0] and _show_only_alarms() == []

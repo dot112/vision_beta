@@ -68,6 +68,7 @@ class AlarmCode:
     SEND_CHANNEL_DOWN = "send.channel_down"
     RECORDS_DROPPED = "records.dropped"
     RECORDS_WRITE_FAILED = "records.write_failed"
+    LINE_CODES_SHOW_ONLY = "line.codes_show_only"
 
 
 # Every well-known alarm, for pick-lists such as a PLC action's "Alarm" trigger.
@@ -90,6 +91,9 @@ ALARM_CATALOG: List[Dict[str, str]] = [
     {"code": "line.fps_low", "label": "Line frame rate low", "group": "Lines",
      "severity": "warning", "scope": "line",
      "description": "The running line processes fewer frames/s than its minimum; counts may be missed."},
+    {"code": "line.codes_show_only", "label": "Codes only shown", "group": "Lines",
+     "severity": "warning", "scope": "line",
+     "description": "Since the settings upgrade a camera of the line reads codes Continuously, which only shows them; choose when it reads codes on Line setup."},
     {"code": "plc.action_failed", "label": "Output action failed", "group": "PLC",
      "severity": "critical", "scope": "line",
      "description": "One of the line's output actions could not be sent."},

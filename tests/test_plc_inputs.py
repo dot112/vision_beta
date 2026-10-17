@@ -151,7 +151,7 @@ def test_line_1_keeps_its_signal_cards_in_its_own_entry(lines):  # noqa: F811
 
 def test_version_8_settings_load_without_signal_cards(lines):  # noqa: F811
     state = SettingsPersistenceService._state
-    assert state["schema_version"] == SCHEMA_VERSION == 8
+    assert state["schema_version"] == SCHEMA_VERSION == 9
     assert all("plc_inputs" not in line for line in state["lines"])
     assert SettingsPersistenceService.get_line(PRIMARY_LINE_ID).get("plc_inputs", []) == []
     # Saving such a line does not add the key: its entry keeps the shape it had.

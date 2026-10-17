@@ -218,7 +218,7 @@ def test_a_client_that_does_not_send_the_join_settings_keeps_them(lines):
 def test_version_8_settings_load_without_the_new_keys(lines):
     state = copy.deepcopy(DEFAULT_STATE)
     upgrade_state(state)
-    assert state["schema_version"] == SCHEMA_VERSION == 8
+    assert state["schema_version"] == SCHEMA_VERSION == 9
     # A file saved before the join settings existed: a camera set to "join" with none of them.
     state["lines"].append({"id": "line-old", "name": "Old", "enabled": True, "sync": {"enabled": False, "window_ms": 500},
                            "cameras": [

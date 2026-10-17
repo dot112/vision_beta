@@ -1185,6 +1185,46 @@ class LineManager:
                 seen.insert(0, PRIMARY_LINE_ID)
             self._order = seen
             self._camera_map = camera_map
+        self._report_show_only_alarms()
+
+    def _report_show_only_alarms(self) -> None:
+        """line.codes_show_only for each running line with a camera the version 9 upgrade flagged.
+
+        Such a camera reads codes Continuously, which now only shows them. The
+        alarm says what the line does until the user chooses when it reads codes.
+        """
+        from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
+
+        live = set()
+        for runtime in self.all():
+            flagged = [(i, cam) for i, cam in enumerate(runtime.cameras) if cam.get("qr_trigger_review") is True]
+            if not runtime.enabled or not flagged:
+                continue
+            source = f"line:{runtime.id}"
+            live.add(source)
+            names = " and ".join(f"Camera {i + 1}" for i, _ in flagged)
+            has_source = runtime.has_role("vision") or any(
+                card.get("action") == "product_sensor" and card.get("enabled", True) is True for card in runtime.plc_inputs
+            )
+            checked = [runtime.code_checks[cam["camera_id"]] for _, cam in flagged if cam["camera_id"] in runtime.code_checks]
+            if not has_source and checked:
+                effect = "Until then the line counts nothing: no picture is read."
+            elif runtime.sync_enabled and any(check["no_read"] == "reject" for check in checked):
+                effect = "Until then every product is rejected: no code is read (When no code is read: reject)."
+            elif runtime.sync_enabled and checked:
+                effect = "Until then products pass without a code (When no code is read: ignore)."
+            else:
+                effect = "Until then their codes are only shown."
+            alarm_manager.raise_alarm(
+                AlarmCode.LINE_CODES_SHOW_ONLY, source,
+                f"Line '{runtime.name}': {names} only show their codes since the settings upgrade (Read codes "
+                f"'Continuously'). {effect} Choose when they read codes on Line setup.",
+                AlarmSeverity.WARNING,
+                {"line_id": runtime.id, "camera_ids": [cam["camera_id"] for _, cam in flagged]},
+            )
+        for alarm in alarm_manager.active("line:"):
+            if alarm.code == AlarmCode.LINE_CODES_SHOW_ONLY and alarm.source not in live:
+                alarm_manager.clear_alarm(alarm.code, alarm.source, "no camera of the line only shows codes, or it stopped")
 
     def primary(self) -> LineRuntime:
         with self._lock:
