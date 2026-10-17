@@ -18,6 +18,7 @@
         { name: "code", label: "Code read" },
         { name: "code_status", label: "Code status (known / unknown / no_read)" },
         { name: "product_id", label: "Product ID in the code" },
+        { name: "sequence", label: "Product sequence (from the PLC)" },
         { name: "good_count", label: "Good count" },
         { name: "reject_count", label: "Reject count" },
         { name: "total_count", label: "Total count" },

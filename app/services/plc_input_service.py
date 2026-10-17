@@ -583,8 +583,13 @@ class PLCInputService:
         if not cameras:
             raise ValueError(f"No camera of this line uses trigger {number}: tick it on a camera's card, "
                              "under Counting or Read codes")
+        # What travels with this request into the product it makes: the carton's sequence number.
+        context: Dict[str, Any] = {}
+        sequence = await cls.read_sequence(runtime)
+        if sequence is not None:
+            context["sequence"] = sequence
         done = await asyncio.gather(
-            *(cls._capture_camera(runtime, camera_id, number) for camera_id in cameras), return_exceptions=True,
+            *(cls._capture_camera(runtime, camera_id, number, context) for camera_id in cameras), return_exceptions=True,
         )
         for result in done:
             if isinstance(result, BaseException) and not isinstance(result, ValueError):
@@ -595,9 +600,46 @@ class PLCInputService:
         return [result for result in done if result is not None]
 
     @classmethod
-    async def _capture_camera(cls, runtime: Any, camera_id: str, trigger_no: Optional[int]) -> Optional[Dict[str, Any]]:
+    async def read_sequence(cls, runtime: Any) -> Any:
+        """The carton's sequence number when a "Take a picture" input fires: the line's sequence input,
+        read once, now. None when the line has none, or it cannot be read.
+
+        A fresh read, not the last polled value: the PLC sets the sequence and the capture request in
+        the same scan, and the poll may not have read the sequence input of that pass yet. When the
+        read fails, the polled value stands in only while the input reads fine.
+        """
+        input_id = getattr(runtime, "sequence_input_id", None)
+        if not input_id:
+            return None
+        card = next((c for c in cls._all if c.get("line_id") == runtime.id and c.get("id") == input_id), None)
+        if card is None or cls._config_problem(card) is not None:
+            return None
+        try:
+            answer = await cls.read_now(card)
+        except Exception as exc:
+            answer = {"ok": False, "message": str(exc)}
+        if answer.get("ok"):
+            return answer.get("value")
+        logger.warning("Line '%s': the product sequence could not be read now (%s); the last value read is used, if any",
+                       card.get("line_name"), answer.get("message"))
+        return cls.value_of(runtime.id, input_id)
+
+    @classmethod
+    def value_of(cls, line_id: str, input_id: Optional[str]) -> Any:
+        """The last accepted value of one input of a line; None when it has none, or its last read failed."""
+        state = cls._states.get((line_id, input_id or ""))
+        if state is None or not state.filter.has_value or state.error is not None:
+            return None
+        return state.filter.value
+
+    @classmethod
+    async def _capture_camera(cls, runtime: Any, camera_id: str, trigger_no: Optional[int],
+                              context: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """One picture with one camera: a code reader that captures when an input asks, or a
-        vision camera in trigger mode, whose picture is one product."""
+        vision camera in trigger mode, whose picture is one product.
+
+        ``context``: what travels with the request into the product (``sequence``, ``request_id``)."""
+        context = context or {}
         import app.services.trigger_inspection as trigger_inspection
         from app.services.line_config import reads_codes
         from app.state.application_state import app_state
@@ -613,10 +655,10 @@ class PLCInputService:
         if reads_codes(entry) and entry.get("qr_trigger") == "signal":
             from app.services.qr_service import QRReaderPipeline
             delay = int(entry.get("qr_trigger_delay_ms") or 0) / 1000.0
-            QRReaderPipeline.get_worker(camera_id).request_capture(delay=delay, trigger_no=trigger_no)
+            QRReaderPipeline.get_worker(camera_id).request_capture(delay=delay, trigger_no=trigger_no, **context)
         if entry.get("role", "vision") == "vision" and entry.get("count_mode") == "trigger":
             # A camera that is not connected, or has no model, is said on the card (ValueError).
-            answer = await trigger_inspection.trigger_camera(runtime, camera_id, trigger_no=trigger_no)
+            answer = await trigger_inspection.trigger_camera(runtime, camera_id, trigger_no=trigger_no, **context)
             if answer["status"] == "no_frame":
                 raise ValueError(f"No new picture came from camera '{camera_id}' in time; nothing was counted")
         return answer

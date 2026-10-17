@@ -198,6 +198,12 @@ class CountingService:
         # each time a product crosses wire line 1 or 2, before it is counted:
         # a QR reader set to capture on a crossing takes its picture then.
         self.line_crossing_sink: Optional[Any] = None
+        # Set by a line that uses them (a product sequence, a result handshake, sorting
+        # verification): product_gate(crossing) -> False drops a product before it is
+        # counted (its request already got its one result); product_hook(crossing,
+        # payload, plc_event) sees each product's one event before it is recorded and sent.
+        self.product_gate: Optional[Any] = None
+        self.product_hook: Optional[Any] = None
         # The line's batch (work order) number, "" for none: every product's message
         # and PLC event carries it while the line has one.
         self.batch: str = ""
@@ -458,6 +464,9 @@ class CountingService:
         """
         from app.services.line_config import REASON_VISION
 
+        gate = self.product_gate
+        if gate is not None and not gate(crossing):
+            return {}, {}
         vision_reject = bool(crossing["is_defect"])
         is_reject = vision_reject if reject is None else bool(reject)
         if is_reject and reason is None and vision_reject:
@@ -540,6 +549,12 @@ class CountingService:
             payload.update(fields)
         if plc_fields:
             plc_event.update(plc_fields)
+        hook = self.product_hook
+        if hook is not None:
+            try:
+                hook(crossing, payload, plc_event)
+            except Exception as hook_err:
+                logger.exception("Line %s: the product hook failed: %s", self.line_id, hook_err)
         if self.dispatch_telemetry:
             # Own-station products are recorded too, but are not in the line totals.
             from app.services.production_records_service import record_event

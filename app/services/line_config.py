@@ -614,6 +614,7 @@ TEMPLATE_FIELDS: Dict[str, str] = {
     "alarm_message": "Alarm message",
     "input_name": "Input that changed",
     "product_check": "Product check that rejected the product",
+    "sequence": "Product sequence number (from the PLC)",
 }
 
 _TEMPLATE_TOKEN = re.compile(r"\{\{|\}\}|\{([^{}]*)\}|\\[rnt\\]|[{}]")
@@ -1138,6 +1139,16 @@ def counting_camera(line: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return next((c for c in line.get("cameras") or [] if c.get("role") == "vision" and c.get("counting")), None)
 
 
+def _line_input(value: Any, inputs: Optional[List[Dict[str, Any]]], label: str) -> Optional[str]:
+    """The id of one of the line's inputs that a line setting names; None for none. Raises ValueError."""
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not any(card["id"] == text for card in inputs or []):
+        raise ValueError(f"{label} must be one of the line's inputs ('{text[:64]}' is not)")
+    return text
+
+
 def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Validate a line sent by a client, filling gaps from ``existing``.
 
@@ -1232,6 +1243,8 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
             f"the products. Use the action 'Take a picture' to trigger a camera instead."
         )
     _check_signal_cameras(inputs or [], cameras)
+    # The input whose value is each carton's sequence number. A client that leaves it out keeps it.
+    sequence_input_id = _line_input(merged.get("sequence_input_id"), inputs, "The product sequence input")
     # Where the line's products come from: a vision camera, or a sensor on the PLC.
     has_source = bool(vision) or bool(sensors)
 
@@ -1283,6 +1296,8 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
         line["plc_inputs"] = inputs
     if product_checks is not None:
         line["product_checks"] = product_checks
+    if sequence_input_id:
+        line["sequence_input_id"] = sequence_input_id
     for key in COUNTS_RESET_KEYS:
         if key in base:
             line[key] = copy.deepcopy(base[key])

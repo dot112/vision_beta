@@ -7,6 +7,7 @@ message template and an only-when rule:
     class, confidence                    what the counting camera saw
     code, code_status                    the code read (known / unknown / no_read)
     product_id                           the product ID the code holds (by its list's code format)
+    sequence                             the product sequence number the PLC held for the item
     good_count, reject_count, total_count, batch, line, camera
     product.name, product.code, product.list, product.<field>   the product of a known code
     input.<value name>                   the last value an input of the line read
@@ -49,6 +50,8 @@ def values_for(event: Dict[str, Any]) -> Dict[str, Any]:
         values["code_status"] = event["qr_status"]
     if event.get("product_id") not in (None, ""):
         values["product_id"] = event["product_id"]
+    if event.get("sequence") not in (None, ""):
+        values["sequence"] = event["sequence"]
 
     line_id = str(event.get("line_id") or PRIMARY_LINE_ID)
     runtime = _runtime(line_id)

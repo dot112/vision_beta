@@ -76,11 +76,14 @@ def inspection_verdict(detections: List[Any], config: Any) -> Optional[Dict[str,
 
 
 def product_from_result(runtime: Any, camera_id: str, detections: List[Any],
-                        arrived_at: Optional[float] = None, trigger_no: Optional[int] = None) -> Dict[str, Any]:
+                        arrived_at: Optional[float] = None, trigger_no: Optional[int] = None,
+                        sequence: Optional[Any] = None, request_id: Optional[int] = None) -> Dict[str, Any]:
     """Make the product one picture of a camera in trigger mode shows, from what its model found.
 
     ``arrived_at``: the clock time the picture arrived; it becomes the product's time.
     ``trigger_no``: the number of the input that asked for the picture; the product's message carries it.
+    ``sequence`` / ``request_id``: the product sequence the PLC held when it asked, and the line's number
+    for that request (its result handshake); the product keeps them.
     Returns ``status`` "inspected" (a product was made) or "nothing" (nothing was found
     and that is ignored), with ``result``, ``class_name``, ``reject_reason``, ``track_id``
     and ``detections`` (how many). Safe to call from a camera's inference thread.
@@ -102,8 +105,9 @@ def product_from_result(runtime: Any, camera_id: str, detections: List[Any],
     )
     if verdict["reject_reason"]:
         crossing["reject_reason"] = verdict["reject_reason"]
-    if trigger_no is not None:
-        crossing["trigger_no"] = trigger_no
+    for key, value in (("trigger_no", trigger_no), ("sequence", sequence), ("request_id", request_id)):
+        if value is not None:
+            crossing[key] = value
     counter.emit_crossing(crossing)
     answer.update({
         "status": "inspected",
@@ -176,8 +180,12 @@ async def trigger_input(runtime: Any, trigger_no: int) -> List[Dict[str, Any]]:
 
 
 async def trigger_camera(runtime: Any, camera_id: str, timeout: Optional[float] = None,
-                         with_detections: bool = False, trigger_no: Optional[int] = None) -> Dict[str, Any]:
+                         with_detections: bool = False, trigger_no: Optional[int] = None,
+                         sequence: Optional[Any] = None, request_id: Optional[int] = None) -> Dict[str, Any]:
     """Make one product from the next picture of a camera in trigger mode.
+
+    ``sequence`` / ``request_id``: what the "Take a picture" input that asked carries (the product
+    sequence the PLC held, the line's number for the request); the product keeps them.
 
     Returns what the camera's own picture said: ``status`` is ``"inspected"``
     (a product was made), ``"nothing"`` (nothing was found and that is
@@ -246,5 +254,5 @@ async def trigger_camera(runtime: Any, camera_id: str, timeout: Optional[float] 
         })
         if with_detections:
             answer["detection_items"] = [d.model_dump() if hasattr(d, "model_dump") else d for d in detections]
-        answer.update(product_from_result(runtime, camera_id, detections, arrived_at, trigger_no))
+        answer.update(product_from_result(runtime, camera_id, detections, arrived_at, trigger_no, sequence, request_id))
         return answer

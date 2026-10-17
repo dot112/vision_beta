@@ -51,6 +51,7 @@ _FIELDS: Tuple[Tuple[str, Callable[[ProductRecord], Any]], ...] = (
     ("stations", lambda r: _stations(r.details)),
     ("product_data", lambda r: _product_data(r.details)),
     ("product_check", lambda r: (r.details or {}).get("product_check") if isinstance(r.details, dict) else None),
+    ("sequence", lambda r: (r.details or {}).get("sequence") if isinstance(r.details, dict) else None),
     ("id", lambda r: r.id),
 )
 

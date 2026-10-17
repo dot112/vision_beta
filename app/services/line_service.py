@@ -390,6 +390,8 @@ class LineRuntime:
         self._trigger_locks: Dict[str, asyncio.Lock] = {}
         # The line's batch (work order) number, "" for none.
         self.batch = ""
+        # The input whose value is each carton's sequence number (None: the line has none).
+        self.sequence_input_id: Optional[str] = None
         # Batches from codes that the line refused (said once each).
         self._batch_errors: set = set()
         self.last_capture: Optional[Dict[str, Any]] = None
@@ -452,6 +454,9 @@ class LineRuntime:
         self.plc_inputs = copy.deepcopy(line.get("plc_inputs") or [])
         self.has_product_sensor = bool(product_sensors(line))
         self.set_batch(str(line.get("batch") or ""))
+        self.sequence_input_id = line.get("sequence_input_id") or None
+        # Each product's one event passes the line first when the line adds to it.
+        self.counter.product_hook = self._product_finished if self.sequence_input_id else None
 
         self.code_checks = code_checks(self.cameras)
         self.product_checks = [c for c in copy.deepcopy(line.get("product_checks") or []) if c.get("enabled", True)]
@@ -623,9 +628,15 @@ class LineRuntime:
     # ── QR reads ──────────────────────────────────────────────────────────────
 
     def on_qr_read(self, camera_id: str, code: str, code_format: str, t: Optional[float] = None,
-                   track_id: Optional[int] = None) -> Dict[str, Any]:
-        """Called by a QR reader's thread for each new read of a triggered picture. Returns the read record."""
+                   track_id: Optional[int] = None, sequence: Optional[Any] = None,
+                   request_id: Optional[int] = None) -> Dict[str, Any]:
+        """Called by a QR reader's thread for each new read of a triggered picture. Returns the read record.
+
+        ``sequence`` / ``request_id``: what the "Take a picture" input that asked for the picture carries."""
         read = self._make_read(camera_id, code, code_format, t=t, track_id=track_id)
+        for key, value in (("sequence", sequence), ("request_id", request_id)):
+            if value is not None:
+                read[key] = value
         with self._lock:
             self.qr_stats["codes_read"] += 1
             self.qr_stats["known" if read["known"] else "unknown"] += 1
@@ -694,7 +705,8 @@ class LineRuntime:
             return capture
         if capture.get("codes"):
             for code in self._deciding_first(camera_id, capture["codes"]):
-                self.on_qr_read(camera_id, code["code"], code["format"], t=capture.get("t"), track_id=capture.get("track_id"))
+                self.on_qr_read(camera_id, code["code"], code["format"], t=capture.get("t"), track_id=capture.get("track_id"),
+                                sequence=capture.get("sequence"), request_id=capture.get("request_id"))
         elif not self.sync_enabled:
             # With Sync on, the product's crossing goes out as a no-read when
             # no code pairs with it; without Sync, say so here.
@@ -726,7 +738,8 @@ class LineRuntime:
     def _emit_no_read(self, camera_id: str, capture: Dict[str, Any]) -> None:
         with self._lock:
             self.qr_stats["no_reads"] += 1
-        self._remember(None, "no_read", paired=None, class_name=capture.get("class_name"), camera_id=camera_id)
+        self._remember(None, "no_read", paired=None, class_name=capture.get("class_name"), camera_id=camera_id,
+                       sequence=capture.get("sequence"))
         self._qr_seq += 1
         payload = {
             "event": "QR_CODE_NO_READ",
@@ -754,6 +767,8 @@ class LineRuntime:
             "timestamp": time.time(),
         }
         self._with_batch(payload, plc_event)
+        if capture.get("sequence") is not None:
+            payload["sequence"] = plc_event["sequence"] = capture["sequence"]
         self._record(payload, "code", counted=False, product_list_id=self.product_list_id(camera_id))
         self._publish(("qr_code",), payload, plc_event)
 
@@ -895,6 +910,12 @@ class LineRuntime:
         found none); None without Sync. ``product``: what its joined cameras
         saw, on a line that has them.
         """
+        # The request this product answers: the vision camera's (it made the product), else its code's.
+        if kind == "paired":
+            for key in ("sequence", "request_id"):
+                if crossing.get(key) is None and read.get(key) is not None:
+                    crossing[key] = read[key]
+        sequence = self._product_sequence(crossing)
         # One result per product: the vision camera's, the joined cameras' and,
         # where a camera checks codes, the paired code's (or the missing code's);
         # last, the line's product checks on the product of a known code.
@@ -924,14 +945,14 @@ class LineRuntime:
                 "qr_paired": True,
             }
             self._remember(read, status, paired=True, class_name=crossing.get("class_name"),
-                           result=result, reason=reason, product_check=check)
+                           result=result, reason=reason, product_check=check, sequence=sequence)
         elif kind == "no_read":
             status = "no_read"
             fields = {"qr_code": None, "qr_format": None, "qr_status": "no_read", "product_name": None, "qr_paired": False}
             with self._lock:
                 self.qr_stats["no_reads"] += 1
             self._remember(None, "no_read", paired=False, class_name=crossing.get("class_name"),
-                           camera_id=crossing.get("camera_id"), result=result, reason=reason)
+                           camera_id=crossing.get("camera_id"), result=result, reason=reason, sequence=sequence)
         if kind is not None:
             plc_fields = {"qr_code": fields["qr_code"], "qr_status": status, "qr_paired": fields["qr_paired"]}
         if kind == "paired" and read.get("product"):
@@ -964,6 +985,30 @@ class LineRuntime:
             # the crossing, where the product was.
             delay_from_crossing=bool(self.code_checks) or product is not None,
         )
+
+    def _sequence_now(self) -> Any:
+        """The last value the line's sequence input read; None without one, or while it cannot be read."""
+        if not self.sequence_input_id:
+            return None
+        from app.services.plc_input_service import PLCInputService
+        return PLCInputService.value_of(self.id, self.sequence_input_id)
+
+    def _product_sequence(self, item: Dict[str, Any]) -> Any:
+        """A product's (or a code-only product's read's) sequence number, kept in ``item``.
+
+        The one its "Take a picture" request carried; a product made without one (a moving line)
+        takes the sequence input's value of this moment."""
+        if item.get("sequence") is None:
+            now = self._sequence_now()
+            if now is not None:
+                item["sequence"] = now
+        return item.get("sequence")
+
+    def _product_finished(self, crossing: Dict[str, Any], payload: Dict[str, Any], plc_event: Dict[str, Any]) -> None:
+        """The line's counter hook: each product's one event, before it is recorded and sent."""
+        sequence = self._product_sequence(crossing)
+        if sequence is not None:
+            payload["sequence"] = plc_event["sequence"] = sequence
 
     @staticmethod
     def _station_rows(product: _Product) -> List[Dict[str, Any]]:
@@ -1016,6 +1061,10 @@ class LineRuntime:
         }
         # The carton's own product ID and batch (the line's batch stays for a carton without one).
         event.update(self._code_fields(read)[1])
+        sequence = (crossing or {}).get("sequence")
+        sequence = read.get("sequence") if sequence is None else sequence
+        if sequence is not None:
+            event["sequence"] = sequence
         if crossing:
             event["class_name"] = crossing.get("class_name")
             if crossing.get("confidence") is not None:
@@ -1029,7 +1078,8 @@ class LineRuntime:
     def _remember(self, read: Optional[Dict[str, Any]], status: str, paired: Optional[bool],
                   class_name: Optional[str] = None, camera_id: Optional[str] = None,
                   result: Optional[str] = None, reason: Optional[str] = None,
-                  product_check: Optional[str] = None, shown_only: bool = False) -> None:
+                  product_check: Optional[str] = None, shown_only: bool = False,
+                  sequence: Optional[Any] = None) -> None:
         entry = {
             "timestamp": read["timestamp"] if read else datetime.now(timezone.utc).isoformat(),
             "code": read["code"] if read else None,
@@ -1050,6 +1100,9 @@ class LineRuntime:
             entry["product_id"] = read["product_id"]
         if read and read.get("code_batch"):
             entry["batch"] = read["code_batch"]
+        sequence = (read or {}).get("sequence") if sequence is None else sequence
+        if sequence is not None:
+            entry["sequence"] = sequence
         if shown_only:
             # A camera that reads Continuously: the code went nowhere but this list.
             entry["shown_only"] = True
@@ -1088,6 +1141,8 @@ class LineRuntime:
         code_fields, code_plc_fields = self._code_fields(read)
         payload.update(code_fields)
         plc_event.update(code_plc_fields)
+        if read.get("sequence") is not None:
+            payload["sequence"] = plc_event["sequence"] = read["sequence"]
         return payload, plc_event
 
     @staticmethod
@@ -1136,6 +1191,7 @@ class LineRuntime:
     def _emit_code_product(self, read: Dict[str, Any]) -> None:
         """A code read on a line without a vision camera, by a camera that checks codes:
         the read is one product, good or reject, counted like any other product."""
+        self._product_sequence(read)
         reason = code_verdict(self.code_checks[read["camera_id"]]["action"], read["known"])
         check = self._failed_check(read) if reason is None else None
         if check:
