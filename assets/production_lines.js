@@ -1348,12 +1348,6 @@
         const checks = byId("plChecksPanel");
         // Product checks need a camera that reads codes; checks already made stay in view, so they can be removed.
         if (checks) checks.hidden = !setupReadsCodes() && !(setup.checks || []).length;
-        const state = byId("plSyncState");
-        if (state) {
-            state.innerHTML = syncPossible()
-                ? "<b>On:</b> each counted product is paired with its code. The line waits for the code, at most the Sync window."
-                : "<b>Off:</b> pairing needs a vision camera (or a PLC product sensor) and a camera that reads codes on a wire line or when an input asks.";
-        }
         const add = byId("plAddCard");
         if (add) {
             const full = cardsOnPage().length >= MAX_CAMERAS_PER_LINE;
@@ -2048,11 +2042,10 @@
                 </div>
                 <div class="pl-form-grid">
                     <div class="form-group"><label class="form-label">Line name</label><input type="text" class="form-input" id="plName" maxlength="64" value="${esc(d.name)}"></div>
-                    <div class="form-group"><label class="form-label">Minimum processed frames/s (0 = no alarm)</label><input type="number" class="form-input" id="plMinFps" min="0" max="240" step="1" value="${d.min_fps || 0}"></div>
+                    <div class="form-group"><label class="form-label">Minimum frames/s</label><input type="number" class="form-input" id="plMinFps" min="0" max="240" step="1" value="${d.min_fps || 0}">
+                        <div class="pl-note">An alarm is raised when the running line processes fewer frames per second. 0 = no alarm.</div></div>
                     <div class="form-group"><label class="form-label">Yield target (%)</label><input type="number" class="form-input" id="plYieldTarget" min="0" max="100" step="0.1" value="${d.yield_target || 0}">
                         <div class="pl-note">The dashboard marks the yield as below target under this value. 0 = no target.</div></div>
-                    <div class="form-group"><label class="form-label">Products and codes</label>
-                        <div class="pl-note" id="plSyncState" style="margin-top:6px"></div></div>
                     <div class="form-group"><label class="form-label">Sync window (ms)</label><input type="number" class="form-input" id="plSyncWindow" min="50" max="10000" step="50" value="${(d.sync && d.sync.window_ms) || 500}">
                         <div class="pl-note">Products must pass further apart than this. A reject card's travel delay must be longer.</div></div>
                 </div>

@@ -22,3 +22,16 @@ def test_the_line_settings_grid_closes_every_box_it_opens():
     # The handshake, the warnings and the buttons come after the grid, not in it.
     after = script[end:script.index('<div class="pl-cam-grid"', end)]
     assert 'id="plSetupWarnings"' in after and 'class="pl-setup-actions"' in after
+
+
+def test_the_line_settings_are_short_and_without_a_sync_box():
+    script = (ROOT / "assets" / "production_lines.js").read_text(encoding="utf-8")
+    start = script.index('<div class="pl-form-grid">', script.index("Line setup"))
+    grid = script[start:script.index("${handshakeSetupHtml(d)}", start)]
+    # Sync is saved on by itself wherever the line can pair: no box or text about it.
+    assert "Products and codes" not in grid and "plSyncState" not in script
+    # Each setting's label fits one line, so the fields sit level; the explanation goes in a note under it.
+    labels = re.findall(r'<label class="form-label"[^>]*>([^<]*)</label>', grid)
+    assert "Minimum frames/s" in labels
+    assert all(len(label) <= 24 for label in labels), labels
+    assert "0 = no alarm" in grid
