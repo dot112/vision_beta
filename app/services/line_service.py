@@ -35,6 +35,7 @@ from app.services.line_config import (
     code_verdict,
     join_settings,
     joined_cameras,
+    picture_source,
     product_result,
     product_reader,
     product_sensors,
@@ -44,6 +45,8 @@ from app.services.line_config import (
 
 # Sorting verification remembers the line's last products that had a code.
 SORTING_MEMORY = 200
+# What each camera in trigger mode counts (trigger_view, count_trigger).
+TRIGGER_COUNTERS = ("triggers", "pictures", "results", "missing", "late", "extra")
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -448,6 +451,12 @@ class LineRuntime:
         self._trigger_seq = 0
         self._trigger_seq_lock = threading.Lock()
         self._trigger_locks: Dict[str, asyncio.Lock] = {}
+        # Per camera in trigger mode: its latest capture and that capture's JPEG (None when no picture
+        # came), and its counters. A capture id goes up by one with each capture of the line.
+        self._trigger_captures: Dict[str, Dict[str, Any]] = {}
+        self._trigger_jpegs: Dict[str, Optional[bytes]] = {}
+        self._trigger_capture_seq = 0
+        self._trigger_counters: Dict[str, Dict[str, int]] = {}
         # The line's batch (work order) number, "" for none.
         self.batch = ""
         # The input whose value is each carton's sequence number (None: the line has none).
@@ -811,6 +820,73 @@ class LineRuntime:
     def capture_image(self) -> Tuple[Optional[Dict[str, Any]], Optional[bytes]]:
         with self._lock:
             return (dict(self.last_capture) if self.last_capture else None), self._capture_jpeg
+
+    # ── Trigger cameras: the latest picture and the counters ─────────────────
+
+    def remember_trigger_capture(self, camera_id: str, answer: Dict[str, Any], jpeg: Optional[bytes]) -> int:
+        """Keep the latest capture of a camera in trigger mode; returns its id (it goes up with each capture).
+
+        ``answer``: ``status`` ("inspected", "nothing" or "no_picture"), ``class_name``, ``result``,
+        ``reject_reason`` and ``trigger_no``. ``jpeg``: the picture with its boxes, None when no
+        picture came. A new capture replaces the camera's last one.
+        """
+        with self._lock:
+            self._trigger_capture_seq += 1
+            capture_id = self._trigger_capture_seq
+            self._trigger_captures[camera_id] = {
+                "id": capture_id,
+                "at": datetime.now(timezone.utc).isoformat(),
+                "class_name": answer.get("class_name"),
+                "result": answer.get("result"),
+                "reason": answer.get("reject_reason"),
+                "trigger_no": answer.get("trigger_no"),
+                "has_picture": jpeg is not None,
+            }
+            self._trigger_jpegs[camera_id] = jpeg
+        return capture_id
+
+    def trigger_capture(self, camera_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[bytes]]:
+        """The camera's latest capture and its JPEG; (None, None) before its first."""
+        with self._lock:
+            capture = self._trigger_captures.get(camera_id)
+            return (dict(capture) if capture else None), self._trigger_jpegs.get(camera_id)
+
+    def count_trigger(self, camera_id: str, key: str, n: int = 1) -> None:
+        """Add ``n`` to one of a trigger camera's counters (one of TRIGGER_COUNTERS)."""
+        if key not in TRIGGER_COUNTERS:
+            raise ValueError(f"'{key}' is not a trigger counter; use one of {', '.join(TRIGGER_COUNTERS)}")
+        with self._lock:
+            counters = self._trigger_counters.setdefault(camera_id, dict.fromkeys(TRIGGER_COUNTERS, 0))
+            counters[key] += n
+
+    def trigger_view(self) -> List[Dict[str, Any]]:
+        """One row per vision camera in count mode trigger, in card order, for the line's status.
+
+        ``{camera_id, picture_source, notice_trigger, capture, counters}``. The notice is the number of
+        the trigger that tells the server a camera took a picture; it is only used when the camera takes
+        the picture itself, so it is None for a picture from the system.
+        """
+        from app.services.trigger_inspection import trigger_cameras
+        from app.state.application_state import app_state
+
+        wanted = set(trigger_cameras(self))
+        rows = []
+        for cam in self.cameras:
+            camera_id = cam["camera_id"]
+            if camera_id not in wanted:
+                continue
+            source = picture_source(cam, getattr(app_state.cameras.get(camera_id), "trigger_mode", "off"))
+            with self._lock:
+                capture = self._trigger_captures.get(camera_id)
+                counters = self._trigger_counters.get(camera_id) or {}
+                rows.append({
+                    "camera_id": camera_id,
+                    "picture_source": source,
+                    "notice_trigger": cam.get("notice_trigger") if source == "camera" else None,
+                    "capture": dict(capture) if capture else None,
+                    "counters": {key: counters.get(key, 0) for key in TRIGGER_COUNTERS},
+                })
+        return rows
 
     def _record(self, payload: Dict[str, Any], kind: str, counted: bool, **extra: Any) -> None:
         """Keep one product or code read in the product records (not for a counter that sends nothing)."""
@@ -1578,6 +1654,8 @@ class LineRuntime:
             self._sorting_memory.clear()
             for key in self._sorting_stats:
                 self._sorting_stats[key] = 0
+            # The trigger cameras' counts start again; their latest picture stays.
+            self._trigger_counters.clear()
         from app.events.alarm_events import AlarmCode, alarm_manager
         alarm_manager.clear_alarm(AlarmCode.LINE_SORTING_MISMATCH, self._alarm_source("sorting"), "the counters were reset")
 
@@ -2156,6 +2234,8 @@ class LineManager:
             "handshake": runtime.handshake.view() if runtime.handshake.enabled else None,
             # Sorting verification at the outfeeds, when a camera of the line verifies one.
             "sorting": runtime.sorting_counts() if runtime.sorting_lanes else None,
+            # Per vision camera in trigger mode: where its picture comes from, its latest capture and counters.
+            "trigger_cameras": runtime.trigger_view(),
         }
 
     def overview(self) -> List[Dict[str, Any]]:

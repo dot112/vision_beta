@@ -382,6 +382,27 @@ async def last_qr_capture(line_id: str, user: User = Depends(require_operator)) 
     )
 
 
+@router.get("/{line_id}/trigger/capture", summary="The latest picture a camera in trigger mode took, with the model's boxes (JPEG)")
+async def last_trigger_capture(
+    line_id: str,
+    camera_id: str = Query(..., description="The trigger camera"),
+    user: User = Depends(require_operator),
+) -> Response:
+    """``X-Capture-Id`` is the capture's id (it goes up with each picture); 404 when the camera has
+    not taken one yet, or its last trigger got no picture."""
+    runtime = _manager().get(line_id)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    capture, jpeg = runtime.trigger_capture(camera_id)
+    if not capture or not jpeg:
+        raise HTTPException(status_code=404, detail="No picture has been taken yet")
+    return Response(
+        content=jpeg,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store", "X-Capture-Id": str(capture["id"])},
+    )
+
+
 @router.post("/{line_id}/qr/capture", summary="Take a test picture with the line's QR reader (sends no events; Level 2+)")
 async def test_qr_capture(line_id: str, user: User = Depends(require_supervisor)) -> Dict[str, Any]:
     """Take and decode one picture now, to check the QR camera's aim and focus.

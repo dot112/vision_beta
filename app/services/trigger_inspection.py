@@ -119,6 +119,31 @@ def product_from_result(runtime: Any, camera_id: str, detections: List[Any],
     return answer
 
 
+def render_trigger_capture(camera_id: str, frame: Any, detections: List[Any]) -> Optional[bytes]:
+    """The picture a trigger camera's product was made from, with the model's boxes and class names drawn.
+
+    ``frame`` is the frame the model inferred (the inference worker's ``last_inferred_frame``) and
+    ``detections`` what it found in it. It is drawn the way the annotated video draws a camera's
+    picture, by the engine of the camera, on a copy: the frame belongs to the camera driver.
+    Returns the JPEG, or None on any failure (never raises). It draws and encodes a whole picture:
+    run it off the event loop.
+    """
+    try:
+        import cv2
+
+        import app.services.line_service as line_service
+
+        if frame is None:
+            return None
+        engine = line_service.line_manager.engine_for_camera(camera_id)[0]
+        annotated = engine.draw_annotations_mat(frame.copy(), detections, 0.0, draw_wirelines=False, camera_id=camera_id)
+        ok, buf = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        return buf.tobytes() if ok else None
+    except Exception as exc:
+        logger.warning("The picture of camera %s could not be drawn: %s: %s", camera_id, type(exc).__name__, exc)
+        return None
+
+
 async def _software_shot(driver: Any, worker: Any, runtime: Any, camera_id: str,
                          timeout: float) -> Optional[Tuple[List[Any], float, float]]:
     """Trigger a camera on software trigger and run its model on the picture that trigger made.

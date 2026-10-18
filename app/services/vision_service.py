@@ -98,6 +98,10 @@ class _CameraInferenceWorker:
         # Goes up by one with every frame the worker got through. A trigger waits
         # on this, not on the frame id, which starts again when a camera reconnects.
         self.result_seq: int = 0
+        # The frame the model last got through. A trigger camera's picture is this frame with the
+        # boxes drawn; it is set before the result callback runs. Drivers replace frames and never
+        # modify them, so it is kept as it is (drawing is done on a copy).
+        self.last_inferred_frame: Optional[Any] = None
 
         name = f"InferenceWorker-{camera_id[:8]}"
         self._thread = threading.Thread(
@@ -208,6 +212,7 @@ class _CameraInferenceWorker:
                     self._latest_detections = det_response.detections
                     self._latest_inference_ms = det_response.inference_time_ms
                     self._processed_frame_id = fid
+                    self.last_inferred_frame = mat
                     self.result_seq += 1
                     app_state.detection_count += det_response.total_detections
                     app_state.processed_frames += 1
