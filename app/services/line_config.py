@@ -598,15 +598,16 @@ def picture_source(camera: Dict[str, Any], trigger_mode: str = "off") -> str:
     return "camera" if trigger_mode == "hardware" else "system"
 
 
-def trigger_mode_for_card(camera: Dict[str, Any]) -> str:
+def trigger_mode_for_card(camera: Dict[str, Any], current_mode: str = "off") -> str:
     """The Trigger an industrial camera gets from its line's card: "hardware", "software" or "off".
 
     One picture per trigger from the camera is "hardware", from the system "software"; any other
-    count mode leaves the camera free running ("off").
+    count mode leaves the camera free running ("off"). A card saved without a picture source
+    follows the camera's ``current_mode`` (picture_source): on "hardware" it stays "hardware".
     """
     if camera.get("role", "vision") != "vision" or camera.get("count_mode") != "trigger":
         return "off"
-    return "hardware" if picture_source(camera) == "camera" else "software"
+    return "hardware" if picture_source(camera, current_mode) == "camera" else "software"
 
 
 def _join_settings(raw: Dict[str, Any], label: str) -> Dict[str, Any]:
@@ -1994,6 +1995,12 @@ def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any
             )
         for camera_id in used_by:
             if modes.get(camera_id) != "hardware":
+                continue
+            cam = next((c for c in cameras if c.get("camera_id") == camera_id), {})
+            # A camera that triggers itself and names this input as its trigger notice is obeyed: the input
+            # only tells the server a picture is coming.
+            if picture_source(cam, modes[camera_id]) == "camera" and cam.get("notice_trigger") is not None \
+                    and cam.get("notice_trigger") == card.get("trigger_no"):
                 continue
             number = next((i + 1 for i, cam in enumerate(cameras) if cam.get("camera_id") == camera_id), "?")
             warnings.append(

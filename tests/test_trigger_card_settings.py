@@ -122,8 +122,15 @@ def test_trigger_mode_for_card():
     assert trigger_mode_for_card({"role": "vision", "count_mode": "track"}) == "off"
     assert trigger_mode_for_card({"role": "vision"}) == "off"
     assert trigger_mode_for_card({"role": "qr"}) == "off"
-    # no saved source: the mode of the card is "software" (the camera's own mode is not known here)
+    # no saved source: the card follows the camera's current mode
+    assert trigger_mode_for_card({"role": "vision", "count_mode": "trigger"}, "hardware") == "hardware"
+    assert trigger_mode_for_card({"role": "vision", "count_mode": "trigger"}, "off") == "software"
     assert trigger_mode_for_card({"role": "vision", "count_mode": "trigger"}) == "software"
+    assert trigger_mode_for_card({"role": "vision", "count_mode": "trigger"}, "software") == "software"
+    # a saved source wins over the camera's current mode; other count modes are "off" whatever the mode
+    assert trigger_mode_for_card({"role": "vision", "count_mode": "trigger", "picture_source": "system"}, "hardware") == "software"
+    assert trigger_mode_for_card({"role": "vision", "count_mode": "trigger", "picture_source": "camera"}, "off") == "hardware"
+    assert trigger_mode_for_card({"role": "vision", "count_mode": "track"}, "hardware") == "off"
 
 
 def test_no_picture_reason_code():
@@ -254,6 +261,44 @@ def test_the_frames_per_second_warning():
     assert FPS not in " ".join(line_warnings({**base, "cameras": [reader], "min_fps": 5}))
     # a reader beside the trigger cameras does not change that
     assert FPS in " ".join(line_warnings({**base, "cameras": [system, reader], "min_fps": 5}))
+
+
+# ── "Not obeyed": an input asks a camera that triggers itself ────────────────
+
+NOT_OBEYED = "so it is not obeyed"
+
+
+def _not_obeyed(line, modes):
+    return [w for w in line_warnings(line, trigger_modes=modes) if NOT_OBEYED in w]
+
+
+def test_a_trigger_notice_is_not_an_input_that_is_not_obeyed():
+    cam = _cam(count_mode="trigger", picture_source="camera", notice_trigger=3)
+    assert cam["triggers"] == [3]
+    line = {"cameras": [cam], "plc_inputs": [_capture_input(3)]}
+    assert _not_obeyed(line, {"c": "hardware"}) == []
+    assert _not_obeyed(line, {}) == []
+
+
+def test_a_hardware_camera_without_a_notice_still_ignores_the_input_that_asks_it():
+    # a camera saved before the card held a picture source, on a hardware trigger, with the input ticked
+    saved = _cam(count_mode="trigger", triggers=[1])
+    assert "picture_source" not in saved and saved["triggers"] == [1]
+    line = {"cameras": [saved], "plc_inputs": [_capture_input(1)]}
+    (warning,) = _not_obeyed(line, {"c": "hardware"})
+    assert "Input 'Take 1' asks Camera 1 for a picture" in warning
+    assert _not_obeyed(line, {"c": "software"}) == []
+    # a system trigger on a camera whose own Trigger is still Hardware (not applied yet) warns too
+    system = _cam(count_mode="trigger", picture_source="system", triggers=[1])
+    assert len(_not_obeyed({"cameras": [system], "plc_inputs": [_capture_input(1)]}, {"c": "hardware"})) == 1
+
+
+def test_an_input_that_is_not_the_cameras_notice_is_still_not_obeyed():
+    cam = _cam(count_mode="trigger", picture_source="camera", notice_trigger=3)
+    named = {**_capture_input(4), "camera_id": "c"}          # an older input that names the camera itself
+    line = {"cameras": [cam], "plc_inputs": [_capture_input(3), named]}
+    (warning,) = _not_obeyed(line, {"c": "hardware"})
+    assert "Take 4" in warning
 
 
 # ── The line's detail answers with these warnings ────────────────────────────
