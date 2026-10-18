@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import copy
+import functools
 import threading
 import time
 import weakref
@@ -25,6 +26,7 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from app.services.counting_service import CountingService, counting_service
 from app.services.line_config import (
     CODE_REASONS,
+    DEFAULT_PICTURE_WAIT_MS,
     DEFAULT_SYNC_WINDOW_MS,
     PRIMARY_LINE_ID,
     REASON_INSPECTION_TIMEOUT,
@@ -43,6 +45,7 @@ from app.services.line_config import (
     reads_codes,
     sorting_lane,
 )
+from app.services.trigger_pairing import PicturePairer
 
 # Sorting verification remembers the line's last products that had a code.
 SORTING_MEMORY = 200
@@ -55,6 +58,27 @@ logger = get_logger(__name__)
 _FPS_WINDOW_SECONDS = 5.0
 # What a camera without a loaded model reports as its model.
 NO_MODEL_NAME = "No model"
+
+# Camera trigger with a trigger notice (LineRuntime.trigger_notice / trigger_picture).
+# The clocks of the notices and pictures (a test runs them on a clock of its own): they are paired
+# on the monotonic clock; a product's time is on the wall clock.
+_now = time.monotonic
+_wall = time.time
+# What waits is expired this long after its window ("Wait for the picture") is over.
+PAIRING_MARGIN_S = 0.01
+# A paired picture the model is still busy for is offered to it again this often.
+PAIR_RETRY_S = 0.02
+# Each waiting picture holds a whole frame (about 6 MB at 1080p): at most this many wait for a notice,
+# and at most this many paired pictures wait for the model, per camera.
+MAX_WAITING_PICTURES = 32
+MAX_QUEUED_PAIRS = 64
+# Pictures in a row that no notice claimed before camera.picture_unpaired is raised.
+UNPAIRED_ALARM_AFTER = 3
+
+
+def pairing_time(wall: float) -> float:
+    """A camera driver's wall-clock picture time (``arrived``) on the clock notices and pictures are paired on."""
+    return _now() - (_wall() - wall)
 
 
 # ── Sync pairing ──────────────────────────────────────────────────────────────
@@ -458,6 +482,16 @@ class LineRuntime:
         self._trigger_jpegs: Dict[str, Optional[bytes]] = {}
         self._trigger_capture_seq = 0
         self._trigger_counters: Dict[str, Dict[str, int]] = {}
+        # Cameras that take their own pictures with a trigger notice: (pairer, its window in s) each while
+        # the line runs; the paired pictures waiting for the model, as (picture, the notice's context, the
+        # picture's wall-clock time); the timer that offers them again; and per camera the pictures in a
+        # row no notice claimed, counted from the latest paired picture's time.
+        self._pairers: Dict[str, Tuple[PicturePairer, float]] = {}
+        self._pair_queues: Dict[str, Deque[Tuple[Any, Dict[str, Any], float]]] = {}
+        self._pair_retry: Dict[str, Any] = {}
+        self._unpaired: Dict[str, int] = {}
+        self._last_paired_at: Dict[str, float] = {}
+        self._pair_lock = threading.RLock()
         # The line's batch (work order) number, "" for none.
         self.batch = ""
         # The input whose value is each carton's sequence number (None: the line has none).
@@ -563,6 +597,7 @@ class LineRuntime:
         self.signal_readers = {
             c["camera_id"] for c in self.cameras if reads_codes(c) and c.get("qr_trigger") == "signal"
         }
+        self._configure_pairing()
 
     def set_batch(self, batch: str) -> None:
         """The line's batch number from now on, for its own products and its own stations'."""
@@ -906,6 +941,212 @@ class LineRuntime:
                     "counters": {key: counters.get(key, 0) for key in TRIGGER_COUNTERS},
                 })
         return rows
+
+    # ── Camera trigger with a trigger notice ──────────────────────────────────
+    # The camera takes each picture on its own input; the "Take a picture" input with the card's notice
+    # number tells the server one is coming. A notice and a picture at most Wait for the picture (W) apart,
+    # in either order, are one product (trigger_pairing). The notices come on the event loop, the pictures
+    # from the camera runner, the model's results on the camera's inference thread.
+
+    def _configure_pairing(self) -> None:
+        """One pairer per vision camera on One picture per trigger whose card names a trigger notice and does
+        not say the system takes its picture, with the card's Wait for the picture; none while the line is
+        stopped. A camera whose window did not change keeps what waits for it. Whatever else waited is
+        dropped and nothing is made of it, as on a line stop."""
+        wanted: Dict[str, float] = {}
+        if self.enabled:
+            for cam in self.cameras:
+                if cam.get("role", "vision") == "vision" and cam.get("count_mode") == "trigger" \
+                        and cam.get("notice_trigger") is not None and cam.get("picture_source") != "system":
+                    wanted[cam["camera_id"]] = int(cam.get("picture_wait_ms") or DEFAULT_PICTURE_WAIT_MS) / 1000.0
+        for camera_id in self._paired_cameras():
+            pairing = self._pairers.get(camera_id)
+            if pairing is None or pairing[1] != wanted.get(camera_id):
+                self._drop_pairing(camera_id)
+        for camera_id, window in wanted.items():
+            if camera_id not in self._pairers:
+                self._pairers[camera_id] = (PicturePairer(window), window)
+
+    def _drop_pairing(self, camera_id: str) -> None:
+        """Forget the notices and pictures that wait for a camera, and its pairs waiting for the model."""
+        pairing = self._pairers.pop(camera_id, None)
+        if pairing is not None:
+            pairing[0].clear()
+        with self._pair_lock:
+            self._pair_queues.pop(camera_id, None)
+            retry = self._pair_retry.pop(camera_id, None)
+            self._unpaired.pop(camera_id, None)
+            self._last_paired_at.pop(camera_id, None)
+        if retry is not None:
+            retry.cancel()
+
+    def stop_pairing(self) -> None:
+        """Forget everything that waits for a notice or for the model (the line is gone)."""
+        for camera_id in self._paired_cameras():
+            self._drop_pairing(camera_id)
+
+    def _paired_cameras(self) -> set:
+        """The cameras with a pairer or with pairs waiting for the model."""
+        with self._pair_lock:
+            return set(self._pairers) | set(self._pair_queues)
+
+    def has_notice(self, camera_id: str) -> bool:
+        """True for a camera of the running line that takes its own pictures (Picture taken by: Camera trigger)
+        and has a trigger notice: each of its pictures waits for a notice, and only a paired one is inspected."""
+        if camera_id not in self._pairers:
+            return False
+        from app.state.application_state import app_state
+
+        entry = self.camera_entry(camera_id) or {}
+        return picture_source(entry, getattr(app_state.cameras.get(camera_id), "trigger_mode", "off")) == "camera"
+
+    def trigger_notice(self, camera_id: str, trigger_no: int, context: Dict[str, Any]) -> None:
+        """The "Take a picture" input that is this camera's trigger notice fired: one picture is coming.
+
+        ``context``: what the input carries (``sequence``, ``request_id``). The notice keeps
+        ``{"trigger_no", "sequence", "request_id", "at"}`` (``at``: its wall-clock time), the arguments of
+        no_picture_product. A waiting picture at most Wait for the picture before it takes it at once;
+        else it waits that long for its picture (_expire_pairing). The paired picture goes to the model, and
+        its product keeps the context. Counts ``triggers``. Raises ValueError for a camera without a
+        notice on this line, or a stopped line.
+        """
+        pairing = self._pairers.get(camera_id)
+        if pairing is None or not self.enabled:
+            raise ValueError(f"Camera '{camera_id}' has no trigger notice on running line '{self.name}'")
+        pairer, window = pairing
+        self.count_trigger(camera_id, "triggers")
+        notice_context = {"trigger_no": trigger_no, "sequence": context.get("sequence"),
+                          "request_id": context.get("request_id"), "at": _wall()}
+        pair = pairer.add_notice(_now(), notice_context)
+        if pair is not None:
+            self._paired(camera_id, *pair)
+        else:
+            self._expire_later(camera_id, window)
+
+    def trigger_picture(self, camera_id: str, frame: Any, frame_id: int, arrived: float) -> None:
+        """A picture the camera took itself, handed over by the camera runner in the order taken.
+
+        ``arrived``: when it arrived, on the pairing clock (pairing_time of the driver's time). Counts
+        ``pictures``. A waiting notice it fits takes it and it goes to the model; else it waits for a
+        notice up to Wait for the picture, and then counts late or extra (_expire_pairing). When
+        MAX_WAITING_PICTURES wait already, it is extra at once: each one holds a whole frame.
+        """
+        pairing = self._pairers.get(camera_id)
+        if pairing is None or not self.enabled:
+            return
+        pairer, window = pairing
+        self.count_trigger(camera_id, "pictures")
+        if pairer.waiting()[1] >= MAX_WAITING_PICTURES:
+            self._expire_pairing(camera_id)
+            if pairer.waiting()[1] >= MAX_WAITING_PICTURES:
+                self.count_trigger(camera_id, "extra")
+                self._note_unpaired(camera_id, [arrived])
+                return
+        pair = pairer.add_picture(arrived, frame, frame_id)
+        if pair is not None:
+            self._paired(camera_id, *pair)
+        else:
+            self._expire_later(camera_id, window)
+
+    def _expire_later(self, camera_id: str, window: float) -> None:
+        """Expire what waits for this camera once its window is over, on a line timer: a camera that is not
+        connected (the runner skips it) still gets its answers. Without the line's loop, what is overdue
+        goes now."""
+        if self._schedule_timer(window + PAIRING_MARGIN_S, lambda: self._expire_pairing(camera_id)) is None:
+            self._expire_pairing(camera_id)
+
+    def _expire_pairing(self, camera_id: str) -> None:
+        """What waited longer than Wait for the picture: each notice without its picture is a "no picture"
+        reject with the notice's context; each picture without a notice counts late or extra, and is
+        not inspected."""
+        from app.services.trigger_inspection import no_picture_product
+
+        pairing = self._pairers.get(camera_id)
+        if pairing is None or not self.enabled:
+            return
+        pairer, window = pairing
+        expired = pairer.expire(_now())
+        for notice in expired.missing:
+            no_picture_product(self, camera_id, f"no picture within {round(window * 1000)} ms of the notice",
+                               **notice.context)
+        if expired.late:
+            self.count_trigger(camera_id, "late", len(expired.late))
+        if expired.extra:
+            self.count_trigger(camera_id, "extra", len(expired.extra))
+        if expired.late or expired.extra:
+            self._note_unpaired(camera_id, [picture.at for picture in expired.late + expired.extra])
+
+    def _note_unpaired(self, camera_id: str, times: List[float]) -> None:
+        """Pictures no notice claimed, by their times. UNPAIRED_ALARM_AFTER in a row (taken after the latest
+        paired picture) raise camera.picture_unpaired; the next paired picture clears it (_paired)."""
+        from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
+        from app.state.application_state import app_state
+
+        with self._pair_lock:
+            last = self._last_paired_at.get(camera_id)
+            streak = self._unpaired.get(camera_id, 0) + sum(1 for t in times if last is None or t > last)
+            self._unpaired[camera_id] = streak
+        if streak < UNPAIRED_ALARM_AFTER:
+            return
+        name = getattr(app_state.cameras.get(camera_id), "name", None) or camera_id
+        alarm_manager.raise_alarm(
+            AlarmCode.CAMERA_PICTURE_UNPAIRED, f"camera:{camera_id}",
+            f"Camera '{name}' on line '{self.name}' took {streak} pictures in a row that no trigger notice "
+            "claimed (late or extra); they were not inspected",
+            AlarmSeverity.WARNING, {"line_id": self.id, "camera_id": camera_id, "unpaired": streak},
+        )
+
+    def _paired(self, camera_id: str, notice: Any, picture: Any) -> None:
+        """A notice and a picture belong together: the picture waits for the camera's model with the notice's
+        context (drain_pairs), and the run of unpaired pictures ends. When MAX_QUEUED_PAIRS wait already,
+        the oldest gets its answer now: a "no picture" reject."""
+        from app.events.alarm_events import AlarmCode, alarm_manager
+        from app.services.trigger_inspection import no_picture_product
+
+        arrived = _wall() - (_now() - picture.at)      # the picture's time on the wall clock: its product's time
+        with self._pair_lock:
+            self._unpaired[camera_id] = 0
+            self._last_paired_at[camera_id] = max(picture.at, self._last_paired_at.get(camera_id, picture.at))
+            queue = self._pair_queues.setdefault(camera_id, collections.deque())
+            dropped = queue.popleft() if len(queue) >= MAX_QUEUED_PAIRS else None
+            queue.append((picture, notice.context, arrived))
+        alarm_manager.clear_alarm(AlarmCode.CAMERA_PICTURE_UNPAIRED, f"camera:{camera_id}",
+                                  "a picture was paired with its trigger notice")
+        if dropped is not None:
+            no_picture_product(self, camera_id, f"the model fell behind: more than {MAX_QUEUED_PAIRS} pictures "
+                                                "waited for it", **dropped[1])
+        self.drain_pairs(camera_id)
+
+    def drain_pairs(self, camera_id: str) -> None:
+        """Give the camera's oldest paired picture to its model when the model is free, with its notice's context.
+
+        Called when a pair is made, by the camera runner on each pass (_push_triggered), and by a line timer
+        while pairs wait, so pairs do not wait for a camera that disconnected. One at a time, in order."""
+        from app.services.vision_service import CameraStreamPipeline, _hardware_result
+
+        with self._pair_lock:
+            queue = self._pair_queues.get(camera_id)
+            if not queue:
+                return
+            picture, context, arrived = queue[0]
+            worker = CameraStreamPipeline.get_worker(camera_id)
+            if worker.submit_frame_if_idle(picture.frame, picture.frame_id, conf_thresh=self.confidence_for(camera_id),
+                                           copy=False, arrived_at=arrived,
+                                           on_result=functools.partial(_hardware_result, camera_id, context=context)):
+                queue.popleft()
+            waiting = bool(queue)
+        if waiting:
+            self._retry_pairs_later(camera_id)
+
+    def _retry_pairs_later(self, camera_id: str) -> None:
+        with self._pair_lock:
+            if self._pair_retry.get(camera_id) is None:
+                self._pair_retry[camera_id] = self._schedule_timer(PAIR_RETRY_S, lambda: self._retry_pairs(camera_id))
+
+    def _retry_pairs(self, camera_id: str) -> None:
+        with self._pair_lock:
+            self._pair_retry.pop(camera_id, None)
+        self.drain_pairs(camera_id)
 
     def _record(self, payload: Dict[str, Any], kind: str, counted: bool, **extra: Any) -> None:
         """Keep one product or code read in the product records (not for a counter that sends nothing)."""
@@ -1759,6 +2000,7 @@ class LineManager:
                 runtime = self._lines.pop(gone)
                 runtime.counter.event_sink = None
                 runtime.handshake.stop()
+                runtime.stop_pairing()
             if PRIMARY_LINE_ID not in self._lines:
                 self._lines[PRIMARY_LINE_ID] = LineRuntime(PRIMARY_LINE_ID, "Line 1", counting_service)
                 seen.insert(0, PRIMARY_LINE_ID)

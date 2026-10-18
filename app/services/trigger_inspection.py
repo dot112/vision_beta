@@ -23,11 +23,14 @@ the server waits the card's Picture delay, then:
 
 ``hardware``: a signal on an industrial camera's own input takes each picture,
 and the frame runner makes a product of every one (``product_from_result``).
-The server cannot trigger such a camera.
+The server cannot trigger such a camera. With a trigger notice on its card, the
+"Take a picture" input with that number only says a picture is coming: the line
+pairs notices and pictures by time (LineRuntime.trigger_notice / trigger_picture)
+and inspects only a paired picture.
 
 A trigger whose picture never comes while the line runs (no frame in time, the
-camera not connected) still gets one answer: a product rejected with the reason
-"no picture" (``no_picture_product``).
+camera not connected, a notice with no picture) still gets one answer: a product
+rejected with the reason "no picture" (``no_picture_product``).
 """
 from __future__ import annotations
 

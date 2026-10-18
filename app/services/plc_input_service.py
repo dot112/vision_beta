@@ -652,8 +652,13 @@ class PLCInputService:
         """One picture with one camera: a code reader that captures when an input asks, or a
         vision camera in trigger mode, whose picture is one product.
 
+        For a camera that takes its own pictures with a trigger notice, the input with the notice's
+        number only says a picture is coming: the line pairs it with the camera's picture by time
+        (LineRuntime.trigger_notice), and the answer is ``status`` "expecting".
+
         ``context``: what travels with the request into the product (``sequence``, ``request_id``)."""
         context = context or {}
+        import app.services.line_service as line_service
         import app.services.trigger_inspection as trigger_inspection
         from app.services.line_config import reads_codes
         from app.state.application_state import app_state
@@ -662,6 +667,12 @@ class PLCInputService:
         if entry is None:
             return None
         answer: Dict[str, Any] = {"camera_id": camera_id, "status": "requested", "trigger_no": trigger_no}
+        if trigger_no is not None and trigger_no == entry.get("notice_trigger") and runtime.has_notice(camera_id):
+            engine = line_service.line_manager.engine_for_camera(camera_id)[0]
+            if not getattr(engine, "is_loaded", True):
+                raise ValueError(f"Camera '{camera_id}' has no vision model loaded, so its picture cannot be inspected")
+            runtime.trigger_notice(camera_id, trigger_no, context)
+            return {"camera_id": camera_id, "status": "expecting", "trigger_no": trigger_no}
         if getattr(app_state.cameras.get(camera_id), "trigger_mode", "off") == "hardware":
             # Its pictures are used as they come; reading the last one again would count it twice.
             raise ValueError(f"Camera '{camera_id}' is triggered by its own input, so this input is not obeyed: "

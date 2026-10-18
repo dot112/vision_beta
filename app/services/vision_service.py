@@ -733,15 +733,29 @@ OVERRUN_CLEAR_S = 60.0
 
 
 def _hardware_result(camera_id: str, frame_id: int, detections: List[Any], inference_ms: float,
-                     arrived_at: Optional[float]) -> None:
-    """The model got through a picture a hardware trigger took: it is one product of the camera's line."""
+                     arrived_at: Optional[float], context: Optional[Dict[str, Any]] = None) -> None:
+    """The model got through a picture a hardware trigger took: it is one product of the camera's line.
+
+    ``context``: the trigger notice the picture was paired with (``trigger_no``, ``sequence``,
+    ``request_id``); the product keeps it. None for a camera without a notice. Runs on the camera's
+    inference thread, as its result callback: the picture with its boxes is drawn from the frame the
+    worker has just got through, and becomes the camera's latest capture.
+    """
     from app.services.line_service import line_manager
-    from app.services.trigger_inspection import product_from_result
+    from app.services.trigger_inspection import product_from_result, render_trigger_capture
 
     routed = line_manager.route(camera_id)
     if routed is None or not routed[0].enabled:
         return      # the line was stopped while the model ran
-    product_from_result(routed[0], camera_id, detections, arrived_at)
+    runtime = routed[0]
+    # Not get_worker: a result that comes after the camera was removed must not start a new worker.
+    frame = getattr(CameraStreamPipeline._workers.get(camera_id), "last_inferred_frame", None)
+    context = context or {}
+    answer = product_from_result(runtime, camera_id, detections, arrived_at, context.get("trigger_no"),
+                                 context.get("sequence"), context.get("request_id"))
+    runtime.count_trigger(camera_id, "results")
+    alarm_manager.clear_alarm(AlarmCode.CAMERA_PICTURE_MISSING, f"camera:{camera_id}", "the camera's next picture came")
+    runtime.remember_trigger_capture(camera_id, answer, render_trigger_capture(camera_id, frame, detections))
 
 
 class ContinuousVisionRunner:
@@ -902,11 +916,20 @@ class ContinuousVisionRunner:
 
         One picture serves the model and the code reader. The next one waits until both are free,
         so no picture is skipped and they stay in the order taken.
+
+        A camera with a trigger notice hands each picture to its line instead of the model
+        (LineRuntime.trigger_picture): it is paired with a notice by time, and only a paired picture
+        goes to the model, with the notice's context. That pairing does not wait for the model; the
+        pairs wait for it in the line, and each pass offers the oldest to the model (drain_pairs).
         """
+        from app.services.line_service import pairing_time
         from app.services.qr_service import QRReaderPipeline
 
         cls._watch_overrun(camera_id, driver, runtime, memory)
-        worker = CameraStreamPipeline.get_worker(camera_id) if to_model else None
+        notice = to_model and runtime.has_notice(camera_id)
+        if notice:
+            runtime.drain_pairs(camera_id)
+        worker = CameraStreamPipeline.get_worker(camera_id) if to_model and not notice else None
         reader = QRReaderPipeline.get_worker(camera_id) if to_reader else None
         if (worker is not None and worker.is_busy) or (reader is not None and reader.capture_busy):
             return
@@ -914,7 +937,11 @@ class ContinuousVisionRunner:
         if shot is None:
             return
         mat, frame_id, arrived = shot
-        if worker is not None:
+        if notice:
+            # The driver's time is the wall clock's; notices and pictures are paired on the monotonic one.
+            runtime.trigger_picture(camera_id, mat, frame_id, pairing_time(arrived))
+        elif worker is not None:
+            runtime.count_trigger(camera_id, "pictures")
             worker.submit_frame_if_idle(
                 mat, frame_id, conf_thresh=runtime.confidence_for(camera_id), copy=False, arrived_at=arrived,
                 on_result=functools.partial(_hardware_result, camera_id),
