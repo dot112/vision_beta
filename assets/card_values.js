@@ -145,7 +145,7 @@
             <div class="ow-head"><span class="form-label" style="margin:0">Only when</span>
                 <select class="form-input ow-match" aria-label="Which rules must pass"${on("onchange")} data-help="Whether all of the rules below must pass, or any one of them.">${opt("all", "all of these rules pass", match)}${opt("any", "any of these rules passes", match)}</select></div>
             <div class="ow-rows">${rows || `<div class="ow-none">${esc(empty)}</div>`}</div>
-            <button type="button" class="btn-action btn-outline ow-add"${rules.length >= MAX_RULES ? " disabled" : ""}${click("add")} data-help="Adds a rule to the list above." data-help-at="inside">Add rule</button>
+            <button type="button" class="btn-action btn-outline ow-add"${rules.length >= MAX_RULES ? " disabled" : ""}${click("add")}>Add rule</button>
         </div>`;
     }
 

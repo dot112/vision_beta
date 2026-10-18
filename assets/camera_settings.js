@@ -163,7 +163,7 @@
         </div>
         <div class="cam-settings-section">Rotation &amp; flip</div>
         <div class="cam-settings-row">
-            ${field("rotation", "Rotation", `<select class="form-input" data-help="Turns the picture before it is used.">${rotOption("", "No rotation")}${rotOption("90", "90° clockwise")}${rotOption("180", "180°")}${rotOption("270", "270° (counter-clockwise)")}</select>`)}
+            ${field("rotation", "Rotation", `<select class="form-input">${rotOption("", "No rotation")}${rotOption("90", "90° clockwise")}${rotOption("180", "180°")}${rotOption("270", "270° (counter-clockwise)")}</select>`)}
             <div class="form-group" style="margin:0;padding-top:20px;display:flex;gap:16px;align-items:center">
                 <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" data-cs="flip_h" ${s.flip_h ? "checked" : ""}> Flip H</label>
                 <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer"><input type="checkbox" data-cs="flip_v" ${s.flip_v ? "checked" : ""}> Flip V</label>
@@ -174,7 +174,7 @@
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
             <span class="form-label" style="margin:0">Enable ROI</span>
             <label class="switch"><input type="checkbox" data-cs="roi_enabled" ${s.roi_enabled ? "checked" : ""}><span class="slider"></span></label>
-            <button type="button" class="btn-action btn-sm btn-outline cs-roi-reset" style="margin-left:auto" data-help="Sets the region of interest back to the whole picture.">Whole picture</button>
+            <button type="button" class="btn-action btn-sm btn-outline cs-roi-reset" style="margin-left:auto">Whole picture</button>
         </div>
         <div class="cs-roi-fields">
             <div class="cam-settings-row">

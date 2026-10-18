@@ -41,6 +41,6 @@ def test_values_typed_in_the_product_dialog():
 
 def test_the_page_loads_the_helper_before_the_products_page(client):
     page = client.get("/dashboard").text
-    helper = page.index('/assets/product_fields.js?v=3.4.0')
+    helper = page.index('/assets/product_fields.js?v=3.5.0')
     assert helper < page.index("/assets/production_lines.js?v=")
     assert client.get("/assets/product_fields.js").status_code == 200

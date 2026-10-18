@@ -63,19 +63,19 @@
         <div class="comm-modal-body">
             <!-- Protocol Selector -->
             <div class="comm-proto-selector">
-                <button type="button" class="proto-btn active" id="protoBtnPlc" onclick="selectCommProto('plc')" data-help="Makes this connection a PLC, for output actions and inputs.">
+                <button type="button" class="proto-btn active" id="protoBtnPlc" onclick="selectCommProto('plc')">
                     <span>Controller</span>
                 </button>
-                <button type="button" class="proto-btn" id="protoBtnTcp" onclick="selectCommProto('tcp')" data-help="Makes this connection a TCP socket that send cards write messages to.">
+                <button type="button" class="proto-btn" id="protoBtnTcp" onclick="selectCommProto('tcp')">
                     <span>TCP Socket</span>
                 </button>
-                <button type="button" class="proto-btn" id="protoBtnMqtt" onclick="selectCommProto('mqtt')" data-help="Makes this connection an MQTT broker that send cards publish messages to.">
+                <button type="button" class="proto-btn" id="protoBtnMqtt" onclick="selectCommProto('mqtt')">
                     <span>MQTT Broker</span>
                 </button>
-                <button type="button" class="proto-btn" id="protoBtnIpcam" onclick="selectCommProto('ipcam')" data-help="Makes this connection a network camera: an IP stream, or an industrial camera found by its serial number.">
+                <button type="button" class="proto-btn" id="protoBtnIpcam" onclick="selectCommProto('ipcam')">
                     <span>Network camera</span>
                 </button>
-                <button type="button" class="proto-btn" id="protoBtnWebhook" onclick="selectCommProto('webhook')" data-help="Makes this connection a web address (webhook) that send cards post messages to.">
+                <button type="button" class="proto-btn" id="protoBtnWebhook" onclick="selectCommProto('webhook')">
                     <span>API / Webhook</span>
                 </button>
             </div>
@@ -392,7 +392,7 @@
                         <label class="form-label" for="ipcamSerialInput">Serial number *</label>
                         <div style="display:flex;gap:8px">
                             <input type="text" id="ipcamSerialInput" class="form-input" maxlength="128" placeholder="Press Scan, or type the camera's serial number" style="flex:1" />
-                            <button type="button" id="ipcamScanBtn" class="btn-action btn-outline" onclick="scanGigeCameras()" style="white-space:nowrap" data-help="Looks for industrial cameras on the network and the USB3 ports, to pick one.">Scan</button>
+                            <button type="button" id="ipcamScanBtn" class="btn-action btn-outline" onclick="scanGigeCameras()" style="white-space:nowrap">Scan</button>
                         </div>
                         <div id="ipcamScanResult" style="margin-top:8px"></div>
                     </div>
@@ -409,7 +409,7 @@
                 </div>
                 <div class="cam-settings-row">
                     <div class="form-group" style="margin:0"><label class="form-label">HTTP Method</label>
-                        <select id="webhookMethodInput" class="form-input" data-help="The HTTP method each message is sent with.">
+                        <select id="webhookMethodInput" class="form-input">
                             <option value="POST">POST (JSON Body)</option>
                             <option value="PUT">PUT</option>
                             <option value="PATCH">PATCH</option>
@@ -435,7 +435,7 @@
                 <div class="cam-settings-row">
                     <div class="form-group" style="margin:0">
                         <label class="form-label">Controller protocol *</label>
-                        <select id="plcProtocolTypeInput" class="form-input" onchange="onPlcProtocolTypeChange(this.value)" data-help="The protocol the PLC speaks; choosing one also sets its usual port.">
+                        <select id="plcProtocolTypeInput" class="form-input" onchange="onPlcProtocolTypeChange(this.value)">
                             <option value="modbus_tcp">Modbus TCP (Universal / Port 502)</option>
                             <option value="modbus_rtu">Modbus RTU (RS-485 Serial / RTU over TCP)</option>
                             <option value="s7">Siemens S7comm (1200 / 1500 / 300 / 400)</option>
@@ -511,7 +511,7 @@
                     <div class="cam-settings-row triple" style="margin-top:10px">
                         <div class="form-group" style="margin:0">
                             <label class="form-label">Baud Rate</label>
-                            <select id="plcRtuBaudrate" class="form-input" data-help="The serial speed; it must match the PLC.">
+                            <select id="plcRtuBaudrate" class="form-input">
                                 <option value="1200">1200</option>
                                 <option value="2400">2400</option>
                                 <option value="4800">4800</option>
@@ -524,7 +524,7 @@
                         </div>
                         <div class="form-group" style="margin:0">
                             <label class="form-label">Parity (8 data bits)</label>
-                            <select id="plcRtuParity" class="form-input" data-help="The parity of the serial line; it must match the PLC (Modbus uses Even by default).">
+                            <select id="plcRtuParity" class="form-input">
                                 <option value="E">Even (8E1 — Modbus default)</option>
                                 <option value="N">None (8N1 / 8N2)</option>
                                 <option value="O">Odd (8O1)</option>
@@ -532,7 +532,7 @@
                         </div>
                         <div class="form-group" style="margin:0">
                             <label class="form-label">Stop Bits</label>
-                            <select id="plcRtuStopbits" class="form-input" data-help="The number of stop bits of the serial line; it must match the PLC.">
+                            <select id="plcRtuStopbits" class="form-input">
                                 <option value="1">1</option>
                                 <option value="2">2</option>
                             </select>
@@ -681,7 +681,7 @@
         <div class="comm-modal-footer">
             <button type="button" class="btn-action btn-outline" onclick="closeCommModal()">Cancel</button>
             <div class="comm-modal-footer-actions">
-                <button type="button" class="btn-action btn-red" id="commBtnDelete" style="display:none" onclick="deleteCurrentCommEndpoint()" data-help="Deletes this connection after you confirm.">Delete</button>
+                <button type="button" class="btn-action btn-red" id="commBtnDelete" style="display:none" onclick="deleteCurrentCommEndpoint()">Delete</button>
                 <button type="button" class="btn-action btn-blue" id="commSaveBtn" onclick="saveCommEndpoint()">Save connection</button>
             </div>
         </div>
@@ -707,7 +707,7 @@
                 <label class="form-label" for="opcuaScanPort">Port</label>
                 <input type="number" id="opcuaScanPort" class="form-input" value="4840" min="1" max="65535" />
             </div>
-            <button type="button" id="opcuaScanRunBtn" class="btn-action btn-blue" onclick="performOpcuaScan()" style="min-width:100px" data-help="Scans the subnet above for OPC UA servers and lists what it finds.">Scan</button>
+            <button type="button" id="opcuaScanRunBtn" class="btn-action btn-blue" onclick="performOpcuaScan()" style="min-width:100px">Scan</button>
         </div>
         <div id="opcuaScanStatus" role="status" aria-live="polite" style="font-size:12px;color:var(--text-muted);margin:2px 0 10px">Scan results will appear here.</div>
         <div id="opcuaScanResults" style="overflow-y:auto;min-height:100px;display:flex;flex-direction:column;gap:9px;padding:1px 4px 4px 1px"></div>
@@ -844,30 +844,30 @@
 
         <ul class="sidebar-menu">
             <li class="pro-nav-label" id="navGroupRun">Run</li>
-            <li class="menu-item active" onclick="switchTab('tabDashboard')" data-help="Opens the live view of the line: its state, counts, video and alarms.">
+            <li class="menu-item active" onclick="switchTab('tabDashboard')">
                 <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg></span><span>Line dashboard</span>
             </li>
-            <li class="menu-item" onclick="switchTab('tabActionTrigger')" data-help="Opens the setup of the line: cameras, counting, messages, output actions and inputs.">
+            <li class="menu-item" onclick="switchTab('tabActionTrigger')">
                 <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></span><span>Line setup</span>
             </li>
             <li class="pro-nav-label" id="navGroupSetup">Setup</li>
-            <li class="menu-item" onclick="switchTab('tabCameras')" data-help="Opens the USB and network cameras this server can use.">
+            <li class="menu-item" onclick="switchTab('tabCameras')">
                 <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></span><span>Cameras</span>
             </li>
-            <li class="menu-item" onclick="switchTab('tabModels')" data-help="Opens the AI models on this server, where new ones are uploaded.">
+            <li class="menu-item" onclick="switchTab('tabModels')">
                 <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg></span><span>AI models</span>
             </li>
-            <li class="menu-item" onclick="switchTab('tabComms')" data-help="Opens the PLCs, MQTT brokers, TCP sockets, network cameras and webhooks the server talks to.">
+            <li class="menu-item" onclick="switchTab('tabComms')">
                 <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></svg></span><span>Connections</span>
             </li>
             <li class="pro-nav-label">Admin</li>
-            <li class="menu-item" id="adminMenuTab" onclick="switchTab('tabUsers')" data-help="Opens the user accounts and the API keys of other systems.">
+            <li class="menu-item" id="adminMenuTab" onclick="switchTab('tabUsers')">
                 <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></span><span>Users &amp; API keys</span>
             </li>
-            <li class="menu-item" onclick="switchTab('tabLogs')" data-help="Opens the record of who changed what on this server.">
+            <li class="menu-item" onclick="switchTab('tabLogs')">
                 <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span><span>Audit log</span>
             </li>
-            <li class="menu-item" onclick="switchTab('tabAccount')" data-help="Opens your profile, where you change your password or sign out.">
+            <li class="menu-item" onclick="switchTab('tabAccount')">
                 <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span><span>My account</span>
             </li>
         </ul>
@@ -875,8 +875,8 @@
             <div class="theme-switch-container">
                 <span>Theme</span>
                 <div class="seg" role="group" aria-label="Theme">
-                    <button type="button" id="themeDarkBtn" class="on" aria-pressed="true" onclick="setTheme('dark')" data-help="Shows the dashboard in dark colours.">Dark</button>
-                    <button type="button" id="themeLightBtn" aria-pressed="false" onclick="setTheme('light')" data-help="Shows the dashboard in light colours.">Light</button>
+                    <button type="button" id="themeDarkBtn" class="on" aria-pressed="true" onclick="setTheme('dark')">Dark</button>
+                    <button type="button" id="themeLightBtn" aria-pressed="false" onclick="setTheme('light')">Light</button>
                 </div>
             </div>
             <div class="sidebar-version" title="Vision server version">Version <span class="app-version">1.0.0 beta</span></div>
@@ -898,14 +898,14 @@
                     <span class="pro-status-cell optional"><span class="pro-status-val num" id="proClock">--:--:--</span></span>
                 </div>
                 <div class="user-menu" id="userMenu">
-                    <button type="button" class="user-profile-badge" onclick="toggleMenu('userMenu', event)" aria-haspopup="menu" aria-expanded="false" data-help="Opens your account menu: My account and Sign out." data-help-at="inside">
+                    <button type="button" class="user-profile-badge" title="Account" onclick="toggleMenu('userMenu', event)" aria-haspopup="menu" aria-expanded="false">
                         <span class="user-avatar" id="barAvatar">A</span>
                         <span class="user-label-full"><b id="barUsername">admin</b><span id="barClearance">Level 3 · Admin</span></span>
                     </button>
                     <div class="user-menu-panel" role="menu">
-                        <button type="button" class="menu-panel-item" role="menuitem" onclick="closeMenus(); switchTab('tabAccount')" data-help="Opens your profile, where you change your password.">My account</button>
+                        <button type="button" class="menu-panel-item" role="menuitem" onclick="closeMenus(); switchTab('tabAccount')">My account</button>
                         <div class="menu-panel-sep"></div>
-                        <button type="button" class="menu-panel-item danger" role="menuitem" onclick="closeMenus(); handleLogout()" data-help="Signs you out of this dashboard.">Sign out</button>
+                        <button type="button" class="menu-panel-item danger" role="menuitem" onclick="closeMenus(); handleLogout()">Sign out</button>
                     </div>
                 </div>
             </div>
@@ -931,17 +931,17 @@
         </div>
         <div class="line-status-meta" id="lineStatusMeta"></div>
         <div class="line-status-actions">
-            <button type="button" class="status-pill neutral" id="lineAlarmPill" onclick="showAlarmPanel()" title="Show the alarms" hidden data-help="Jumps to the alarms of this line below."></button>
-            <button type="button" class="btn-action btn-outline restricted-l2" id="lineRunBtn" onclick="toggleLineRunning()" hidden data-help="Starts the line, or stops it after you confirm; it counts and acts only while it runs.">Start line</button>
+            <button type="button" class="status-pill neutral" id="lineAlarmPill" onclick="showAlarmPanel()" title="Show the alarms" hidden></button>
+            <button type="button" class="btn-action btn-outline restricted-l2" id="lineRunBtn" onclick="toggleLineRunning()" hidden>Start line</button>
             <div class="more-menu" id="lineMoreMenu">
-                <button type="button" class="btn-action btn-outline btn-icon" onclick="toggleMenu('lineMoreMenu', event)" aria-label="More line actions" aria-haspopup="menu" aria-expanded="false" data-help="Opens more actions for this line: Line setup, Cameras and Reset all counts.">
+                <button type="button" class="btn-action btn-outline btn-icon" onclick="toggleMenu('lineMoreMenu', event)" aria-label="More line actions" aria-haspopup="menu" aria-expanded="false">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
                 </button>
                 <div class="user-menu-panel" role="menu">
-                    <button type="button" class="menu-panel-item" role="menuitem" onclick="closeMenus(); switchTab('tabActionTrigger')" data-help="Opens the setup of this line.">Open line setup</button>
-                    <button type="button" class="menu-panel-item" role="menuitem" onclick="closeMenus(); switchTab('tabCameras')" data-help="Opens the Cameras page.">Cameras</button>
+                    <button type="button" class="menu-panel-item" role="menuitem" onclick="closeMenus(); switchTab('tabActionTrigger')">Open line setup</button>
+                    <button type="button" class="menu-panel-item" role="menuitem" onclick="closeMenus(); switchTab('tabCameras')">Cameras</button>
                     <div class="menu-panel-sep"></div>
-                    <button type="button" class="menu-panel-item danger restricted-l2" role="menuitem" onclick="closeMenus(); confirmResetAllCounts()" data-help="Sets the counts of this line back to 0 after you confirm.">Reset all counts…</button>
+                    <button type="button" class="menu-panel-item danger restricted-l2" role="menuitem" onclick="closeMenus(); confirmResetAllCounts()">Reset all counts…</button>
                 </div>
             </div>
         </div>
@@ -1033,10 +1033,10 @@
                 <div class="card-panel-sub">Faults on this line and faults that affect every line. An alarm clears on its own once its cause is fixed.</div>
             </div>
             <div class="card-actions">
-                <button type="button" class="btn-action btn-sm btn-outline" id="alarmAckAllBtn" onclick="acknowledgeAllAlarms()" hidden data-help="Acknowledges every alarm in the list that is not acknowledged yet.">Acknowledge all</button>
+                <button type="button" class="btn-action btn-sm btn-outline" id="alarmAckAllBtn" onclick="acknowledgeAllAlarms()" hidden>Acknowledge all</button>
                 <div class="seg" role="group" aria-label="Which alarms">
-                    <button type="button" id="alarmViewActive" class="on" aria-pressed="true" onclick="setAlarmView('active')" data-help="Shows the alarms that are on now.">Active</button>
-                    <button type="button" id="alarmViewCleared" aria-pressed="false" onclick="setAlarmView('cleared')" data-help="Shows the alarms that cleared recently.">Cleared</button>
+                    <button type="button" id="alarmViewActive" class="on" aria-pressed="true" onclick="setAlarmView('active')">Active</button>
+                    <button type="button" id="alarmViewCleared" aria-pressed="false" onclick="setAlarmView('cleared')">Cleared</button>
                 </div>
             </div>
         </div>
@@ -1059,14 +1059,14 @@
             <div class="card-actions">
                 <span id="sendActionSaveState" class="feed-meta">Loading saved cards…</span>
                 <div class="seg" role="group" aria-label="Show send cards as">
-                    <button type="button" id="sendViewCards" class="on" aria-pressed="true" onclick="setSendActionsView('cards')" data-help="Shows the send cards as cards.">
+                    <button type="button" id="sendViewCards" title="Show as cards" class="on" aria-pressed="true" onclick="setSendActionsView('cards')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Cards
                     </button>
-                    <button type="button" id="sendViewList" aria-pressed="false" onclick="setSendActionsView('list')" data-help="Shows the send cards as a table.">
+                    <button type="button" id="sendViewList" title="Show as a list" aria-pressed="false" onclick="setSendActionsView('list')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>List
                     </button>
                 </div>
-                <button type="button" class="btn-action btn-outline restricted-l2" onclick="addSendActionCard()" data-help="Adds a send card and opens its settings; Apply puts it to work.">Add card</button>
+                <button type="button" class="btn-action btn-outline restricted-l2" onclick="addSendActionCard()">Add card</button>
                 <button type="button" class="btn-action btn-blue restricted-l2" onclick="applySendActionCards()" data-help="Saves the send cards of this line and puts them to work.">Apply</button>
             </div>
         </div>
@@ -1085,14 +1085,14 @@
             <div class="card-actions">
                 <span id="plcActionSaveState" class="feed-meta">Loading saved actions…</span>
                 <div class="seg" role="group" aria-label="Show output actions as">
-                    <button type="button" id="plcViewCards" class="on" aria-pressed="true" onclick="setPlcActionsView('cards')" data-help="Shows the output actions as cards.">
+                    <button type="button" id="plcViewCards" title="Show as cards" class="on" aria-pressed="true" onclick="setPlcActionsView('cards')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Cards
                     </button>
-                    <button type="button" id="plcViewList" aria-pressed="false" onclick="setPlcActionsView('list')" data-help="Shows the output actions as a table.">
+                    <button type="button" id="plcViewList" title="Show as a list" aria-pressed="false" onclick="setPlcActionsView('list')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>List
                     </button>
                 </div>
-                <button type="button" class="btn-action btn-outline restricted-l2" onclick="addPlcActionCard()" data-help="Adds an output action; Apply puts it to work.">Add action</button>
+                <button type="button" class="btn-action btn-outline restricted-l2" onclick="addPlcActionCard()">Add action</button>
                 <button type="button" class="btn-action btn-blue restricted-l2" onclick="applyPlcActionCards()" data-help="Saves the output actions of this line and puts them to work.">Apply</button>
             </div>
         </div>
@@ -1111,14 +1111,14 @@
             <div class="card-actions">
                 <span id="plcSignalSaveState" class="feed-meta">Loading saved signals…</span>
                 <div class="seg" role="group" aria-label="Show inputs as">
-                    <button type="button" id="plcSignalViewCards" class="on" aria-pressed="true" onclick="PlcSignals.setView('cards')" data-help="Shows the inputs as cards.">
+                    <button type="button" id="plcSignalViewCards" title="Show as cards" class="on" aria-pressed="true" onclick="PlcSignals.setView('cards')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Cards
                     </button>
-                    <button type="button" id="plcSignalViewList" aria-pressed="false" onclick="PlcSignals.setView('list')" data-help="Shows the inputs as a table.">
+                    <button type="button" id="plcSignalViewList" title="Show as a list" aria-pressed="false" onclick="PlcSignals.setView('list')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>List
                     </button>
                 </div>
-                <button type="button" class="btn-action btn-outline restricted-l2" onclick="PlcSignals.add()" data-help="Adds an input that reads a PLC address; Apply starts reading it.">Add input</button>
+                <button type="button" class="btn-action btn-outline restricted-l2" onclick="PlcSignals.add()">Add input</button>
                 <button type="button" class="btn-action btn-blue restricted-l2" onclick="PlcSignals.apply()" data-help="Saves the inputs of this line and starts reading them.">Apply</button>
             </div>
         </div>
@@ -1137,7 +1137,7 @@
                 <div class="card-panel-sub">USB and network cameras this server can use. Assign them to a line under Line setup.</div>
             </div>
             <div class="card-actions">
-                <button class="btn-action btn-blue" id="camScanHeaderBtn" onclick="scanHardwareCameras(this)" data-help="Looks for USB cameras on this computer and adds new ones to the list.">Scan for cameras</button>
+                <button class="btn-action btn-blue" id="camScanHeaderBtn" onclick="scanHardwareCameras(this)">Scan for cameras</button>
             </div>
         </div>
         <div class="table-responsive">
@@ -1176,13 +1176,13 @@
                 <div class="card-panel-sub">A model is active while a camera runs it. Pick the model for each vision camera under Line setup; several models can run at the same time.</div>
             </div>
             <div class="card-actions">
-                <button class="btn-action btn-blue restricted-l2" onclick="openModelUploadModal()" data-help="Opens a dialog to upload a new AI model file (.onnx) to this server.">Upload model</button>
+                <button class="btn-action btn-blue restricted-l2" onclick="openModelUploadModal()">Upload model</button>
             </div>
         </div>
         <div class="seg" role="group" aria-label="Model type" style="margin-bottom:14px">
-            <button type="button" id="modelFilterAll" class="on" aria-pressed="true" onclick="setModelFilter('all')" data-help="Shows every model.">All</button>
-            <button type="button" id="modelFilterDetect" aria-pressed="false" onclick="setModelFilter('detect')" data-help="Shows only the detection models.">Detection</button>
-            <button type="button" id="modelFilterSeg" aria-pressed="false" onclick="setModelFilter('segment')" data-help="Shows only the segmentation models.">Segmentation</button>
+            <button type="button" id="modelFilterAll" class="on" aria-pressed="true" onclick="setModelFilter('all')">All</button>
+            <button type="button" id="modelFilterDetect" aria-pressed="false" onclick="setModelFilter('detect')">Detection</button>
+            <button type="button" id="modelFilterSeg" aria-pressed="false" onclick="setModelFilter('segment')">Segmentation</button>
         </div>
         <div class="table-responsive">
             <table class="table-compact table-mobile-cards" id="modelTable">
@@ -1257,18 +1257,18 @@
                 <div class="card-panel-sub">Controllers (PLCs), MQTT brokers, TCP sockets, network cameras and webhooks the server talks to.</div>
             </div>
             <div class="card-actions">
-                <button class="btn-action btn-blue restricted-l2" onclick="openAddCommModal()" data-help="Adds a PLC, MQTT broker, TCP socket, network camera or webhook.">Add connection</button>
+                <button class="btn-action btn-blue restricted-l2" onclick="openAddCommModal()">Add connection</button>
             </div>
         </div>
 
         <!-- Protocol Filter Pills -->
         <div class="comm-filter-bar" role="group" aria-label="Show">
-            <button class="filter-pill active" onclick="filterCommsGrid('all', this)" data-help="Shows every connection.">All</button>
-            <button class="filter-pill" onclick="filterCommsGrid('plc', this)" data-help="Shows only the PLC connections.">Controllers</button>
-            <button class="filter-pill" onclick="filterCommsGrid('tcp', this)" data-help="Shows only the TCP sockets.">TCP</button>
-            <button class="filter-pill" onclick="filterCommsGrid('mqtt', this)" data-help="Shows only the MQTT brokers.">MQTT</button>
-            <button class="filter-pill" onclick="filterCommsGrid('ipcam', this)" data-help="Shows only the network cameras.">Network cameras</button>
-            <button class="filter-pill" onclick="filterCommsGrid('webhook', this)" data-help="Shows only the webhooks.">Webhooks</button>
+            <button class="filter-pill active" onclick="filterCommsGrid('all', this)">All</button>
+            <button class="filter-pill" onclick="filterCommsGrid('plc', this)">Controllers</button>
+            <button class="filter-pill" onclick="filterCommsGrid('tcp', this)">TCP</button>
+            <button class="filter-pill" onclick="filterCommsGrid('mqtt', this)">MQTT</button>
+            <button class="filter-pill" onclick="filterCommsGrid('ipcam', this)">Network cameras</button>
+            <button class="filter-pill" onclick="filterCommsGrid('webhook', this)">Webhooks</button>
         </div>
 
         <!-- Responsive Card Grid -->
@@ -1288,7 +1288,7 @@
                 <div class="card-panel-sub">Who changed what on this server, newest first.</div>
             </div>
             <div class="card-actions">
-                <button class="btn-action btn-outline" onclick="loadAuditLogs()" data-help="Loads the newest entries of the audit log.">Refresh</button>
+                <button class="btn-action btn-outline" onclick="loadAuditLogs()">Refresh</button>
             </div>
         </div>
         <div class="table-responsive">
@@ -1329,7 +1329,7 @@
                     <option value="supervisor">Level 2 · Supervisor (setup and control)</option>
                 </select></div>
         </div>
-        <div style="margin-top:16px"><button class="btn-action btn-blue" onclick="provisionUser()" data-help="Creates the account; the user can sign in with it at once.">Create user</button></div>
+        <div style="margin-top:16px"><button class="btn-action btn-blue" onclick="provisionUser()">Create user</button></div>
     </div>
 
     <div class="card-panel">
@@ -1342,7 +1342,7 @@
         <div class="cam-settings-row triple">
             <div class="form-group"><label class="form-label" for="apiKeyNameInput">Key name</label><input type="text" id="apiKeyNameInput" class="form-input" maxlength="100" placeholder="e.g. Line 1 MES reader" /></div>
             <div class="form-group"><label class="form-label" for="apiKeyOwnerSelect">Owner account</label><select id="apiKeyOwnerSelect" class="form-input" data-help="The account the key belongs to; the key never gets more access than this account."><option value="">Loading accounts...</option></select></div>
-            <div class="form-group"><label class="form-label" for="apiKeyExpirySelect">Expires after</label><select id="apiKeyExpirySelect" class="form-input" data-help="How long the key works before it stops."><option value="30">30 days</option><option value="90" selected>90 days</option><option value="180">180 days</option><option value="365">365 days</option></select></div>
+            <div class="form-group"><label class="form-label" for="apiKeyExpirySelect">Expires after</label><select id="apiKeyExpirySelect" class="form-input"><option value="30">30 days</option><option value="90" selected>90 days</option><option value="180">180 days</option><option value="365">365 days</option></select></div>
         </div>
         <div class="form-group" style="margin-top:8px">
             <span class="form-label">Permissions</span>
@@ -1362,8 +1362,8 @@
             </div>
         </div>
         <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <button class="btn-action btn-blue" type="button" onclick="createApiKey()" data-help="Creates the key with the ticked permissions and shows it once, to copy.">Create API key</button>
-            <button class="btn-action btn-red" type="button" id="deleteSelectedApiKeysBtn" onclick="deleteSelectedApiKeys()" disabled data-help="Revokes the keys ticked in the table below after you confirm; their integrations lose access.">Delete selected (0)</button>
+            <button class="btn-action btn-blue" type="button" onclick="createApiKey()">Create API key</button>
+            <button class="btn-action btn-red" type="button" id="deleteSelectedApiKeysBtn" onclick="deleteSelectedApiKeys()" disabled>Delete selected (0)</button>
             <span class="feed-meta">Only admins can manage users and keys.</span>
         </div>
         <div id="apiKeyRevealPanel" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="apiKeyRevealTitle" onclick="if(event.target===this)hideNewApiKey()" style="display:none;z-index:12000">
@@ -1375,7 +1375,7 @@
                 <div class="modal-message" style="margin-bottom:12px">Store this key somewhere safe. Anyone who has it can use its permissions.</div>
                 <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
                     <input id="apiKeyRevealValue" type="text" class="form-input" readonly autocomplete="off" aria-label="Full API key" style="flex:1;min-width:240px;font-family:var(--font-mono)" />
-                    <button class="btn-action btn-blue" type="button" onclick="copyNewApiKey()" data-help="Copies the key to the clipboard.">Copy</button>
+                    <button class="btn-action btn-blue" type="button" onclick="copyNewApiKey()">Copy</button>
                 </div>
             </div>
         </div>
@@ -1406,7 +1406,7 @@
             <div class="form-group"><span class="form-label">Session</span>
                 <span class="state-text ok">Signed in</span>
             </div>
-            <button class="btn-action btn-outline" style="margin-top:6px" onclick="handleLogout()" data-help="Signs you out of this dashboard.">Sign out</button>
+            <button class="btn-action btn-outline" style="margin-top:6px" onclick="handleLogout()">Sign out</button>
         </div>
 
         <!-- Change Password -->
@@ -1415,7 +1415,7 @@
             <div class="form-group"><label class="form-label" for="pwdCurrent">Current password</label><input type="password" id="pwdCurrent" class="form-input" autocomplete="current-password" /></div>
             <div class="form-group"><label class="form-label" for="pwdNew">New password</label><input type="password" id="pwdNew" class="form-input" autocomplete="new-password" /><div class="form-hint">At least 6 characters.</div></div>
             <div class="form-group"><label class="form-label" for="pwdConfirm">Confirm new password</label><input type="password" id="pwdConfirm" class="form-input" autocomplete="new-password" /></div>
-            <button class="btn-action btn-blue" style="margin-top:4px" onclick="changeMyPassword()" data-help="Changes your password to the new one typed above.">Update password</button>
+            <button class="btn-action btn-blue" style="margin-top:4px" onclick="changeMyPassword()">Update password</button>
         </div>
     </div>
 </div>
@@ -2625,7 +2625,7 @@ function renderCommsGrid() {
             <div class="empty-state" style="grid-column:1/-1">
                 <b>${kind ? `No ${kind} connections yet` : "No connections yet"}</b>
                 <p>Add a PLC, MQTT broker, TCP socket, network camera or webhook for the server to talk to.</p>
-                <button class="btn-action btn-blue restricted-l2" onclick="openAddCommModal('${currentFilterProto === "all" ? "tcp" : currentFilterProto}')" data-help="Adds a PLC, MQTT broker, TCP socket, network camera or webhook.">Add connection</button>
+                <button class="btn-action btn-blue restricted-l2" onclick="openAddCommModal('${currentFilterProto === "all" ? "tcp" : currentFilterProto}')">Add connection</button>
             </div>
         `;
         applyRoleRestrictions(grid);
@@ -2719,9 +2719,9 @@ function renderCommsGrid() {
                         ${proto === "mqtt" && ep.sparkplug_enabled ? `<span class="badge badge-outline" title="${escapeHtml(sparkplugStateText(ep) || "Sparkplug B is switched on for this channel")}">${escapeHtml(sparkplugStateText(ep) || "Sparkplug B")}</span>` : ""}
                     </div>
                     <div class="row-actions">
-                        <button class="btn-action btn-sm btn-outline restricted-l2" onclick="testEndpointById(this.closest('[data-ep-id]').dataset.epId, event)" data-help="Tries this connection now and shows whether it answers.">Test</button>
-                        <button class="btn-action btn-sm btn-outline restricted-l2" onclick="openEditCommModal(this.closest('[data-ep-id]').dataset.epId)" data-help="Opens the settings of this connection.">Edit</button>
-                        <button class="btn-action btn-sm btn-red restricted-l2" onclick="deleteCommEndpointById(this.closest('[data-ep-id]').dataset.epId, event)" aria-label="Delete ${escapeHtml(ep.name || "connection")}" data-help="Deletes this connection after you confirm.">Delete</button>
+                        <button class="btn-action btn-sm btn-outline restricted-l2" onclick="testEndpointById(this.closest('[data-ep-id]').dataset.epId, event)">Test</button>
+                        <button class="btn-action btn-sm btn-outline restricted-l2" onclick="openEditCommModal(this.closest('[data-ep-id]').dataset.epId)">Edit</button>
+                        <button class="btn-action btn-sm btn-red restricted-l2" onclick="deleteCommEndpointById(this.closest('[data-ep-id]').dataset.epId, event)" aria-label="Delete ${escapeHtml(ep.name || "connection")}">Delete</button>
                     </div>
                 </div>
             </div>
@@ -3826,7 +3826,7 @@ function cardInputPickerHtml(card, onchange) {
     if (current && !inputs.some(i => i.id === current)) options += `<option value="${escapeHtml(current)}" selected>(input not found)</option>`;
     return `<div class="form-group" style="margin:0">
         <label class="form-label" style="font-size:11.5px;font-weight:600">Input:</label>
-        <select class="form-input" onchange="${onchange}" data-help="The input whose change fires this card.">${options}</select>
+        <select class="form-input" onchange="${onchange}">${options}</select>
         <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${inputs.length ? "Fires on each change of this input that the condition names, whatever the input's own action does. The first value read after a start is not a change." : "This line has no inputs yet: add one under Inputs (the action Only fires cards is for an input that only does this)."}</div>
     </div>`;
 }
@@ -4231,7 +4231,7 @@ function renderSendActionCards() {
             <div class="empty-state">
                 <b>No send cards yet</b>
                 <p>A card sends a message to another system when something happens on the line, for example every rejected product to an MES over TCP. Set up the channels under Connections first.</p>
-                <button type="button" class="btn-action btn-blue restricted-l2" onclick="addSendActionCard()" data-help="Adds a send card and opens its settings; Apply puts it to work.">Add card</button>
+                <button type="button" class="btn-action btn-blue restricted-l2" onclick="addSendActionCard()">Add card</button>
             </div>`;
         applyRoleRestrictions(container);
         return;
@@ -4256,8 +4256,8 @@ function renderSendActionCards() {
                     <td data-label="Message" title="${escapeHtml(s.contentsFull)}">${escapeHtml(s.contents)}</td>
                     <td data-label="Sent" class="num">Sent: ${s.sent}</td>
                     <td class="col-actions"><div class="row-actions">
-                        <button type="button" class="btn-action btn-sm btn-outline" onclick="openSendActionSettingsModal(this.closest('[data-send-id]').dataset.sendId)" data-help="Opens the channel, trigger and message of this card.">Settings</button>
-                        <button type="button" class="btn-action btn-sm btn-outline restricted-l2" onclick="testSendActionCard(this.closest('[data-send-id]').dataset.sendId)" data-help="Sends this message once now, with example values.">Test</button>
+                        <button type="button" class="btn-action btn-sm btn-outline" onclick="openSendActionSettingsModal(this.closest('[data-send-id]').dataset.sendId)">Settings</button>
+                        <button type="button" class="btn-action btn-sm btn-outline restricted-l2" onclick="testSendActionCard(this.closest('[data-send-id]').dataset.sendId)">Test</button>
                         <button type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deleteSendActionCard(this.closest('[data-send-id]').dataset.sendId)" title="Delete this card" aria-label="Delete this card">✕</button>
                     </div></td>
                 </tr>`;
@@ -4301,8 +4301,8 @@ function renderSendActionCards() {
                     </div>
                 </div>
                 <div class="plc-card-actions">
-                    <button type="button" class="btn-action btn-sm btn-outline" onclick="openSendActionSettingsModal(this.closest('[data-send-id]').dataset.sendId)" data-help="Opens the channel, trigger and message of this card.">Settings</button>
-                    <button type="button" class="btn-action btn-sm btn-outline restricted-l2" onclick="testSendActionCard(this.closest('[data-send-id]').dataset.sendId)" data-help="Sends this message once now, with example values.">Test message</button>
+                    <button type="button" class="btn-action btn-sm btn-outline" onclick="openSendActionSettingsModal(this.closest('[data-send-id]').dataset.sendId)">Settings</button>
+                    <button type="button" class="btn-action btn-sm btn-outline restricted-l2" onclick="testSendActionCard(this.closest('[data-send-id]').dataset.sendId)">Test message</button>
                 </div>
             </div>`;
     }).join("");
@@ -4588,7 +4588,7 @@ function refreshSendModalBody() {
         <!-- 2. Where the message goes: one channel -->
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600">Send to (one MQTT, TCP or webhook channel):</label>
-            <select class="form-input" onchange="setSendDraft('endpoint_id', this.value)" data-help="The MQTT, TCP or webhook connection this card sends to.">${channelOptions}</select>
+            <select class="form-input" onchange="setSendDraft('endpoint_id', this.value)">${channelOptions}</select>
             <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${channels.length ? "The channels are set up under Connections. To send to two systems, add a card for each." : "No MQTT, TCP or webhook channel yet: add one under Connections."}</div>
         </div>
 
@@ -5129,7 +5129,7 @@ function plcAlarmPickerHtml(card, toggleFn = "togglePlcAlarmCode") {
     if (!_alarmCatalog) {
         loadAlarmCatalog();
         return _alarmCatalogFailed
-            ? `<div class="plc-alarm-note">Could not load the alarm list. <button type="button" class="btn-action btn-sm btn-outline" onclick="retryAlarmCatalog()" data-help="Loads the list of alarms again.">Try again</button></div>`
+            ? `<div class="plc-alarm-note">Could not load the alarm list. <button type="button" class="btn-action btn-sm btn-outline" onclick="retryAlarmCatalog()">Try again</button></div>`
             : `<div class="plc-alarm-note">Loading alarms…</div>`;
     }
     const picked = new Set(card.alarm_codes || []);
@@ -5229,7 +5229,7 @@ function plcFieldPickerHtml(card) {
     }
     return `<div class="form-group" style="margin:0">
         <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcValueFieldInput">Product field:</label>
-        <select id="plcValueFieldInput" class="form-input" onchange="updatePlcCardProp(${PLC_CARD_ID}, 'value_field', this.value); refreshPlcModalBody(${PLC_CARD_ID}); renderPlcActionCards()" data-help="The product field whose value is written.">${options}</select>
+        <select id="plcValueFieldInput" class="form-input" onchange="updatePlcCardProp(${PLC_CARD_ID}, 'value_field', this.value); refreshPlcModalBody(${PLC_CARD_ID}); renderPlcActionCards()">${options}</select>
         ${fields.length ? "" : `<div style="font-size:10px;color:var(--text-muted);margin-top:3px">The product lists of this line's code readers have no fields yet. Add them on the Products page with Fields.</div>`}
     </div>`;
 }
@@ -5244,7 +5244,7 @@ function plcInputPickerHtml(card) {
     }
     return `<div class="form-group" style="margin:0">
         <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcValueInputInput">Input:</label>
-        <select id="plcValueInputInput" class="form-input" onchange="updatePlcCardProp(${PLC_CARD_ID}, 'value_input', this.value); renderPlcActionCards()" data-help="The input whose value is written.">${options}</select>
+        <select id="plcValueInputInput" class="form-input" onchange="updatePlcCardProp(${PLC_CARD_ID}, 'value_input', this.value); renderPlcActionCards()">${options}</select>
         ${inputs.length ? "" : `<div style="font-size:10px;color:var(--text-muted);margin-top:3px">No input of this line has a value name yet. Give one in the input's dialog (Inputs).</div>`}
     </div>`;
 }
@@ -5375,7 +5375,7 @@ function renderPlcActionCards() {
             <div class="empty-state">
                 <b>No output actions yet</b>
                 <p>An action writes to a PLC address when something happens on the line, for example a reject pulse when a defect crosses count line B.</p>
-                <button type="button" class="btn-action btn-blue restricted-l2" onclick="addPlcActionCard()" data-help="Adds an output action; Apply puts it to work.">Add action</button>
+                <button type="button" class="btn-action btn-blue restricted-l2" onclick="addPlcActionCard()">Add action</button>
             </div>
         `;
         applyRoleRestrictions(container);
@@ -5403,8 +5403,8 @@ function renderPlcActionCards() {
                     <td data-label="Output" style="color:var(--primary-color);font-weight:600">${escapeHtml(actionSummary)}</td>
                     <td data-label="Fired" class="num" id="plcCardCount_${id}">Fired: ${Number(c.fired_count) || 0}</td>
                     <td class="col-actions"><div class="row-actions">
-                        <button type="button" class="btn-action btn-sm btn-outline" onclick="openPlcActionSettingsModal(this.closest('[data-action-id]').dataset.actionId)" data-help="Opens the trigger, PLC address and timing of this action.">Settings</button>
-                        <button type="button" class="btn-action btn-sm btn-outline" onclick="testPlcActionCard(this.closest('[data-action-id]').dataset.actionId)" data-help="Fires this output once now.">Test</button>
+                        <button type="button" class="btn-action btn-sm btn-outline" onclick="openPlcActionSettingsModal(this.closest('[data-action-id]').dataset.actionId)">Settings</button>
+                        <button type="button" class="btn-action btn-sm btn-outline" onclick="testPlcActionCard(this.closest('[data-action-id]').dataset.actionId)">Test</button>
                         <button type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deletePlcActionCard(this.closest('[data-action-id]').dataset.actionId)" title="Delete this action" aria-label="Delete this action">✕</button>
                     </div></td>
                 </tr>`;
@@ -5456,8 +5456,8 @@ function renderPlcActionCards() {
                 </div>
 
                 <div class="plc-card-actions">
-                    <button type="button" class="btn-action btn-sm btn-outline" onclick="openPlcActionSettingsModal(this.closest('[data-action-id]').dataset.actionId)" data-help="Opens the trigger, PLC address and timing of this action.">Settings</button>
-                    <button type="button" class="btn-action btn-sm btn-outline" onclick="testPlcActionCard(this.closest('[data-action-id]').dataset.actionId)" data-help="Fires this output once now.">Test output</button>
+                    <button type="button" class="btn-action btn-sm btn-outline" onclick="openPlcActionSettingsModal(this.closest('[data-action-id]').dataset.actionId)">Settings</button>
+                    <button type="button" class="btn-action btn-sm btn-outline" onclick="testPlcActionCard(this.closest('[data-action-id]').dataset.actionId)">Test output</button>
                 </div>
             </div>
         `;
@@ -5592,7 +5592,7 @@ function refreshPlcModalBody(cardId) {
                 <label class="form-label" style="font-size:11.5px;font-weight:600;margin:0">Communication (Target PLC):</label>
                 <span style="font-size:10.5px;color:var(--primary-color);font-weight:600">${escapeHtml(protoDef.label)}</span>
             </div>
-            <select class="form-input" onchange="onPlcModalEndpointChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)" data-help="The PLC this action writes to.">
+            <select class="form-input" onchange="onPlcModalEndpointChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)">
                 ${channelOptions}
             </select>
         </div>
@@ -7232,7 +7232,7 @@ function renderAlarmPanel() {
     } else if (_alarmPanel.view === "active") {
         html = active.length
             ? active.map(a => alarmRowHtml(a, false)).join("")
-            : `<div class="alarm-empty"><span class="alarm-empty-icon" aria-hidden="true">✓</span>No active alarms on this line. <button type="button" class="link-btn" onclick="setAlarmView('cleared')" data-help="Shows the alarms that cleared recently.">See recently cleared</button></div>`;
+            : `<div class="alarm-empty"><span class="alarm-empty-icon" aria-hidden="true">✓</span>No active alarms on this line. <button type="button" class="link-btn" onclick="setAlarmView('cleared')">See recently cleared</button></div>`;
     } else if (!_alarmPanel.cleared) {
         html = `<div class="bar-empty">Loading cleared alarms…</div>`;
     } else {
@@ -7427,11 +7427,11 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
 })();
 </script>
 <script src="/assets/help_tips.js?v=3.4.0"></script>
-<script src="/assets/card_values.js?v=3.4.0"></script>
-<script src="/assets/camera_settings.js?v=3.4.0"></script>
-<script src="/assets/plc_signals.js?v=3.4.0"></script>
-<script src="/assets/product_fields.js?v=3.4.0"></script>
-<script src="/assets/production_lines.js?v=3.4.0"></script>
+<script src="/assets/card_values.js?v=3.5.0"></script>
+<script src="/assets/camera_settings.js?v=3.5.0"></script>
+<script src="/assets/plc_signals.js?v=3.5.0"></script>
+<script src="/assets/product_fields.js?v=3.5.0"></script>
+<script src="/assets/production_lines.js?v=3.5.0"></script>
 <script>
 /* ─── Cameras: Connect / Disconnect / Settings / Delete on every row ────────
    Runs after assets/production_lines.js has added its Line and Role columns. */

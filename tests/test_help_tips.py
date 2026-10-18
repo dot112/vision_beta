@@ -19,54 +19,52 @@ HELPER = ROOT / "assets" / "help_tips.js"
 FILES = ("dashboard.html", "assets/production_lines.js", "assets/plc_signals.js", "assets/camera_settings.js",
          "assets/card_values.js", "assets/product_fields.js")
 
-# Controls without a help icon, each named by a piece of its opening tag (id, class, data-act or handler).
-EXEMPT = {
-    "dashboard.html": (
-        # Dialog footers and corners: Cancel, OK, Save, Upload, Close and the ✕ buttons.
-        'id="modalBtnCancel"', 'id="modalBtnConfirm"',
-        'onclick="closeCamSettings()"', 'onclick="saveCamSettings()"',
-        'onclick="closeCommModal()"', 'id="commSaveBtn"',
-        'onclick="closeOpcuaScanModal()"',
-        'onclick="closeSendActionSettingsModal()"', 'onclick="saveSendActionFromModal()"',
-        'onclick="closePlcActionSettingsModal()"', 'onclick="savePlcActionFromModal()"',
-        'onclick="PlcSignals.closeDialog()"', 'onclick="PlcSignals.saveDialog()"',
-        'onclick="closeModelUploadModal()"', 'onclick="submitModelUpload()"',
-        'onclick="closeModelDeleteModal()"', 'onclick="confirmModelDelete()"',
-        'onclick="hideNewApiKey()"',
-        # The sign-in form, the menu's show / hide arrows and the full-screen corner of the video:
-        # icons with their own label, and an icon beside them would sit in the wrong place.
-        'id="toggleLoginPassBtn"', 'class="btn-login"', 'class="btn-sidebar-collapse"', 'class="btn-hamburger"',
-        'id="videoFloatBtn"',
-        # The ✕ that deletes a card.
-        'onclick="deleteSendActionCard(', 'onclick="deletePlcActionCard(',
-        # Buttons repeated on every row of a list or table.
-        'onclick="selectOpcuaCandidate(', 'onclick="pickGigeCamera(this)"', 'class="send-chip"',
-        'selectModelById(this.closest(\'tr\').dataset.id);deleteSelectedModel()',
-        'onclick="confirmDeleteUser(', 'class="api-key-prefix-link"', 'onclick="revokeApiKey(',
-        'onclick="acknowledgeAlarmAndRefresh(',
-        'data-act="${connected ? "disconnect" : "connect"}"', 'class="btn-action btn-sm btn-outline" data-act="settings"',
-        'data-act="delete" aria-label="Delete ${escapeHtml(cam.name)}"',
-    ),
-    "assets/production_lines.js": (
-        # A line's row on the Lines page.
-        'data-act="logic" data-id=', 'data-act="${running ? "stop" : "start"}"', 'data-act="rename" data-id=',
-        'data-act="clone" data-id=', 'class="btn-action btn-red" data-act="delete" data-id=',
-        # A camera card's move up / move down / ✕, and the big picture of a camera tile (it has its title).
-        'class="pl-icon-btn', 'class="video-box pl-strip-pic"',
-        # Rows: industrial cameras found, product checks, products.
-        'data-act="industrial-add"', 'pl-check-del', 'class="btn-action btn-outline" data-act="edit"',
-        'class="btn-action btn-red" data-act="delete">',
-        # The footer of the Products dialogs.
-        'pf-cancel', 'pf-ok',
-    ),
-    "assets/plc_signals.js": ('onclick="PlcSignals.remove(',),
-    # The form helper adds data-cs to a <select> written elsewhere: not a control of its own.
-    "assets/camera_settings.js": ('<select data-cs="${name}"',),
-    # A rule's row in the Only when editor.
-    "assets/card_values.js": ("ow-kind", "ow-right", "ow-left", "ow-op", "ow-del"),
-    # A field's row in the fields editor.
-    "assets/product_fields.js": ("pf-type", "pf-up", "pf-down", "pf-del"),
-}
+# Only controls whose purpose is not plain from their label have a help icon: technical settings, the
+# choices that decide when a card fires, and the buttons whose effect the label does not say. Each is
+# named here by the start of its help sentence; a control not on this list has no help icon.
+KEEP = (
+    # Connections: TCP, MQTT, network cameras, PLCs.
+    "Whether this server connects to the device", "The characters that end each message",
+    "The MQTT version the broker speaks", "The CA certificate that checks", "The certificate this server shows a broker",
+    "The private key that belongs to the client certificate", "How sure the delivery of each message is",
+    "The delivery level of the birth message", "The delivery level of the close message",
+    "The delivery level of the last-will message", "An IP camera with a stream address", "How the RTSP stream travels",
+    "The stream's own picture size", "Opens a search for OPC UA servers", "Whether the addresses you type start at 0",
+    "Which half comes first in a 32-bit number", "A serial port of this computer, or a serial gateway",
+    "The Siemens PLC family", "Whether messages to the OPC UA server are signed",
+    "The client certificate of a secured OPC UA connection", "The server's certificate, to accept only that server",
+    # Line dashboard.
+    "Sets the batch number", "Shows the video with the detections", "Shows the camera picture as it arrives",
+    # Apply: the cards only work after it.
+    "Saves the send cards of this line and puts them to work", "Saves the output actions of this line and puts them to work",
+    "Saves the inputs of this line and starts reading them",
+    # Users and API keys.
+    "What the new user may do", "The account the key belongs to",
+    # Send card and output action dialogs: when a card fires and what it does.
+    "The event that sends this message", "Which results send the message", "Which camera's events send this message",
+    "JSON with the fields you tick", "Checks the formula", "What happens when there is no value",
+    "The event that fires this action", "Which results fire the action", "Which camera's events fire this action",
+    "The kind of PLC memory written", "What is done at the address", "Where the written value comes from",
+    "Fire once for each tracked product", "An input that tells the action really happened",
+    # Camera cards on Line setup.
+    "Whether this camera counts and rejects on its own", "What a product gets when this camera sees nothing of it",
+    "What a triggered picture counts as when none", "The direction the products move", "Count crossings in the flow direction only",
+    "Takes a still picture to draw the count lines on", "Keeps this camera showing codes only",
+    "Off, or the outfeed this camera watches", "Takes one test picture with the code reader now",
+    # Product sequence and result handshake.
+    "The input read for each product's sequence number", "The Take a picture input that starts each handshake",
+    "The input the PLC acknowledges each result with", "What happens when a result is not ready in time",
+    # Products and records.
+    "Sets the fields of the list shown", "Sets how the codes of this list are built", "How a code is built",
+    "Shows the products, the code reads, or both",
+    # Inputs, industrial camera settings, Only when rules.
+    "Reads this address once now", "What the line does with this input", "How the value at the address is read",
+    "Which change of the value makes the input act", "How the camera takes pictures", "Which edge of the trigger signal takes a picture",
+    "Takes one test picture by software trigger now", "How the IP stream travels", "Whether all of the rules below must pass",
+)
+
+# Buttons that show only an icon: without a help icon they keep a plain tooltip.
+ICON_ONLY = ("sendViewCards", "sendViewList", "plcViewCards", "plcViewList", "plcSignalViewCards", "plcSignalViewList")
 
 # Controls whose title= is set by code as the state changes (it stays beside the help icon).
 TITLE_SET_BY_CODE = ('id="lineAlarmPill"',)
@@ -122,75 +120,51 @@ def _read(name: str) -> str:
     return (ROOT / name).read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("name", FILES)
-def test_every_button_and_dropdown_says_what_it_does(name):
-    exempt = EXEMPT.get(name, ())
-    tags = list(_opening_tags(_read(name)))
-    assert tags
-    missing = [f"{name}:{line}: {tag[:120]}" for tag, line in tags
-               if not HELP.search(tag) and not any(piece in tag for piece in exempt)]
-    assert not missing, "\n".join(missing)
-    # Every exemption still names a control, and a control is either helped or exempt, not both.
-    for piece in exempt:
-        named = [tag for tag, _ in tags if piece in tag]
-        assert named, f"{name}: no control has {piece!r}"
-        assert not any(HELP.search(tag) for tag in named), f"{name}: {piece!r} is exempt but has data-help"
-
-
 def _help_texts():
     for name in FILES:
         for tag, line in _opening_tags(_read(name)):
             found = HELP.search(tag)
             if found:
                 yield f"{name}:{line}", found.group(1)
+
+
+def test_only_controls_whose_purpose_is_not_plain_have_help():
+    texts = list(_help_texts())
+    extra = [f"{where}: {text}" for where, text in texts if not text.startswith(KEEP)]
+    assert not extra, "a help icon on a control with a plain label:\n" + "\n".join(extra)
+    gone = [piece for piece in KEEP if not any(text.startswith(piece) for _, text in texts)]
+    assert not gone, f"these controls lost their help: {gone}"
+
+
+def test_plain_places_have_no_help_icons():
     page = _read("dashboard.html")
-    for item in re.findall(r'<li class="menu-item[^"]*"[^>]*>', page):
-        found = HELP.search(item)
-        yield "dashboard.html menu", found.group(1) if found else ""
-    for map_name in ("MENU_HELP", "FOLD_HELP"):
-        for text in re.findall(r'^\s+\w+: "([^"]*)",?\r?$', _js_map(map_name), re.M):
-            yield f"production_lines.js {map_name}", text
-    ranges = re.search(r"const RECORD_RANGES = \[(.*?)\n\s*\];", _read("assets/production_lines.js"), re.S).group(1)
-    texts = re.findall(r'\["\w+", "[^"]+", "([^"]*)"\]', ranges)
-    assert len(texts) == len(re.findall(r"\[", ranges))         # each time range has its text
-    for text in texts:
-        yield "production_lines.js RECORD_RANGES", text
+    script = _read("assets/production_lines.js")
+    # The sidebar's pages, the camera cards' section heads, the record time ranges and the line's own buttons.
+    assert not any(HELP.search(item) for item in re.findall(r'<li class="menu-item[^"]*"[^>]*>', page))
+    assert "dataset.help" not in script and "MENU_HELP" not in script and "FOLD_HELP" not in script
+    assert 'data-help="${help}"' not in script
+    for button in ("plSaveSetup", "plStartLine", "plStopLine", "plResetCounts", "plListNew", "plListRename", "plProdAdd"):
+        tag = re.search(rf'<button[^>]*id="{button}"[^>]*>', script).group(0)
+        assert not HELP.search(tag), button
+    for text in ("Save", "Add", "Delete", "Cancel", "Edit", "Settings", "Test", "Refresh", "Export CSV", "Sign out"):
+        for name in FILES:
+            for match in re.finditer(rf"<button([^>]*)>\s*{re.escape(text)}\s*</button>", _read(name)):
+                assert not HELP.search(match.group(0)), f"{name}: {text}"
 
 
-def _js_map(name: str) -> str:
-    found = re.search(rf"const {name} = \{{(.*?)\n\s*\}};", _read("assets/production_lines.js"), re.S)
-    assert found, name
-    return found.group(1)
+def test_icon_only_buttons_keep_a_plain_tooltip():
+    page = _read("dashboard.html")
+    for button in ICON_ONLY:
+        tag = re.search(rf'<button[^>]*id="{button}"[^>]*>', page).group(0)
+        assert re.search(r'\stitle="Show as (cards|a list)"', tag), button
 
 
 def test_each_help_text_is_one_plain_sentence():
-    texts = list(_help_texts())
-    assert len(texts) > 200
-    for where, text in texts:
-        if "${" in text:                     # chosen by the template from one of the maps checked here
-            continue
+    for where, text in _help_texts():
         assert text and text[0].isupper() and text.endswith("."), f"{where}: {text!r}"
         assert len(text) <= 150, f"{where}: {len(text)} characters"
         assert ". " not in text[:-1] and "  " not in text, f"{where}: one sentence: {text!r}"
         assert not re.search(r"[<>&`\\]|https?:", text), f"{where}: {text!r}"
-
-
-def test_the_sidebar_menu_items_say_what_they_do():
-    page = _read("dashboard.html")
-    items = re.findall(r'<li class="menu-item[^"]*"[^>]*>', page)
-    assert len(items) == 8
-    assert all(HELP.search(item) for item in items), [item for item in items if not HELP.search(item)]
-    # The items assets/production_lines.js adds: each tab it passes to menuItem() has a text in MENU_HELP.
-    script = _read("assets/production_lines.js")
-    tabs = set(re.findall(r'menuItem\("(\w+)"', script))
-    assert tabs == {"tabOverview", "tabRecords", "tabLines", "tabProducts"}
-    helped = set(re.findall(r"^\s+(\w+): \"", _js_map("MENU_HELP"), re.M))
-    assert tabs <= helped, tabs - helped
-    body = re.search(r"function menuItem\(tab, label\) \{(.*?)\n    \}", script, re.S).group(1)
-    assert "li.dataset.help = MENU_HELP[tab]" in body
-    # Each fold of a camera card says what is in it.
-    folds = set(re.findall(r'fold\("(\w+)", "', script))
-    assert folds and folds <= set(re.findall(r"^\s+(\w+): \"", _js_map("FOLD_HELP"), re.M))
 
 
 @pytest.mark.parametrize("name", FILES)
@@ -354,10 +328,3 @@ def test_the_bubble_stays_inside_the_window():
     assert right["left"] == 375 - 8 - 260 and left["left"] == 8
     # Without room below it goes above the icon.
     assert low["above"] and low["top"] == 780 - 6 - 60
-
-
-def test_the_account_badge_keeps_its_icon_inside():
-    # Placed after the badge, the icon wrapped below the avatar in the top bar; inside it stays on the badge's row.
-    page = (ROOT / "dashboard.html").read_text(encoding="utf-8")
-    badge = re.search(r'<button[^>]*class="user-profile-badge"[^>]*>', page).group(0)
-    assert 'data-help-at="inside"' in badge

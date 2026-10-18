@@ -80,7 +80,7 @@
         return `<div class="pf-note">Use a field in output actions, formulas and messages by its key, as <span class="pl-code">product.&lt;key&gt;</span>. A saved field keeps its key; its label can change.</div>
             <div class="pf-head"><span>Label</span><span>Key</span><span>Type</span><span></span></div>
             <div class="pf-rows">${(fields || []).map((f) => fieldRowHtml(f, true)).join("")}</div>
-            <button type="button" class="btn-action btn-outline pf-add" data-help="Adds a field to this list." data-help-at="inside">Add field</button>
+            <button type="button" class="btn-action btn-outline pf-add">Add field</button>
             <div class="pf-count"></div>`;
     }
 
@@ -154,7 +154,7 @@
             let input;
             if (f.type === "yes_no") {
                 const chosen = value === true ? "yes" : value === false ? "no" : "";
-                input = `<select class="form-input pf-val" id="${id}" data-key="${esc(f.key)}" data-help="This field's value for the product: yes, no or empty.">${[["", "(empty)"], ["yes", "Yes"], ["no", "No"]]
+                input = `<select class="form-input pf-val" id="${id}" data-key="${esc(f.key)}">${[["", "(empty)"], ["yes", "Yes"], ["no", "No"]]
                     .map(([v, l]) => `<option value="${v}" ${v === chosen ? "selected" : ""}>${l}</option>`).join("")}</select>`;
             } else {
                 const attrs = f.type === "number" ? `inputmode="decimal"` : `maxlength="256"`;
