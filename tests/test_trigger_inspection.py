@@ -352,7 +352,10 @@ def test_nothing_found(lines, workers, fake_camera, no_product, status, totals):
         assert (result["result"], payload["class_name"], payload["reject_reason"]) == ("good", "product", None)
 
 
-def test_a_picture_the_model_does_not_get_through_in_time_is_a_no_picture_reject(lines, workers, fake_camera):  # noqa: F811
+def test_a_picture_the_model_does_not_get_through_in_time_is_a_no_picture_reject(lines, workers, fake_camera, monkeypatch):  # noqa: F811
+    from app.services import trigger_inspection
+
+    monkeypatch.setattr(trigger_inspection, "TRIGGER_INFERENCE_TIMEOUT_S", 0.1)
     runtime = _line(lines, [_trigger_cam(no_product="ignore")])
     fake_camera("vis")
     seen = {}

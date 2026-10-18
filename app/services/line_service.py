@@ -17,6 +17,7 @@ import collections
 import copy
 import threading
 import time
+import weakref
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
@@ -1697,6 +1698,21 @@ def pick_default_camera(cameras: List[Any], owned: Any, selected_id: Optional[st
     )
 
 
+def _warm_up(engine: Any, name: str) -> None:
+    """One run of a model on a black picture of its input size (LineManager._warm_on_demand_engines).
+
+    A failure is only logged: the model's first trigger then waits for its first run."""
+    import numpy as np
+
+    try:
+        width, height = getattr(engine, "input_size", None) or (640, 640)
+        engine.predict_mat(np.zeros((int(height), int(width), 3), np.uint8))
+        logger.info("Vision model '%s' warmed up for the cameras that run it only on a trigger", name)
+    except Exception as exc:
+        logger.warning("Vision model '%s' could not be warmed up; its first trigger may wait for it: %s: %s",
+                       name, type(exc).__name__, exc)
+
+
 class LineManager:
     def __init__(self) -> None:
         self._lines: Dict[str, LineRuntime] = {}
@@ -1713,6 +1729,9 @@ class LineManager:
         # A model a detect call named that no camera runs: (model_id, entry).
         # One at a time, so calls cannot fill the GPU with models.
         self._api_model: Optional[Tuple[str, Dict[str, Any]]] = None
+        # The engines warmed up for the cameras that infer only on a trigger, and the warm-ups running.
+        self._warmed: "weakref.WeakSet[Any]" = weakref.WeakSet()
+        self._warm_tasks: set = set()
 
     # ── Configuration ─────────────────────────────────────────────────────────
 
@@ -1987,7 +2006,27 @@ class LineManager:
             self._release(self._engines.pop(model_id, None))
         self._model_problems = problems
         self._report_model_alarms()
+        self._warm_on_demand_engines()
         return problems
+
+    def _warm_on_demand_engines(self) -> None:
+        """Run each model a camera of a running line infers on demand once, now, off the event loop.
+
+        Such a camera's model gets no frame until a trigger comes, and a model's first run (on a GPU
+        above all) can take seconds: the first trigger would wait for it. Each engine is warmed once,
+        when it was loaded or its camera's line started (this runs after every refresh_models).
+        """
+        for runtime in self.all():
+            if not runtime.enabled:
+                continue
+            for cam in runtime.cameras:
+                entry = self._engines.get(cam.get("model_id"))
+                if entry is None or entry["engine"] in self._warmed or not runtime.infers_on_demand(cam["camera_id"]):
+                    continue
+                self._warmed.add(entry["engine"])
+                task = asyncio.get_running_loop().create_task(asyncio.to_thread(_warm_up, entry["engine"], entry["name"]))
+                self._warm_tasks.add(task)
+                task.add_done_callback(self._warm_tasks.discard)
 
     def _report_model_alarms(self) -> None:
         """One alarm for each vision camera of a running line that has no model it can run."""

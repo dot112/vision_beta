@@ -40,17 +40,20 @@ from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# How long a trigger waits for the camera's picture, after its Picture delay (and then for the model).
+# How long a trigger waits for the camera's picture, after its Picture delay.
 TRIGGER_TIMEOUT_S = 2.0
+# How long a trigger then waits for the model to get through that picture (a first run on a GPU takes seconds).
+TRIGGER_INFERENCE_TIMEOUT_S = 10.0
 # The class a product is counted under when nothing was found and that rejects it.
 NOTHING_CLASS = "nothing detected"
 # The class of the product a trigger makes when its picture never came.
 NO_PICTURE_CLASS = "no picture"
 
 _POLL_S = 0.01
-# The clock and the sleep of a trigger's waits (a test runs them on a clock of its own).
+# The clock and the sleep of a trigger's waits, and the wall clock of its times (a test runs them on a clock of its own).
 _now = time.monotonic
 _sleep = asyncio.sleep
+_wall = time.time
 
 
 def inspection_verdict(detections: List[Any], config: Any) -> Optional[Dict[str, Any]]:
@@ -144,23 +147,27 @@ def _add_context(crossing: Dict[str, Any], trigger_no: Optional[int], sequence: 
 
 
 def no_picture_product(runtime: Any, camera_id: str, why: str, trigger_no: Optional[int] = None,
-                       sequence: Any = None, request_id: Optional[int] = None) -> Dict[str, Any]:
+                       sequence: Any = None, request_id: Optional[int] = None,
+                       at: Optional[float] = None) -> Dict[str, Any]:
     """The product of a trigger whose picture never came while its line ran: a reject, reason "no picture".
 
     Whoever waits for the trigger's answer (a PLC's result handshake, a robot) gets one: the product is
     counted, recorded and sent, and fires the line's cards like any rejected product, with the trigger's
-    ``trigger_no``, ``sequence`` and ``request_id``. ``why`` says what happened (no frame in time, the
-    camera not connected, ...). The camera's ``missing`` counter goes up, the alarm camera.picture_missing
-    is raised (the camera's next picture clears it), and its latest capture is one without a picture.
-    Returns the answer: ``status`` "no_picture", ``result`` "reject", ``class_name``, ``reject_reason``,
-    ``track_id``, ``detections`` (0) and ``trigger_no`` when given. Safe to call from any thread.
+    ``trigger_no``, ``sequence`` and ``request_id``. ``at``: the wall-clock time the picture should have
+    been taken (the trigger plus its Picture delay, or the notice's time); it is the product's time, so
+    its records and a reject gate's travel delay run from it, not from when the wait ran out (None: now).
+    ``why`` says what happened (no frame in time, the camera not connected, ...). The camera's ``missing``
+    counter goes up, the alarm camera.picture_missing is raised (the camera's next picture clears it), and
+    its latest capture is one without a picture. Returns the answer: ``status`` "no_picture", ``result``
+    "reject", ``class_name``, ``reject_reason``, ``track_id``, ``detections`` (0) and ``trigger_no`` when
+    given. Safe to call from any thread.
     """
     from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
     from app.state.application_state import app_state
 
     counter = runtime.counter_for(camera_id)
     track_id = _next_track_id(runtime)
-    crossing = counter.make_crossing(NO_PICTURE_CLASS, True, track_id=track_id, camera_id=camera_id)
+    crossing = counter.make_crossing(NO_PICTURE_CLASS, True, track_id=track_id, camera_id=camera_id, arrived_at=at)
     crossing["reject_reason"] = REASON_NO_PICTURE
     _add_context(crossing, trigger_no, sequence, request_id)
     counter.emit_crossing(crossing)
@@ -207,7 +214,18 @@ def render_trigger_capture(camera_id: str, frame: Any, detections: List[Any]) ->
 
 
 class _NoPicture(Exception):
-    """A trigger's picture did not come; the message says why."""
+    """A trigger's picture did not come through; the message says why.
+
+    ``taken``: the camera did give a frame, and the model did not finish with it in time.
+    """
+
+    def __init__(self, why: str, taken: bool = False) -> None:
+        super().__init__(why)
+        self.taken = taken
+
+
+# Why a trigger with a frame got no picture through: the model did not finish with the frame.
+MODEL_TOO_SLOW = "the model did not finish in time"
 
 
 def _still_running(runtime: Any) -> None:
@@ -239,7 +257,7 @@ async def _infer_one(worker: Any, runtime: Any, camera_id: str, mat: Any, frame_
     """Run the camera's model on this one picture and wait for what it found.
 
     Returns (detections, inference ms, the time the picture arrived, the picture), or None when the
-    model did not take the picture or get through it within ``timeout``.
+    model did not take the picture or get through it within ``timeout`` (TRIGGER_INFERENCE_TIMEOUT_S).
     """
     loop = asyncio.get_running_loop()
     done: asyncio.Future = loop.create_future()
@@ -266,7 +284,7 @@ async def _software_shot(driver: Any, worker: Any, runtime: Any, camera_id: str,
 
     Returns (detections, inference ms, the time the picture arrived, the picture). Raises _NoPicture
     when the camera did not take the trigger (it is reconnecting, it refused the command), no picture
-    came within ``timeout`` or the model did not get through it in time.
+    came within ``timeout``, or the model did not finish with it within TRIGGER_INFERENCE_TIMEOUT_S.
     """
     try:
         shot = await asyncio.to_thread(driver.take_picture, timeout)
@@ -275,9 +293,9 @@ async def _software_shot(driver: Any, worker: Any, runtime: Any, camera_id: str,
     if shot is None:
         raise _NoPicture(f"no picture came within {timeout:g} s of the trigger")
     mat, frame_id, arrived = shot
-    inferred = await _infer_one(worker, runtime, camera_id, mat, frame_id, arrived, timeout)
+    inferred = await _infer_one(worker, runtime, camera_id, mat, frame_id, arrived, TRIGGER_INFERENCE_TIMEOUT_S)
     if inferred is None:
-        raise _NoPicture(f"the model did not get through the picture within {timeout:g} s")
+        raise _NoPicture(MODEL_TOO_SLOW, taken=True)
     return inferred
 
 
@@ -287,8 +305,8 @@ async def _stream_shot(driver: Any, worker: Any, runtime: Any, camera_id: str,
     industrial camera that is not triggered).
 
     Returns (detections, inference ms, the time the frame was taken, the frame). Raises _NoPicture
-    when the camera drops, no new frame comes within ``timeout`` or the model does not get through it
-    in time, and ValueError when the line is stopped meanwhile.
+    when the camera drops, no new frame comes within ``timeout``, or the model does not finish with it
+    within TRIGGER_INFERENCE_TIMEOUT_S; ValueError when the line is stopped meanwhile.
     """
     start = _frame_id(driver)
     deadline = _now() + timeout
@@ -298,15 +316,15 @@ async def _stream_shot(driver: Any, worker: Any, runtime: Any, camera_id: str,
         ok, mat, frame_id = _latest_frame(driver)
         # A camera that reconnected numbers its frames from 1 again: a lower number is a new frame too.
         if ok and mat is not None and (frame_id > start or 0 < frame_id < start):
-            arrived = time.time()
+            arrived = _wall()
             break
         if _now() >= deadline:
             raise _NoPicture(f"no new picture came within {timeout:g} s")
         await _sleep(_POLL_S)
         _still_running(runtime)
-    inferred = await _infer_one(worker, runtime, camera_id, mat, frame_id, arrived, timeout)
+    inferred = await _infer_one(worker, runtime, camera_id, mat, frame_id, arrived, TRIGGER_INFERENCE_TIMEOUT_S)
     if inferred is None:
-        raise _NoPicture(f"the model did not get through the picture within {timeout:g} s")
+        raise _NoPicture(MODEL_TOO_SLOW, taken=True)
     return inferred
 
 
@@ -361,15 +379,16 @@ async def trigger_camera(runtime: Any, camera_id: str, timeout: Optional[float] 
     The camera's Picture delay (``picture_delay_ms`` on its card) is waited first. Then an industrial
     camera on software trigger is fired, and any other camera gives the first frame that arrives after
     that moment. ``timeout`` (TRIGGER_TIMEOUT_S), counted after the delay, is how long that picture may
-    take to come, and then the model's result. Triggers of one camera are served one after the other,
-    each with a picture of its own.
+    take to come; the model then has TRIGGER_INFERENCE_TIMEOUT_S to get through it. Triggers of one
+    camera are served one after the other, each with a picture of its own.
 
     ``sequence`` / ``request_id``: what the "Take a picture" input that asked carries (the product
     sequence the PLC held, the line's number for the request); the product keeps them.
 
     Returns what the picture said: ``status`` is ``"inspected"`` (a product was made), ``"nothing"``
     (nothing was found and that is ignored) or ``"no_picture"`` (no picture came in time, or the camera
-    is not connected: the product is a reject with the reason "no picture", see no_picture_product).
+    is not connected, or the model did not finish with the picture: the product is a reject with the
+    reason "no picture" and the time the picture should have been taken, see no_picture_product).
     On a line with Sync or joined cameras the product's final result may still change after this
     returns. ``with_detections`` adds the picture's detections as ``detection_items``. Each answer
     counts in the camera's trigger counters, and its picture becomes the camera's latest capture.
@@ -399,6 +418,8 @@ async def trigger_camera(runtime: Any, camera_id: str, timeout: Optional[float] 
     delay = int(entry.get("picture_delay_ms") or 0) / 1000.0
     runtime.count_trigger(camera_id, "triggers")
     started = _now()
+    # When the picture is to be taken: a product without one gets this time, not the time the wait ran out.
+    picture_at = _wall() + delay
     answer: Dict[str, Any] = {
         "camera_id": camera_id, "status": "no_picture", "result": None, "class_name": None,
         "reject_reason": None, "track_id": None, "detections": 0, "inference_time_ms": 0.0, "waited_ms": 0.0,
@@ -414,7 +435,10 @@ async def trigger_camera(runtime: Any, camera_id: str, timeout: Optional[float] 
             detections, inference_ms, arrived_at, picture = await _take_picture(runtime, camera_id, timeout)
         except _NoPicture as missing:
             _still_running(runtime)
-            answer.update(no_picture_product(runtime, camera_id, str(missing), trigger_no, sequence, request_id))
+            if missing.taken:
+                runtime.count_trigger(camera_id, "pictures")    # a frame was taken; the model did not finish it
+            answer.update(no_picture_product(runtime, camera_id, str(missing), trigger_no, sequence, request_id,
+                                             at=picture_at))
             answer["waited_ms"] = round((_now() - started) * 1000, 2)
             if with_detections:
                 answer["detection_items"] = []

@@ -10,6 +10,7 @@ never comes still gets one answer while the line runs: a product, rejected with 
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from types import SimpleNamespace
 
@@ -22,7 +23,8 @@ from app.engines.inference_engine import STATUS_STOPPED, STATUS_WAITING_TRIGGER
 from app.events.alarm_events import AlarmCode, alarm_manager
 from app.schemas.vision import BoundingBox, DetectionItem, DetectionResponse
 from app.services.plc_input_service import PLCInputService
-from app.services.trigger_inspection import TRIGGER_TIMEOUT_S, render_trigger_capture, trigger_camera
+from app.services.settings_persistence_service import SettingsPersistenceService
+from app.services.trigger_inspection import TRIGGER_TIMEOUT_S, no_picture_product, render_trigger_capture, trigger_camera
 from app.services.vision_service import CameraStreamPipeline, ContinuousVisionRunner, inspection_status
 from app.state.application_state import app_state
 from tests.conftest import FakeInferenceEngine
@@ -33,6 +35,8 @@ from tests.test_trigger_inspection import _det, _trigger_cam
 from tests.test_video_overlay import _RecordingEngine
 
 _real_sleep = asyncio.sleep
+# The wall clock of the on_demand fixture at its clock's 0 (in the past, so no product time is held back to now).
+WALL0 = 1_700_000_000.0
 
 
 class Clock:
@@ -83,7 +87,10 @@ class StreamCamera:
 
 
 class FrameEngine:
-    """The model: it finds ``names`` in every picture and notes which frame it got (its pixel value)."""
+    """The model: it finds ``names`` in every picture and notes which frame it got (its pixel value).
+
+    ``delay``: real seconds each picture takes; ``gate``: cleared, the model does not finish.
+    """
 
     is_loaded = True
     task = "detect"
@@ -91,9 +98,14 @@ class FrameEngine:
     def __init__(self):
         self.seen = []
         self.names = ["bottle"]
+        self.delay = 0.0
+        self.gate = threading.Event()
+        self.gate.set()
 
     def predict_mat(self, mat, conf_threshold=None, nms_threshold=None):
         self.seen.append(int(mat[0, 0, 0]))
+        self.gate.wait(30)
+        time.sleep(self.delay)
         found = [_det(name) for name in self.names]
         return DetectionResponse(model_name="fake", total_detections=len(found), detections=found,
                                  inference_time_ms=2.0, image_width=mat.shape[1], image_height=mat.shape[0])
@@ -112,6 +124,7 @@ def on_demand(lines, monkeypatch):  # noqa: F811
 
     monkeypatch.setattr(trigger_inspection, "_now", clock)
     monkeypatch.setattr(trigger_inspection, "_sleep", clock.sleep)
+    monkeypatch.setattr(trigger_inspection, "_wall", lambda: WALL0 + clock.now)
     monkeypatch.setattr(trigger_inspection, "render_trigger_capture", render)
     monkeypatch.setattr(lines, "engine_for_camera", lambda camera_id: (engine, "fake", None))
     alarm_manager.reset()
@@ -124,6 +137,7 @@ def on_demand(lines, monkeypatch):  # noqa: F811
         return cam
 
     yield SimpleNamespace(clock=clock, engine=engine, rendered=rendered, camera=camera)
+    engine.gate.set()
     for camera_id in {"vis", *made}:
         CameraStreamPipeline.remove_camera(camera_id)
     alarm_manager.reset()
@@ -511,3 +525,181 @@ def test_a_trigger_picture_shows_a_box_at_the_edge_and_no_exit_band(lines):  # n
     picture = cv2.imdecode(np.frombuffer(render_trigger_capture("c", frame, [edge]), np.uint8), cv2.IMREAD_COLOR)
     assert picture[104:118, 58:64].max() > 120, "the box at the edge was not drawn"
     assert picture[102:120, 0:40].max() < 30, "an exit band was drawn"
+
+
+# ── The model's own time (fix round 1) ────────────────────────────────────────
+
+def test_a_slow_first_inference_is_inspected_not_no_picture(lines, on_demand):  # noqa: F811
+    # A model's first run on a GPU can take seconds: longer than the 2 s for the frame, within the 10 s for the model.
+    assert (TRIGGER_TIMEOUT_S, trigger_inspection.TRIGGER_INFERENCE_TIMEOUT_S) == (2.0, 10.0)
+    runtime = _line(lines, [_trigger_cam()])
+    on_demand.camera("vis", times=(0.01,))
+    on_demand.engine.delay = 2.3
+    seen = {}
+
+    async def steps():
+        seen["answer"] = await trigger_camera(runtime, "vis")
+
+    _run(steps)
+    assert (seen["answer"]["status"], seen["answer"]["class_name"]) == ("inspected", "bottle")
+    counters = _counters(runtime)
+    assert (counters["pictures"], counters["results"], counters["missing"]) == (1, 1, 0)
+
+
+def test_a_model_that_does_not_finish_in_time_is_a_no_picture_reject(lines, on_demand, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(trigger_inspection, "TRIGGER_INFERENCE_TIMEOUT_S", 0.3)
+    runtime = _line(lines, [_trigger_cam()])
+    on_demand.camera("vis", times=(0.01,))
+    on_demand.engine.gate.clear()                        # the model never finishes
+    seen = {}
+
+    async def steps():
+        seen["answer"] = await trigger_camera(runtime, "vis")
+
+    _run(steps)
+    assert (seen["answer"]["status"], seen["answer"]["reject_reason"]) == ("no_picture", "no_picture")
+    assert _missing_alarm().details["why"] == "the model did not finish in time"
+    counters = _counters(runtime)
+    # A frame was taken (a picture), and the trigger got no picture through (missing), and no result.
+    assert (counters["triggers"], counters["pictures"], counters["results"], counters["missing"]) == (1, 1, 0, 1)
+    assert _totals(runtime.counter) == (1, 0, 1)
+
+
+@pytest.mark.parametrize("finishes, status, counted", [(True, "inspected", (1, 1, 0)), (False, "no_picture", (1, 0, 1))])
+def test_an_industrial_cameras_picture_has_the_models_own_time(lines, rig, monkeypatch, finishes, status, counted):  # noqa: F811
+    # Scaled down: 0.2 s for the picture, 0.6 s for the model; the model takes 0.4 s, or never finishes.
+    monkeypatch.setattr(trigger_inspection, "TRIGGER_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(trigger_inspection, "TRIGGER_INFERENCE_TIMEOUT_S", 0.6)
+    runtime = _line(lines, [_trigger_cam("cam")])
+    cam, backend = rig.camera("cam", trigger_mode="software")
+    backend.on_trigger = lambda: backend.push(_picture(DENT))
+    rig.engine.delay = 0.4
+    if not finishes:
+        rig.engine.gate.clear()
+    seen = {}
+
+    async def steps():
+        seen["answer"] = await trigger_camera(runtime, "cam")
+
+    _run(steps)
+    rig.engine.gate.set()
+    assert seen["answer"]["status"] == status
+    counters = _counters(runtime, "cam")
+    assert (counters["pictures"], counters["results"], counters["missing"]) == counted
+
+
+def test_a_no_picture_product_has_the_time_of_the_trigger_and_its_delay(lines, on_demand):  # noqa: F811
+    runtime = _line(lines, [_trigger_cam(picture_delay_ms=300)])
+    on_demand.camera("vis")                              # no frame comes
+    on_demand.clock.now = 5.0                            # the trigger comes at 5 s
+    hooked = []
+    runtime.counter.product_hook = lambda crossing, payload, plc_event: hooked.append(crossing)
+
+    async def steps():
+        await trigger_camera(runtime, "vis")
+
+    _run(steps)
+    crossing, = hooked
+    assert on_demand.clock.now >= 7.3 - 1e-6             # it was made when the 2 s for the frame were over ...
+    assert crossing["time"] == pytest.approx(WALL0 + 5.3, abs=1e-3)  # ... and has the trigger's time plus its delay
+
+
+def test_no_picture_product_takes_the_time_it_is_given(lines):  # noqa: F811
+    runtime = _line(lines, [_trigger_cam()])
+    hooked = []
+    runtime.counter.product_hook = lambda crossing, payload, plc_event: hooked.append(crossing)
+    at = time.time() - 4.0
+
+    async def steps():
+        no_picture_product(runtime, "vis", "no picture within 1000 ms of the notice", trigger_no=5, at=at)
+        no_picture_product(runtime, "vis", "the camera is not connected")
+
+    _run(steps)
+    first, second = hooked
+    assert first["time"] == pytest.approx(at, abs=1e-3) and first["trigger_no"] == 5
+    assert second["time"] == pytest.approx(time.time(), abs=1.0)        # without one: now
+    alarm_manager.clear_source("camera:vis")
+
+
+# ── A warm model for the first trigger (fix round 1) ─────────────────────────
+
+class _WarmEngine(FakeInferenceEngine):
+    """A loaded model of input size 320 x 256 that notes the size of each picture it is given."""
+
+    input_size = (320, 256)
+
+    def __init__(self, fail=False):
+        super().__init__()
+        self.shapes = []
+        self.fail = fail
+
+    def predict_mat(self, mat, conf_threshold=None, nms_threshold=None):
+        self.shapes.append(mat.shape)
+        if self.fail:
+            raise RuntimeError("the GPU said no")
+        return super().predict_mat(mat, conf_threshold, nms_threshold)
+
+
+@pytest.fixture
+def models(lines, monkeypatch):  # noqa: F811
+    """Each model loads as its own _WarmEngine ("m-broken" as one whose run fails)."""
+    made = {}
+
+    async def load(model_id):
+        made[model_id] = _WarmEngine(fail=model_id == "m-broken")
+        return {"engine": made[model_id], "name": model_id}, None
+
+    monkeypatch.setattr(lines, "_load_engine", load)
+    return made
+
+
+async def _settle(seconds=0.3):
+    await asyncio.sleep(seconds)                        # the warm-up runs off the event loop
+
+
+def _cards(model_id="m-trigger"):
+    return [{**_trigger_cam("c"), "model_id": model_id},
+            {"camera_id": "t", "model_id": "m-track", "expected_classes": ["bottle"], "station": "own"}]
+
+
+def test_the_model_of_an_on_demand_camera_is_warmed_up_once_when_it_is_loaded(lines, models):  # noqa: F811
+    _line(lines, _cards())
+
+    async def steps():
+        await lines.refresh_models()
+        await _settle()
+        await lines.refresh_models()                    # loaded already: not again
+        await _settle()
+
+    _run(steps)
+    assert models["m-trigger"].shapes == [(256, 320, 3)]     # one dummy picture of the model's input size
+    assert models["m-track"].shapes == []                   # a camera that infers every frame warms its own
+
+
+def test_the_model_of_an_on_demand_camera_is_warmed_up_when_its_line_starts(lines, models):  # noqa: F811
+    line = SettingsPersistenceService.save_line({"name": "Indexing", "cameras": _cards(), "enabled": False})
+    lines.apply_state()
+
+    async def steps():
+        await lines.refresh_models()
+        await _settle()
+        assert models["m-trigger"].shapes == []         # loaded, but its line is stopped
+        SettingsPersistenceService.save_line({"id": line["id"], "name": "Indexing", "cameras": _cards(), "enabled": True})
+        lines.apply_state()
+        await lines.refresh_models()
+        await _settle()
+
+    _run(steps)
+    assert models["m-trigger"].shapes == [(256, 320, 3)]
+
+
+def test_a_warm_up_that_fails_is_only_logged(lines, models, caplog):  # noqa: F811
+    _line(lines, _cards("m-broken"))
+
+    async def steps():
+        assert await lines.refresh_models() == {}
+        await _settle()
+
+    _run(steps)
+    assert models["m-broken"].shapes == [(256, 320, 3)]
+    assert "could not be warmed up" in caplog.text and "the GPU said no" in caplog.text
