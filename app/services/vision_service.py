@@ -18,6 +18,7 @@ from app.engines.inference_engine import (
     STATUS_NO_LINE,
     STATUS_NO_MODEL,
     STATUS_STOPPED,
+    STATUS_WAITING_TRIGGER,
     begin_model_timing,
     end_model_timing,
 )
@@ -32,11 +33,12 @@ logger = get_logger(__name__)
 # A model or tracker that fails on every frame is reported once a minute, not 30 times a second.
 _error_log = LogThrottle(60.0)
 
-def inspection_status(routed: Optional[Tuple[Any, str]], engine: Any) -> Optional[str]:
+def inspection_status(routed: Optional[Tuple[Any, str]], engine: Any, camera_id: Optional[str] = None) -> Optional[str]:
     """Why a camera's pictures go to no model now, or None while they do.
 
     ``routed`` is line_manager.route(camera): the runner only feeds cameras of a
-    running line (ContinuousVisionRunner._feed_camera).
+    running line (ContinuousVisionRunner._feed_camera). With ``camera_id``, a camera
+    whose model runs only on a trigger's picture is STATUS_WAITING_TRIGGER.
     """
     if routed is None:
         return STATUS_NO_LINE
@@ -44,6 +46,9 @@ def inspection_status(routed: Optional[Tuple[Any, str]], engine: Any) -> Optiona
         return STATUS_STOPPED
     if not getattr(engine, "is_loaded", True):
         return STATUS_NO_MODEL
+    on_demand = getattr(routed[0], "infers_on_demand", None)
+    if camera_id is not None and callable(on_demand) and on_demand(camera_id):
+        return STATUS_WAITING_TRIGGER
     return None
 
 
@@ -95,8 +100,8 @@ class _CameraInferenceWorker:
         self._latest_detections: List[Any] = []
         self._latest_inference_ms: float = 0.0
         self._processed_frame_id: int = 0
-        # Goes up by one with every frame the worker got through. A trigger waits
-        # on this, not on the frame id, which starts again when a camera reconnects.
+        # Goes up by one with every frame the worker got through (the frame id
+        # starts again when a camera reconnects; this does not).
         self.result_seq: int = 0
         # The frame the model last got through. A trigger camera's picture is this frame with the
         # boxes drawn; it is set before the result callback runs. Drivers replace frames and never
@@ -452,10 +457,10 @@ class _CameraStreamPublisher:
             elif want_ann:
                 # 4. Draw annotations directly onto BGR display_mat. A camera that is not
                 # inspected now shows why, not the last results it had (they would stand
-                # still on the moving picture).
+                # still on the moving picture); so does one inspected only on a trigger.
                 engine, _, _ = line_manager.engine_for_camera(self.camera_id)
-                status = inspection_status(routed, engine)
-                if status in (STATUS_STOPPED, STATUS_NO_LINE):
+                status = inspection_status(routed, engine, self.camera_id)
+                if status in (STATUS_STOPPED, STATUS_NO_LINE, STATUS_WAITING_TRIGGER):
                     detections, latency_ms = [], 0.0
                 else:
                     detections, latency_ms = CameraStreamPipeline.get_worker(self.camera_id).get_latest_inference()
@@ -866,7 +871,10 @@ class ContinuousVisionRunner:
                     success, mat, fid = driver.grab_raw_frame()
                 if success and mat is not None and reader.submit_frame_if_idle(mat, fid):
                     last_code_fids[camera_id] = (driver, fid)
-        if role == "qr" or every_model or (driver, cur_fid) == last_submitted_fids.get(camera_id):
+        # A vision camera whose picture a trigger takes gets its model only for that picture
+        # (trigger_inspection); its code reader above is fed as before.
+        if role == "qr" or every_model or runtime.infers_on_demand(camera_id) \
+                or (driver, cur_fid) == last_submitted_fids.get(camera_id):
             return
 
         # Leave the frame for the next pass while inference is running,

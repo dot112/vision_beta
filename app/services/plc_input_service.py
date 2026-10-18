@@ -671,10 +671,9 @@ class PLCInputService:
             delay = int(entry.get("qr_trigger_delay_ms") or 0) / 1000.0
             QRReaderPipeline.get_worker(camera_id).request_capture(delay=delay, trigger_no=trigger_no, **context)
         if entry.get("role", "vision") == "vision" and entry.get("count_mode") == "trigger":
-            # A camera that is not connected, or has no model, is said on the card (ValueError).
+            # A camera without a model is said on the card (ValueError). A picture that does not come
+            # (no frame in time, the camera not connected) is an answer too: a "no picture" reject.
             answer = await trigger_inspection.trigger_camera(runtime, camera_id, trigger_no=trigger_no, **context)
-            if answer["status"] == "no_frame":
-                raise ValueError(f"No new picture came from camera '{camera_id}' in time; nothing was counted")
         return answer
 
     @staticmethod

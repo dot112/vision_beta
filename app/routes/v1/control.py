@@ -61,6 +61,6 @@ def _judged_picture(camera_id: str, detections: list, product: Dict[str, Any]) -
         # How long the trigger waited for the camera's next picture.
         "acquisition_time_ms": waited,
         "total_latency_ms": round(waited + inference, 2),
-        # No new picture in time is not a pass.
-        "passed": product.get("status") != "no_frame" and product.get("result") != "reject",
+        # No picture is not a pass.
+        "passed": product.get("status") != "no_picture" and product.get("result") != "reject",
     }

@@ -52,6 +52,7 @@ class AlarmCode:
 
     CAMERA_MODEL_UNAVAILABLE = "camera.model_unavailable"
     CAMERA_TRIGGER_OVERRUN = "camera.trigger_overrun"
+    CAMERA_PICTURE_MISSING = "camera.picture_missing"
     PLC_CONNECT_FAILED = "plc.connect_failed"
     PLC_DISCONNECT_ERROR = "plc.disconnect_error"
     PLC_ACTION_FAILED = "plc.action_failed"
@@ -92,6 +93,9 @@ ALARM_CATALOG: List[Dict[str, str]] = [
     {"code": "camera.trigger_overrun", "label": "Camera pictures arrive faster than they are inspected", "group": "Cameras",
      "severity": "warning", "scope": "line",
      "description": "A triggered camera took pictures faster than its line could inspect them: the oldest waiting pictures were dropped and their products were not counted."},
+    {"code": "camera.picture_missing", "label": "A trigger got no picture", "group": "Cameras",
+     "severity": "warning", "scope": "line",
+     "description": "A camera on One picture per trigger got no picture for a trigger (no frame in time, or the camera is not connected): the product was rejected with the reason \"no picture\". Cleared by the camera's next picture."},
     {"code": "line.fps_low", "label": "Line frame rate low", "group": "Lines",
      "severity": "warning", "scope": "line",
      "description": "The running line processes fewer frames/s than its minimum; counts may be missed."},

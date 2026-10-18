@@ -290,6 +290,36 @@ def test_a_camera_whose_own_model_is_missing_is_not_reported_as_stalled_inferenc
     assert alarm_manager.get(HealthAlarmCode.INFERENCE_MODEL_NOT_LOADED, "inference") is None
 
 
+def test_a_camera_that_infers_only_on_a_trigger_is_not_stalled_inference(runtime):
+    """One picture per trigger, taken by the system: its model runs only when a trigger comes."""
+    service, clock, _ = runtime
+    from app.services import line_service
+    line_service.line_manager.primary().cameras[0]["count_mode"] = "trigger"
+    app_state.cameras["cam1"] = cam = FakeCamera()
+    for _ in range(int(hs.settings.HEALTH_INFERENCE_STALE_SECONDS) + 2):
+        clock.now += 1
+        cam.frame_id += 30
+        report = service.snapshot()
+    assert alarm_manager.get(HealthAlarmCode.INFERENCE_STALLED, "inference") is None
+    assert report["components"]["inference"]["status"] == "idle"
+
+
+def test_the_frame_rate_is_checked_only_on_a_line_with_a_camera_that_infers_continuously(runtime):
+    service, clock, _ = runtime
+    from app.services import line_service
+    primary = line_service.line_manager.primary()
+    primary.min_fps = 5.0
+    app_state.cameras["cam1"] = FakeCamera()
+    clock.now += 20
+    service.check_lines()
+    source = f"line:{primary.id}"
+    assert alarm_manager.get(HealthAlarmCode.LINE_FPS_LOW, source) is not None      # a tracking camera: checked
+    primary.cameras[0]["count_mode"] = "trigger"
+    rows = service.check_lines()["lines"]
+    assert alarm_manager.get(HealthAlarmCode.LINE_FPS_LOW, source) is None          # only on demand: not checked
+    assert rows[0]["status"] == "ok"
+
+
 def test_stopped_runner_raises_alarm(runtime, monkeypatch):
     service, _, _ = runtime
     from app.services import vision_service

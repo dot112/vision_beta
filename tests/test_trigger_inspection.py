@@ -13,6 +13,7 @@ import uuid
 import pytest
 
 import app.services.line_service as line_module
+from app.events.alarm_events import alarm_manager
 from app.schemas.counting import CountingConfig
 from app.schemas.vision import BoundingBox, DetectionItem
 from app.security.api_key_scopes import required_api_key_scopes
@@ -56,6 +57,15 @@ def _config(expected, defects, no_product="ignore", **extra):
 def _trigger_cam(camera_id="vis", **extra):
     return {"camera_id": camera_id, "count_mode": "trigger", "expected_classes": ["bottle"],
             "defect_classes": ["dent"], **extra}
+
+
+@pytest.fixture(autouse=True)
+def _no_picture_alarms_left():
+    """A trigger without a picture raises camera.picture_missing; it does not outlive its test."""
+    yield
+    for alarm in alarm_manager.active("camera:"):
+        if alarm.code == "camera.picture_missing":
+            alarm_manager.clear_alarm(alarm.code, alarm.source, "the test is over")
 
 
 # ── What one picture says ─────────────────────────────────────────────────────
@@ -218,22 +228,36 @@ def test_the_inference_worker_counts_every_picture_it_gets_through(lines, monkey
 # ── A trigger ─────────────────────────────────────────────────────────────────
 
 class _Worker:
-    """What trigger_camera uses of a camera's inference worker."""
+    """What trigger_camera uses of a camera's inference worker: it takes a picture when it is idle,
+    and ``process`` says what the model found in it."""
 
     def __init__(self):
         self.result_seq = 0
         self.is_busy = False
         self.detections = []
         self.inference_ms = 4.2
+        self.submitted = []
+        self._waiting = None
 
     def get_latest_inference(self):
         return list(self.detections), self.inference_ms
+
+    def submit_frame_if_idle(self, mat, frame_id, conf_thresh=None, copy=True, arrived_at=None, on_result=None):
+        if self.is_busy:
+            return False
+        self.is_busy = True
+        self.submitted.append(frame_id)
+        self._waiting = (frame_id, arrived_at, on_result)
+        return True
 
     def process(self, *names, conf=0.9):
         """The model got through one more picture and found these classes in it."""
         self.detections = [_det(name, conf) for name in names]
         self.result_seq += 1
         self.is_busy = False
+        waiting, self._waiting = self._waiting, None
+        if waiting is not None and waiting[2] is not None:
+            waiting[2](waiting[0], list(self.detections), self.inference_ms, waiting[1])
 
 
 @pytest.fixture
@@ -328,8 +352,8 @@ def test_nothing_found(lines, workers, fake_camera, no_product, status, totals):
         assert (result["result"], payload["class_name"], payload["reject_reason"]) == ("good", "product", None)
 
 
-def test_no_new_frame_in_two_seconds_gives_no_result(lines, workers, fake_camera):  # noqa: F811
-    runtime = _line(lines, [_trigger_cam(no_product="reject")])
+def test_a_picture_the_model_does_not_get_through_in_time_is_a_no_picture_reject(lines, workers, fake_camera):  # noqa: F811
+    runtime = _line(lines, [_trigger_cam(no_product="ignore")])
     fake_camera("vis")
     seen = {}
 
@@ -337,8 +361,10 @@ def test_no_new_frame_in_two_seconds_gives_no_result(lines, workers, fake_camera
         seen["result"] = await trigger_camera(runtime, "vis", timeout=0.1)
 
     _run(steps)
-    assert seen["result"]["status"] == "no_frame" and seen["result"]["result"] is None
-    assert _totals(runtime.counter) == (0, 0, 0) and runtime.sent == []
+    assert (seen["result"]["status"], seen["result"]["result"], seen["result"]["reject_reason"]) == (
+        "no_picture", "reject", "no_picture")
+    assert _totals(runtime.counter) == (1, 0, 1)
+    assert runtime.sent[0][0]["reject_reason"] == "no_picture"
 
 
 def test_a_trigger_while_the_worker_is_busy_skips_the_frame_in_flight(lines, workers, fake_camera):  # noqa: F811
@@ -383,8 +409,10 @@ def test_two_triggers_at_once_take_two_pictures(lines, workers, fake_camera):  #
     assert _totals(runtime.counter) == (2, 1, 1)
 
 
-def test_a_trigger_on_a_stopped_line_or_a_disconnected_camera_is_refused(lines, workers, fake_camera, monkeypatch):  # noqa: F811
+def test_a_trigger_on_a_stopped_line_or_a_camera_that_cannot_take_it_is_refused(lines, workers, fake_camera, monkeypatch):  # noqa: F811
     runtime = _line(lines, [_trigger_cam(), {"camera_id": "tracking", "station": "own"}])
+    fake_camera("vis")
+    fake_camera("tracking")
     seen = []
 
     async def refused(camera_id, word):
@@ -393,9 +421,6 @@ def test_a_trigger_on_a_stopped_line_or_a_disconnected_camera_is_refused(lines, 
         seen.append(word)
 
     async def steps():
-        await refused("vis", "not connected")
-        fake_camera("vis")
-        fake_camera("tracking")
         await refused("tracking", "One picture per trigger")
         await refused("no-such-camera", "One picture per trigger")
         runtime.enabled = False
@@ -408,8 +433,23 @@ def test_a_trigger_on_a_stopped_line_or_a_disconnected_camera_is_refused(lines, 
         await refused("vis", "model")
 
     _run(steps)
-    assert len(seen) == 5
+    assert len(seen) == 4
     assert _totals(runtime.counter) == (0, 0, 0) and runtime.sent == []
+
+
+def test_a_trigger_on_a_disconnected_camera_is_a_no_picture_reject(lines, workers, fake_camera):  # noqa: F811
+    runtime = _line(lines, [_trigger_cam()])
+    seen = {}
+
+    async def steps():
+        seen["absent"] = await trigger_camera(runtime, "vis", timeout=0.1)
+        fake_camera("vis").is_connected = False
+        seen["dropped"] = await trigger_camera(runtime, "vis", timeout=0.1)
+
+    _run(steps)
+    assert [(a["status"], a["result"]) for a in (seen["absent"], seen["dropped"])] == [("no_picture", "reject")] * 2
+    assert _totals(runtime.counter) == (2, 0, 2)
+    assert "vis" not in workers                     # nothing went to the model
 
 
 def test_a_triggered_counting_camera_waits_for_its_code(lines, workers, fake_camera):  # noqa: F811
@@ -494,38 +534,35 @@ def test_a_capture_signal_triggers_a_vision_camera_in_trigger_mode(signals, work
     assert _status(line, "plcin_capture")["error"] is None
 
 
-def test_a_capture_signal_says_when_no_picture_came(signals, workers, fake_camera, monkeypatch):  # noqa: F811
+def test_a_capture_signal_whose_picture_does_not_come_makes_a_no_picture_reject(signals, workers, fake_camera, monkeypatch):  # noqa: F811
     from app.services import trigger_inspection
 
     monkeypatch.setattr(trigger_inspection, "TRIGGER_TIMEOUT_S", 0.05)
     line = _line_with(_signal("capture", camera_id="vis"), cameras=[{"model_id": "model-test", **_trigger_cam()}])
-    fake_camera("vis")
+    runtime = line_module.line_manager.get(line["id"])
+    fake_camera("vis").is_connected = False
 
     async def steps():
         await PLCInputService._act(_card(line, "plcin_capture"), False, True)
 
-    with pytest.raises(ValueError, match="picture"):
-        _run(steps)
+    _run(steps)                                         # an answer, not an error on the card
+    assert _totals(runtime.counter) == (1, 0, 1)
 
 
 # ── The endpoints ─────────────────────────────────────────────────────────────
 
 class _AutoWorker(_Worker):
-    """A worker that has got through one more picture every time it is asked."""
+    """A worker whose model gets through every picture at once and finds ``names`` in it."""
 
     def __init__(self, *names):
         super().__init__()
         self.detections = [_det(name) for name in names]
-        self._seq = 0
 
-    @property
-    def result_seq(self):
-        self._seq += 1
-        return self._seq
-
-    @result_seq.setter
-    def result_seq(self, value):
-        self._seq = value
+    def submit_frame_if_idle(self, mat, frame_id, conf_thresh=None, copy=True, arrived_at=None, on_result=None):
+        self.submitted.append(frame_id)
+        if on_result is not None:
+            on_result(frame_id, list(self.detections), self.inference_ms, arrived_at)
+        return True
 
 
 @pytest.fixture
@@ -576,6 +613,21 @@ def test_the_line_trigger_endpoint(client, admin_headers, operator_headers, trig
     stopped = client.post(url, headers=admin_headers)
     assert stopped.status_code == 409 and "stopped" in stopped.json()["detail"]
     assert _line_total(client, admin_headers, trigger_line["id"]) == 2
+
+
+def test_the_line_trigger_endpoint_answers_no_picture_for_a_disconnected_camera(client, admin_headers, trigger_line):
+    from app.state.application_state import app_state
+
+    app_state.cameras[trigger_line["trig"]].is_connected = False
+    res = client.post(f"{API}/lines/{trigger_line['id']}/trigger", headers=admin_headers)
+    assert res.status_code == 200, res.text
+    assert [(r["status"], r["result"], r["reject_reason"]) for r in res.json()["results"]] == [
+        ("no_picture", "reject", "no_picture")]
+    assert _line_total(client, admin_headers, trigger_line["id"]) == 1
+    status = client.get(f"{API}/lines/{trigger_line['id']}", headers=admin_headers).json()["status"]
+    row, = status["trigger_cameras"]
+    assert row["capture"]["has_picture"] is False and row["counters"]["missing"] == 1
+    assert alarm_manager.clear_source(f"camera:{trigger_line['trig']}") == 1      # camera.picture_missing
 
 
 def test_a_line_without_a_trigger_camera_answers_409(client, admin_headers):

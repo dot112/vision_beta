@@ -630,6 +630,21 @@ class LineRuntime:
     def counting_camera_id(self) -> Optional[str]:
         return next((c["camera_id"] for c in self.cameras if c.get("role") == "vision" and c.get("counting")), None)
 
+    def infers_on_demand(self, camera_id: str) -> bool:
+        """True for a vision camera on One picture per trigger whose picture the system takes: its model
+        runs only on the picture a trigger takes, not on every frame (trigger_inspection)."""
+        entry = self.camera_entry(camera_id)
+        if not entry or entry.get("role", "vision") != "vision" or entry.get("count_mode") != "trigger":
+            return False
+        from app.state.application_state import app_state
+        return picture_source(entry, getattr(app_state.cameras.get(camera_id), "trigger_mode", "off")) == "system"
+
+    def has_continuous_camera(self) -> bool:
+        """Whether a camera of the line goes through its model or code reader frame after frame, so its
+        frame rate means something. A line without cameras of its own counts as one (Line 1 takes the
+        cameras no line has)."""
+        return not self.cameras or any(not self.infers_on_demand(c["camera_id"]) for c in self.cameras)
+
     # ── Frame rate ────────────────────────────────────────────────────────────
 
     def record_frame(self, camera_id: str, now: Optional[float] = None) -> None:
@@ -653,13 +668,16 @@ class LineRuntime:
         return round(len(recent) / span, 1)
 
     def processed_fps(self) -> float:
-        """Frames per second the line's counting camera (or its busiest camera) gets through."""
+        """Frames per second the line's counting camera (or its busiest camera) gets through.
+
+        A camera whose model runs only on a trigger's picture is left out: it gets through as many
+        pictures as triggers come, which is no frame rate."""
         cid = self.counting_camera_id
-        if cid:
+        if cid and not self.infers_on_demand(cid):
             return self.fps(cid)
         with self._lock:
             ids = list(self._frames)
-        return max((self.fps(i) for i in ids), default=0.0)
+        return max((self.fps(i) for i in ids if not self.infers_on_demand(i)), default=0.0)
 
     # ── State ─────────────────────────────────────────────────────────────────
 
@@ -2039,9 +2057,10 @@ class LineManager:
         self._model_names.pop(model_id, None)
 
     def inferring(self, camera_id: str) -> Optional[bool]:
-        """None: no running line runs a model on this camera. Else whether its model is loaded."""
+        """None: no running line runs a model on this camera frame after frame (a camera whose model
+        runs only on a trigger's picture neither). Else whether its model is loaded."""
         routed = self.route(camera_id)
-        if routed is None or routed[1] != "vision" or not routed[0].enabled:
+        if routed is None or routed[1] != "vision" or not routed[0].enabled or routed[0].infers_on_demand(camera_id):
             return None
         return self.model_for_camera(camera_id) in self._engines
 

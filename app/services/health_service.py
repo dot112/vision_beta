@@ -256,8 +256,10 @@ class HealthService:
             status = {"running": OK, "stopped": IDLE, "no_camera": IDLE, "idle": IDLE}.get(state, DOWN)
             min_fps = float(runtime.min_fps or 0.0)
             fps = summary["processed_fps"]
-            # Checked only once the line has run past the frame-rate window.
-            if state == "running" and min_fps > 0 and self.uptime_seconds > 10 and fps < min_fps:
+            # Checked only once the line has run past the frame-rate window, and only on a line with a
+            # camera that infers frame after frame (one that infers only on a trigger has no frame rate).
+            if state == "running" and min_fps > 0 and self.uptime_seconds > 10 and fps < min_fps \
+                    and runtime.has_continuous_camera():
                 status = DEGRADED
                 alarm_manager.raise_alarm(
                     HealthAlarmCode.LINE_FPS_LOW, source,

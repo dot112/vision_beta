@@ -70,17 +70,16 @@ class _Reader:
 
 
 class _Vision:
-    """Camera 2's model: it has always got through one more picture, which shows ``names``."""
+    """Camera 2's model: it gets through every picture it is given at once and finds ``names`` in it."""
 
     def __init__(self):
         self.names = ["carton"]
-        self._seq = 0
         self.is_busy = False
 
-    @property
-    def result_seq(self):
-        self._seq += 1
-        return self._seq
+    def submit_frame_if_idle(self, mat, frame_id, conf_thresh=None, copy=True, arrived_at=None, on_result=None):
+        if on_result is not None:
+            on_result(frame_id, [_det(name) for name in self.names], 3.0, arrived_at)
+        return True
 
     def get_latest_inference(self):
         return [_det(name) for name in self.names], 3.0

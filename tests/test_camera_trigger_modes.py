@@ -352,9 +352,10 @@ def test_an_unanswered_software_trigger_does_not_shift_the_next_one(lines, rig, 
         seen["second"] = await trigger_camera(runtime, "cam")
 
     _run(steps)
-    assert seen["first"]["status"] == "no_frame" and seen["first"]["result"] is None
+    # The first trigger's answer is a "no picture" reject; the late picture is not the second's.
+    assert (seen["first"]["status"], seen["first"]["result"]) == ("no_picture", "reject")
     assert (seen["second"]["status"], seen["second"]["result"]) == ("inspected", "good")
-    assert rig.engine.seen == [BOTTLE] and _totals(runtime.counter) == (1, 1, 0)
+    assert rig.engine.seen == [BOTTLE] and _totals(runtime.counter) == (2, 1, 1)
 
 
 def test_the_server_cannot_trigger_a_hardware_triggered_camera(lines, rig):  # noqa: F811   D8
@@ -369,17 +370,20 @@ def test_the_server_cannot_trigger_a_hardware_triggered_camera(lines, rig):  # n
     assert runtime.counter.total_inspected == 0
 
 
-def test_a_refused_software_trigger_is_an_error_not_a_product(lines, rig):  # noqa: F811
-    runtime = _line(lines, [_trigger_cam("cam", no_product="reject")])
+def test_a_refused_software_trigger_is_a_no_picture_reject(lines, rig):  # noqa: F811
+    # The trigger got no picture, and still one answer (spec 1.8); the alarm says why.
+    runtime = _line(lines, [_trigger_cam("cam", no_product="ignore")])
     cam, backend = rig.camera("cam", trigger_mode="software")
     backend.fail["execute"] = OSError("the camera is busy")
+    seen = {}
 
     async def steps():
-        with pytest.raises(ValueError, match="busy"):
-            await trigger_camera(runtime, "cam")
+        seen["answer"] = await trigger_camera(runtime, "cam")
 
     _run(steps)
-    assert runtime.counter.total_inspected == 0
+    assert (seen["answer"]["status"], seen["answer"]["reject_reason"]) == ("no_picture", "no_picture")
+    assert _totals(runtime.counter) == (1, 0, 1) and rig.engine.seen == []
+    assert "busy" in alarm_manager.get(AlarmCode.CAMERA_PICTURE_MISSING, "camera:cam").details["why"]
 
 
 def test_a_code_reader_triggers_a_software_camera_for_its_picture(lines, rig):  # noqa: F811   D12

@@ -162,6 +162,8 @@ STATUS_BAR_COLOR = (20, 24, 33)
 STATUS_STOPPED = "LINE STOPPED"
 STATUS_NO_LINE = "NOT ON A LINE"
 STATUS_NO_MODEL = "NO MODEL"
+# A camera whose model runs only on the picture a trigger takes (One picture per trigger, by the system).
+STATUS_WAITING_TRIGGER = "WAITING FOR TRIGGER"
 
 
 def overlay_scale(w: int, h: int) -> float:
@@ -842,7 +844,8 @@ class InferenceEngine:
         Zero JPEG encode/decode overhead!
         camera_id selects that camera's tracker; without it the default tracker is used.
         camera_rotation and the flips are accepted for older callers and not used:
-        the exit band is drawn where the camera's products flow out (exit_edge).
+        the exit band is drawn where the camera's products flow out (exit_edge); a camera in
+        trigger mode has none.
         status: why the camera is not inspected now (STATUS_STOPPED, ...), said in the
         bar. Its tracks are then old and not drawn; only ``detections`` are.
         The bar and labels are drawn in proportion to the picture (overlay_scale).
@@ -859,7 +862,10 @@ class InferenceEngine:
         counting_service = line_manager.counter_for_camera(camera_id)
         try:
             flow = counting_service.config
-            exit_side = exit_edge(flow.orientation, flow.direction, flow.line1_position, flow.line2_position)
+            # A camera in trigger mode tracks nothing, so no product leaves its picture: it has no exit
+            # band, and every box is drawn (a trigger's picture shows all the model found in it).
+            exit_side = None if getattr(flow, "count_mode", "track") == "trigger" else \
+                exit_edge(flow.orientation, flow.direction, flow.line1_position, flow.line2_position)
         except Exception:
             exit_side = exit_edge("horizontal")
         exit_rect = exit_zone(w, h, exit_side)
