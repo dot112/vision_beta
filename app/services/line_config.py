@@ -82,8 +82,10 @@ REASON_NOTHING_DETECTED = "nothing_detected"
 REASON_PRODUCT_CHECK = "product_check"
 # The line's result handshake got no result for a capture request in time, and is set to reject then.
 REASON_INSPECTION_TIMEOUT = "inspection_timeout"
+# A trigger camera's trigger came and no picture followed (a notice with no picture, or a camera that did not answer).
+REASON_NO_PICTURE = "no_picture"
 REJECT_REASONS = (REASON_VISION, REASON_NOT_LISTED, REASON_LISTED, REASON_NO_CODE, REASON_STATION_NO_RESULT,
-                  REASON_NOTHING_DETECTED, REASON_PRODUCT_CHECK, REASON_INSPECTION_TIMEOUT)
+                  REASON_NOTHING_DETECTED, REASON_PRODUCT_CHECK, REASON_INSPECTION_TIMEOUT, REASON_NO_PICTURE)
 # A sorting verification camera saw a product in the other outfeed (a record's reason; no product gets it).
 REASON_SORTING_MISMATCH = "sorting_mismatch"
 # The reasons that come from a product's code.
@@ -102,7 +104,7 @@ IF_MISSING = ("skip", "default")
 # A rejected product's reason as a number for the PLC (0: not rejected, 9: any other reason).
 REJECT_REASON_CODES = {REASON_VISION: 1, REASON_NOT_LISTED: 2, REASON_LISTED: 3, REASON_NO_CODE: 4,
                        REASON_STATION_NO_RESULT: 5, REASON_NOTHING_DETECTED: 6, REASON_PRODUCT_CHECK: 7,
-                       REASON_INSPECTION_TIMEOUT: 8}
+                       REASON_INSPECTION_TIMEOUT: 8, REASON_NO_PICTURE: 10}
 # Product checks: up to MAX_PRODUCT_CHECKS per line, each "reject when these rules pass".
 MAX_PRODUCT_CHECKS = 10
 # A product check decides the result, so its rules cannot use it.
@@ -206,6 +208,14 @@ COUNT_DIRECTIONS = ("forward", "backward", "both")
 COUNT_MODES = ("track", "trigger")
 # What a triggered picture in which nothing was found counts as: no product, a reject or a good product.
 NO_PRODUCT = ("ignore", "reject", "good")
+# Where a trigger camera's picture comes from:
+#   system  the server takes it when a trigger happens in the system (after the Picture delay)
+#   camera  an industrial camera triggers itself and sends it; a trigger notice (a "Take a picture"
+#           input) may tell the server it is coming, and Wait for the picture is how long it may take
+PICTURE_SOURCES = ("system", "camera")
+PICTURE_DELAY_LIMITS_MS = (0, 5000)
+PICTURE_WAIT_LIMITS_MS = (50, 10000)
+DEFAULT_PICTURE_WAIT_MS = 1000
 # Tracking settings a vision camera may change: (lowest, highest, whole number).
 TRACKING_LIMITS = {
     "track_high_thresh": (0.05, 1.0, False),
@@ -222,6 +232,7 @@ TRACKING_KEYS = tuple(TRACKING_LIMITS)
 CAMERA_KEPT_KEYS = CAMERA_MODEL_KEYS + (
     "name_based_defects", "direction", "tracking", "line1_position", "line2_position", "orientation",
     "confidence", "station", "count_mode", "no_product",
+    "picture_source", "picture_delay_ms", "notice_trigger", "picture_wait_ms",
 ) + JOIN_KEYS
 # Settings of a camera that reads codes that a client written before them does not send.
 READER_KEPT_KEYS = ("qr_trigger_review", "code_sets_batch", "sorting_lane")
@@ -534,6 +545,7 @@ def normalize_camera(raw: Any, index: int) -> Dict[str, Any]:
                     raise ValueError(f"{label}: when nothing is found must be 'ignore', 'reject' or 'good'")
                 camera["count_mode"] = "trigger"
                 camera["no_product"] = no_product
+                camera.update(_picture_settings(raw, label))
     # The triggers ("Take a picture" inputs, by their number) that take this camera's picture.
     sent = raw.get("triggers")
     if sent not in (None, "", []) and (camera.get("count_mode") == "trigger"
@@ -542,7 +554,59 @@ def normalize_camera(raw: Any, index: int) -> Dict[str, Any]:
         if None in numbers:
             raise ValueError(f"{label}: its triggers must be a list of trigger numbers from 1 to {MAX_TRIGGER_NO}")
         camera["triggers"] = sorted(set(numbers))
+    if camera.get("picture_source") == "camera":
+        # A camera that triggers itself has no trigger of the system: only its notice, if it has one.
+        notice = camera.get("notice_trigger")
+        camera["triggers"] = [notice] if notice else []
     return camera
+
+
+def _picture_settings(raw: Dict[str, Any], label: str) -> Dict[str, Any]:
+    """A trigger camera's picture source (left out when not sent), delay, trigger notice and wait."""
+    settings: Dict[str, Any] = {}
+    source = raw.get("picture_source")
+    if source not in (None, ""):
+        source = str(source).strip().lower()
+        if source not in PICTURE_SOURCES:
+            raise ValueError(f"{label} picture source must be 'system' (the server takes it) or 'camera' (the camera triggers itself)")
+        settings["picture_source"] = source
+    low, high = PICTURE_DELAY_LIMITS_MS
+    settings["picture_delay_ms"] = int(round(_number(raw.get("picture_delay_ms"), f"{label} picture delay (ms)", low, low, high)))
+    low, high = PICTURE_WAIT_LIMITS_MS
+    settings["picture_wait_ms"] = int(round(_number(
+        raw.get("picture_wait_ms"), f"{label} wait for the picture (ms)", DEFAULT_PICTURE_WAIT_MS, low, high,
+    )))
+    notice = raw.get("notice_trigger")
+    if notice in (None, ""):
+        settings["notice_trigger"] = None
+    else:
+        settings["notice_trigger"] = _trigger_number(notice)
+        if settings["notice_trigger"] is None:
+            raise ValueError(f"{label}: its trigger notice must be a trigger number from 1 to {MAX_TRIGGER_NO} (or none)")
+    return settings
+
+
+def picture_source(camera: Dict[str, Any], trigger_mode: str = "off") -> str:
+    """Where a trigger camera's picture comes from: "system" or "camera".
+
+    The saved value; a camera saved before the card held it follows its camera's Trigger
+    (``trigger_mode``): "hardware" is "camera" (without a notice), anything else "system".
+    """
+    saved = camera.get("picture_source")
+    if saved in PICTURE_SOURCES:
+        return saved
+    return "camera" if trigger_mode == "hardware" else "system"
+
+
+def trigger_mode_for_card(camera: Dict[str, Any]) -> str:
+    """The Trigger an industrial camera gets from its line's card: "hardware", "software" or "off".
+
+    One picture per trigger from the camera is "hardware", from the system "software"; any other
+    count mode leaves the camera free running ("off").
+    """
+    if camera.get("role", "vision") != "vision" or camera.get("count_mode") != "trigger":
+        return "off"
+    return "hardware" if picture_source(camera) == "camera" else "software"
 
 
 def _join_settings(raw: Dict[str, Any], label: str) -> Dict[str, Any]:
@@ -1826,9 +1890,19 @@ def model_warnings(line: Dict[str, Any], models: Dict[str, Dict[str, Any]]) -> L
     return warnings
 
 
+def _answers_someone(line: Dict[str, Any], send_protocols: Dict[str, str]) -> bool:
+    """A PLC, robot or TCP receiver waits for this line's answers: the result handshake is on, a product
+    sequence input is set, or an enabled send card goes to a TCP channel."""
+    if (line.get("handshake") or {}).get("enabled") or line.get("sequence_input_id"):
+        return True
+    return any(card.get("enabled", True) is True and send_protocols.get(str(card.get("endpoint_id"))) == "tcp"
+               for card in line.get("send_actions") or [])
+
+
 def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any]]] = None,
                   products_per_minute: float = 0.0, trigger_modes: Optional[Dict[str, str]] = None,
-                  list_formats: Optional[Dict[str, Dict[str, Any]]] = None) -> List[str]:
+                  list_formats: Optional[Dict[str, Dict[str, Any]]] = None,
+                  send_protocols: Optional[Dict[str, str]] = None) -> List[str]:
     """Things about a saved line the user should look at; none of them stops the line.
 
     ``models`` adds the warnings about the vision cameras' models (model_warnings).
@@ -1839,6 +1913,8 @@ def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any
     the camera's own setting, which a line's settings do not hold.
     ``list_formats``: each product list's code format (a list missing reads whole codes); with
     it, a camera that sets the line's batch from codes that hold none is warned about.
+    ``send_protocols``: each channel's protocol by endpoint id; with it, a send card on a TCP channel
+    counts as someone waiting for an answer (the line answers someone, see _answers_someone).
     """
     modes = trigger_modes or {}
     warnings: List[str] = model_warnings(line, models) if models is not None else []
@@ -1847,8 +1923,20 @@ def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any
     capturing = {camera_id for card in taking if card.get("enabled", True) is True
                  for camera_id in triggered_cameras(cameras, card)}
     numbers = {card.get("trigger_no") for card in taking}
+    answers = _answers_someone(line, send_protocols or {})
     for index, cam in enumerate(cameras):
         mode = modes.get(cam.get("camera_id"), "off")
+        if answers and cam.get("role", "vision") == "vision" and cam.get("count_mode") == "trigger":
+            if picture_source(cam, mode) == "camera" and not cam.get("notice_trigger"):
+                warnings.append(
+                    f"Camera {index + 1} takes its own pictures without a trigger notice: a missed or double trigger "
+                    f"cannot be seen. Use a trigger notice when a PLC or robot waits for each answer."
+                )
+            if cam.get("no_product", "ignore") == "ignore":
+                warnings.append(
+                    f"Camera {index + 1} ignores a picture with nothing in it: A trigger with nothing found gets no "
+                    f"answer. Set When nothing is found to Reject."
+                )
         # A camera on hardware trigger needs no signal card: every picture it takes is read.
         if reads_codes(cam) and cam.get("qr_trigger") == "signal" and cam.get("camera_id") not in capturing \
                 and mode != "hardware":
@@ -1889,6 +1977,12 @@ def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any
                     f"Read codes 'Continuously' reads nothing. Set Read codes to 'When an input asks' or to a "
                     f"wire line."
                 )
+    vision = [cam for cam in cameras if cam.get("role", "vision") == "vision"]
+    if float(line.get("min_fps") or 0) > 0 and vision and all(cam.get("count_mode") == "trigger" for cam in vision):
+        warnings.append(
+            "This line's cameras take one picture per trigger, so frames per second are not measured. "
+            "Set Minimum frames/s to 0."
+        )
     for card in taking:
         if card.get("enabled", True) is not True:
             continue

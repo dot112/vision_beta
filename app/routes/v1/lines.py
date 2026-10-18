@@ -72,7 +72,7 @@ async def _view(line_id: str, with_logic: bool) -> Dict[str, Any]:
             await _name_cameras(warning, line.get("cameras"))
             for warning in line_warnings(line, await _model_info(line), products_per_minute=rate,
                                          trigger_modes=await _trigger_modes(line.get("cameras")),
-                                         list_formats=_list_formats())
+                                         list_formats=_list_formats(), send_protocols=_send_protocols())
         ]
     return line
 
@@ -232,6 +232,12 @@ def _list_formats() -> Dict[str, Dict[str, Any]]:
     from app.services.product_service import product_catalog
 
     return product_catalog.formats()
+
+
+def _send_protocols() -> Dict[str, str]:
+    """{endpoint_id: protocol} of the communication channels, for the line warnings (who waits for an answer)."""
+    return {str(endpoint["id"]): str(endpoint.get("protocol", "")).lower()
+            for endpoint in _svc().get_endpoints() if endpoint.get("id")}
 
 
 async def _trigger_modes(cameras: Any) -> Dict[str, str]:
