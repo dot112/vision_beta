@@ -205,6 +205,35 @@ def test_several_pictures_in_flight_pair_in_order():
     assert p.waiting() == (0, 0)
 
 
+@pytest.mark.parametrize("notice_at, pairs", [(9.0, True), (8.99, False), (11.0, True), (11.01, False)])
+@pytest.mark.parametrize("notice_first", [True, False], ids=["notice_first", "picture_first"])
+def test_a_notice_and_a_picture_pair_only_within_the_window_on_both_sides(notice_at, pairs, notice_first):
+    # The picture's time is when it was taken and the notice's when its edge was seen; either may be
+    # handed over later, so the window is checked on both sides whichever comes first.
+    p = PicturePairer(W)
+    if notice_first:
+        assert p.add_notice(notice_at, {"n": 1}) is None
+        got = p.add_picture(10.0, "f", 1)
+    else:
+        assert p.add_picture(10.0, "f", 1) is None
+        got = p.add_notice(notice_at, {"n": 1})
+    assert (got is not None) is pairs
+    assert p.waiting() == ((0, 0) if pairs else (1, 1))
+
+
+def test_a_picture_handed_over_late_does_not_take_a_later_notice():
+    # W = 0.2: picture k is taken at 0.00 but handed over at 0.35; its notice (0.01) went missing at
+    # 0.22, and the next notice came at 0.31, more than W after the picture.
+    p = PicturePairer(0.2)
+    p.add_notice(0.01, {"n": 1})
+    assert [n.context["n"] for n in p.expire(0.22).missing] == [1]
+    p.add_notice(0.31, {"n": 2})
+    assert p.add_picture(0.00, "k", 1) is None
+    assert p.waiting() == (1, 1)
+    e = p.expire(0.6)
+    assert [n.context["n"] for n in e.missing] == [2] and [x.frame for x in e.late + e.extra] == ["k"]
+
+
 def test_clear_drops_everything():
     p = PicturePairer(W)
     p.add_notice(0, {})

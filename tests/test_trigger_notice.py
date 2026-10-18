@@ -10,6 +10,7 @@ camera.picture_unpaired. Expiry runs on the line's timers, not on the camera run
 """
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import numpy as np
@@ -140,7 +141,7 @@ class Model:
 
 
 def _notice_cam(camera_id="cam", **extra):
-    return _trigger_cam(camera_id, picture_source="camera", notice_trigger=1, picture_wait_ms=WAIT_MS, **extra)
+    return _trigger_cam(camera_id, **{"picture_source": "camera", "notice_trigger": 1, "picture_wait_ms": WAIT_MS, **extra})
 
 
 @pytest.fixture
@@ -152,6 +153,7 @@ def rig(lines, monkeypatch):  # noqa: F811
     model = Model()
     drawn = []
     crossings = []
+    emitted_at = []
     monkeypatch.setattr(line_service, "_now", clock)
     monkeypatch.setattr(line_service, "_wall", clock.wall)
     monkeypatch.setattr(CameraStreamPipeline, "get_worker", classmethod(lambda cls, camera_id: model))
@@ -175,15 +177,16 @@ def rig(lines, monkeypatch):  # noqa: F811
         PLCInputService.reload()
         runtime = lines.get(saved["id"])
         runtime.sent = []
-        runtime.counter.dispatch_event = lambda payload, plc_event, is_defect: runtime.sent.append((payload, plc_event))
         monkeypatch.setattr(runtime, "_schedule_timer", clock.schedule)
-        emit = runtime.counter.emit_crossing
+        for counter in [runtime.counter, *runtime.aux_counters.values()]:
+            counter.dispatch_event = lambda payload, plc_event, is_defect: runtime.sent.append((payload, plc_event))
 
-        def noted(crossing):
-            crossings.append(crossing)
-            emit(crossing)
+            def noted(crossing, emit=counter.emit_crossing):
+                crossings.append(crossing)
+                emitted_at.append(clock.now)
+                emit(crossing)
 
-        monkeypatch.setattr(runtime.counter, "emit_crossing", noted)
+            monkeypatch.setattr(counter, "emit_crossing", noted)
         return runtime
 
     def running(runtime, on):
@@ -191,8 +194,16 @@ def rig(lines, monkeypatch):  # noqa: F811
         lines.apply_state()
         assert lines.get(runtime.id) is runtime and runtime.enabled is on
 
+    def resave(runtime, cameras, **extra):
+        """Save the running line again with these cameras (a settings change while it runs)."""
+        cameras = [{"model_id": "model-test", **cam} for cam in cameras]
+        SettingsPersistenceService.save_line({"id": runtime.id, "cameras": cameras, **extra})
+        lines.apply_state()
+        assert lines.get(runtime.id) is runtime and runtime.enabled
+
     yield SimpleNamespace(clock=clock, model=model, camera=camera, drawn=drawn, crossings=crossings, line=line,
-                          running=running, pump=lambda: ContinuousVisionRunner.feed_once(memory))
+                          emitted_at=emitted_at, running=running, resave=resave,
+                          pump=lambda: ContinuousVisionRunner.feed_once(memory))
     alarm_manager.reset()
 
 
@@ -343,6 +354,166 @@ def test_a_paired_picture_waiting_for_the_model_is_inspected_though_the_camera_d
     rig.model.finish()
     assert [c.get("sequence") for c in rig.crossings] == [1, 2]
     assert _counters(runtime)["results"] == 2
+
+
+def test_a_picture_handed_over_late_does_not_pair_with_a_later_notice(rig):
+    runtime = rig.line()                         # W = 0.5
+    runtime.trigger_notice("cam", 1, {"sequence": 1})
+    rig.camera.take(BOTTLE)                      # its picture, but the runner hands it over late
+    rig.clock.advance(0.7)                       # the notice went missing at 0.5
+    runtime.trigger_notice("cam", 1, {"sequence": 2})
+    rig.pump()                                   # the picture, taken at 0, comes more than W before this notice
+    assert rig.model.taken == []
+    rig.clock.advance(1.0)
+    assert [(c.get("sequence"), c["reject_reason"]) for c in rig.crossings] == [(1, "no_picture"), (2, "no_picture")]
+    counters = _counters(runtime)
+    assert (counters["missing"], counters["late"] + counters["extra"], counters["results"]) == (2, 1, 0)
+
+
+def test_a_slow_sequence_read_still_pairs_the_picture_taken_at_the_edge(rig, signals, monkeypatch):  # noqa: F811
+    runtime = rig.line([_notice_cam(picture_wait_ms=200)], plc_inputs=[CAPTURE_INPUT])
+    card = {**runtime.plc_inputs[0], "line_id": runtime.id, "line_name": runtime.name}
+
+    async def slow_read(cls, line):
+        # The camera takes its picture as the input's edge is seen, and the runner hands it over at once;
+        # the PLC answers the sequence read 0.5 s later (more than W = 0.2).
+        rig.camera.take(BOTTLE)
+        rig.clock.advance(0.01)
+        rig.pump()
+        rig.clock.advance(0.49)
+        return 42
+
+    monkeypatch.setattr(PLCInputService, "read_sequence", classmethod(slow_read))
+    seen = {}
+
+    async def steps():
+        seen["answers"] = await PLCInputService._capture(card)
+
+    _run(steps)
+    assert seen["answers"] == [{"camera_id": "cam", "status": "expecting", "trigger_no": 1}]
+    assert rig.model.taken == [BOTTLE]
+    rig.model.finish()
+    crossing, = rig.crossings
+    assert _context(crossing) == (1, 42, None) and crossing["class_name"] == "bottle"
+    assert crossing["time"] == pytest.approx(WALL0, abs=1e-3)
+    # Nothing waits on: a later picture without a notice is counted as usual.
+    rig.clock.advance(0.1)
+    rig.camera.take(DENT)
+    rig.pump()
+    rig.clock.advance(0.5)
+    assert _counters(runtime) == {"triggers": 1, "pictures": 2, "results": 1, "missing": 0, "late": 0, "extra": 1}
+
+
+def test_a_slow_read_whose_picture_never_comes_answers_from_the_edge(rig, signals, monkeypatch):  # noqa: F811
+    runtime = rig.line([_notice_cam(picture_wait_ms=200)], plc_inputs=[CAPTURE_INPUT])
+    card = {**runtime.plc_inputs[0], "line_id": runtime.id, "line_name": runtime.name}
+
+    async def slow_read(cls, line):
+        rig.clock.advance(0.5)
+        return 7
+
+    monkeypatch.setattr(PLCInputService, "read_sequence", classmethod(slow_read))
+
+    async def steps():
+        await PLCInputService._capture(card)
+
+    _run(steps)
+    rig.clock.advance(0.5)
+    crossing, = rig.crossings
+    assert _context(crossing) == (1, 7, None) and crossing["reject_reason"] == "no_picture"
+    assert crossing["time"] == pytest.approx(WALL0, abs=1e-3)              # the edge, not the end of the read
+
+
+class _StillCamera:
+    """A stream camera whose picture never changes: a System trigger on it waits its whole 2 s."""
+
+    is_connected = True
+    trigger_mode = "off"
+    name = "Still"
+
+    def get_latest_frame_id(self):
+        return 1
+
+    def get_latest_raw_mat(self, copy=True):
+        return True, np.zeros((4, 4, 3), np.uint8), 1
+
+
+def test_a_notice_is_answered_in_its_time_while_its_input_waits_for_another_camera(rig, signals, monkeypatch):  # noqa: F811
+    # One input is the notice of "cam" and the System trigger of "sys"; the input waits up to 2 s for
+    # the picture of "sys", but the notice's hold ends with the notice.
+    monkeypatch.setitem(app_state.cameras, "sys", _StillCamera())
+
+    async def sleep(seconds):
+        rig.clock.advance(seconds)
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(trigger_inspection, "_now", rig.clock)
+    monkeypatch.setattr(trigger_inspection, "_wall", rig.clock.wall)
+    monkeypatch.setattr(trigger_inspection, "_sleep", sleep)
+    runtime = rig.line([_notice_cam(), _trigger_cam("sys", triggers=[1])], plc_inputs=[CAPTURE_INPUT])
+    card = {**runtime.plc_inputs[0], "line_id": runtime.id, "line_name": runtime.name}
+    seen = {}
+
+    async def steps():
+        seen["answers"] = await PLCInputService._capture(card)
+
+    _run(steps)
+    statuses = {answer["camera_id"]: answer["status"] for answer in seen["answers"]}
+    assert statuses == {"cam": "expecting", "sys": "no_picture"}
+    by_camera = {c["camera_id"]: at for c, at in zip(rig.crossings, rig.emitted_at)}
+    assert by_camera["cam"] == pytest.approx(W + 0.01, abs=0.02)      # not when "sys" gave up (2 s)
+    assert by_camera["sys"] == pytest.approx(2.0, abs=0.05)
+
+
+# ── Wait for the picture changed while the line runs ─────────────────────────
+
+def test_a_new_wait_answers_the_waiting_notices_and_keeps_the_pairs(rig):
+    runtime = rig.line()                         # W = 0.5
+    runtime.trigger_notice("cam", 1, {"sequence": 1})
+    rig.camera.take(BOTTLE)
+    rig.pump()                                   # pair 1 is in the model
+    runtime.trigger_notice("cam", 1, {"sequence": 2})
+    rig.camera.take(DENT)
+    rig.pump()                                   # pair 2 waits for the model
+    rig.camera.take(BOTTLE, ago=0.6)             # a picture no notice claims
+    rig.pump()
+    runtime.trigger_notice("cam", 1, {"sequence": 3, "request_id": 9})     # a notice whose picture has not come
+    rig.clock.advance(0.1)
+
+    rig.resave(runtime, [_notice_cam(picture_wait_ms=800)])
+    # The waiting notice gets its answer at once, with its context and time; the waiting picture is dropped.
+    assert [(_context(c), c["reject_reason"]) for c in rig.crossings] == [((1, 3, 9), "no_picture")]
+    assert rig.crossings[0]["time"] == pytest.approx(WALL0, abs=1e-3)
+    assert (_counters(runtime)["missing"], _counters(runtime)["extra"]) == (1, 1)
+    # The pairs waiting for the model go on.
+    rig.model.finish()
+    rig.pump()
+    rig.model.finish()
+    assert [c.get("sequence") for c in rig.crossings] == [3, 1, 2]
+    # And the new wait applies: a notice now waits 0.8 s for its picture.
+    rig.clock.advance(2.0)
+    runtime.trigger_notice("cam", 1, {"sequence": 4})
+    rig.clock.advance(0.7)
+    rig.camera.take(BOTTLE)
+    rig.pump()
+    rig.model.finish()
+    assert [c.get("sequence") for c in rig.crossings] == [3, 1, 2, 4]
+    assert _counters(runtime) == {"triggers": 4, "pictures": 4, "results": 3, "missing": 1, "late": 0, "extra": 1}
+
+
+def test_a_save_that_keeps_the_wait_keeps_what_waits(rig):
+    runtime = rig.line()
+    runtime.trigger_notice("cam", 1, {"sequence": 1})       # waits for its picture
+    rig.camera.take(DENT, ago=0.6)               # a picture no notice claims waits too
+    rig.pump()
+    rig.resave(runtime, [_notice_cam()], name="Renamed line")
+    assert rig.crossings == [] and _counters(runtime)["extra"] == 0
+    rig.camera.take(BOTTLE)
+    rig.pump()                                   # the notice still takes its picture
+    rig.model.finish()
+    rig.clock.advance(1.0)
+    assert [(c.get("sequence"), c["class_name"]) for c in rig.crossings] == [(1, "bottle")]
+    assert _counters(runtime) == {"triggers": 1, "pictures": 2, "results": 1, "missing": 0, "late": 0, "extra": 1}
 
 
 # ── Pictures without a notice ────────────────────────────────────────────────
@@ -503,6 +674,11 @@ def test_a_notice_for_a_camera_without_a_model_is_refused(rig, lines, signals, m
     _run(steps)
     rig.clock.advance(1.0)
     assert rig.crossings == [] and _counters(runtime)["triggers"] == 0
+    # The refused input holds nothing back: a picture without a notice is counted as usual.
+    rig.camera.take(BOTTLE)
+    rig.pump()
+    rig.clock.advance(1.0)
+    assert _counters(runtime)["extra"] == 1
 
 
 # ── Without a notice ──────────────────────────────────────────────────────────

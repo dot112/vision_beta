@@ -491,6 +491,9 @@ class LineRuntime:
         self._pair_retry: Dict[str, Any] = {}
         self._unpaired: Dict[str, int] = {}
         self._last_paired_at: Dict[str, float] = {}
+        # Per camera, the edges (pairing-clock times) of its notice inputs that are still being read
+        # (notice_edge): nothing that could pair with them is expired meanwhile.
+        self._held: Dict[str, List[float]] = {}
         self._pair_lock = threading.RLock()
         # The line's batch (work order) number, "" for none.
         self.batch = ""
@@ -951,8 +954,9 @@ class LineRuntime:
     def _configure_pairing(self) -> None:
         """One pairer per vision camera on One picture per trigger whose card names a trigger notice and does
         not say the system takes its picture, with the card's Wait for the picture; none while the line is
-        stopped. A camera whose window did not change keeps what waits for it. Whatever else waited is
-        dropped and nothing is made of it, as on a line stop."""
+        stopped. A camera whose window did not change keeps what waits for it; one whose window changed
+        while the line runs answers what waited (_change_window). On a stop, or for a camera that has no
+        notice any more, whatever waited is dropped and nothing is made of it."""
         wanted: Dict[str, float] = {}
         if self.enabled:
             for cam in self.cameras:
@@ -960,12 +964,30 @@ class LineRuntime:
                         and cam.get("notice_trigger") is not None and cam.get("picture_source") != "system":
                     wanted[cam["camera_id"]] = int(cam.get("picture_wait_ms") or DEFAULT_PICTURE_WAIT_MS) / 1000.0
         for camera_id in self._paired_cameras():
-            pairing = self._pairers.get(camera_id)
-            if pairing is None or pairing[1] != wanted.get(camera_id):
+            pairing, window = self._pairers.get(camera_id), wanted.get(camera_id)
+            if pairing is None or window is None:
                 self._drop_pairing(camera_id)
+            elif pairing[1] != window:
+                self._change_window(camera_id, pairing, window)
         for camera_id, window in wanted.items():
             if camera_id not in self._pairers:
                 self._pairers[camera_id] = (PicturePairer(window), window)
+
+    def _change_window(self, camera_id: str, old: Tuple[PicturePairer, float], window: float) -> None:
+        """Wait for the picture changed while the line runs. The camera pairs with the new window from now
+        on; what waited under the old one gets its answer now: each waiting notice is a "no picture"
+        reject with its context and time, and each waiting picture is dropped and counted extra. The
+        pairs waiting for the model do not depend on the window: they go on."""
+        from app.services.trigger_inspection import no_picture_product
+
+        self._pairers[camera_id] = (PicturePairer(window), window)
+        left = old[0].expire(float("inf"))
+        for notice in left.missing:
+            no_picture_product(self, camera_id, f"its Wait for the picture changed from {round(old[1] * 1000)} ms "
+                                                "before the picture came", **notice.context)
+        dropped = len(left.late) + len(left.extra)
+        if dropped:
+            self.count_trigger(camera_id, "extra", dropped)
 
     def _drop_pairing(self, camera_id: str) -> None:
         """Forget the notices and pictures that wait for a camera, and its pairs waiting for the model."""
@@ -977,6 +999,7 @@ class LineRuntime:
             retry = self._pair_retry.pop(camera_id, None)
             self._unpaired.pop(camera_id, None)
             self._last_paired_at.pop(camera_id, None)
+            self._held.pop(camera_id, None)
         if retry is not None:
             retry.cancel()
 
@@ -1000,28 +1023,71 @@ class LineRuntime:
         entry = self.camera_entry(camera_id) or {}
         return picture_source(entry, getattr(app_state.cameras.get(camera_id), "trigger_mode", "off")) == "camera"
 
+    def notice_edge(self, trigger_no: Optional[int]) -> Tuple[float, float]:
+        """A "Take a picture" input with this trigger number saw its edge now. Returns the time, on the
+        pairing clock and the wall clock: the notice's time (trigger_notice ``seen_at`` / ``seen_wall``).
+
+        The input reads its product sequence (and opens its handshake request) before its notices are
+        given. Meanwhile the cameras whose notice it is expire nothing that could still pair with it,
+        so a picture taken at the edge waits for the notice however long the read takes. Each camera's
+        hold ends with its notice, or with notice_edge_done.
+        """
+        seen = (_now(), _wall())
+        if trigger_no is not None:
+            with self._pair_lock:
+                for cam in self.cameras:
+                    if cam["camera_id"] in self._pairers and cam.get("notice_trigger") == trigger_no:
+                        self._held.setdefault(cam["camera_id"], []).append(seen[0])
+        return seen
+
+    def notice_edge_done(self, seen: Tuple[float, float]) -> None:
+        """The input whose edge was seen at ``seen`` is done: its cameras' holds that are left end
+        (it gave no notice: a duplicate request, a refusal, an error)."""
+        for camera_id in self._release_edge(seen[0]):
+            pairing = self._pairers.get(camera_id)
+            if pairing is not None:
+                self._expire_later(camera_id, pairing[1])
+
+    def _release_edge(self, at: float, camera_id: Optional[str] = None) -> List[str]:
+        """End the hold of one edge, for one camera or all; returns the cameras it held."""
+        released = []
+        with self._pair_lock:
+            for held_id in [camera_id] if camera_id is not None else list(self._held):
+                held = self._held.get(held_id)
+                if held and at in held:
+                    held.remove(at)
+                    if not held:
+                        del self._held[held_id]
+                    released.append(held_id)
+        return released
+
     def trigger_notice(self, camera_id: str, trigger_no: int, context: Dict[str, Any]) -> None:
         """The "Take a picture" input that is this camera's trigger notice fired: one picture is coming.
 
-        ``context``: what the input carries (``sequence``, ``request_id``). The notice keeps
-        ``{"trigger_no", "sequence", "request_id", "at"}`` (``at``: its wall-clock time), the arguments of
-        no_picture_product. A waiting picture at most Wait for the picture before it takes it at once;
-        else it waits that long for its picture (_expire_pairing). The paired picture goes to the model, and
-        its product keeps the context. Counts ``triggers``. Raises ValueError for a camera without a
-        notice on this line, or a stopped line.
+        ``context``: what the input carries (``sequence``, ``request_id``), and ``seen_at`` / ``seen_wall``,
+        when its edge was seen (notice_edge; now when left out). The notice has that time and keeps
+        ``{"trigger_no", "sequence", "request_id", "at"}`` (``at``: the wall-clock time), the arguments of
+        no_picture_product. A waiting picture at most Wait for the picture from it takes it at once; else
+        it waits for its picture until that long after its time (_expire_pairing). The paired picture
+        goes to the model, and its product keeps the context. Counts ``triggers``. Ends the camera's
+        hold for this edge. Raises ValueError for a camera without a notice on this line, or a stopped line.
         """
         pairing = self._pairers.get(camera_id)
         if pairing is None or not self.enabled:
             raise ValueError(f"Camera '{camera_id}' has no trigger notice on running line '{self.name}'")
         pairer, window = pairing
         self.count_trigger(camera_id, "triggers")
+        seen_at = context.get("seen_at")
+        at = _now() if seen_at is None else seen_at
+        wall = _wall() if context.get("seen_wall") is None else context["seen_wall"]
         notice_context = {"trigger_no": trigger_no, "sequence": context.get("sequence"),
-                          "request_id": context.get("request_id"), "at": _wall()}
-        pair = pairer.add_notice(_now(), notice_context)
+                          "request_id": context.get("request_id"), "at": wall}
+        pair = pairer.add_notice(at, notice_context)
+        released = seen_at is not None and bool(self._release_edge(seen_at, camera_id))
         if pair is not None:
             self._paired(camera_id, *pair)
-        else:
-            self._expire_later(camera_id, window)
+        if pair is None or released:
+            self._expire_later(camera_id, window)       # what the hold kept goes now in its turn
 
     def trigger_picture(self, camera_id: str, frame: Any, frame_id: int, arrived: float) -> None:
         """A picture the camera took itself, handed over by the camera runner in the order taken.
@@ -1058,14 +1124,20 @@ class LineRuntime:
     def _expire_pairing(self, camera_id: str) -> None:
         """What waited longer than Wait for the picture: each notice without its picture is a "no picture"
         reject with the notice's context; each picture without a notice counts late or extra, and is
-        not inspected."""
+        not inspected. While a notice input of the camera is still being read (notice_edge), what could
+        pair with its edge is kept: this runs as if it were the moment of that edge."""
         from app.services.trigger_inspection import no_picture_product
 
         pairing = self._pairers.get(camera_id)
         if pairing is None or not self.enabled:
             return
         pairer, window = pairing
-        expired = pairer.expire(_now())
+        now = _now()
+        with self._pair_lock:
+            held = self._held.get(camera_id)
+            if held:
+                now = min(now, min(held))
+        expired = pairer.expire(now)
         for notice in expired.missing:
             no_picture_product(self, camera_id, f"no picture within {round(window * 1000)} ms of the notice",
                                **notice.context)

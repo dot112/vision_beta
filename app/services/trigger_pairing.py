@@ -8,8 +8,10 @@ at most the window ("Wait for the picture") apart, in either order.
 
 ``PicturePairer`` holds the notices and pictures that have no partner yet, one
 pairer per camera. It pairs in arrival order: a notice takes the oldest waiting
-picture with ``picture.at >= notice.at - window``, and a picture takes the
-oldest waiting notice with ``notice.at >= picture.at - window``. A notice that
+picture, and a picture the oldest waiting notice, that is at most the window
+from it on either side (``|notice.at - picture.at| <= window``). Both sides
+count because either may be handed over later than its time: a picture keeps
+the time it was taken, a notice the time its input's edge was seen. A notice that
 gets no picture within the window is *missing*. A picture that gets no notice
 within the window is not a product; it is *late* when a notice went missing
 just before it (the picture came after the window ended, but within a window of
@@ -69,11 +71,15 @@ class PicturePairer:
         # When the window of the latest notice that went missing ended.
         self._last_missing_at: Optional[float] = None
 
+    def _fits(self, notice_at: float, picture_at: float) -> bool:
+        """A notice and a picture belong together: at most the window apart, in either order."""
+        return picture_at - self._window_s <= notice_at <= picture_at + self._window_s
+
     def add_notice(self, at: float, context: Dict[str, Any]) -> Optional[Tuple[Notice, Picture]]:
         """A notice came in. Returns (notice, picture) if a waiting picture fits, else waits."""
         notice = Notice(at, context)
         with self._lock:
-            picture = _take_oldest(self._pictures, lambda p: p.at >= notice.at - self._window_s)
+            picture = _take_oldest(self._pictures, lambda p: self._fits(notice.at, p.at))
             if picture is None:
                 self._notices.append(notice)
                 return None
@@ -83,7 +89,7 @@ class PicturePairer:
         """A picture came in. Returns (notice, picture) if a waiting notice fits, else waits."""
         picture = Picture(at, frame, frame_id)
         with self._lock:
-            notice = _take_oldest(self._notices, lambda n: n.at >= picture.at - self._window_s)
+            notice = _take_oldest(self._notices, lambda n: self._fits(n.at, picture.at))
             if notice is None:
                 self._pictures.append(picture)
                 return None

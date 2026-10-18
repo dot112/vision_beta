@@ -591,20 +591,27 @@ class PLCInputService:
         if not cameras:
             raise ValueError(f"No camera of this line uses trigger {number}: tick it on a camera's card, "
                              "under Counting or Read codes")
-        # What travels with this request into the product it makes: the carton's sequence number.
-        context: Dict[str, Any] = {}
-        sequence = await cls.read_sequence(runtime)
-        if sequence is not None:
-            context["sequence"] = sequence
-        # The line's result handshake, when this is its capture input.
-        request = runtime.capture_request(card.get("id"), sequence) if hasattr(runtime, "capture_request") else None
-        if request is not None:
-            if request["action"] == "duplicate":
-                return [{"status": "duplicate", "trigger_no": number, "sequence": sequence}]
-            context["request_id"] = request["request_id"]
-        done = await asyncio.gather(
-            *(cls._capture_camera(runtime, camera_id, number, context) for camera_id in cameras), return_exceptions=True,
-        )
+        # When the edge was seen, before anything is read: a camera that takes its own picture pairs it
+        # with this input by that time, and keeps what could pair with it while the input is read on.
+        seen = runtime.notice_edge(number)
+        try:
+            # What travels with this request into the product it makes: the carton's sequence number.
+            context: Dict[str, Any] = {}
+            sequence = await cls.read_sequence(runtime)
+            if sequence is not None:
+                context["sequence"] = sequence
+            # The line's result handshake, when this is its capture input.
+            request = runtime.capture_request(card.get("id"), sequence) if hasattr(runtime, "capture_request") else None
+            if request is not None:
+                if request["action"] == "duplicate":
+                    return [{"status": "duplicate", "trigger_no": number, "sequence": sequence}]
+                context["request_id"] = request["request_id"]
+            done = await asyncio.gather(
+                *(cls._capture_camera(runtime, camera_id, number, context, seen=seen) for camera_id in cameras),
+                return_exceptions=True,
+            )
+        finally:
+            runtime.notice_edge_done(seen)
         for result in done:
             if isinstance(result, BaseException) and not isinstance(result, ValueError):
                 raise result
@@ -648,13 +655,15 @@ class PLCInputService:
 
     @classmethod
     async def _capture_camera(cls, runtime: Any, camera_id: str, trigger_no: Optional[int],
-                              context: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+                              context: Optional[Dict[str, Any]] = None,
+                              seen: Optional[Tuple[float, float]] = None) -> Optional[Dict[str, Any]]:
         """One picture with one camera: a code reader that captures when an input asks, or a
         vision camera in trigger mode, whose picture is one product.
 
         For a camera that takes its own pictures with a trigger notice, the input with the notice's
         number only says a picture is coming: the line pairs it with the camera's picture by time
-        (LineRuntime.trigger_notice), and the answer is ``status`` "expecting".
+        (LineRuntime.trigger_notice), and the answer is ``status`` "expecting". ``seen``: when the
+        input's edge was seen (LineRuntime.notice_edge), the notice's time; None: now.
 
         ``context``: what travels with the request into the product (``sequence``, ``request_id``)."""
         context = context or {}
@@ -671,7 +680,8 @@ class PLCInputService:
             engine = line_service.line_manager.engine_for_camera(camera_id)[0]
             if not getattr(engine, "is_loaded", True):
                 raise ValueError(f"Camera '{camera_id}' has no vision model loaded, so its picture cannot be inspected")
-            runtime.trigger_notice(camera_id, trigger_no, context)
+            edge = {"seen_at": seen[0], "seen_wall": seen[1]} if seen is not None else {}
+            runtime.trigger_notice(camera_id, trigger_no, {**context, **edge})
             return {"camera_id": camera_id, "status": "expecting", "trigger_no": trigger_no}
         if getattr(app_state.cameras.get(camera_id), "trigger_mode", "off") == "hardware":
             # Its pictures are used as they come; reading the last one again would count it twice.
