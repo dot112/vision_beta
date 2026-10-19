@@ -1164,7 +1164,7 @@
         <div class="switch-row" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border-color)">
             <div>
                 <label for="camAutoConnectToggle">Connect cameras when the server starts</label>
-                <div class="form-hint">Connects the cameras of every production line that is running. A camera that belongs to no line is connected by hand.</div>
+                <div class="form-hint">Connects the cameras of every production line that is running. A camera whose Connect switch is on (its card under Line setup) is always connected.</div>
             </div>
             <label class="switch" title="Connect cameras when the server starts">
                 <input type="checkbox" id="camAutoConnectToggle" onchange="toggleCameraAutoConnect(this.checked)" />
@@ -3970,6 +3970,8 @@ let _sendActionPendingChanges = false;
 let _sendActionAppliedSignature = null;
 let _sendActionApplyInFlight = false;
 let _sendActionEditingDraft = null;
+// The draft in the settings window is a card Add made: OK places it, Cancel drops it.
+let _sendActionDraftIsNew = false;
 let _sendActionLoadFailed = false;
 const SEND_PROTOCOLS = ["mqtt", "tcp", "webhook"];
 const SEND_RUNTIME_FIELDS = ["sent_count", "last_sent_at", "last_result"];
@@ -4149,10 +4151,8 @@ function addSendActionCard() {
         format: "json",
         template: "",
     };
-    _sendActionCards.push(card);
-    markSendActionsChanged();
-    renderSendActionCards();
-    openSendActionSettingsModal(card.id);
+    // Placed when its settings are OK'd; Cancel adds nothing.
+    openSendActionSettingsModal(card.id, card);
 }
 
 function deleteSendActionCard(cardId) {
@@ -4317,9 +4317,10 @@ function renderSendActionCards() {
 }
 
 /* ─── Send card settings window ──────────────────────────────────────────── */
-function openSendActionSettingsModal(cardId) {
-    const card = _sendActionCards.find(c => c.id === cardId);
+function openSendActionSettingsModal(cardId, newCard = null) {
+    const card = newCard || _sendActionCards.find(c => c.id === cardId);
     if (!card) return;
+    _sendActionDraftIsNew = Boolean(newCard);
     _sendActionEditingDraft = JSON.parse(JSON.stringify(card));
     loadSendMessageFields();
     refreshSendModalBody();
@@ -4329,12 +4330,13 @@ function openSendActionSettingsModal(cardId) {
 function closeSendActionSettingsModal() {
     document.getElementById("sendActionSettingsModal")?.classList.remove("active");
     _sendActionEditingDraft = null;
+    _sendActionDraftIsNew = false;
 }
 
 function saveSendActionFromModal() {
     const draft = _sendActionEditingDraft;
     const index = draft ? _sendActionCards.findIndex(card => card.id === draft.id) : -1;
-    if (index >= 0) {
+    if (index >= 0 || (draft && _sendActionDraftIsNew)) {
         if (!String(draft.name || "").trim()) draft.name = "Send card";
         if (draft.enabled !== false && sendCardIsMqtt(draft) && sendTopicProblem(draft.topic)) {
             updateSendTopicHint();
@@ -4346,7 +4348,8 @@ function saveSendActionFromModal() {
             document.getElementById("sendTemplateInput")?.focus();
             return;
         }
-        _sendActionCards[index] = draft;
+        if (_sendActionDraftIsNew) _sendActionCards.push(draft);
+        else _sendActionCards[index] = draft;
         markSendActionsChanged();
     }
     closeSendActionSettingsModal();
@@ -4777,6 +4780,8 @@ let _plcActionRuntime = {};
 let _plcActionAppliedSignature = null;
 let _plcActionApplyInFlight = false;
 let _plcActionEditingDraft = null;
+// The draft in the settings window is a card Add made: OK places and saves it, Cancel drops it.
+let _plcActionDraftIsNew = false;
 
 function getEditablePlcActionCard(cardId) {
     if (_activeEditingPlcCardId === cardId && _plcActionEditingDraft?.id === cardId) {
@@ -4999,9 +5004,8 @@ function addPlcActionCard() {
         fired_count: 0,
         last_fired: null
     };
-    _plcActionCards.push(newCard);
-    savePlcActionCards();
-    renderPlcActionCards();
+    // Placed (and saved) when its settings are OK'd; Cancel adds nothing.
+    openPlcActionSettingsModal(newCard.id, newCard);
 }
 
 function deletePlcActionCard(cardId) {
@@ -5474,9 +5478,10 @@ function renderPlcActionCards() {
 }
 
 /* ─── Floating Settings Modal Engine ─────────────────────────────────────── */
-function openPlcActionSettingsModal(cardId) {
-    const card = _plcActionCards.find(c => c.id === cardId);
+function openPlcActionSettingsModal(cardId, newCard = null) {
+    const card = newCard || _plcActionCards.find(c => c.id === cardId);
     if (!card) return;
+    _plcActionDraftIsNew = Boolean(newCard);
     _activeEditingPlcCardId = cardId;
     _plcActionEditingDraft = JSON.parse(JSON.stringify(card));
     // The lists' fields can have changed since the dialog was last open. Only the field picker
@@ -5504,6 +5509,7 @@ function closePlcActionSettingsModal() {
     if (modal) modal.classList.remove("active");
     _activeEditingPlcCardId = null;
     _plcActionEditingDraft = null;
+    _plcActionDraftIsNew = false;
     renderPlcActionCards();
 }
 
@@ -5513,11 +5519,12 @@ function savePlcActionFromModal() {
         return;
     }
     const cardIndex = _plcActionCards.findIndex(card => card.id === _activeEditingPlcCardId);
-    if (cardIndex < 0) {
+    if (cardIndex < 0 && !_plcActionDraftIsNew) {
         closePlcActionSettingsModal();
         return;
     }
-    _plcActionCards[cardIndex] = _plcActionEditingDraft;
+    if (_plcActionDraftIsNew) _plcActionCards.push(_plcActionEditingDraft);
+    else _plcActionCards[cardIndex] = _plcActionEditingDraft;
     savePlcActionCards();
     closePlcActionSettingsModal();
 }
@@ -6026,12 +6033,6 @@ function selectCamById(id) {
     document.querySelectorAll(".cam-row").forEach(r => {
         r.classList.toggle("selected", r.dataset.id === id);
     });
-
-    // Enable the action buttons; Delete stays off for Level 1 operators.
-    ["camBtnConnect", "camBtnDisconnect", "camBtnSettings", "camBtnDelete"].forEach(bid => {
-        const btn = document.getElementById(bid);
-        if (btn) btn.disabled = btn.classList.contains("restricted-l2") && !canConfigure();
-    });
 }
 
 function clearCamSelection() {
@@ -6042,22 +6043,6 @@ function clearCamSelection() {
     document.querySelectorAll(".cam-row").forEach(r => {
         r.classList.remove("selected");
     });
-    ["camBtnConnect", "camBtnDisconnect", "camBtnSettings", "camBtnDelete"].forEach(bid => {
-        const btn = document.getElementById(bid);
-        if (btn) btn.disabled = true;
-    });
-}
-
-async function camBarAction(action) {
-    if (!selectedCamId) {
-        showToast("Please tap a camera to select it first", "info");
-        return;
-    }
-    const id = selectedCamId, name = selectedCamName;
-    if (action === "connect")    await connectCam(id);
-    if (action === "disconnect") await disconnectCam(id);
-    if (action === "settings")   openCamSettings(id, name, selectedCamType, selectedCamSettings);
-    if (action === "delete")     await deleteCam(id, name);
 }
 
 async function probeHardwareCameras() {
@@ -6102,33 +6087,6 @@ async function scanHardwareCameras(triggerBtn) {
             }
         });
     }
-}
-
-async function connectCam(id) {
-    activeCamId = id;
-    try {
-        const res = await fetch(`/api/v1/cameras/${id}/connect`, { method: "POST" });
-        if (res.ok) {
-            await loadCameras();
-            reloadStream();
-            document.getElementById("noVideoOverlay").classList.remove("active");
-        } else {
-            const e = await res.json();
-            showModal("Camera Connect Failed", e.detail || "Could not open stream.");
-            await loadCameras();
-        }
-    } catch { 
-        showModal("Network Error", "Could not reach camera service");
-        await loadCameras();
-    }
-}
-
-async function disconnectCam(id) {
-    try {
-        await fetch(`/api/v1/cameras/${id}/disconnect`, { method: "POST" });
-        loadCameras();
-        reloadStream();
-    } catch {}
 }
 
 async function deleteCam(id, name) {
@@ -7438,11 +7396,11 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
 <script src="/assets/help_tips.js?v=3.4.0"></script>
 <script src="/assets/card_values.js?v=3.5.0"></script>
 <script src="/assets/camera_settings.js?v=3.7.0"></script>
-<script src="/assets/plc_signals.js?v=3.5.0"></script>
+<script src="/assets/plc_signals.js?v=3.6.0"></script>
 <script src="/assets/product_fields.js?v=3.5.0"></script>
 <script src="/assets/production_lines.js?v=3.10.0"></script>
 <script>
-/* ─── Cameras: Connect / Disconnect / Settings / Delete on every row ────────
+/* ─── Cameras: Settings / Delete on every row (Connect is on the Line setup camera card) ─
    Runs after assets/production_lines.js has added its Line and Role columns. */
 (function () {
     function addCameraRowActions() {
@@ -7461,9 +7419,7 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
             if (extra[1]) extra[1].dataset.label = "Role";
             const cam = (_allCamsData || []).find(c => c.id === row.dataset.id);
             if (!cam) return;
-            const connected = Boolean(cam.is_active);
             row.insertAdjacentHTML("beforeend", `<td class="col-actions"><div class="row-actions">
-                <button type="button" class="btn-action btn-sm ${connected ? "btn-outline" : "btn-blue"}" data-act="${connected ? "disconnect" : "connect"}">${connected ? "Disconnect" : "Connect"}</button>
                 <button type="button" class="btn-action btn-sm btn-outline" data-act="settings">Settings</button>
                 <button type="button" class="btn-action btn-sm btn-red restricted-l2" data-act="delete" aria-label="Delete ${escapeHtml(cam.name)}">Delete</button>
             </div></td>`);
@@ -7476,9 +7432,7 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
                 const id = btn.closest("tr").dataset.id;
                 const cam = (_allCamsData || []).find(c => c.id === id);
                 if (!cam) return;
-                if (btn.dataset.act === "connect") connectCam(id);
-                else if (btn.dataset.act === "disconnect") disconnectCam(id);
-                else if (btn.dataset.act === "settings") openCamSettings(id, cam.name, cam.type, cam.settings || {});
+                if (btn.dataset.act === "settings") openCamSettings(id, cam.name, cam.type, cam.settings || {});
                 else if (btn.dataset.act === "delete") deleteCam(id, cam.name);
             });
         });

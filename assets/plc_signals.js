@@ -101,6 +101,7 @@
         statusBusy: false,
         timer: null,
         draft: null,               // the card open in the dialog
+        draftIsNew: false,         // the draft is a card Add made: OK places it, Cancel drops it
     };
 
     // ── Small helpers ─────────────────────────────────────────────────────────
@@ -533,9 +534,8 @@
             debounce_ms: 0,
             action: "start_line",
         };
-        state.cards.push(card);
-        render();
-        openDialog(card.id);
+        // Placed when its settings are OK'd; Cancel adds nothing.
+        openDialog(card.id, card);
     }
 
     function confirmedNames(id) {
@@ -564,9 +564,10 @@
 
     // ── Dialog ────────────────────────────────────────────────────────────────
 
-    function openDialog(id) {
-        const card = state.cards.find((c) => c.id === id);
+    function openDialog(id, newCard = null) {
+        const card = newCard || state.cards.find((c) => c.id === id);
         if (!card) return;
+        state.draftIsNew = Boolean(newCard);
         state.draft = { ...card };
         refreshDialog();
         const modal = byId("plcSignalSettingsModal");
@@ -577,6 +578,7 @@
         const modal = byId("plcSignalSettingsModal");
         if (modal) modal.classList.remove("active");
         state.draft = null;
+        state.draftIsNew = false;
     }
 
     function saveDialog() {
@@ -593,8 +595,11 @@
                 return;
             }
         }
-        const index = state.cards.findIndex((c) => c.id === draft.id);
-        if (index >= 0) state.cards[index] = { ...draft, ...cleanCard(draft) };
+        if (state.draftIsNew) state.cards.push({ ...draft, ...cleanCard(draft) });
+        else {
+            const index = state.cards.findIndex((c) => c.id === draft.id);
+            if (index >= 0) state.cards[index] = { ...draft, ...cleanCard(draft) };
+        }
         closeDialog();
         render();
     }
