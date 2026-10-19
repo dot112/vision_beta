@@ -342,3 +342,21 @@ def test_a_retry_that_lands_after_connect_was_pressed_again_stays_connected(clie
     gate["release"].set()
     retry.join(10)
     assert _connected(cam) and cam in S.kept_cameras()
+
+
+def test_an_operator_cannot_change_the_switch(client, cams):
+    import uuid
+
+    name = f"op_{uuid.uuid4().hex[:8]}"
+    created = client.post("/api/v1/auth/users", headers=cams.headers, json={
+        "username": name, "password": "operator-password-123456", "full_name": "Line Operator",
+        "role": "operator", "clearance_level": 1})
+    assert created.status_code == 201, created.text
+    login = client.post("/api/v1/auth/login", json={"username": name, "password": "operator-password-123456"})
+    operator = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    cam = cams("a")
+    assert client.post(f"{API}/{cam}/connect", headers=operator).status_code == 403
+    assert cam not in S.kept_cameras() and not _connected(cam)
+    client.post(f"{API}/{cam}/connect", headers=cams.headers)
+    assert client.post(f"{API}/{cam}/disconnect", headers=operator).status_code == 403
+    assert cam in S.kept_cameras()

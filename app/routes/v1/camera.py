@@ -167,12 +167,13 @@ RUNNING_LINE_KEEPS_IT = "The running line keeps this camera connected. Stop the 
 
 
 @router.post("/{camera_id}/connect", summary="Switch the camera's Connect switch on: keep it connected")
-async def connect_camera(camera_id: str, db: AsyncSession = Depends(get_db)) -> dict:
+async def connect_camera(camera_id: str, db: AsyncSession = Depends(get_db), _user=Depends(require_supervisor)) -> dict:
     """The camera is put on the kept-connected list (saved) and connected.
 
     "status" is "connected", or "retrying" when it did not connect: it is then retried in the
     background until it is switched off. "disconnected" when it was switched off while it connected
     (the last choice wins). 409 when the server already has the most cameras connected (nothing saved).
+    Level 2+: the choice is saved, like the rest of Line setup.
     """
     from app.services.settings_persistence_service import SettingsPersistenceService
 
@@ -190,7 +191,7 @@ async def connect_camera(camera_id: str, db: AsyncSession = Depends(get_db)) -> 
 
 
 @router.post("/{camera_id}/disconnect", summary="Switch the camera's Connect switch off and disconnect it")
-async def disconnect_camera(camera_id: str, db: AsyncSession = Depends(get_db)) -> dict:
+async def disconnect_camera(camera_id: str, db: AsyncSession = Depends(get_db), _user=Depends(require_supervisor)) -> dict:
     """
     Takes the camera off the kept-connected list, stops its background retries, and releases the device.
     409 while the camera's line is running: the line keeps it connected.
