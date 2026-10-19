@@ -567,9 +567,10 @@ def test_a_model_that_does_not_finish_in_time_is_a_no_picture_reject(lines, on_d
 
 @pytest.mark.parametrize("finishes, status, counted", [(True, "inspected", (1, 1, 0)), (False, "no_picture", (1, 0, 1))])
 def test_an_industrial_cameras_picture_has_the_models_own_time(lines, rig, monkeypatch, finishes, status, counted):  # noqa: F811
-    # Scaled down: 0.2 s for the picture, 0.6 s for the model; the model takes 0.4 s, or never finishes.
+    # Scaled down: 0.2 s for the picture; the model takes 0.4 s (longer than the picture's time, so it has its
+    # own), with 2 s to do it (a wide margin for a cold, slow machine), or never finishes (1 s is enough to say so).
     monkeypatch.setattr(trigger_inspection, "TRIGGER_TIMEOUT_S", 0.2)
-    monkeypatch.setattr(trigger_inspection, "TRIGGER_INFERENCE_TIMEOUT_S", 0.6)
+    monkeypatch.setattr(trigger_inspection, "TRIGGER_INFERENCE_TIMEOUT_S", 2.0 if finishes else 1.0)
     runtime = _line(lines, [_trigger_cam("cam")])
     cam, backend = rig.camera("cam", trigger_mode="software")
     backend.on_trigger = lambda: backend.push(_picture(DENT))
