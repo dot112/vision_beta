@@ -10,8 +10,9 @@
  *     8) holding every setting of that camera: device, job, model and
  *     classes, counting (flow, count lines drawn on its picture, tracking),
  *     code reading, image (resolution, ROI...) and video. One Save;
- *   - on Line dashboard, a camera strip beside the large feed and a list of
- *     recent QR reads;
+ *   - on Line dashboard, a camera strip beside the large feed, a list of
+ *     recent QR reads, and for a camera in trigger mode "Waiting for trigger"
+ *     and each picture taken in place of the live video;
  *   - Line and Role columns on Cameras, "Used by" on Connections, and a
  *     line filter on Audit log.
  *
@@ -20,8 +21,58 @@
  * counting, PLC card and send card calls and routes the counting settings
  * to that line, so the existing pages work per line without being rewritten.
  */
+/*
+ * The Line Dashboard's view of a camera in trigger mode. These helpers are pure: the script's closure
+ * below draws the view from them, and tests/test_trigger_view_markup.py runs them with node
+ * (module.exports, as assets/card_values.js does).
+ */
+const TRIGGER_VIEW_MS = 5000;  // how long the page shows a capture before it waits for the next trigger
+
+// What the video box of a trigger camera shows now.
+//   row         the camera's entry of the line status' trigger_cameras ({capture, counters, ...})
+//   shown       {id, atMs}: the capture the page is showing and since when (the browser's clock), or null
+//   nowMs       the browser's clock now
+//   lineRunning false when the line is stopped (the row does not say)
+// Returns {mode: "waiting" | "picture" | "no_picture" | "stopped"}, and fetchId (the capture whose
+// picture the page asks for, once) when the capture is new to the page and has a picture.
+function triggerViewState(row, shown, nowMs, lineRunning) {
+    if (lineRunning === false) return { mode: "stopped" };
+    const capture = row && row.capture;
+    if (!capture) return { mode: "waiting" };
+    const isNew = !shown || shown.id !== capture.id;
+    if (!isNew && nowMs - shown.atMs >= TRIGGER_VIEW_MS) return { mode: "waiting" };
+    if (!capture.has_picture) return { mode: "no_picture" };
+    return isNew ? { mode: "picture", fetchId: capture.id } : { mode: "picture" };
+}
+
+// The picture's caption: class · Good / Reject (reason) · trigger N · time.
+function triggerCaption(capture, reasonLabels) {
+    const reason = capture.reason ? ((reasonLabels || {})[capture.reason] || capture.reason) : "";
+    const result = capture.result === "good" ? "Good" : capture.result === "reject" ? `Reject${reason ? ` (${reason})` : ""}` : "No result";
+    const parts = [capture.class_name || "nothing found", result];
+    if (capture.trigger_no !== null && capture.trigger_no !== undefined) parts.push(`trigger ${capture.trigger_no}`);
+    parts.push(new Date(capture.at).toLocaleTimeString());
+    return parts.join(" \u00b7 ");
+}
+
+// The counters under the video box, as [label, value]. Late and Extra only count for a camera that
+// takes the picture itself and tells the server with a trigger notice.
+function triggerCounterFigures(row) {
+    const counters = (row && row.counters) || {};
+    const figures = [["Triggers", counters.triggers], ["Pictures", counters.pictures], ["Results", counters.results], ["Missing", counters.missing]];
+    if (row && row.picture_source === "camera" && row.notice_trigger !== null && row.notice_trigger !== undefined) {
+        figures.push(["Late", counters.late], ["Extra", counters.extra]);
+    }
+    return figures.map(([label, value]) => [label, Number(value) || 0]);
+}
+
+if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_VIEW_MS, triggerViewState, triggerCaption, triggerCounterFigures };
+
 (function () {
     "use strict";
+
+    // Under node (the tests) only the helpers above are loaded.
+    if (typeof window === "undefined" || typeof document === "undefined") return;
 
     const PRIMARY = "line-1";
     const MAX_CAMERAS_PER_LINE = 8;  // line_config.MAX_CAMERAS_PER_LINE
@@ -2666,6 +2717,7 @@
         }
         window.dispatchEvent(new CustomEvent("pl:detail", { detail: state.detail }));
         renderLineExtras();
+        renderTriggerView((state.detail && state.detail.status) || {});
     }
 
     function ensureStripFeeds() {
@@ -2831,10 +2883,130 @@
         return big && readsCodes(big) ? big : null;
     }
 
+    // ── Trigger cameras on the Line Dashboard ─────────────────────────────────
+    // A camera in trigger mode has no live picture. Its video box says "Waiting for trigger", shows each
+    // picture taken (with a caption) for 5 s of the browser's clock, then waits again; the counters sit
+    // under the box. The 1 s refresh reads the line's status and draws it (renderTriggerView).
+    const trig = {
+        key: null,      // line and camera on view; a change starts the view over
+        shown: null,    // {id, atMs}: the capture on view and since when
+        mode: null, capture: null,
+        url: null,      // object URL of the picture on screen
+        imgId: null,    // id of the capture that picture belongs to
+        loading: false, // the status is being read
+    };
+    const TRIGGER_TEXT = { waiting: "Waiting for trigger", no_picture: "No picture: Reject", stopped: "The line is stopped" };
+
+    const triggerRow = (cameraId) => (((state.detail && state.detail.status) || {}).trigger_cameras || []).find((r) => r.camera_id === cameraId) || null;
+    const isTriggerCamera = (cameraId) => Boolean(cameraId && triggerRow(cameraId));
+
+    function clearTriggerPicture() {
+        const img = byId("trigViewImg");
+        if (img) { img.removeAttribute("src"); img.hidden = true; }
+        if (trig.url) URL.revokeObjectURL(trig.url);
+        trig.url = null;
+        trig.imgId = null;
+    }
+
+    function resetTriggerView() {
+        clearTriggerPicture();
+        trig.key = null;
+        trig.shown = null;
+        trig.mode = null;
+        trig.capture = null;
+    }
+
+    // Draw what trig.mode says on the panel.
+    function paintTriggerView() {
+        const view = byId("trigView");
+        const img = byId("trigViewImg");
+        const text = byId("trigViewText");
+        const caption = byId("trigViewCaption");
+        if (!view || !img || !text || !caption) return;
+        const mode = trig.mode;
+        const capture = trig.capture;
+        const hasCaption = Boolean(capture) && (mode === "picture" || mode === "no_picture");
+        img.hidden = !(mode === "picture" && capture && trig.url && trig.imgId === capture.id);
+        // While a picture is on its way the panel is black with the caption only.
+        text.hidden = mode === "picture";
+        text.textContent = TRIGGER_TEXT[mode] || "";
+        caption.hidden = !hasCaption;
+        if (hasCaption) caption.textContent = triggerCaption(capture, REJECT_REASON);
+        view.hidden = false;
+    }
+
+    // The capture's picture, once. A picture of another capture than the one asked for (a newer trigger
+    // came in between) is dropped: the next refresh sees that capture and asks for it.
+    async function fetchTriggerPicture(cameraId, id, key) {
+        // Still the capture on view, and still showing a picture (the 5 s may have run out meanwhile).
+        const current = () => trig.key === key && trig.shown && trig.shown.id === id && trig.mode === "picture";
+        try {
+            const res = await fetch(`/api/v1/lines/${encodeURIComponent(state.lineId)}/trigger/capture?camera_id=${encodeURIComponent(cameraId)}`, { cache: "no-store" });
+            if (!res.ok || res.headers.get("X-Capture-Id") !== String(id)) return;
+            const blob = await res.blob();
+            if (!current()) return;
+            const url = URL.createObjectURL(blob);
+            const previous = trig.url;
+            trig.url = url;
+            trig.imgId = id;
+            byId("trigViewImg").src = url;
+            if (previous) URL.revokeObjectURL(previous);
+            paintTriggerView();
+        } catch (_) { /* the capture shows without its picture; the next trigger tries again */ }
+    }
+
+    function renderTriggerView(status) {
+        const view = byId("trigView");
+        const counters = byId("trigCounters");
+        if (!view || !counters) return;
+        const cam = lineFeedCamera();
+        const row = cam ? ((status && status.trigger_cameras) || []).find((r) => r.camera_id === cam.camera_id) : null;
+        if (!row) {
+            view.hidden = true;
+            counters.hidden = true;
+            if (trig.key) resetTriggerView();
+            return;
+        }
+        // This camera has no live picture: a stream opened before its card was set to trigger is closed.
+        if (typeof isLiveFeedRunning === "function" && isLiveFeedRunning()) pauseMainFeed();
+        const key = `${state.lineId}/${row.camera_id}`;
+        if (trig.key !== key) { resetTriggerView(); trig.key = key; }
+        const html = `<div class="pl-carton-figs">${triggerCounterFigures(row).map(([label, value]) =>
+            `<div class="pl-carton-fig"><span>${esc(label)}</span><b>${esc(String(value))}</b></div>`).join("")}</div>`;
+        if (counters.dataset.html !== html) { counters.innerHTML = html; counters.dataset.html = html; }
+        counters.hidden = false;
+        const running = !status || status.state !== "stopped";
+        // A running line whose camera is not connected keeps the video box's own note.
+        if (running && !cam.connected) { view.hidden = true; return; }
+        const now = Date.now();
+        const next = triggerViewState(row, trig.shown, now, running);
+        const capture = row.capture;
+        // A capture new to the page: it is on view from now, and its picture is asked for once.
+        let fetchId;
+        if (next.mode !== "stopped" && capture && (!trig.shown || trig.shown.id !== capture.id)) {
+            trig.shown = { id: capture.id, atMs: now };
+            clearTriggerPicture();
+            fetchId = next.fetchId;
+        }
+        if (next.mode !== "picture") clearTriggerPicture();
+        trig.mode = next.mode;
+        trig.capture = capture;
+        paintTriggerView();
+        if (fetchId !== undefined) fetchTriggerPicture(row.camera_id, fetchId, key);
+    }
+
     async function refreshLineExtras() {
         if (!dashboardShown() || !state.detail) return;
         ensureStripFeeds();
+        // The status is read every 5 s; a trigger camera's capture and counters are read every second.
+        const feed = lineFeedCamera();
+        if (feed && isTriggerCamera(feed.camera_id) && !trig.loading) {
+            trig.loading = true;
+            try { await loadDetail(); } catch (_) { /* the view goes on with what it has */ } finally { trig.loading = false; }
+            if (!dashboardShown() || !state.detail) return;
+        }
         const status = state.detail.status || {};
+        renderTriggerView(status);
         if (byId("plHsView")) {
             try {
                 renderCartonView(await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}/handshake`), null);
@@ -2885,6 +3057,9 @@
     const originalReloadStream = window.reloadStream;
     window.reloadStream = function () {
         if (!dashboardShown()) { pauseMainFeed(); return; }
+        // Which camera the line shows is known once its status is read (a camera in trigger mode has no
+        // stream): checkActiveStream opens the feed then.
+        if (!state.detail) return;
         const main = lineFeedCamera();
         if (main) {
             if (!main.connected) {
@@ -2895,6 +3070,8 @@
             }
             // Selecting another camera on Cameras & Capture does not move the line's feed.
             activeCamId = main.camera_id;
+            // A camera in trigger mode has no live picture: its video box shows the trigger view instead.
+            if (isTriggerCamera(main.camera_id)) { pauseMainFeed(); return; }
         }
         return originalReloadStream.apply(this, arguments);
     };
@@ -2919,14 +3096,17 @@
             activeCamId = main.camera_id;
             // The server ends a feed when its camera is restarted (a new address, a
             // reconnect). The camera keeps its id, so the feed is opened again here.
-            const ended = dashboardShown() && typeof isLiveFeedRunning === "function" && !isLiveFeedRunning();
+            const ended = dashboardShown() && !isTriggerCamera(main.camera_id) && typeof isLiveFeedRunning === "function" && !isLiveFeedRunning();
             if (quiet !== true || changed || ended) window.reloadStream();
         } else {
             activeCamId = null;
             pauseMainFeed();
             byId("noVideoOverlay")?.classList.add("active");
         }
-        if (isTab("tabDashboard")) renderLineExtras();
+        if (isTab("tabDashboard")) {
+            renderLineExtras();
+            renderTriggerView((state.detail && state.detail.status) || {});
+        }
     };
 
     document.addEventListener("visibilitychange", () => {

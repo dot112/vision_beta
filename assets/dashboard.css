@@ -650,6 +650,23 @@ input[type="password"]::-ms-reveal, input[type="password"]::-ms-clear { display:
 .no-video-overlay.active { display: flex; }
 .no-video-title { font-size: 16px; font-weight: 600; color: #fff; }
 .no-video-note { font-size: 13px; color: rgba(255, 255, 255, 0.6); }
+/* A camera in trigger mode: "Waiting for trigger", then each picture taken (assets/production_lines.js). */
+.trig-view {
+    position: absolute;
+    inset: 0;
+    z-index: 12;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: var(--video-bg);
+    text-align: center;
+}
+.trig-view[hidden], .trig-view .pl-feed-caption[hidden], .trig-view-text[hidden], .trig-counters[hidden] { display: none; }
+.trig-view .video-img { position: absolute; inset: 0; }
+.trig-view-text { font-size: 20px; font-weight: 600; color: rgba(255, 255, 255, 0.85); }
+.trig-counters { margin-top: 12px; }
+@media (max-width: 520px) { .trig-view-text { font-size: 16px; } }
 .feed-meta { font-size: 13px; font-weight: 400; color: var(--text-muted); }
 .live-dot { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--text-faint); }
 .live-dot::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
