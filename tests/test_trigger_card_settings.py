@@ -175,6 +175,24 @@ def test_warnings_for_lines_that_answer_someone():
     assert "Minimum frames/s" in quiet         # that one does not depend on anyone waiting
 
 
+NO_TICK = ("Camera 1 takes one picture per trigger, but no trigger is ticked on its card: only the API can take its "
+           "picture. Tick a trigger under Counting, or add an input with the action 'Take a picture'.")
+
+
+def test_a_system_trigger_card_with_no_trigger_ticked_is_warned_about():
+    system = _cam(camera_id="sys", count_mode="trigger", picture_source="system", no_product="reject", triggers=[])
+    assert NO_TICK in line_warnings({"cameras": [system]})
+    assert NO_TICK in line_warnings({"cameras": [{k: v for k, v in system.items() if k != "triggers"}]})
+    # An input that names the camera itself takes its picture too.
+    named = {"action": "capture", "camera_id": "sys", "enabled": True, "name": "Take", "trigger_no": 1}
+    assert not any("no trigger is ticked" in w for w in line_warnings({"cameras": [system], "plc_inputs": [named]}))
+    # A ticked trigger, a camera that takes its own pictures, and a tracking camera have nothing to warn about.
+    for fine in ({**system, "triggers": [1]},
+                 {**system, "picture_source": "camera", "notice_trigger": 1},
+                 {**system, "count_mode": "track"}):
+        assert not any("no trigger is ticked" in w for w in line_warnings({"cameras": [fine]})), fine
+
+
 def test_each_warning_names_its_camera_and_says_what_to_do():
     warnings = line_warnings(_answering_line(), send_protocols={"tcp-1": "tcp"})
     assert (
