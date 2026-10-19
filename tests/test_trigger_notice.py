@@ -273,6 +273,18 @@ def test_a_paired_picture_the_model_cannot_inspect_still_gets_its_notice_a_no_pi
     assert len(rig.crossings) == 1
 
 
+def test_a_model_failure_after_the_line_stopped_answers_nothing(rig):
+    runtime = rig.line()
+    runtime.trigger_notice("cam", 1, {"sequence": 42})
+    rig.camera.take(BOTTLE)
+    rig.pump()                                   # the pair is in the model
+    before = _counters(runtime)
+
+    rig.running(runtime, False)
+    rig.model.fail("out of memory")              # the model gives up after the stop
+    assert rig.crossings == [] and runtime.sent == [] and _counters(runtime) == before
+
+
 def test_picture_then_notice_pairs_too(rig):
     runtime = rig.line()
     rig.camera.take(DENT)

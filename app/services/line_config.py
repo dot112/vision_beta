@@ -1985,7 +1985,9 @@ def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any
                 f"Camera {index + 1} takes a picture on its own input, but Read codes 'Continuously' only shows "
                 f"the codes. Set Read codes to 'When an input asks': every picture it takes is then read."
             )
-        if cam.get("role", "vision") == "vision" and cam.get("count_mode") == "trigger"                 and picture_source(cam, mode) == "system" and not cam.get("triggers")                 and cam.get("camera_id") not in capturing:
+        if (cam.get("role", "vision") == "vision" and cam.get("count_mode") == "trigger"
+                and picture_source(cam, mode) == "system" and not cam.get("triggers")
+                and cam.get("camera_id") not in capturing):
             warnings.append(
                 f"Camera {index + 1} takes one picture per trigger, but no trigger is ticked on its card: only the "
                 f"API can take its picture. Tick a trigger under Counting, or add an input with the action "

@@ -1216,6 +1216,8 @@ class LineRuntime:
         gets its one answer, a "no picture" reject with the notice's context."""
         from app.services.trigger_inspection import no_picture_product
 
+        if not self.enabled:
+            return      # the line was stopped while the model ran
         no_picture_product(self, camera_id, f"the model could not inspect the picture: {why}", **context)
 
     def _retry_pairs_later(self, camera_id: str) -> None:
