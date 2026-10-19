@@ -559,7 +559,8 @@ async def read_plc_input(
 async def trigger_line(line_id: str, body: Optional[Dict[str, Any]] = None,
                        user: User = Depends(require_supervisor)) -> Dict[str, Any]:
     """Trigger every vision camera of the line that has Count mode "One picture per trigger",
-    or only ``{"camera_id": "..."}``. Each makes one product from its next picture: it is
+    or only ``{"camera_id": "..."}``. Without a camera_id, only the cameras whose picture the server
+    takes (not Camera trigger, not a hardware trigger) are triggered. Each makes one product from its next picture: it is
     counted, recorded and sent, and fires the line's cards. Answers what each camera's own
     picture said; 409 when the line is stopped or has no such camera.
 
@@ -568,7 +569,7 @@ async def trigger_line(line_id: str, body: Optional[Dict[str, Any]] = None,
     code readers included. 404 when the line has no such input switched on."""
     import asyncio
 
-    from app.services.trigger_inspection import trigger_camera, trigger_cameras, trigger_input
+    from app.services.trigger_inspection import system_trigger_cameras, trigger_camera, trigger_cameras, trigger_input
 
     if _svc().get_line(line_id, with_logic=False) is None:
         raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
@@ -585,7 +586,13 @@ async def trigger_line(line_id: str, body: Optional[Dict[str, Any]] = None,
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
     wanted = str((body or {}).get("camera_id") or "").strip()
-    cameras = [wanted] if wanted else trigger_cameras(runtime)
+    if wanted:
+        cameras = [wanted]
+    else:
+        # Every trigger gets one answer: only the cameras whose picture the server takes (not Camera trigger, not Hardware).
+        cameras = system_trigger_cameras(runtime)
+        if not cameras and trigger_cameras(runtime):
+            raise HTTPException(status_code=409, detail="This line has no camera whose picture the server takes")
     if not cameras:
         raise HTTPException(status_code=409, detail="This line has no vision camera with Count mode 'One picture per trigger'")
     try:

@@ -633,6 +633,52 @@ def test_the_line_trigger_endpoint_answers_no_picture_for_a_disconnected_camera(
     assert alarm_manager.clear_source(f"camera:{trigger_line['trig']}") == 1      # camera.picture_missing
 
 
+def test_the_line_trigger_without_a_camera_skips_cameras_that_take_their_own_picture(
+        client, admin_headers, vision_model, fake_engine, fake_camera, monkeypatch):
+    suffix = uuid.uuid4().hex[:6]
+    system, own = f"cam-sys-{suffix}", f"cam-own-{suffix}"
+    made = {system: _AutoWorker("bottle"), own: _AutoWorker("bottle")}
+    monkeypatch.setattr(CameraStreamPipeline, "get_worker",
+                        classmethod(lambda cls, camera_id: made.setdefault(camera_id, _AutoWorker())))
+    fake_camera(system)
+    fake_camera(own)
+    created = client.post(f"{API}/lines", headers=admin_headers, json={"name": f"Mixed {suffix}", "enabled": True, "cameras": [
+        {"model_id": vision_model, **_trigger_cam(system, picture_source="system")},
+        {"model_id": vision_model, **_trigger_cam(own, picture_source="camera", notice_trigger=1)},
+    ]})
+    assert created.status_code == 201, created.text
+    line_id = created.json()["id"]
+    try:
+        assert client.post(f"{API}/lines/{line_id}/start", headers=admin_headers).status_code == 200
+        res = client.post(f"{API}/lines/{line_id}/trigger", headers=admin_headers, json={})
+        assert res.status_code == 200, res.text
+        assert [(r["camera_id"], r["status"]) for r in res.json()["results"]] == [(system, "inspected")]
+        assert _line_total(client, admin_headers, line_id) == 1
+    finally:
+        client.post(f"{API}/lines/{line_id}/stop", headers=admin_headers)
+        client.delete(f"{API}/lines/{line_id}", headers=admin_headers)
+
+
+def test_a_line_whose_cameras_all_take_their_own_picture_answers_409_to_a_trigger(
+        client, admin_headers, vision_model, fake_engine, fake_camera, monkeypatch):
+    suffix = uuid.uuid4().hex[:6]
+    own = f"cam-own-{suffix}"
+    monkeypatch.setattr(CameraStreamPipeline, "get_worker", classmethod(lambda cls, camera_id: _AutoWorker("bottle")))
+    fake_camera(own)
+    created = client.post(f"{API}/lines", headers=admin_headers, json={"name": f"Own {suffix}", "enabled": True, "cameras": [
+        {"model_id": vision_model, **_trigger_cam(own, picture_source="camera", notice_trigger=1)},
+    ]})
+    assert created.status_code == 201, created.text
+    line_id = created.json()["id"]
+    try:
+        assert client.post(f"{API}/lines/{line_id}/start", headers=admin_headers).status_code == 200
+        res = client.post(f"{API}/lines/{line_id}/trigger", headers=admin_headers, json={})
+        assert res.status_code == 409 and "the server takes" in res.json()["detail"]
+    finally:
+        client.post(f"{API}/lines/{line_id}/stop", headers=admin_headers)
+        client.delete(f"{API}/lines/{line_id}", headers=admin_headers)
+
+
 def test_a_line_without_a_trigger_camera_answers_409(client, admin_headers):
     created = client.post(f"{API}/lines", headers=admin_headers, json={"name": f"Plain {uuid.uuid4().hex[:6]}"})
     line_id = created.json()["id"]

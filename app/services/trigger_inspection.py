@@ -357,6 +357,18 @@ def trigger_cameras(runtime: Any) -> List[str]:
     ]
 
 
+def system_trigger_cameras(runtime: Any) -> List[str]:
+    """The trigger cameras whose picture the server takes: not Camera trigger, not a hardware trigger."""
+    from app.state.application_state import app_state
+
+    ids = []
+    for camera_id in trigger_cameras(runtime):
+        mode = getattr(app_state.cameras.get(camera_id), "trigger_mode", "off")
+        if mode != "hardware" and picture_source(runtime.camera_entry(camera_id) or {}, mode) == "system":
+            ids.append(camera_id)
+    return ids
+
+
 async def trigger_input(runtime: Any, trigger_no: int) -> List[Dict[str, Any]]:
     """Fire the line's "Take a picture" input with this trigger number, as its signal would.
 
