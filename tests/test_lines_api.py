@@ -310,8 +310,9 @@ def test_dashboard_offers_the_industrial_camera_settings(client):
     for key, (low, high) in gige_camera.SETTING_LIMITS.items():
         assert re.search(rf'field\("{key}"[^\n]*min="{low}" max="{high}"', form), key
     assert f'placeholder="{gige_camera.DEFAULT_TRIGGER_LINE}"' in form
-    cards = client.get("/assets/production_lines.js").text
-    assert "/api/v1/cameras/discover/gige" in cards and 'type: "gige"' in cards
+    # Industrial cameras are found and added under Connections (an IP Camera channel of type GigE Vision).
+    page = client.get("/dashboard").text
+    assert "/api/v1/cameras/discover/gige" in page and 'camera_kind === "gige"' in page
 
 
 def test_the_dashboard_scripts_parse(client, tmp_path):
