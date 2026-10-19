@@ -1,8 +1,10 @@
 """The line's camera card sets an industrial camera's Trigger (decision A: one place).
 
 After a line is saved, each vision camera that is an industrial camera gets the trigger mode its card
-asks for: One picture per trigger from the camera is Hardware, from the system Software, any other
-Count mode Off. A QR reader keeps its own. The camera's own Settings may not change the mode.
+asks for: One picture per trigger from the camera is Hardware, from the system Software. That card
+also locks the mode (the camera's own Settings may not change it). Any other vision card leaves the
+mode alone (a tracking camera on Hardware, a code reader on a signal), except Software that nothing
+triggers, which is Off; it does not lock. A QR reader keeps its own.
 """
 from __future__ import annotations
 
@@ -151,8 +153,8 @@ def test_the_mode_is_set_before_the_line_is_applied(industrial, save_line, monke
     res = save_line(_card(row["id"], picture_source="camera"))
     assert res.status_code == 201, res.text
     assert len(seen) == 1 and [s["trigger_mode"] for s in seen[0]] == ["hardware"]    # told before the line was applied
-    assert save_line({"camera_id": row["id"], "count_mode": "track"}, line_id=res.json()["id"]).status_code == 200
-    assert len(seen) == 2 and [s["trigger_mode"] for s in seen[1]] == ["hardware", "off"]    # and when it is changed
+    assert save_line(_card(row["id"], picture_source="system"), line_id=res.json()["id"]).status_code == 200
+    assert len(seen) == 2 and [s["trigger_mode"] for s in seen[1]] == ["hardware", "software"]    # and when it is changed
 
 
 def test_a_camera_that_is_not_connected_has_its_saved_mode_set(client, admin_headers, industrial, save_line):
@@ -170,6 +172,83 @@ def test_qr_role_camera_keeps_its_mode(client, admin_headers, industrial, save_l
     assert save_line({"camera_id": row["id"], "role": "qr", "qr_trigger": "signal"},
                      line_id=res.json()["id"]).status_code == 200
     assert _mode(client, admin_headers, row["id"]) == "software" and driver.sets == []
+
+
+def _reader(camera_id, **extra):
+    """A vision camera that also reads codes, when an input asks (it takes its picture on a trigger)."""
+    return {"camera_id": camera_id, "read_codes": True, "qr_trigger": "signal", "triggers": [1], **extra}
+
+
+def test_a_tracking_camera_keeps_its_hardware_trigger_and_is_not_locked(client, admin_headers, industrial, save_line):
+    # Count mode track on a Hardware camera is a supported setup: the card does not control the Trigger.
+    row, driver = industrial("hardware")
+    res = save_line({"camera_id": row["id"], "count_mode": "track"})
+    assert res.status_code == 201, res.text
+    assert _mode(client, admin_headers, row["id"]) == "hardware" and driver.sets == []
+    # Saved again, and with no Count mode sent at all: still its own.
+    assert save_line({"camera_id": row["id"]}, line_id=res.json()["id"]).status_code == 200
+    assert _mode(client, admin_headers, row["id"]) == "hardware" and driver.sets == []
+    assert client.get(f"{API}/{row['id']}", headers=admin_headers).json()["line_trigger_mode"] is None
+    changed = client.patch(f"{API}/{row['id']}", json={"settings": {"trigger_mode": "off"}}, headers=admin_headers)
+    assert changed.status_code == 200 and changed.json()["settings"]["trigger_mode"] == "off", changed.text
+
+
+def test_a_code_reader_on_a_signal_keeps_its_software_trigger_and_is_not_locked(client, admin_headers, industrial, save_line):
+    row, driver = industrial("software")
+    res = save_line(_reader(row["id"]))
+    assert res.status_code == 201, res.text
+    assert res.json()["cameras"][0]["qr_trigger"] == "signal"
+    assert _mode(client, admin_headers, row["id"]) == "software" and driver.sets == []
+    assert client.get(f"{API}/{row['id']}", headers=admin_headers).json()["line_trigger_mode"] is None
+    changed = client.patch(f"{API}/{row['id']}", json={"settings": {"trigger_mode": "hardware"}}, headers=admin_headers)
+    assert changed.status_code == 200, changed.text
+
+
+def test_a_software_camera_nothing_triggers_is_set_off_and_is_not_locked(client, admin_headers, industrial, save_line):
+    row, driver = industrial("software")
+    res = save_line({"camera_id": row["id"], "count_mode": "track"})
+    assert res.status_code == 201, res.text
+    assert _mode(client, admin_headers, row["id"]) == "off" and _told(driver, "off")
+    assert client.get(f"{API}/{row['id']}", headers=admin_headers).json()["line_trigger_mode"] is None
+    # A code reader that reads continuously has nothing to trigger a Software camera either.
+    other, other_driver = industrial("software", source="B2")
+    reader = save_line({"camera_id": other["id"], "read_codes": True, "qr_trigger": "continuous"})
+    assert reader.status_code == 201, reader.text
+    assert _mode(client, admin_headers, other["id"]) == "off" and _told(other_driver, "off")
+
+
+def test_a_camera_off_stays_off_whatever_the_card(client, admin_headers, industrial, save_line):
+    row, driver = industrial("off")
+    assert save_line({"camera_id": row["id"], "count_mode": "track"}).status_code == 201
+    assert _mode(client, admin_headers, row["id"]) == "off" and driver.sets == []
+
+
+@pytest.mark.parametrize("card, current, sets, locks", [
+    # A card with One picture per trigger controls the Trigger.
+    ({"count_mode": "trigger", "picture_source": "camera"}, "off", "hardware", True),
+    ({"count_mode": "trigger", "picture_source": "system"}, "hardware", "software", True),
+    ({"count_mode": "trigger"}, "hardware", "hardware", True),
+    # Any other vision card leaves the Trigger alone...
+    ({"count_mode": "track"}, "hardware", None, False),
+    ({}, "hardware", None, False),
+    ({"read_codes": True, "qr_trigger": "signal"}, "software", None, False),
+    ({"read_codes": True, "qr_trigger": "signal"}, "hardware", None, False),
+    ({"count_mode": "track"}, "off", None, False),
+    # ...except Software that nothing on the card triggers.
+    ({"count_mode": "track"}, "software", "off", False),
+    ({}, "software", "off", False),
+    ({"read_codes": True, "qr_trigger": "continuous"}, "software", "off", False),
+    # A QR reader keeps its own.
+    ({"role": "qr", "qr_trigger": "signal"}, "software", None, False),
+    ({"role": "qr", "qr_trigger": "continuous"}, "hardware", None, False),
+    ({"role": "qr", "count_mode": "trigger"}, "off", None, False),
+])
+def test_what_a_save_sets_for_each_kind_of_card(card, current, sets, locks):
+    from app.services.line_config import locks_trigger_mode, trigger_mode_to_set
+
+    card = {"role": "vision", **card}
+    assert trigger_mode_to_set(card, current) == sets
+    assert locks_trigger_mode(card) is locks
 
 
 def test_a_line_saved_without_cameras_leaves_the_cameras_alone(client, admin_headers, industrial, save_line):
@@ -266,11 +345,12 @@ def test_the_camera_list_and_detail_say_the_mode_the_card_sets(client, admin_hea
     assert listed[alone["id"]]["line_trigger_mode"] is None                 # on no line
     assert listed[reader["id"]]["line_trigger_mode"] is None                # a QR reader keeps its own
     assert client.get(f"{API}/{system['id']}", headers=admin_headers).json()["line_trigger_mode"] == "software"
-    # Any other Count mode is Off, and the camera's mode is locked to it as well.
+    # A card with another Count mode does not control the Trigger any more: the camera is not locked.
     other = save_line({"camera_id": system["id"], "count_mode": "track"}, _card(hardware["id"], picture_source="camera"),
                       {"camera_id": reader["id"], "role": "qr", "qr_trigger": "signal"}, line_id=saved.json()["id"])
     assert other.status_code == 200, other.text
-    assert client.get(f"{API}/{system['id']}", headers=admin_headers).json()["line_trigger_mode"] == "off"
+    assert client.get(f"{API}/{system['id']}", headers=admin_headers).json()["line_trigger_mode"] is None
+    assert client.get(f"{API}/{hardware['id']}", headers=admin_headers).json()["line_trigger_mode"] == "hardware"
 
 
 def test_the_camera_list_has_no_line_mode_for_a_camera_that_is_not_industrial(client, admin_headers, camera_row, save_line):   # noqa: F811

@@ -27,10 +27,12 @@ LOCKED_TRIGGER_MODE = "Set on the line's camera card (Line setup)"
 def line_trigger_mode(camera) -> Optional[str]:
     """The trigger mode that the camera card of the camera's line sets: "hardware", "software" or "off".
 
-    None when no card does: the camera is on no line, is not an industrial camera, or is the line's QR
-    reader (it keeps its own). It is the mode a save of the line sets (``trigger_mode_for_card``).
+    None when no card controls it: the camera is on no line, is not an industrial camera, is the line's
+    QR reader (it keeps its own), or its card does not have Count mode One picture per trigger (a tracking
+    camera or a code reader keeps the Trigger it has). It is the mode a save of the line sets
+    (``trigger_mode_for_card``) and the one the camera's Settings may not change.
     """
-    from app.services.line_config import trigger_mode_for_card
+    from app.services.line_config import locks_trigger_mode, trigger_mode_for_card
     from app.services.settings_persistence_service import SettingsPersistenceService
 
     if str(getattr(camera.type, "value", camera.type)) != "gige":
@@ -38,7 +40,7 @@ def line_trigger_mode(camera) -> Optional[str]:
     line_id = SettingsPersistenceService.line_for_camera(camera.id)
     line = SettingsPersistenceService.get_line(line_id, with_logic=False) if line_id else None
     card = next((c for c in (line or {}).get("cameras", []) if c.get("camera_id") == camera.id), None)
-    if card is None or card.get("role", "vision") != "vision":
+    if card is None or not locks_trigger_mode(card):
         return None
     current = str((camera.settings or {}).get("trigger_mode") or "off").strip().lower()
     return trigger_mode_for_card(card, current)

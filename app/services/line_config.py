@@ -604,10 +604,36 @@ def trigger_mode_for_card(camera: Dict[str, Any], current_mode: str = "off") -> 
     One picture per trigger from the camera is "hardware", from the system "software"; any other
     count mode leaves the camera free running ("off"). A card saved without a picture source
     follows the camera's ``current_mode`` (picture_source): on "hardware" it stays "hardware".
+    Only a card with count mode "trigger" controls the Trigger (``locks_trigger_mode``); what a save
+    does for the others is ``trigger_mode_to_set``.
     """
     if camera.get("role", "vision") != "vision" or camera.get("count_mode") != "trigger":
         return "off"
     return "hardware" if picture_source(camera, current_mode) == "camera" else "software"
+
+
+def locks_trigger_mode(camera: Dict[str, Any]) -> bool:
+    """True when the camera's card controls the camera's Trigger: it sets it and the camera's own Settings
+    may not change it. Only a vision camera with Count mode "One picture per trigger" does (the card
+    says how its pictures are taken); any other card leaves the Trigger to the camera (``trigger_mode_to_set``)."""
+    return camera.get("role", "vision") == "vision" and camera.get("count_mode") == "trigger"
+
+
+def trigger_mode_to_set(camera: Dict[str, Any], current_mode: str = "off") -> Optional[str]:
+    """The Trigger a save of the line sets on an industrial camera, or None to leave it as it is.
+
+    - A card that controls the Trigger (``locks_trigger_mode``): ``trigger_mode_for_card``.
+    - Another vision card: the camera keeps its Trigger (a tracking camera on Hardware, a code reader on
+      a signal), except Software that nothing on the card triggers (no "Take a picture" for it), which is Off.
+    - A QR reader keeps its own Trigger.
+    """
+    if camera.get("role", "vision") != "vision":
+        return None
+    if locks_trigger_mode(camera):
+        return trigger_mode_for_card(camera, current_mode)
+    if current_mode == "software" and not takes_a_picture_on_a_trigger(camera):
+        return "off"
+    return None
 
 
 def _join_settings(raw: Dict[str, Any], label: str) -> Dict[str, Any]:
