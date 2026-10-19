@@ -1824,8 +1824,11 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
     // Count mode changed. One picture per trigger: a trigger that finds nothing is a rejected product (the user can
     // change it). Back to tracking: the count lines are drawn on a picture again.
     function onCountModeChange(card, mode) {
-        if (mode === "trigger") cardField(card, "no_product").value = "reject";
-        else if (mode === "track") setTimeout(() => loadLinesPicture(card), 0);
+        if (mode === "trigger") {
+            const noProduct = cardField(card, "no_product");
+            noProduct.value = "reject";
+            if (noProduct._refreshCustomSelect) noProduct._refreshCustomSelect();    // the custom select shows Reject too
+        } else if (mode === "track") setTimeout(() => loadLinesPicture(card), 0);
     }
 
     // Exactly one counting camera on a line with a vision camera.

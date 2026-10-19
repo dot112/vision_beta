@@ -148,7 +148,8 @@ def test_switching_to_one_picture_per_trigger_sets_nothing_found_to_reject():
         const loaded = [];
         const setTimeout = (fn) => fn();
         const loadLinesPicture = (card) => loaded.push(card.id);
-        const noProduct = {{ value: "ignore" }};
+        const refreshed = [];
+        const noProduct = {{ value: "ignore", _refreshCustomSelect: () => refreshed.push(noProduct.value) }};
         const cardField = (card, name) => (name === "no_product" ? noProduct : null);
         {_function(script, "onCountModeChange")}
         const card = {{ id: "k1" }};
@@ -156,9 +157,10 @@ def test_switching_to_one_picture_per_trigger_sets_nothing_found_to_reject():
         const afterTrigger = noProduct.value;
         noProduct.value = "good";
         onCountModeChange(card, "track");        // back to tracking: the user's choice stays
-        console.log(JSON.stringify({{ afterTrigger, afterTrack: noProduct.value, loaded }}));
+        console.log(JSON.stringify({{ afterTrigger, afterTrack: noProduct.value, loaded, refreshed }}));
     """)
     assert out["afterTrigger"] == "reject"
+    assert out["refreshed"] == ["reject"]      # the custom select shows Reject, not the old label
     assert out["afterTrack"] == "good" and out["loaded"] == ["k1"]    # the count lines are drawn on a picture again
 
 
