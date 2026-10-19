@@ -138,6 +138,18 @@ def test_the_reasons_name_no_picture():
     assert line_config.REJECT_REASON_CODES[line_config.REASON_NO_PICTURE] == 10
 
 
+def test_every_reason_list_the_user_reads_names_every_reject_reason():
+    page = (ROOT / "dashboard.html").read_text(encoding="utf-8")
+    help_text = re.search(r'reject_reason_code: "([^"]*)"', page).group(1)
+    for code in line_config.REJECT_REASON_CODES.values():
+        assert re.search(rf"\b{code} [a-z]", help_text), f"code {code} is missing from the Reject reason code help"
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    for reason in line_config.REJECT_REASONS:
+        assert f"`{reason}`" in readme, f"{reason} is missing from the README's reject_reason values"
+    send_label = re.search(r'\["reject_reason", "([^"]*)"\]', page).group(1)
+    assert send_label.count(",") == len(line_config.REJECT_REASONS) - 1       # one entry for each reason
+
+
 # ── Count mode One picture per trigger: When nothing is found is Reject ────────
 
 

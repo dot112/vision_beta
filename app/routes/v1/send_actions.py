@@ -26,7 +26,7 @@ FIELD_LABELS = [
     ("class_name", "Class"),
     ("result", "Result (PASSED / REJECTED)"),
     ("is_defect", "Rejected (true / false)"),
-    ("reject_reason", "Reject reason (vision class, code not in list, code in reject list, no code, joined camera saw nothing)"),
+    ("reject_reason", "Reject reason (vision class, code not in list, code in reject list, no code, joined camera saw nothing, nothing detected, product check, no result in time, no picture)"),
     ("stations", "Joined cameras (what each saw of the product)"),
     ("reject_camera_id", "Camera that rejected the product (a line with joined cameras)"),
     ("confidence", "Confidence"),
