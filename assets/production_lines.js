@@ -1077,8 +1077,8 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                 <div class="pl-note">Change the device this card uses. Cameras on another line are greyed out.</div></div>
             <div class="form-group"><label class="form-label">Name</label><input type="text" class="form-input" data-f="name" maxlength="128" value="${esc(row.name || "")}">
                 <div class="pl-note">The camera's name everywhere (Cameras page, messages). Saved with the line setup.</div></div>
-            <div class="pl-inline"><button type="button" class="btn-action btn-sm btn-outline" data-act="connect">Connect</button><button type="button" class="btn-action btn-sm btn-outline" data-act="disconnect">Disconnect</button>
-                <span class="pl-note pl-conn-note" style="margin:0"></span></div>`;
+            <div class="pl-inline"><label class="switch"><input type="checkbox" data-act="keep-connected" aria-label="Connect"><span class="slider"></span></label>
+                <span class="form-label" style="margin:0">Connect</span><span class="pl-note pl-conn-note" style="margin:0"></span></div>`;
 
         const jobBody = `
             <div class="form-group"><label class="form-label">What this camera does</label><select class="form-input" data-f="job">${Object.keys(JOBS).map((j) => option(j, JOBS[j].label, job)).join("")}</select>
@@ -1514,18 +1514,33 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         }
     }
 
+    // The card's Connect switch: on when the user switched it on (kept connected, saved) or while the line runs,
+    // which keeps its cameras connected and greys the switch out.
+    function connectionView(row, connected, running, canEdit) {
+        const kept = Boolean(row && row.kept_connected);
+        const state = connected ? "Connected"
+            : row && row.connection_state === "reconnecting" ? "Connecting (retrying)" : "Not connected";
+        return {
+            checked: kept || running,
+            disabled: running || !canEdit,
+            text: running ? `${state} · The running line keeps it connected` : state,
+        };
+    }
+
     function updateConnection(card) {
         const id = card.dataset.camera;
         const connected = cameraConnected(id);
         const dot = card.querySelector(".pl-card-dot");
         dot.style.background = connected ? "var(--success-color)" : "var(--danger-color)";
         dot.title = connected ? "Connected" : "Not connected";
+        const view = connectionView(cameraRow(id), connected, Boolean(state.detail && state.detail.enabled), level() >= 2);
         const note = card.querySelector(".pl-conn-note");
-        if (note) note.textContent = connected ? "Connected" : "Not connected";
-        const connect = card.querySelector('[data-act="connect"]');
-        const disconnect = card.querySelector('[data-act="disconnect"]');
-        if (connect) connect.disabled = connected || level() < 2;
-        if (disconnect) disconnect.disabled = !connected || level() < 2;
+        if (note) note.textContent = view.text;
+        const toggle = card.querySelector('[data-act="keep-connected"]');
+        if (toggle && !toggle.dataset.busy) {
+            toggle.checked = view.checked;
+            toggle.disabled = view.disabled;
+        }
     }
 
     // ── Count lines drawn on the camera's picture ─────────────────────────────
@@ -1771,11 +1786,11 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             const act = button.dataset.act;
             if (act === "up" || act === "down") moveCard(card, act === "up" ? -1 : 1);
             else if (act === "remove") removeCard(card);
-            else if (act === "connect" || act === "disconnect") connectCard(card, act);
             else if (act === "picture") loadLinesPicture(card);
         });
         card.addEventListener("change", (e) => {
             const t = e.target;
+            if (t.dataset.act === "keep-connected") { setKeptConnected(card, t.checked); return; }    // not a line setting
             if (t.dataset.trigger) {
                 const ticked = cardTriggers(card);
                 const number = Number(t.dataset.trigger);
@@ -1807,6 +1822,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         });
         card.addEventListener("input", (e) => {
             const t = e.target;
+            if (t.dataset.act === "keep-connected") return;
             if (t.classList.contains("pl-class-filter")) {
                 const text = t.value.trim().toLowerCase();
                 t.parentNode.querySelectorAll(".pl-class").forEach((label) => {
@@ -1913,15 +1929,21 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         });
     }
 
-    async function connectCard(card, act) {
+    // The Connect switch: on keeps the camera connected (saved; retried until switched off), off disconnects it.
+    async function setKeptConnected(card, on) {
         const id = card.dataset.camera;
         const name = card.querySelector(".pl-card-name").textContent;
+        const toggle = card.querySelector('[data-act="keep-connected"]');
+        if (toggle) { toggle.dataset.busy = "1"; toggle.disabled = true; }
         try {
-            await api(`/api/v1/cameras/${encodeURIComponent(id)}/${act}`, { method: "POST" });
-            toast(`${name} ${act === "connect" ? "connected" : "disconnected"}`, "success");
+            const answer = await api(`/api/v1/cameras/${encodeURIComponent(id)}/${on ? "connect" : "disconnect"}`, { method: "POST" });
+            const status = answer && answer.status;
+            if (status === "retrying") toast(`${name} did not connect yet: Connecting (retrying) until you switch it off`, "info");
+            else toast(`${name} ${status === "connected" ? "connected" : "disconnected"}`, "success");
         } catch (e) {
             toast(`${name}: ${e.message}`, "warning");
         }
+        if (toggle) delete toggle.dataset.busy;
         await loadCamerasList();
         try { await loadDetail(); } catch (_) { /* the dot uses the camera list */ }
         cardsOnPage().forEach(updateConnection);
@@ -1938,17 +1960,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                 <div class="pl-add-body">
                     <div class="form-group"><label class="form-label">Camera</label><select class="form-input" data-f="add-device"></select>
                         <div class="pl-note">Cameras on another line are greyed out.</div></div>
-                    <div class="pl-inline" style="margin-bottom:12px">
-                        <button type="button" class="btn-action btn-sm btn-outline" data-act="scan">Scan USB</button>
-                        <button type="button" class="btn-action btn-sm btn-outline" data-act="scan-industrial">Scan industrial cameras</button>
-                        <button type="button" class="btn-action btn-sm btn-outline" data-act="network">Add network camera</button>
-                    </div>
-                    <div class="pl-add-industrial" style="margin-bottom:12px" hidden></div>
-                    <div class="pl-add-network" hidden>
-                        <div class="form-group"><label class="form-label">Name</label><input type="text" class="form-input" data-f="net-name" maxlength="64" placeholder="e.g. Infeed camera"></div>
-                        <div class="form-group"><label class="form-label">Stream URL</label><input type="text" class="form-input" data-f="net-url" placeholder="rtsp://user:pass@192.168.1.100:554/stream1"></div>
-                        <div class="pl-inline" style="margin-bottom:12px"><button type="button" class="btn-action btn-sm btn-blue" data-act="net-add">Add to the camera list</button></div>
-                    </div>
+                    <div class="pl-note" style="margin:-4px 0 12px">Add USB cameras on the Cameras page, and network and industrial cameras under Communication.</div>
                     <div class="form-group"><label class="form-label">Starting job</label><select class="form-input" data-f="add-job">${START_JOBS.map((j) => option(j, JOBS[j].label, "counting")).join("")}</select>
                         <div class="pl-note">The first vision camera is the counting camera. Everything can be changed on the card.</div></div>
                     <button type="button" class="btn-action btn-blue" data-act="add">Add camera</button>
@@ -1963,7 +1975,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         const onCards = new Set(cardsOnPage().map((c) => c.dataset.camera));
         const keep = select.value;
         const free = state.cameras.filter((c) => !owners[c.id] && !onCards.has(c.id));
-        const html = (free.length ? "" : `<option value="">No free camera: scan or add one</option>`) + state.cameras.map((c) => {
+        const html = (free.length ? "" : `<option value="">No free camera: add one on the Cameras page or under Communication</option>`) + state.cameras.map((c) => {
             const taken = owners[c.id] ? `on ${owners[c.id]}` : onCards.has(c.id) ? "on this line" : "";
             return `<option value="${esc(c.id)}" ${taken ? "disabled" : ""} ${c.id === keep && !taken ? "selected" : ""}>${esc(c.name)} (${esc(typeLabel(c.type))})${taken ? ` · ${esc(taken)}` : ""}</option>`;
         }).join("");
@@ -1980,69 +1992,9 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             const button = e.target.closest("[data-act]");
             if (!button) return;
             const act = button.dataset.act;
-            if (act === "network") {
-                const box = card.querySelector(".pl-add-network");
-                box.hidden = !box.hidden;
-            } else if (act === "scan") {
-                button.disabled = true;
-                try {
-                    const found = await api("/api/v1/cameras/discover/usb");
-                    await loadCamerasList();
-                    toast(found && found.length ? `Found ${found.length} USB camera(s): ${found.map((c) => c.name).join(", ")}` : "No new USB camera found", found && found.length ? "success" : "info");
-                    refreshDeviceSelects();
-                    refreshAddDevices();
-                } catch (err) { toast(`Scan failed: ${err.message}`, "warning"); }
-                button.disabled = false;
-            } else if (act === "scan-industrial") {
-                const box = card.querySelector(".pl-add-industrial");
-                button.disabled = true;
-                box.hidden = false;
-                box.innerHTML = `<div class="pl-note">Looking for cameras on the network and the USB3 ports…</div>`;
-                try {
-                    const found = await api("/api/v1/cameras/discover/gige");
-                    box.innerHTML = found && found.length ? found.map((c) => `
-                        <div class="pl-inline" style="justify-content:space-between;gap:10px;margin-bottom:8px">
-                            <span style="min-width:0;overflow-wrap:anywhere"><strong>${esc(c.model || "Camera")}</strong> · ${esc(c.serial)}${c.interface ? ` · ${esc(c.interface)}` : ""}${c.vendor ? ` · ${esc(c.vendor)}` : ""}</span>
-                            <button type="button" class="btn-action btn-sm btn-blue" data-act="industrial-add" data-serial="${esc(c.serial)}" data-model="${esc(c.model || "Camera")}" ${c.in_use ? "disabled" : ""}>${c.in_use ? "In the camera list" : "Add to the camera list"}</button>
-                        </div>`).join("")
-                        : `<div class="pl-note">No industrial camera was found. Is it powered, on the same network as the server, and not open in another program?</div>`;
-                } catch (err) { box.innerHTML = `<div class="pl-warn" style="margin:0">${esc(err.message)}</div>`; }
-                button.disabled = false;
-            } else if (act === "industrial-add") {
-                button.disabled = true;
-                try {
-                    // An industrial camera is found again by its serial number.
-                    const saved = await api("/api/v1/cameras", { method: "POST", body: { name: `${button.dataset.model} ${button.dataset.serial}`, type: "gige", source: button.dataset.serial, settings: {} } });
-                    await loadCamerasList();
-                    refreshDeviceSelects();
-                    refreshAddDevices();
-                    const select = cardField(card, "add-device");
-                    if (saved && saved.id && cameraRow(saved.id)) { select.value = saved.id; if (select._updateCustomSelectUI) select._updateCustomSelectUI(); }
-                    button.textContent = "In the camera list";
-                    toast(`Industrial camera '${saved.name}' added to the camera list. Set its Trigger on its card, under Image.`, "success");
-                } catch (err) { button.disabled = false; toast(`Could not add the camera: ${err.message}`, "warning"); }
-            } else if (act === "net-add") {
-                const name = cardField(card, "net-name").value.trim();
-                const source = cardField(card, "net-url").value.trim();
-                if (!name || !source) { toast("Enter the camera's name and its stream URL (rtsp:// or http://)", "warning"); return; }
-                button.disabled = true;
-                try {
-                    // The same channel the Connections page makes for a network camera.
-                    const saved = await api("/api/v1/system/endpoints", { method: "POST", body: { name, description: "", enabled: true, protocol: "ipcam", source, transport: "tcp", resolution: "native", buffer_size: 1 } });
-                    await loadCamerasList();
-                    refreshDeviceSelects();
-                    refreshAddDevices();
-                    const select = cardField(card, "add-device");
-                    if (saved && saved.id && cameraRow(saved.id)) { select.value = saved.id; if (select._updateCustomSelectUI) select._updateCustomSelectUI(); }
-                    cardField(card, "net-name").value = "";
-                    cardField(card, "net-url").value = "";
-                    card.querySelector(".pl-add-network").hidden = true;
-                    toast(`Network camera '${name}' added to the camera list`, "success");
-                } catch (err) { toast(`Could not add the camera: ${err.message}`, "warning"); }
-                button.disabled = false;
-            } else if (act === "add") {
+            if (act === "add") {
                 const id = cardField(card, "add-device").value;
-                if (!id) { toast("Choose a camera to add (or scan for one)", "warning"); return; }
+                if (!id) { toast("Choose a camera to add", "warning"); return; }
                 let job = cardField(card, "add-job").value;
                 const hasCounting = cardsOnPage().some((c) => isCountingJob(cardJob(c)));
                 // The first vision camera added is the counting camera.
