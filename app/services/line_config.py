@@ -623,15 +623,16 @@ def trigger_mode_to_set(camera: Dict[str, Any], current_mode: str = "off") -> Op
     """The Trigger a save of the line sets on an industrial camera, or None to leave it as it is.
 
     - A card that controls the Trigger (``locks_trigger_mode``): ``trigger_mode_for_card``.
-    - Another vision card: the camera keeps its Trigger (a tracking camera on Hardware, a code reader on
-      a signal), except Software that nothing on the card triggers (no "Take a picture" for it), which is Off.
+    - Another vision card: the camera keeps its Trigger (a tracking camera on Hardware, a camera that
+      reads codes on any trigger: a reader at a wire line is fired by the counting camera's crossing),
+      except Software that nothing on the card triggers and that reads no codes, which is Off.
     - A QR reader keeps its own Trigger.
     """
     if camera.get("role", "vision") != "vision":
         return None
     if locks_trigger_mode(camera):
         return trigger_mode_for_card(camera, current_mode)
-    if current_mode == "software" and not takes_a_picture_on_a_trigger(camera):
+    if current_mode == "software" and not takes_a_picture_on_a_trigger(camera) and not reads_codes(camera):
         return "off"
     return None
 

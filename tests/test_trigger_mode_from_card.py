@@ -210,11 +210,16 @@ def test_a_software_camera_nothing_triggers_is_set_off_and_is_not_locked(client,
     assert res.status_code == 201, res.text
     assert _mode(client, admin_headers, row["id"]) == "off" and _told(driver, "off")
     assert client.get(f"{API}/{row['id']}", headers=admin_headers).json()["line_trigger_mode"] is None
-    # A code reader that reads continuously has nothing to trigger a Software camera either.
-    other, other_driver = industrial("software", source="B2")
-    reader = save_line({"camera_id": other["id"], "read_codes": True, "qr_trigger": "continuous"})
-    assert reader.status_code == 201, reader.text
-    assert _mode(client, admin_headers, other["id"]) == "off" and _told(other_driver, "off")
+
+
+def test_a_camera_that_reads_codes_keeps_its_software_trigger_whatever_it_reads_on(client, admin_headers, industrial, save_line):
+    # A reader at a wire line is fired by the counting camera's crossing through take_picture (Ruling 16).
+    for source, qr_trigger in (("B2", "continuous"), ("B3", "line1"), ("B4", "line2")):
+        row, driver = industrial("software", source=source)
+        res = save_line({"camera_id": row["id"], "count_mode": "track", "read_codes": True, "qr_trigger": qr_trigger})
+        assert res.status_code == 201, res.text
+        assert _mode(client, admin_headers, row["id"]) == "software" and driver.sets == [], qr_trigger
+        assert client.get(f"{API}/{row['id']}", headers=admin_headers).json()["line_trigger_mode"] is None
 
 
 def test_a_camera_off_stays_off_whatever_the_card(client, admin_headers, industrial, save_line):
@@ -234,10 +239,13 @@ def test_a_camera_off_stays_off_whatever_the_card(client, admin_headers, industr
     ({"read_codes": True, "qr_trigger": "signal"}, "software", None, False),
     ({"read_codes": True, "qr_trigger": "signal"}, "hardware", None, False),
     ({"count_mode": "track"}, "off", None, False),
-    # ...except Software that nothing on the card triggers.
+    # ...also a camera that reads codes, on any trigger (a reader at a wire line is fired by the counting camera)...
+    ({"count_mode": "track", "read_codes": True, "qr_trigger": "line1"}, "software", None, False),
+    ({"count_mode": "track", "read_codes": True, "qr_trigger": "line2"}, "software", None, False),
+    ({"read_codes": True, "qr_trigger": "continuous"}, "software", None, False),
+    # ...except Software that nothing on the card triggers and that reads no codes.
     ({"count_mode": "track"}, "software", "off", False),
     ({}, "software", "off", False),
-    ({"read_codes": True, "qr_trigger": "continuous"}, "software", "off", False),
     # A QR reader keeps its own.
     ({"role": "qr", "qr_trigger": "signal"}, "software", None, False),
     ({"role": "qr", "qr_trigger": "continuous"}, "hardware", None, False),

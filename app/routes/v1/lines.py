@@ -294,8 +294,9 @@ async def _apply_trigger_modes(line: Dict[str, Any]) -> List[str]:
     """Set each industrial vision camera of a saved line to the trigger mode its card asks for.
 
     A card with Count mode One picture per trigger sets it: from the camera Hardware, from the system
-    Software. Any other vision card leaves the camera's mode alone (a tracking camera on Hardware, a code
-    reader on a signal), except Software with nothing to trigger it, which is Off (``trigger_mode_to_set``).
+    Software. Any other vision card leaves the camera's mode alone (a tracking camera on Hardware, a camera
+    that reads codes), except Software with nothing to trigger it that reads no codes, which is Off
+    (``trigger_mode_to_set``).
     Only a mode that differs is set, through the path the camera's Settings use. A QR reader keeps its
     own mode. A camera that cannot be set is a warning, never a refused save:
     ["Camera 2's trigger mode could not be set: ..."].
