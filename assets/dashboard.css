@@ -785,6 +785,8 @@ select option { background-color: var(--card-bg); color: var(--text-color); }
    the header's line selector and the phone layout keep the full width. */
 .custom-select-wrap { position: relative; width: 100%; max-width: var(--select-max-width, 320px); user-select: none; }
 .modal-backdrop .custom-select-wrap, td .custom-select-wrap, th .custom-select-wrap, .pl-line-select .custom-select-wrap { max-width: none; }
+/* The Trigger of an industrial camera whose line card sets it: shown, not changeable (assets/camera_settings.js). */
+select.cs-locked + .custom-select-wrap { opacity: 0.65; pointer-events: none; }
 .custom-select-trigger {
     display: flex;
     align-items: center;

@@ -17,6 +17,7 @@ from app.services.line_config import (
     model_warnings,
     plc_address_clashes,
     reads_codes,
+    trigger_mode_for_card,
     vision_models,
 )
 
@@ -198,6 +199,29 @@ def _check_camera_count(raw: Dict[str, Any]) -> None:
         )
 
 
+async def _check_picture_sources(raw: Dict[str, Any]) -> None:
+    """Camera trigger (the camera takes its own picture) is only for an industrial camera (row type gige)."""
+    from app.db.models.camera import Camera
+    from app.db.session import AsyncSessionLocal
+
+    cameras = raw.get("cameras")
+    asked = [
+        (index, str(cam.get("camera_id") or "").strip())
+        for index, cam in enumerate(cameras if isinstance(cameras, list) else [])
+        if isinstance(cam, dict) and str(cam.get("picture_source") or "").strip().lower() == "camera"
+        # The key counts only on a vision camera with One picture per trigger (else the save drops it).
+        and str(cam.get("role") or "vision").strip().lower() == "vision"
+        and str(cam.get("count_mode") or "trigger").strip().lower() == "trigger"
+    ]
+    if not asked:
+        return
+    async with AsyncSessionLocal() as db:
+        for index, camera_id in asked:
+            row = await db.get(Camera, camera_id) if camera_id else None
+            if row is not None and row.type != "gige":
+                raise HTTPException(status_code=422, detail=f"Camera {index + 1}: only an industrial camera can trigger itself")
+
+
 _CAMERA_LABEL = re.compile(r"\bCamera (\d+)\b(?! \()")
 
 
@@ -266,6 +290,42 @@ async def _trigger_modes(cameras: Any) -> Dict[str, str]:
     return modes
 
 
+async def _apply_trigger_modes(line: Dict[str, Any]) -> List[str]:
+    """Set each industrial vision camera of a saved line to the trigger mode its card asks for.
+
+    One picture per trigger from the camera is Hardware, from the system Software, any other Count mode
+    Off (``trigger_mode_for_card``). Only a mode that differs is set, through the path the camera's Settings
+    use. A QR reader keeps its own mode. A camera that cannot be set is a warning, never a refused save:
+    ["Camera 2's trigger mode could not be set: ..."].
+    """
+    from app.db.models.camera import Camera
+    from app.db.session import AsyncSessionLocal
+    from app.schemas.camera import CameraUpdate
+    from app.services.camera_service import CameraService
+
+    cameras = line.get("cameras")
+    warnings: List[str] = []
+    async with AsyncSessionLocal() as db:
+        for index, cam in enumerate(cameras if isinstance(cameras, list) else []):
+            if not isinstance(cam, dict) or cam.get("role", "vision") != "vision" or not cam.get("camera_id"):
+                continue
+            try:
+                row = await db.get(Camera, str(cam["camera_id"]))
+                if row is None or row.type != "gige":
+                    continue
+                # A card saved without a picture source follows the camera's mode: Hardware stays Hardware.
+                current = str((row.settings or {}).get("trigger_mode") or "off").strip().lower()
+                wanted = trigger_mode_for_card(cam, current)
+                if wanted == current:
+                    continue
+                if await CameraService.update_camera(db, row.id, CameraUpdate(settings={"trigger_mode": wanted})) is None:
+                    raise LookupError("the camera is not in the camera list")
+            except Exception as exc:
+                await db.rollback()
+                warnings.append(f"Camera {index + 1}'s trigger mode could not be set: {str(exc) or type(exc).__name__}")
+    return warnings
+
+
 async def _name_cameras(text: Optional[str], cameras: Any) -> Optional[str]:
     """A message with each "Camera N" followed by that camera's name: "Camera 2 ('Packing left')"."""
     if not text or not isinstance(cameras, list) or not _CAMERA_LABEL.search(text):
@@ -287,6 +347,7 @@ async def _save(raw: Dict[str, Any]) -> Dict[str, Any]:
         _check_code_types(raw)
         _check_product_lists(raw)
         await _check_models(raw)
+        await _check_picture_sources(raw)
         try:
             return _svc().save_line(raw)
         except ValueError as exc:
@@ -306,12 +367,15 @@ def _sync_forced(body: Dict[str, Any], saved: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-async def _save_warning(body: Dict[str, Any], view: Dict[str, Any]) -> Optional[str]:
-    """What the user is told after a save: the first of a model problem, Sync switched on, or a line warning."""
+async def _save_warning(body: Dict[str, Any], view: Dict[str, Any], not_set: Optional[List[str]] = None) -> Optional[str]:
+    """What the user is told after a save: the first of a model problem, a camera whose trigger mode
+    could not be set (``not_set``, all of them), Sync switched on, or a line warning."""
     about_models = model_warnings(view, await _model_info(view))
     first = next(iter(about_models), None)
     if first:
         return await _name_cameras(first, view.get("cameras"))
+    if not_set:
+        return " ".join(not_set)
     return _sync_forced(body, view) or next(iter(view.get("warnings") or []), None)
 
 
@@ -538,9 +602,10 @@ async def create_line(body: Dict[str, Any], user: User = Depends(require_supervi
     raw.setdefault("enabled", False)  # starts stopped; Start connects its cameras
     line = await _save(raw)
     _audit(user, "CREATE_LINE", f"Created production line '{line['name']}'", line["id"])
+    not_set = await _apply_trigger_modes(line)
     await apply_line(line["id"])
     view = await _view(line["id"], with_logic=True)
-    view["warning"] = await _save_warning(body, view)
+    view["warning"] = await _save_warning(body, view, not_set)
     return view
 
 
@@ -565,10 +630,11 @@ async def update_line(line_id: str, body: Dict[str, Any], user: User = Depends(r
     check_send_cards({"cameras": [c for c in cameras if isinstance(c, dict)]}, send_cards)
     line = await _save({**body, "id": line_id})
     _audit(user, "UPDATE_LINE", f"Updated production line '{line['name']}'", line_id)
+    not_set = await _apply_trigger_modes(line)
     await apply_line(line_id)
     await _fire_line_state(line, existing.get("enabled"))
     view = await _view(line_id, with_logic=True)
-    view["warning"] = await _save_warning(body, view)
+    view["warning"] = await _save_warning(body, view, not_set)
     return view
 
 

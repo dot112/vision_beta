@@ -7,7 +7,7 @@
     <title>Universalz Vision — Line control</title>
     <link rel="icon" type="image/png" href="/assets/universalz_mark.png">
     <link rel="preload" href="/assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="stylesheet" href="/assets/dashboard.css?v=3.6.0">
+    <link rel="stylesheet" href="/assets/dashboard.css?v=3.7.0">
     <script>
         // Apply the saved theme before the first paint (no dark-to-light flash).
         try { document.documentElement.setAttribute("data-theme", localStorage.getItem("theme") === "light" ? "light" : "dark"); } catch (_) {}
@@ -6156,7 +6156,9 @@ let _camSettingsCam = null;
 function openCamSettings(id, name, type, settings) {
     _camSettingsCam = { id, name, type };
     document.getElementById("camSettingsCamName").textContent = name;
-    const form = CameraSettingsForm.render(document.getElementById("camSettingsForm"), { id, type, settings: settings || {} }, ["image", "video"]);
+    const listed = (_allCamsData || []).find((c) => c.id === id);
+    const form = CameraSettingsForm.render(document.getElementById("camSettingsForm"),
+        { id, type, settings: settings || {}, line_trigger_mode: listed ? listed.line_trigger_mode : null }, ["image", "video"]);
     form.loadPicture(() => Boolean(_camSettingsCam && _camSettingsCam.id === id));
     document.getElementById("camSettingsOverlay").classList.add("active");
     setTimeout(initCustomSelects, 30);
@@ -7428,10 +7430,10 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
 </script>
 <script src="/assets/help_tips.js?v=3.4.0"></script>
 <script src="/assets/card_values.js?v=3.5.0"></script>
-<script src="/assets/camera_settings.js?v=3.5.0"></script>
+<script src="/assets/camera_settings.js?v=3.6.0"></script>
 <script src="/assets/plc_signals.js?v=3.5.0"></script>
 <script src="/assets/product_fields.js?v=3.5.0"></script>
-<script src="/assets/production_lines.js?v=3.6.0"></script>
+<script src="/assets/production_lines.js?v=3.7.0"></script>
 <script>
 /* ─── Cameras: Connect / Disconnect / Settings / Delete on every row ────────
    Runs after assets/production_lines.js has added its Line and Role columns. */

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,11 +21,49 @@ from app.state.application_state import app_state
 router = APIRouter(prefix="/cameras", tags=["Cameras"])
 
 
+LOCKED_TRIGGER_MODE = "Set on the line's camera card (Line setup)"
+
+
+def line_trigger_mode(camera) -> Optional[str]:
+    """The trigger mode that the camera card of the camera's line sets: "hardware", "software" or "off".
+
+    None when no card does: the camera is on no line, is not an industrial camera, or is the line's QR
+    reader (it keeps its own). It is the mode a save of the line sets (``trigger_mode_for_card``).
+    """
+    from app.services.line_config import trigger_mode_for_card
+    from app.services.settings_persistence_service import SettingsPersistenceService
+
+    if str(getattr(camera.type, "value", camera.type)) != "gige":
+        return None
+    line_id = SettingsPersistenceService.line_for_camera(camera.id)
+    line = SettingsPersistenceService.get_line(line_id, with_logic=False) if line_id else None
+    card = next((c for c in (line or {}).get("cameras", []) if c.get("camera_id") == camera.id), None)
+    if card is None or card.get("role", "vision") != "vision":
+        return None
+    current = str((camera.settings or {}).get("trigger_mode") or "off").strip().lower()
+    return trigger_mode_for_card(card, current)
+
+
+async def _check_trigger_mode_is_free(db: AsyncSession, camera_id: str, camera_in: CameraUpdate) -> None:
+    """409 when the change sets a trigger mode other than the one the camera's line card sets.
+
+    Only the mode is locked; sending the card's own mode again (a form sends all its settings) is no change.
+    """
+    settings = camera_in.settings
+    if not isinstance(settings, dict) or "trigger_mode" not in settings:
+        return
+    camera = await CameraService.get_camera_by_id(db, camera_id)
+    locked = line_trigger_mode(camera) if camera is not None else None
+    if locked is not None and str(settings["trigger_mode"] or "off").strip().lower() != locked:
+        raise HTTPException(status_code=409, detail=LOCKED_TRIGGER_MODE)
+
+
 def _public_camera(camera):
     from app.services.settings_persistence_service import SettingsPersistenceService
 
     result = SettingsPersistenceService.redact_secrets(CameraResponse.model_validate(camera).model_dump())
     result["connection_state"] = CameraService.connection_state(camera)
+    result["line_trigger_mode"] = line_trigger_mode(camera)
     if result.get("last_error"):
         result["last_error"] = "Camera connection failed; consult server logs for details."
     return result
@@ -84,6 +122,7 @@ async def get_camera(camera_id: str, db: AsyncSession = Depends(get_db)) -> Came
 
 @router.put("/{camera_id}", response_model=CameraResponse, summary="Update camera settings")
 async def update_camera(camera_id: str, camera_in: CameraUpdate, db: AsyncSession = Depends(get_db), _user=Depends(require_supervisor)) -> CameraResponse:
+    await _check_trigger_mode_is_free(db, camera_id, camera_in)
     try:
         updated = await CameraService.update_camera(db, camera_id, camera_in)
     except ValueError as exc:
@@ -96,6 +135,7 @@ async def update_camera(camera_id: str, camera_in: CameraUpdate, db: AsyncSessio
 @router.patch("/{camera_id}", response_model=CameraResponse, summary="Patch camera settings (partial update)")
 async def patch_camera(camera_id: str, camera_in: CameraUpdate, db: AsyncSession = Depends(get_db), _user=Depends(require_supervisor)) -> CameraResponse:
     """Partial update — applies only supplied fields (resolution, ROI, rotation, flip, bandwidth params)."""
+    await _check_trigger_mode_is_free(db, camera_id, camera_in)
     try:
         updated = await CameraService.update_camera(db, camera_id, camera_in)
     except ValueError as exc:

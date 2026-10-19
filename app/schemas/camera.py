@@ -71,6 +71,9 @@ class CameraResponse(BaseModel):
     is_active: bool
     # connected, reconnecting (lost or being retried; nobody disconnected it), failed or disconnected
     connection_state: str = "disconnected"
+    # The trigger mode (off, hardware or software) that the camera card of the line this industrial
+    # camera is on sets; null when no card does (no line, another kind of camera, a QR reader).
+    line_trigger_mode: Optional[str] = None
     last_error: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

@@ -1582,7 +1582,8 @@
     function renderImageForms(card) {
         const info = setup.cards.get(card.dataset.key);
         const row = cameraRow(card.dataset.camera);
-        const camForm = { id: card.dataset.camera, type: row ? row.type : "", settings: (row && row.settings) || {} };
+        const camForm = { id: card.dataset.camera, type: row ? row.type : "", settings: (row && row.settings) || {},
+                          line_trigger_mode: row ? row.line_trigger_mode : null };
         const imageBox = cardField(card, "image-form");
         if (!row) {
             imageBox.innerHTML = `<div class="pl-note">This camera is not in the camera list.</div>`;

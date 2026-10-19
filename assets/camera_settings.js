@@ -8,6 +8,10 @@
  * Used by the camera cards on Line setup (assets/production_lines.js) and by
  * the Settings dialog on the Cameras page for a camera that belongs to no line.
  * read() gives exactly the body of PATCH /api/v1/cameras/{id} {settings: ...}.
+ *
+ * An industrial camera whose line card sets its Trigger (the camera list says
+ * line_trigger_mode: "off", "hardware" or "software") shows it read-only, and
+ * read() leaves it out: the server refuses a change of it on the camera.
  */
 (function () {
     "use strict";
@@ -27,15 +31,21 @@
         software: "No extra wire. The server sends the camera its trigger command when an input with the action \"Take a picture\", a wire-line crossing (Read codes) or the API asks. It is late by the PLC's read time and the network, so it suits parts that stand still.",
     };
 
+    const TRIGGER_LABELS = { off: "Off: runs freely", hardware: "Hardware: the camera's own input", software: "Software: the server triggers it" };
+    const LOCKED_NOTE = "Set on the line's camera card (Line setup)";
+
     function industrialHtml(cam) {
         const s = cam.settings || {};
-        const mode = ["hardware", "software"].includes(s.trigger_mode) ? s.trigger_mode : "off";
+        // The line's camera card sets the Trigger: shown as it sets it, with nothing else to choose.
+        const locked = Object.keys(TRIGGER_LABELS).includes(cam.line_trigger_mode) ? cam.line_trigger_mode : null;
+        const mode = locked || (["hardware", "software"].includes(s.trigger_mode) ? s.trigger_mode : "off");
         const edge = s.trigger_edge === "falling" ? "falling" : "rising";
         const opt = (value, label, current) => `<option value="${value}" ${current === value ? "selected" : ""}>${label}</option>`;
         const lists = `cs-lines-${esc(cam.id)}`;
         return `
         <div class="cam-settings-section">Trigger (industrial camera)</div>
-        ${field("trigger_mode", "Trigger", `<select class="form-input" data-help="How the camera takes pictures: freely, on its own input wire, or when the server triggers it.">${opt("off", "Off: runs freely", mode)}${opt("hardware", "Hardware: the camera's own input", mode)}${opt("software", "Software: the server triggers it", mode)}</select>`)}
+        ${field("trigger_mode", "Trigger", `<select class="form-input${locked ? " cs-locked" : ""}" ${locked ? "disabled" : ""} data-help="How the camera takes pictures: freely, on its own input wire, or when the server triggers it.">${(locked ? [locked] : Object.keys(TRIGGER_LABELS)).map((value) => opt(value, TRIGGER_LABELS[value], mode)).join("")}</select>`)}
+        ${locked ? `<div class="form-hint cs-trigger-locked" style="margin:6px 0 0"><b>${LOCKED_NOTE}</b></div>` : ""}
         <div class="form-hint cs-trigger-note" style="margin:6px 0 10px"></div>
         <div class="cam-settings-row cs-hardware-only">
             ${field("trigger_line", "Trigger input", `<input type="text" class="form-input" maxlength="32" placeholder="Line0" list="${lists}-in" value="${esc(s.trigger_line || "")}">`)}
@@ -367,7 +377,8 @@
             // An empty number is sent as "": the camera then keeps its own exposure or gain.
             const number = (name) => (text(name) === "" ? "" : Number(text(name)));
             Object.assign(settings, {
-                trigger_mode: value("trigger_mode"),
+                // A mode a line card sets is shown read-only and not sent: the server refuses a different one.
+                ...(get(root, "trigger_mode").disabled ? {} : { trigger_mode: value("trigger_mode") }),
                 trigger_line: text("trigger_line"),
                 trigger_edge: value("trigger_edge"),
                 trigger_delay_us: number("trigger_delay_us") || 0,
