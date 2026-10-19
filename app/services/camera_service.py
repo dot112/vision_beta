@@ -197,6 +197,30 @@ class CameraService:
         return True
 
     @staticmethod
+    def kept(camera_id: str) -> bool:
+        """The camera's Connect switch (Line setup camera card) is on: it is kept connected."""
+        from app.services.settings_persistence_service import SettingsPersistenceService
+        return camera_id in SettingsPersistenceService.kept_cameras()
+
+    @staticmethod
+    def wanted(camera_id: str) -> bool:
+        """Someone wants the camera connected: its Connect switch is on, or its line is running."""
+        from app.services.line_service import line_manager
+        return CameraService.kept(camera_id) or line_manager.holds_camera(camera_id)
+
+    @staticmethod
+    def camera_limit_error(camera_id: str) -> Optional[str]:
+        """Why one more camera may not connect (MAX_CONNECTED_CAMERAS), or None. The camera itself does not count."""
+        from app.config import settings as app_settings
+        others = [cid for cid, drv in app_state.cameras.items() if cid != camera_id and getattr(drv, "is_connected", False)]
+        if len(others) >= app_settings.MAX_CONNECTED_CAMERAS:
+            return (
+                f"{len(others)} cameras are already connected, the most this server allows "
+                f"(MAX_CONNECTED_CAMERAS={app_settings.MAX_CONNECTED_CAMERAS}). Disconnect one first."
+            )
+        return None
+
+    @staticmethod
     def connection_state(camera: Camera) -> str:
         """What the Cameras page shows: connected, reconnecting, failed or disconnected.
 
@@ -316,8 +340,10 @@ class CameraService:
 
     @staticmethod
     async def delete_camera(db: AsyncSession, camera_id: str) -> bool:
+        from app.services.settings_persistence_service import SettingsPersistenceService
         from app.services.vision_service import CameraStreamPipeline
         CameraReconnector.forget(camera_id)
+        SettingsPersistenceService.set_camera_kept(camera_id, False)
         # 1. Remove from active hardware/driver memory first so the vision runner stops
         # using it, then stop its workers and release the device. Both join threads,
         # so they run off the event loop.
@@ -433,13 +459,9 @@ class CameraService:
 
         # Several cameras run at once (one or two per production line). A camera
         # that is already connected is reconnected in place.
-        from app.config import settings as app_settings
-        others = [cid for cid, drv in app_state.cameras.items() if cid != camera_id and getattr(drv, "is_connected", False)]
-        if len(others) >= app_settings.MAX_CONNECTED_CAMERAS:
-            return False, (
-                f"{len(others)} cameras are already connected, the most this server allows "
-                f"(MAX_CONNECTED_CAMERAS={app_settings.MAX_CONNECTED_CAMERAS}). Disconnect one first."
-            )
+        limit = CameraService.camera_limit_error(camera_id)
+        if limit is not None:
+            return False, limit
         previous = app_state.cameras.pop(camera_id, None)
         if previous is not None:
             from app.services.vision_service import CameraStreamPipeline
@@ -478,6 +500,9 @@ class CameraService:
         else:
             camera.is_active = False
             camera.last_error = last_err or "Unknown connection error"
+            if not _background and CameraService.kept(camera_id):
+                # Its Connect switch is on: retried in the background until it is switched off.
+                CameraReconnector.want(camera_id)
 
         await db.commit()
         await db.refresh(camera)
@@ -524,6 +549,7 @@ class CameraService:
             type=camera.type,
             is_active=camera.is_active,
             connection_state=CameraService.connection_state(camera),
+            kept_connected=CameraService.kept(camera.id),
             is_streaming=is_streaming,
             source=camera.source,
             properties=properties,
@@ -693,8 +719,9 @@ class CameraReconnector:
             async with AsyncSessionLocal() as db:
                 ok, err = await CameraService.connect_camera(db, camera_id, _background=True)
                 if camera_id not in cls._pending:
-                    # Disconnected by hand or its line stopped while this attempt ran.
-                    if ok:
+                    # Disconnected by hand or its line stopped while this attempt ran. A camera someone
+                    # still wants (Connect pressed again meanwhile) stays connected.
+                    if ok and not CameraService.wanted(camera_id):
                         await CameraService.disconnect_camera(db, camera_id)
                     continue
             if ok:

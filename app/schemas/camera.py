@@ -71,6 +71,8 @@ class CameraResponse(BaseModel):
     is_active: bool
     # connected, reconnecting (lost or being retried; nobody disconnected it), failed or disconnected
     connection_state: str = "disconnected"
+    # The camera's Connect switch (Line setup camera card) is on: it is connected at start and retried until off.
+    kept_connected: bool = False
     # The trigger mode (off, hardware or software) that the camera card of the line this industrial
     # camera is on sets and locks: a vision card with Count mode One picture per trigger. Null when no
     # card does (no line, another kind of camera, a QR reader, a tracking camera or a code reader).
@@ -89,6 +91,7 @@ class CameraStatusResponse(BaseModel):
     type: CameraType
     is_active: bool
     connection_state: str = "disconnected"
+    kept_connected: bool = False
     is_streaming: bool
     source: str
     properties: Dict[str, Any]

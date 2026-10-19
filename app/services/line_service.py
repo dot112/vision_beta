@@ -2165,6 +2165,13 @@ class LineManager:
                 return primary, "vision"
             return None
 
+    def holds_camera(self, camera_id: str) -> bool:
+        """A running line has the camera on one of its cards: the line keeps it connected."""
+        with self._lock:
+            owner = self._camera_map.get(camera_id)
+            runtime = self._lines.get(owner[0]) if owner is not None else None
+            return bool(runtime is not None and runtime.enabled)
+
     def fallback_cameras(self, cameras: Dict[str, Any]) -> List[str]:
         """Connected cameras that feed Line 1 because no line claims them."""
         if self.primary().cameras:
@@ -2454,6 +2461,7 @@ class LineManager:
         return results
 
     async def disconnect_line(self, line_id: str) -> None:
+        """A stopped line's cameras are disconnected, except those whose Connect switch is on."""
         from app.db.session import AsyncSessionLocal
         from app.services.camera_service import CameraService
 
@@ -2461,6 +2469,8 @@ class LineManager:
         if runtime is None:
             return
         for cam in runtime.cameras:
+            if CameraService.kept(cam["camera_id"]):
+                continue
             async with AsyncSessionLocal() as db:
                 await CameraService.disconnect_camera(db, cam["camera_id"])
 
@@ -2470,9 +2480,10 @@ class LineManager:
         await self.connect_on_startup()
 
     async def connect_on_startup(self) -> None:
-        """Connect the cameras of every running line, when the Cameras page switch
-        "Connect cameras when the server starts" is on.
+        """Connect the cameras whose Connect switch is on, always, then the cameras of every
+        running line when the Cameras page switch "Connect cameras when the server starts" is on.
 
+        A camera that does not connect is retried in the background.
         This is the only place cameras are connected at startup. A camera that
         belongs to no line is left alone, with one exception: while Line 1 has
         no camera assigned it is fed by the last active camera, so that one is
@@ -2480,6 +2491,7 @@ class LineManager:
         """
         from app.services.settings_persistence_service import SettingsPersistenceService
 
+        await self._connect_kept_cameras()
         if not SettingsPersistenceService.camera_auto_connect():
             return
         for runtime in self.all():
@@ -2492,6 +2504,29 @@ class LineManager:
                     await self._connect_last_active_camera()
             except Exception:
                 logger.exception("Could not connect the cameras of line '%s'", runtime.name)
+
+    async def _connect_kept_cameras(self) -> None:
+        """Connect every camera whose Connect switch is on; one that does not connect is retried."""
+        from app.db.session import AsyncSessionLocal
+        from app.services.camera_service import CameraReconnector, CameraService
+        from app.services.settings_persistence_service import SettingsPersistenceService
+        from app.state.application_state import app_state
+
+        for camera_id in SettingsPersistenceService.kept_cameras():
+            if getattr(app_state.cameras.get(camera_id), "is_connected", False):
+                continue
+            try:
+                async with AsyncSessionLocal() as db:
+                    ok, err = await CameraService.connect_camera(db, camera_id)
+            except Exception as exc:
+                ok, err = False, str(exc)
+            if ok:
+                continue
+            if err == "Camera not found in database":
+                SettingsPersistenceService.set_camera_kept(camera_id, False)
+                continue
+            logger.warning("Camera %s (kept connected) did not connect, retrying in the background: %s", camera_id, err)
+            CameraReconnector.want(camera_id)
 
     async def _connect_last_active_camera(self) -> None:
         """Line 1 without cameras: connect the camera that feeds it by default.

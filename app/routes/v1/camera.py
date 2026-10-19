@@ -65,6 +65,7 @@ def _public_camera(camera):
 
     result = SettingsPersistenceService.redact_secrets(CameraResponse.model_validate(camera).model_dump())
     result["connection_state"] = CameraService.connection_state(camera)
+    result["kept_connected"] = CameraService.kept(camera.id)
     result["line_trigger_mode"] = line_trigger_mode(camera)
     if result.get("last_error"):
         result["last_error"] = "Camera connection failed; consult server logs for details."
@@ -162,19 +163,44 @@ async def delete_camera(camera_id: str, db: AsyncSession = Depends(get_db), _use
     return {"detail": f"Camera {camera_id} deleted successfully"}
 
 
-@router.post("/{camera_id}/connect", summary="Connect to camera hardware/stream")
+RUNNING_LINE_KEEPS_IT = "The running line keeps this camera connected. Stop the line first."
+
+
+@router.post("/{camera_id}/connect", summary="Switch the camera's Connect switch on: keep it connected")
 async def connect_camera(camera_id: str, db: AsyncSession = Depends(get_db)) -> dict:
-    success, error = await CameraService.connect_camera(db, camera_id)
-    if not success:
-        raise HTTPException(status_code=400, detail="Camera connection failed; verify the configured source and consult server logs.")
-    return {"status": "connected", "camera_id": camera_id}
+    """The camera is put on the kept-connected list (saved) and connected.
+
+    "status" is "connected", or "retrying" when it did not connect: it is then retried in the
+    background until it is switched off. "disconnected" when it was switched off while it connected
+    (the last choice wins). 409 when the server already has the most cameras connected (nothing saved).
+    """
+    from app.services.settings_persistence_service import SettingsPersistenceService
+
+    if await CameraService.get_camera_by_id(db, camera_id) is None:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    limit = CameraService.camera_limit_error(camera_id)
+    if limit is not None:
+        raise HTTPException(status_code=409, detail=limit)
+    SettingsPersistenceService.set_camera_kept(camera_id, True)
+    success, _error = await CameraService.connect_camera(db, camera_id)
+    if not CameraService.wanted(camera_id):
+        await CameraService.disconnect_camera(db, camera_id)
+        return {"status": "disconnected", "camera_id": camera_id}
+    return {"status": "connected" if success else "retrying", "camera_id": camera_id}
 
 
-@router.post("/{camera_id}/disconnect", summary="Disconnect from camera")
+@router.post("/{camera_id}/disconnect", summary="Switch the camera's Connect switch off and disconnect it")
 async def disconnect_camera(camera_id: str, db: AsyncSession = Depends(get_db)) -> dict:
     """
-    Disconnects hardware capture, turns off camera LED, and releases device handle.
+    Takes the camera off the kept-connected list, stops its background retries, and releases the device.
+    409 while the camera's line is running: the line keeps it connected.
     """
+    from app.services.line_service import line_manager
+    from app.services.settings_persistence_service import SettingsPersistenceService
+
+    if line_manager.holds_camera(camera_id):
+        raise HTTPException(status_code=409, detail=RUNNING_LINE_KEEPS_IT)
+    SettingsPersistenceService.set_camera_kept(camera_id, False)
     success = await CameraService.disconnect_camera(db, camera_id)
     if not success:
         raise HTTPException(status_code=404, detail="Camera not found")

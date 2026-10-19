@@ -320,6 +320,8 @@ DEFAULT_STATE: Dict[str, Any] = {
     },
     "active_camera_id": None,
     "camera_auto_connect": False,
+    # Cameras whose Connect switch (Line setup camera card) is on: connected at start, retried until switched off.
+    "cameras_kept_connected": [],
     "audit_logs": [],
 }
 
@@ -438,6 +440,22 @@ class SettingsPersistenceService:
     def camera_auto_connect(cls) -> bool:
         """The Cameras page switch "Connect cameras when the server starts"."""
         return cls.get_state().get("camera_auto_connect") is True
+
+    @classmethod
+    def kept_cameras(cls) -> List[str]:
+        """The cameras whose Connect switch is on (``cameras_kept_connected``), in the order they were switched on."""
+        return [str(c) for c in (cls.get_state().get("cameras_kept_connected") or [])]
+
+    @classmethod
+    def set_camera_kept(cls, camera_id: str, kept: bool) -> None:
+        """Switch a camera's Connect switch on or off; saved only when it changes."""
+        if not cls._state:
+            cls.load()
+        current = cls.kept_cameras()
+        if kept == (camera_id in current):
+            return
+        cls._state["cameras_kept_connected"] = current + [camera_id] if kept else [c for c in current if c != camera_id]
+        cls.save()
 
     @classmethod
     def set_active_camera_id(cls, camera_id: Optional[str]) -> None:
