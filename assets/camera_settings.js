@@ -12,6 +12,8 @@
  * An industrial camera whose line card sets its Trigger (the camera list says
  * line_trigger_mode: "off", "hardware" or "software") shows it read-only, and
  * read() leaves it out: the server refuses a change of it on the camera.
+ * A camera card on Line setup follows its own form instead (lockTrigger): it locks
+ * and frees the Trigger as the card's Count mode and Picture taken by change.
  */
 (function () {
     "use strict";
@@ -33,19 +35,22 @@
 
     const TRIGGER_LABELS = { off: "Off: runs freely", hardware: "Hardware: the camera's own input", software: "Software: the server triggers it" };
     const LOCKED_NOTE = "Set on the line's camera card (Line setup)";
+    const triggerOptions = (values, current) => values.map((value) => `<option value="${value}" ${current === value ? "selected" : ""}>${TRIGGER_LABELS[value]}</option>`).join("");
 
     function industrialHtml(cam) {
         const s = cam.settings || {};
         // The line's camera card sets the Trigger: shown as it sets it, with nothing else to choose.
         const locked = Object.keys(TRIGGER_LABELS).includes(cam.line_trigger_mode) ? cam.line_trigger_mode : null;
-        const mode = locked || (["hardware", "software"].includes(s.trigger_mode) ? s.trigger_mode : "off");
+        // The camera's own mode: what comes back when the card lets go of the Trigger (see lockTrigger).
+        const own = ["hardware", "software"].includes(s.trigger_mode) ? s.trigger_mode : "off";
+        const mode = locked || own;
         const edge = s.trigger_edge === "falling" ? "falling" : "rising";
         const opt = (value, label, current) => `<option value="${value}" ${current === value ? "selected" : ""}>${label}</option>`;
         const lists = `cs-lines-${esc(cam.id)}`;
         return `
         <div class="cam-settings-section">Trigger (industrial camera)</div>
-        ${field("trigger_mode", "Trigger", `<select class="form-input${locked ? " cs-locked" : ""}" ${locked ? "disabled" : ""} data-help="How the camera takes pictures: freely, on its own input wire, or when the server triggers it.">${(locked ? [locked] : Object.keys(TRIGGER_LABELS)).map((value) => opt(value, TRIGGER_LABELS[value], mode)).join("")}</select>`)}
-        ${locked ? `<div class="form-hint cs-trigger-locked" style="margin:6px 0 0"><b>${LOCKED_NOTE}</b></div>` : ""}
+        ${field("trigger_mode", "Trigger", `<select class="form-input${locked ? " cs-locked" : ""}" ${locked ? "disabled" : ""} data-lock="${locked || ""}" data-free="${own}" data-help="How the camera takes pictures: freely, on its own input wire, or when the server triggers it.">${triggerOptions(locked ? [locked] : Object.keys(TRIGGER_LABELS), mode)}</select>`)}
+        <div class="form-hint cs-trigger-locked" style="margin:6px 0 0;font-weight:600" ${locked ? "" : "hidden"}>${locked ? LOCKED_NOTE : ""}</div>
         <div class="form-hint cs-trigger-note" style="margin:6px 0 10px"></div>
         <div class="cam-settings-row cs-hardware-only">
             ${field("trigger_line", "Trigger input", `<input type="text" class="form-input" maxlength="32" placeholder="Line0" list="${lists}-in" value="${esc(s.trigger_line || "")}">`)}
@@ -83,6 +88,34 @@
         root.querySelector(".cs-trigger-note").textContent = TRIGGER_NOTES[mode] || "";
         root.querySelector(".cs-hardware-only").hidden = mode !== "hardware";
         root.querySelector(".cs-triggered-only").hidden = mode === "off";
+    }
+
+    /**
+     * Show the Trigger read-only as ``mode`` ("off", "hardware" or "software") with ``note``, or editable again
+     * when ``mode`` is empty. A line's camera card calls this as its own form changes (Count mode, Picture taken
+     * by), so the Trigger always shows what a save of the card would set. What the camera had before the lock
+     * comes back, with any change made by hand, when the lock ends. A locked Trigger is not read() back.
+     */
+    function lockTrigger(root, mode, note) {
+        const select = get(root, "trigger_mode");
+        if (!select) return;
+        const locked = Object.keys(TRIGGER_LABELS).includes(mode) ? mode : null;
+        if ((select.dataset.lock || "") !== (locked || "")) {
+            if (locked && !select.disabled) select.dataset.free = select.value;
+            const shown = locked || select.dataset.free || "off";
+            select.innerHTML = triggerOptions(locked ? [locked] : Object.keys(TRIGGER_LABELS), shown);
+            select.value = shown;
+            select.disabled = Boolean(locked);
+            select.classList.toggle("cs-locked", Boolean(locked));
+            select.dataset.lock = locked || "";
+            if (typeof select._refreshCustomSelect === "function") select._refreshCustomSelect();
+        }
+        const noteBox = root.querySelector(".cs-trigger-locked");
+        if (noteBox) {
+            noteBox.hidden = !locked;
+            noteBox.textContent = locked ? (note || LOCKED_NOTE) : "";
+        }
+        syncIndustrial(root);
     }
 
     // What the connected camera says of itself: its inputs, its last picture, the settings it refused.
@@ -146,7 +179,11 @@
         if (!get(root, "trigger_mode")) return;
         const triggerButton = root.querySelector(".cs-trigger-btn");
         if (triggerButton) triggerButton.addEventListener("click", () => testTrigger(root, cameraId));
-        get(root, "trigger_mode").addEventListener("change", () => syncIndustrial(root));
+        get(root, "trigger_mode").addEventListener("change", (e) => {
+            // A mode chosen by hand is the one that comes back when a card's lock on the Trigger ends.
+            if (!e.target.disabled) e.target.dataset.free = e.target.value;
+            syncIndustrial(root);
+        });
         syncIndustrial(root);
         loadIndustrial(root, cameraId);
         const timer = setInterval(() => {
@@ -396,5 +433,5 @@
         return settings;
     }
 
-    window.CameraSettingsForm = { render, read };
+    window.CameraSettingsForm = { render, read, lockTrigger };
 })();

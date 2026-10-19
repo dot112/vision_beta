@@ -924,6 +924,42 @@
     const option = (value, label, current) => `<option value="${value}" ${current === value ? "selected" : ""}>${label}</option>`;
     const numOrEmpty = (v) => (v === null || v === undefined || v === "" ? "" : v);
 
+    // ── One picture per trigger: Picture taken by, its delay, its notice and its wait ──
+
+    const DEFAULT_PICTURE_WAIT_MS = 1000;
+    // On the card the Trigger of the camera says where it is set; the Settings dialog says "Line setup".
+    const TRIGGER_SET_BY_CARD_NOTE = "Set by Picture taken by above";
+
+    // The Trigger notice choices: None, and each "Take a picture" input of the line by its trigger number.
+    function noticeOptions(selected) {
+        const chosen = selected === null || selected === undefined || selected === "" ? "" : String(selected);
+        const inputs = window.PlcSignals && PlcSignals.triggers ? PlcSignals.triggers() : [];
+        const rows = inputs.map((t) => ({ no: String(t.no), label: `Trigger ${t.no}${t.name ? ` · ${t.name}` : ""}${t.enabled ? "" : " (switched off)"}` }));
+        // A number no input has stays chosen (the server warns about it), as with the ticks.
+        if (chosen && !rows.some((r) => r.no === chosen)) rows.push({ no: chosen, label: `Trigger ${chosen} (no input has this number)` });
+        rows.sort((a, b) => Number(a.no) - Number(b.no));
+        return `<option value="" ${chosen ? "" : "selected"}>None</option>`
+            + rows.map((r) => `<option value="${esc(r.no)}" ${r.no === chosen ? "selected" : ""}>${esc(r.label)}</option>`).join("");
+    }
+
+    // The Trigger an industrial camera gets from its card: only a vision card with Count mode "One picture per
+    // trigger" sets it (Picture taken by decides); any other card leaves the camera's own Trigger alone (null).
+    // The server sets the same on a save (trigger_mode_for_card).
+    function triggerSetByCard({ industrial, vision, countMode, source }) {
+        if (!industrial || !vision || countMode !== "trigger") return null;
+        return source === "camera" ? "hardware" : "software";
+    }
+
+    // A card's camera settings as PATCH /cameras/{id} wants them. The Trigger is left out unless it was changed by
+    // hand: while the card sets it, the form shows it read-only (and a save of the line sets it before this PATCH,
+    // which a stale mode would be refused with 409).
+    function cardCameraSettings(card, row) {
+        const settings = CameraSettingsForm.read(card, row.type);
+        const own = ["hardware", "software"].includes((row.settings || {}).trigger_mode) ? row.settings.trigger_mode : "off";
+        if (settings.trigger_mode === own) delete settings.trigger_mode;
+        return settings;
+    }
+
     // What the folds remember being open, per camera, in this browser.
     function openFolds(cameraId, fallback) {
         try {
@@ -960,6 +996,12 @@
         const station = cam.station || "own";
         const countMode = cam.count_mode === "trigger" ? "trigger" : "track";
         const noProduct = cam.no_product || "ignore";
+        // Picture taken by. Camera trigger is for an industrial camera; a card saved before it held the source follows
+        // the camera's own Trigger (Hardware is Camera trigger), as the server does.
+        const industrial = row.type === "gige";
+        const savedSource = cam.picture_source === "camera" || cam.picture_source === "system" ? cam.picture_source
+            : (row.settings || {}).trigger_mode === "hardware" ? "camera" : "system";
+        const pictureSource = industrial && savedSource === "camera" ? "camera" : "system";
         const readOnly = level() < 2;
         // A camera the version 9 upgrade flagged opens on its Codes, where its note is.
         const fold = (name, title, body) => foldHtml(name, title, body, openSet.has(name) || (name === "codes" && Boolean(cam.qr_trigger_review)));
@@ -1011,8 +1053,28 @@
             `<div class="form-group" style="margin:0"><label class="form-label">${label}</label><input type="number" class="form-input" data-track="${k}" min="${min}" max="${max}" step="${step}" placeholder="${esc(lineTracking[k] ?? def)}" value="${esc(numOrEmpty(tracking[k]))}"></div>`).join("");
         const countingBody = `
             <div class="form-group"><label class="form-label">Count mode</label><select class="form-input" data-f="count_mode">${option("track", "Moving products cross count lines", countMode)}${option("trigger", "One picture per trigger", countMode)}</select>
-                <div class="pl-note pl-count-mode-note"></div>
-                <div class="pl-triggers" data-for="count" hidden></div></div>
+                <div class="pl-note pl-count-mode-note"></div></div>
+            <div class="pl-picture" hidden>
+                <div class="form-group"><label class="form-label">Picture taken by</label>
+                    <select class="form-input" data-f="picture_source" data-help="Who takes the picture for each trigger: this server, or the camera itself.">
+                        <option value="system" ${pictureSource === "system" ? "selected" : ""}>System trigger</option>
+                        <option value="camera" ${pictureSource === "camera" ? "selected" : ""} ${industrial ? "" : "disabled"}>Camera trigger</option></select>
+                    <div class="pl-note pl-picture-industrial" hidden>Only an industrial camera can trigger itself</div></div>
+                <div class="pl-picture-system">
+                    <div class="pl-triggers" data-for="count" hidden></div>
+                    <div class="form-group"><label class="form-label">Picture delay (ms)</label>
+                        <input type="number" class="form-input" data-f="picture_delay" min="0" max="5000" step="10" value="${esc(numOrEmpty(cam.picture_delay_ms) === "" ? 0 : cam.picture_delay_ms)}">
+                        <div class="pl-note">How long after the trigger the picture is taken (0 to 5000). 0 = at once.</div></div>
+                </div>
+                <div class="pl-picture-camera">
+                    <div class="form-group"><label class="form-label">Trigger notice</label>
+                        <select class="form-input" data-f="notice_trigger" data-help="The Take a picture input that tells the server a picture is coming, so each picture is paired with its trigger.">${noticeOptions(cam.notice_trigger)}</select>
+                        <div class="pl-note">The input that tells the server a picture is coming (add it under Inputs below). None: every picture the camera takes is one product.</div></div>
+                    <div class="form-group pl-picture-wait"><label class="form-label">Wait for the picture (ms)</label>
+                        <input type="number" class="form-input" data-f="picture_wait" min="50" max="10000" step="10" value="${esc(numOrEmpty(cam.picture_wait_ms) === "" ? DEFAULT_PICTURE_WAIT_MS : cam.picture_wait_ms)}">
+                        <div class="pl-note">How far apart a notice and its picture may come, in either order (50 to 10000). Shorter than the time between two products.</div></div>
+                </div>
+            </div>
             <div class="form-group pl-no-product"><label class="form-label">When nothing is found</label><select class="form-input" data-f="no_product" data-help="What a triggered picture counts as when none of this camera's classes is in it.">${option("ignore", "Ignore: no product is counted", noProduct)}${option("reject", "Reject: counted as a rejected product", noProduct)}${option("good", "Good: counted as a good product", noProduct)}</select>
                 <div class="pl-note">What a trigger gives when its picture shows none of this camera's classes. A reject then has the reason "nothing detected".</div></div>
             <div class="pl-track-fields">
@@ -1277,17 +1339,42 @@
         const triggerMode = cardValue(card, "count_mode") === "trigger";
         card.querySelector(".pl-no-product").hidden = !triggerMode;
         card.querySelector(".pl-track-fields").hidden = triggerMode;
+        // Picture taken by: System trigger for any vision camera, Camera trigger for an industrial camera only.
+        const industrial = Boolean(row && row.type === "gige");
+        const sourceSelect = cardField(card, "picture_source");
+        const cameraChoice = [...sourceSelect.options].find((o) => o.value === "camera");
+        let source = sourceSelect.value === "camera" ? "camera" : "system";
+        let sourceChanged = false;
+        if (cameraChoice && cameraChoice.disabled === industrial) { cameraChoice.disabled = !industrial; sourceChanged = true; }
+        // A card that holds Camera trigger for a camera that cannot do it (a new device) goes back to System trigger.
+        if (!industrial && source === "camera") { source = "system"; sourceSelect.value = source; sourceChanged = true; }
+        if (sourceChanged && sourceSelect._refreshCustomSelect) sourceSelect._refreshCustomSelect();
+        card.querySelector(".pl-picture").hidden = !triggerMode;
+        card.querySelector(".pl-picture-industrial").hidden = industrial;
+        card.querySelector(".pl-picture-system").hidden = source !== "system";
+        card.querySelector(".pl-picture-camera").hidden = source !== "camera";
+        renderNoticeOptions(card);
+        const notice = cardValue(card, "notice_trigger");
+        card.querySelector(".pl-picture-wait").hidden = !notice;
+        // The camera's Trigger follows this card's own form (not only what the server saved): with One picture per
+        // trigger it is shown as the card sets it, read-only, and is not sent back; the line save sets it.
+        CameraSettingsForm.lockTrigger(card, triggerSetByCard({ industrial, vision: isVisionJob(job), countMode: triggerMode ? "trigger" : "track", source }), TRIGGER_SET_BY_CARD_NOTE);
         const camTrigger = cameraTrigger(card);
         const COUNT_NOTES = {
             track: { off: "Counts products as they cross the count lines.",
                      hardware: "Counts products as they cross the count lines. The camera's trigger must come fast and steadily.",
                      software: "A camera on Software trigger cannot count moving products. Choose One picture per trigger." },
-            trigger: { off: "One picture per trigger; each picture is one product.",
-                       hardware: "Each picture the camera takes is one product. No input is needed.",
-                       software: "One picture per trigger; each picture is one product." },
+            trigger: {
+                system: "A picture is taken each time a ticked trigger asks, after the Picture delay. Each picture is one product.",
+                camera: "Each picture the camera takes is one product. No input is needed. A missed or double trigger cannot be seen. Use a trigger notice when a PLC or robot waits for each answer.",
+                notice: "The camera takes its own pictures. A notice and a picture within the wait of each other are one product; a notice with no picture is a rejected product.",
+            },
         };
-        card.querySelector(".pl-count-mode-note").textContent = COUNT_NOTES[triggerMode ? "trigger" : "track"][camTrigger];
-        renderTriggers(card, triggerMode && isVisionJob(job), Boolean(JOBS[job].codes) && trigger === "signal", camTrigger);
+        card.querySelector(".pl-count-mode-note").textContent = triggerMode
+            ? COUNT_NOTES.trigger[source === "camera" ? (notice ? "notice" : "camera") : "system"]
+            : COUNT_NOTES.track[camTrigger];
+        // The ticks are for System trigger: for Camera trigger the notice replaces them.
+        renderTriggers(card, triggerMode && isVisionJob(job) && source === "system", Boolean(JOBS[job].codes) && trigger === "signal", camTrigger);
         if (camTrigger !== "off") {
             const readNote = card.querySelector(".pl-trigger-note");
             if (trigger === "signal") {
@@ -1594,7 +1681,7 @@
         }
         info.imageForm = CameraSettingsForm.render(imageBox, camForm, ["image"]);
         CameraSettingsForm.render(cardField(card, "video-form"), camForm, ["video"]);
-        info.initialSettings = JSON.stringify(CameraSettingsForm.read(card, row.type));
+        info.initialSettings = JSON.stringify(cardCameraSettings(card, row));
         info.cam = row;
         if (card.querySelector('.pl-fold[data-fold="image"]').classList.contains("open")) info.imageForm.loadPicture(() => card.isConnected);
     }
@@ -1648,8 +1735,7 @@
             if (name === "job") onJobChange(card, t.value);
             if (name === "device") onDeviceChange(card, t.value);
             if (name === "name") card.querySelector(".pl-card-name").textContent = t.value.trim() || card.dataset.camera;
-            // Back to tracking: the count lines are drawn on a picture again.
-            if (name === "count_mode" && t.value === "track") setTimeout(() => loadLinesPicture(card), 0);
+            if (name === "count_mode") onCountModeChange(card, t.value);
             if (!t.classList.contains("pl-class-filter")) markDirty();
             syncLineSetup();
         });
@@ -1667,6 +1753,13 @@
             if (t.dataset.f === "join_offset" || t.dataset.f === "join_window") syncJoin(card);
         });
         bindCountLineDrag(card);
+    }
+
+    // Count mode changed. One picture per trigger: a trigger that finds nothing is a rejected product (the user can
+    // change it). Back to tracking: the count lines are drawn on a picture again.
+    function onCountModeChange(card, mode) {
+        if (mode === "trigger") cardField(card, "no_product").value = "reject";
+        else if (mode === "track") setTimeout(() => loadLinesPicture(card), 0);
     }
 
     // Exactly one counting camera on a line with a vision camera.
@@ -1914,6 +2007,17 @@
     function cardTriggers(card) {
         const info = setup.cards.get(card.dataset.key);
         return info ? info.triggers : new Set();
+    }
+
+    // The Trigger notice choices follow the line's inputs (they change while the card is open).
+    function renderNoticeOptions(card) {
+        const select = cardField(card, "notice_trigger");
+        if (!select) return;
+        const html = noticeOptions(select.value);
+        if (select.dataset.options === html) return;
+        select.dataset.options = html;
+        select.innerHTML = html;
+        if (select._refreshCustomSelect) select._refreshCustomSelect();
     }
 
     // The tick boxes under Count mode and under Read codes: two views of the camera's one list.
@@ -2220,7 +2324,19 @@
                 // "track" is sent too: a key that is left out keeps its saved value.
                 count_mode: cardValue(card, "count_mode") === "trigger" ? "trigger" : "track",
             });
-            if (entry.count_mode === "trigger") entry.no_product = cardValue(card, "no_product") || "ignore";
+            if (entry.count_mode === "trigger") {
+                entry.no_product = cardValue(card, "no_product") || "ignore";
+                // Picture taken by and what goes with it. The server checks Camera trigger against the camera's type.
+                const camera = cardValue(card, "picture_source") === "camera";
+                const notice = parseInt(cardValue(card, "notice_trigger"), 10);
+                const wait = parseInt(cardValue(card, "picture_wait"), 10);
+                Object.assign(entry, {
+                    picture_source: camera ? "camera" : "system",
+                    picture_delay_ms: Math.max(0, parseInt(cardValue(card, "picture_delay"), 10) || 0),
+                    notice_trigger: camera && notice >= 1 ? notice : null,
+                    picture_wait_ms: Number.isFinite(wait) ? wait : DEFAULT_PICTURE_WAIT_MS,
+                });
+            }
             if (!spec.counting) entry.station = cardValue(card, "station") || "own";
             if (entry.station === "join") {
                 Object.assign(entry, {
@@ -2295,7 +2411,7 @@
             const row = cameraRow(card.dataset.camera);
             if (!info || !row) continue;
             const patch = {};
-            const settings = CameraSettingsForm.read(card, row.type);
+            const settings = cardCameraSettings(card, row);
             if (info.initialSettings !== null && JSON.stringify(settings) !== info.initialSettings) patch.settings = settings;
             const name = cardValue(card, "name").trim();
             if (name && name !== row.name) patch.name = name;
@@ -2578,6 +2694,7 @@
         product_check: "product check",
         inspection_timeout: "no result in time",
         sorting_mismatch: "wrong outfeed",
+        no_picture: "no picture",
     };
     const LANE = { accepted: "accepted outfeed", rejected: "rejected outfeed" };
     const HANDSHAKE_STATE = {

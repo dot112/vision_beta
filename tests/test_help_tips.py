@@ -51,6 +51,7 @@ KEEP = (
     "What a triggered picture counts as when none", "The direction the products move", "Count crossings in the flow direction only",
     "Takes a still picture to draw the count lines on", "Keeps this camera showing codes only",
     "Off, or the outfeed this camera watches", "Takes one test picture with the code reader now",
+    "Who takes the picture for each trigger", "The Take a picture input that tells the server a picture is coming",
     # Product sequence and result handshake.
     "The input read for each product's sequence number", "The Take a picture input that starts each handshake",
     "The input the PLC acknowledges each result with", "What happens when a result is not ready in time",
