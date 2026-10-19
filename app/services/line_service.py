@@ -1204,11 +1204,19 @@ class LineRuntime:
             worker = CameraStreamPipeline.get_worker(camera_id)
             if worker.submit_frame_if_idle(picture.frame, picture.frame_id, conf_thresh=self.confidence_for(camera_id),
                                            copy=False, arrived_at=arrived,
-                                           on_result=functools.partial(_hardware_result, camera_id, context=context)):
+                                           on_result=functools.partial(_hardware_result, camera_id, context=context),
+                                           on_failure=functools.partial(self._pair_failed, camera_id, context)):
                 queue.popleft()
             waiting = bool(queue)
         if waiting:
             self._retry_pairs_later(camera_id)
+
+    def _pair_failed(self, camera_id: str, context: Dict[str, Any], frame_id: int, why: str) -> None:
+        """The camera's model could not inspect a paired picture (no model, or it raised): its notice still
+        gets its one answer, a "no picture" reject with the notice's context."""
+        from app.services.trigger_inspection import no_picture_product
+
+        no_picture_product(self, camera_id, f"the model could not inspect the picture: {why}", **context)
 
     def _retry_pairs_later(self, camera_id: str) -> None:
         with self._pair_lock:

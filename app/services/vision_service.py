@@ -95,6 +95,7 @@ class _CameraInferenceWorker:
         self._pending_fid: int = 0
         self._pending_conf: Optional[float] = None
         self._pending_arrived: Optional[float] = None
+        self._pending_failure: Optional[Callable[[int, str], None]] = None
         self._pending_callback: Optional[Callable[[int, List[Any], float, Optional[float]], None]] = None
 
         self._latest_detections: List[Any] = []
@@ -135,6 +136,7 @@ class _CameraInferenceWorker:
         copy: bool = True,
         arrived_at: Optional[float] = None,
         on_result: Optional[Callable[[int, List[Any], float, Optional[float]], None]] = None,
+        on_failure: Optional[Callable[[int, str], None]] = None,
     ) -> bool:
         """
         Queue a frame for inference unless one is already in flight.
@@ -145,7 +147,9 @@ class _CameraInferenceWorker:
         taken for a repeat of the last one (a camera's frame ids start again when
         it reconnects). on_result is called on the worker's thread once the model
         got through this picture, with (frame id, detections, inference ms,
-        arrived at); it is not called when no model is loaded.
+        arrived at); it is not called when no model is loaded or the model fails.
+        on_failure is called instead, on the worker's thread, with (frame id, why) when
+        this picture got no result: no model is loaded, or the model raised.
         Returns True if the frame was accepted.
         """
         if frame_mat is None or (arrived_at is None and frame_id == self._processed_frame_id):
@@ -161,6 +165,7 @@ class _CameraInferenceWorker:
             self._pending_conf = conf_thresh
             self._pending_arrived = arrived_at
             self._pending_callback = on_result
+            self._pending_failure = on_failure
         self._trigger_event.set()
         return True
 
@@ -176,8 +181,10 @@ class _CameraInferenceWorker:
                 fid = self._pending_fid
                 conf = self._pending_conf
                 arrived, callback = self._pending_arrived, self._pending_callback
+                on_failure = self._pending_failure
                 self._pending_frame = None
                 self._pending_callback = None
+                self._pending_failure = None
 
             if mat is None:
                 continue
@@ -193,6 +200,7 @@ class _CameraInferenceWorker:
                         self._latest_inference_ms = 0.0
                         self._processed_frame_id = fid
                         self.result_seq += 1
+                    self._tell_failure(on_failure, fid, "no vision model is loaded for the camera")
                     continue
                 det_response = engine.predict_mat(mat, conf_threshold=conf)
 
@@ -235,9 +243,23 @@ class _CameraInferenceWorker:
                     logger, logging.WARNING, ("inference", self.camera_id),
                     "Inference failed on camera %s: %s: %s", self.camera_id, type(exc).__name__, exc,
                 )
+                self._tell_failure(on_failure, fid, f"{type(exc).__name__}: {exc}")
             finally:
                 with self._input_lock:
                     self._busy = False
+
+    def _tell_failure(self, on_failure: Optional[Callable[[int, str], None]], fid: int, why: str) -> None:
+        """Say that the picture got no result (a trigger waits for its answer); never raises."""
+        if on_failure is None:
+            return
+        try:
+            on_failure(fid, why)
+        except Exception as cb_err:
+            _error_log.log(
+                logger, logging.WARNING, ("result", self.camera_id),
+                "The failure of a triggered picture of camera %s could not be told: %s: %s",
+                self.camera_id, type(cb_err).__name__, cb_err,
+            )
 
     def stop(self) -> None:
         self._stop_event.set()

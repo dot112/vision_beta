@@ -76,7 +76,8 @@ class _Vision:
         self.names = ["carton"]
         self.is_busy = False
 
-    def submit_frame_if_idle(self, mat, frame_id, conf_thresh=None, copy=True, arrived_at=None, on_result=None):
+    def submit_frame_if_idle(self, mat, frame_id, conf_thresh=None, copy=True, arrived_at=None, on_result=None,
+                             on_failure=None):
         if on_result is not None:
             on_result(frame_id, [_det(name) for name in self.names], 3.0, arrived_at)
         return True

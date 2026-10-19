@@ -242,7 +242,8 @@ class _Worker:
     def get_latest_inference(self):
         return list(self.detections), self.inference_ms
 
-    def submit_frame_if_idle(self, mat, frame_id, conf_thresh=None, copy=True, arrived_at=None, on_result=None):
+    def submit_frame_if_idle(self, mat, frame_id, conf_thresh=None, copy=True, arrived_at=None, on_result=None,
+                             on_failure=None):
         if self.is_busy:
             return False
         self.is_busy = True
@@ -561,7 +562,8 @@ class _AutoWorker(_Worker):
         super().__init__()
         self.detections = [_det(name) for name in names]
 
-    def submit_frame_if_idle(self, mat, frame_id, conf_thresh=None, copy=True, arrived_at=None, on_result=None):
+    def submit_frame_if_idle(self, mat, frame_id, conf_thresh=None, copy=True, arrived_at=None, on_result=None,
+                             on_failure=None):
         self.submitted.append(frame_id)
         if on_result is not None:
             on_result(frame_id, list(self.detections), self.inference_ms, arrived_at)

@@ -9,6 +9,7 @@ GET /lines/{id}/trigger/capture gives the JPEG.
 from __future__ import annotations
 
 import threading
+import time
 
 import cv2
 import numpy as np
@@ -134,6 +135,51 @@ def test_worker_keeps_the_frame_it_inferred(lines, monkeypatch):  # noqa: F811
         worker.stop()
     # The callback finds the very frame the model got through, and it is still kept afterwards.
     assert seen[0] is frame and worker.last_inferred_frame is frame
+
+
+def _worker_failure(lines, monkeypatch, engine):  # noqa: F811
+    """Submit one picture with both callbacks to a real worker whose engine is ``engine``; what on_failure got."""
+    from app.services.vision_service import _CameraInferenceWorker
+
+    monkeypatch.setattr(lines, "engine_for_camera", lambda camera_id: (engine, "fake-model", None))
+    worker = _CameraInferenceWorker("cam-fails")
+    failed, done = [], threading.Event()
+    results = []
+
+    def on_failure(frame_id, why):
+        failed.append((frame_id, why))
+        done.set()
+
+    try:
+        assert worker.submit_frame_if_idle(np.zeros((48, 64, 3), dtype=np.uint8), 7, copy=False,
+                                           on_result=lambda *args: results.append(args), on_failure=on_failure)
+        assert done.wait(3)
+        deadline = time.time() + 2
+        while worker.is_busy and time.time() < deadline:
+            time.sleep(0.005)
+        assert not worker.is_busy                 # the worker takes the next picture
+    finally:
+        worker.stop()
+    assert results == []
+    return failed
+
+
+def test_worker_tells_on_failure_when_no_model_is_loaded(lines, monkeypatch):  # noqa: F811
+    engine = FakeInferenceEngine()
+    engine.is_loaded = False
+    (frame_id, why), = _worker_failure(lines, monkeypatch, engine)
+    assert frame_id == 7 and "model" in why
+
+
+def test_worker_tells_on_failure_when_the_model_raises(lines, monkeypatch):  # noqa: F811
+    engine = FakeInferenceEngine()
+
+    def boom(mat, conf_threshold=None):
+        raise RuntimeError("out of memory")
+
+    engine.predict_mat = boom
+    (frame_id, why), = _worker_failure(lines, monkeypatch, engine)
+    assert frame_id == 7 and "out of memory" in why
 
 
 # ── The picture with its boxes ───────────────────────────────────────────────

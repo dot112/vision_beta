@@ -122,13 +122,23 @@ class Model:
         self.last_inferred_frame = None
         self._job = None
 
-    def submit_frame_if_idle(self, mat, frame_id, conf_thresh=None, copy=True, arrived_at=None, on_result=None):
+    def submit_frame_if_idle(self, mat, frame_id, conf_thresh=None, copy=True, arrived_at=None, on_result=None,
+                             on_failure=None):
         if self.is_busy:
             return False
         self.is_busy = True
         self.taken.append(int(mat[0, 0, 0]))
         self._job = (mat, frame_id, arrived_at, on_result)
+        self._on_failure = on_failure
         return True
+
+    def fail(self, why="the model raised"):
+        """The model could not get through the picture it holds (the real worker calls on_failure)."""
+        assert self._job is not None, "the model holds no picture"
+        frame_id, on_failure = self._job[1], self._on_failure
+        self._job = None
+        on_failure(frame_id, why)
+        self.is_busy = False
 
     def finish(self):
         assert self._job is not None, "the model holds no picture"
@@ -244,6 +254,23 @@ def test_notice_then_picture_makes_one_product_with_the_notice_context(rig):
     assert _counters(runtime) == {"triggers": 1, "pictures": 1, "results": 1, "missing": 0, "late": 0, "extra": 0}
     rig.clock.advance(5.0)                       # the notice's timer finds nothing left to answer
     assert len(rig.crossings) == 1 and _counters(runtime)["missing"] == 0
+
+
+def test_a_paired_picture_the_model_cannot_inspect_still_gets_its_notice_a_no_picture_answer(rig):
+    runtime = rig.line()
+    runtime.trigger_notice("cam", 1, {"sequence": 42, "request_id": 7})
+    rig.clock.advance(0.2)
+    rig.camera.take(BOTTLE)
+    rig.pump()
+    rig.model.fail("out of memory")
+
+    crossing, = rig.crossings
+    assert (crossing["class_name"], crossing["reject_reason"]) == ("no picture", "no_picture")
+    assert _context(crossing) == (1, 42, 7)
+    assert _counters(runtime) == {"triggers": 1, "pictures": 1, "results": 0, "missing": 1, "late": 0, "extra": 0}
+    assert alarm_manager.get(AlarmCode.CAMERA_PICTURE_MISSING, "camera:cam") is not None
+    rig.clock.advance(5.0)                       # nothing is answered twice
+    assert len(rig.crossings) == 1
 
 
 def test_picture_then_notice_pairs_too(rig):
