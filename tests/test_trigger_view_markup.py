@@ -153,6 +153,9 @@ for (const id of ["trigView", "trigViewImg", "trigViewText", "trigViewCaption", 
     els[id] = {id, hidden: true, textContent: "", innerHTML: "", dataset: {}, src: undefined,
         removeAttribute(name) { if (name === "src") this.src = undefined; }};
 }
+els.noVideoNote = {textContent: "Waiting for the first picture\u2026"};
+els.noVideoOverlay = {active: false, classList: {add(name) { els.noVideoOverlay.active = name === "active" || els.noVideoOverlay.active; }}};
+const cameraName = (id) => "Camera " + id;
 const byId = (id) => els[id] || null;
 const state = {lineId: "line 1", detail: null};
 let cam = {camera_id: "cam-1", connected: true, role: "vision"};
@@ -285,13 +288,20 @@ def test_stopped_line_says_so_and_counters_stay():
 
 
 def test_camera_not_connected_keeps_the_video_boxs_own_note():
+    # The page's status line writes that note only when the line view is read (every 5 s), and the 1 s poll
+    # does not fire pl:detail: the view puts the note in itself when it gives way to it.
     result = _run_view(r"""
-    cam = {camera_id: "cam-1", connected: false, role: "vision"};
+    cam = {camera_id: "cam-1", connected: false, role: "vision", name: "Fruit"};
     renderTriggerView(status([row(cap(7))]));
     await tick();
-    console.log(JSON.stringify({viewHidden: els.trigView.hidden, requests: requests.length, countersHidden: els.trigCounters.hidden}));
+    const named = els.noVideoNote.textContent;
+    cam = {camera_id: "cam-1", connected: false, role: "vision"};     // the server names a camera only while it is connected
+    renderTriggerView(status([row(cap(7))]));
+    console.log(JSON.stringify({viewHidden: els.trigView.hidden, requests: requests.length, countersHidden: els.trigCounters.hidden,
+        named, unnamed: els.noVideoNote.textContent, overlay: els.noVideoOverlay.active}));
     """)
-    assert result == {"viewHidden": True, "requests": 0, "countersHidden": False}
+    assert result == {"viewHidden": True, "requests": 0, "countersHidden": False,
+                      "named": "Fruit is not connected.", "unnamed": "Camera cam-1 is not connected.", "overlay": True}
 
 
 def test_a_camera_that_is_not_in_trigger_mode_gets_no_view():
@@ -463,18 +473,18 @@ def test_the_periodic_check_does_not_reopen_the_stream_of_a_trigger_camera():
     assert out == {"trigger": 0, "plain": 1}
 
 
-def test_the_refresh_reads_the_status_each_second_for_a_trigger_camera_only():
+def test_the_refresh_polls_the_status_each_second_for_a_trigger_camera_only():
     source = re.search(r"\n    async function refreshLineExtras\(\) \{.*?\n    \}\n", _script(), re.S).group(0)
+    # loadDetail is not defined here: a refresh that asked for the full line view would fail with a ReferenceError.
     code = r"""
-    let shownTab = true, loads = 0, drawn = [], feedCam = {camera_id: "trig"};
+    let shownTab = true, polls = 0, drawn = [], feedCam = {camera_id: "trig"};
     const dashboardShown = () => shownTab;
     const state = {detail: {status: {state: "running", n: 0}}, lineId: "line-1"};
     const ensureStripFeeds = () => {};
     const lineFeedCamera = () => feedCam;
     const triggerIds = new Set(["trig"]);
     const isTriggerCamera = (id) => triggerIds.has(id);
-    const trig = {loading: false};
-    const loadDetail = async () => { loads++; state.detail = {status: {state: "running", n: loads}}; return state.detail; };
+    const refreshTriggerStatus = async () => { polls++; state.detail.status = {state: "running", n: polls}; };
     const renderTriggerView = (status) => drawn.push(status.n);
     const byId = () => null;
     const renderCartonView = () => {};
@@ -483,27 +493,139 @@ def test_the_refresh_reads_the_status_each_second_for_a_trigger_camera_only():
     (async () => {
         const out = {};
         await refreshLineExtras();
-        out.trigger = {loads, drawn: drawn.slice()};
+        out.trigger = {polls, drawn: drawn.slice()};
         feedCam = {camera_id: "plain"};
         await refreshLineExtras();
-        out.plain = {loads, drawn: drawn.slice()};
-        feedCam = {camera_id: "trig"};
-        trig.loading = true;              // a read is still on its way: another is not started
-        await refreshLineExtras();
-        out.busy = {loads, drawn: drawn.slice()};
-        trig.loading = false;
+        out.plain = {polls, drawn: drawn.slice()};
         shownTab = false;                 // not on the Line Dashboard: nothing is read
+        feedCam = {camera_id: "trig"};
         await refreshLineExtras();
-        out.hidden = {loads, drawn: drawn.slice()};
+        out.hidden = {polls, drawn: drawn.slice()};
         console.log(JSON.stringify(out));
     })();
     """ % source
     out = _node(code)
     # The view is drawn from the status just read; a camera that is not in trigger mode reuses the one it has.
-    assert out["trigger"] == {"loads": 1, "drawn": [1]}
-    assert out["plain"] == {"loads": 1, "drawn": [1, 1]}
-    assert out["busy"] == {"loads": 1, "drawn": [1, 1, 1]}
-    assert out["hidden"] == {"loads": 1, "drawn": [1, 1, 1]}
+    assert out["trigger"] == {"polls": 1, "drawn": [1]}
+    assert out["plain"] == {"polls": 1, "drawn": [1, 1]}
+    assert out["hidden"] == {"polls": 1, "drawn": [1, 1]}
+
+
+def _status_code(scenario: str) -> str:
+    """refreshTriggerStatus and loadDetail cut out of the script, on stubs whose replies the scenario holds back."""
+    script = _script()
+    poll = re.search(r"\n    async function refreshTriggerStatus\(\) \{.*?\n    \}\n", script, re.S).group(0)
+    detail = re.search(r"\n    async function loadDetail\(\) \{.*?\n    \}\n", script, re.S).group(0)
+    return r"""
+    const events = [], paths = [], waiting = [];
+    class CustomEvent { constructor(type, init) { this.type = type; this.detail = init && init.detail; } }
+    const window = {dispatchEvent: (e) => events.push(e.type)};
+    const byId = () => null;
+    const warningsHtml = () => "";
+    const state = {lineId: "line-1", trigger: null,
+        detail: {id: "line-1", name: "Line", enabled: true, status: {n: 0, state: "running", trigger_cameras: []}}};
+    let statusIssued = 0, statusApplied = 0;
+    // Each request waits until the scenario answers it, in the order it chooses.
+    const api = (path) => new Promise((resolve, reject) => { paths.push(path); waiting.push({path, resolve, reject}); });
+    const next = (path) => waiting.find((w) => w.path === path && !w.done && (w.done = true));
+    const answer = (path, value) => next(path).resolve(value);
+    const fail = (path, error) => next(path).reject(error);
+    const trig = {loading: false};
+    const line = (n, extra) => Object.assign({id: "line-1", name: "Line", enabled: true, status: {n, state: "running"}}, extra || {});
+    const overview = (n, extra) => ({lines: [{id: "other", enabled: true, n: -1}, Object.assign({id: "line-1", enabled: true, state: "running", n}, extra || {})]});
+    %s
+    %s
+    (async () => {
+        const out = {};
+    %s
+        console.log(JSON.stringify(out));
+    })();
+    """ % (poll, detail, scenario)
+
+
+def test_the_one_second_poll_reads_the_overview_and_replaces_only_the_status():
+    out = _node(_status_code(r"""
+        const detail = state.detail;
+        const pending = refreshTriggerStatus();
+        out.paths = paths.slice();
+        answer("/api/v1/lines/overview", overview(5, {enabled: false, state: "stopped"}));
+        await pending;
+        out.status = state.detail.status;
+        out.enabled = state.detail.enabled;
+        out.keptTheRest = state.detail === detail && state.detail.name === "Line" && state.detail.id === "line-1";
+        out.events = events.slice();
+        out.loading = trig.loading;
+    """))
+    assert out["paths"] == ["/api/v1/lines/overview"]       # not /lines/{id}
+    assert out["status"]["n"] == 5 and out["status"]["state"] == "stopped" and out["enabled"] is False
+    assert out["keptTheRest"] is True
+    assert out["events"] == []                              # no pl:detail from the 1 s poll
+    assert out["loading"] is False
+
+
+def test_a_poll_is_not_started_while_the_last_one_is_on_its_way():
+    out = _node(_status_code(r"""
+        const first = refreshTriggerStatus();
+        const second = refreshTriggerStatus();
+        out.paths = paths.slice();
+        answer("/api/v1/lines/overview", overview(1));
+        await Promise.all([first, second]);
+        // Once it has landed the next second's poll is asked for.
+        const third = refreshTriggerStatus();
+        out.afterwards = paths.length;
+        answer("/api/v1/lines/overview", overview(2));
+        await third;
+    """))
+    assert out["paths"] == ["/api/v1/lines/overview"]
+    assert out["afterwards"] == 2
+
+
+def test_an_older_poll_landing_late_does_not_replay_an_older_capture():
+    out = _node(_status_code(r"""
+        // The poll was asked for first, the full line view after it; the line view lands first.
+        const poll = refreshTriggerStatus();
+        const full = loadDetail();
+        answer("/api/v1/lines/line-1", line(2));
+        await full;
+        answer("/api/v1/lines/overview", overview(1));
+        await poll;
+        out.afterOldPoll = state.detail.status.n;
+        // And the other way round: the line view was asked for first, a poll after it; the poll lands first.
+        const olderFull = loadDetail();
+        const newerPoll = refreshTriggerStatus();
+        answer("/api/v1/lines/overview", overview(4));
+        await newerPoll;
+        answer("/api/v1/lines/line-1", line(3, {name: "Renamed"}));
+        await olderFull;
+        out.afterOldFull = {n: state.detail.status.n, name: state.detail.name};
+        out.events = events.slice();
+    """))
+    assert out["afterOldPoll"] == 2                          # the older poll was not applied
+    # The older full view keeps the newer status, and still brings what only it carries (a changed name).
+    assert out["afterOldFull"] == {"n": 4, "name": "Renamed"}
+    assert out["events"] == ["pl:detail", "pl:detail"]       # only the full views fire it
+
+
+def test_a_poll_for_another_line_or_a_failed_poll_changes_nothing():
+    out = _node(_status_code(r"""
+        const pending = refreshTriggerStatus();
+        state.lineId = "line-2";                                 // the page moved to another line meanwhile
+        answer("/api/v1/lines/overview", overview(9));
+        await pending;
+        out.moved = state.detail.status.n;
+        state.lineId = "line-1";
+        const failing = refreshTriggerStatus();
+        fail("/api/v1/lines/overview", new Error("network down"));
+        await failing;
+        out.failed = {n: state.detail.status.n, loading: trig.loading};
+        const missing = refreshTriggerStatus();                  // the line is not in the overview
+        answer("/api/v1/lines/overview", {lines: [{id: "other"}]});
+        await missing;
+        out.missing = state.detail.status.n;
+    """))
+    assert out["moved"] == 0
+    assert out["failed"] == {"n": 0, "loading": False}
+    assert out["missing"] == 0
 
 
 # ── Markup ────────────────────────────────────────────────────────────────────
@@ -534,7 +656,7 @@ def test_markup():
     # The 1 s refresh draws the view; a trigger camera's status is read each time.
     refresh = script[script.index("    async function refreshLineExtras"):]
     refresh = refresh[:refresh.index("\n    }\n")]
-    assert "renderTriggerView(" in refresh and "loadDetail()" in refresh
+    assert "renderTriggerView(" in refresh and "refreshTriggerStatus()" in refresh and "loadDetail" not in refresh
     # The view's own style hides it with the hidden attribute and lies over the video box's note.
     assert re.search(r"\.trig-view\s*\{[^}]*position:\s*absolute", css) and ".trig-view[hidden]" in css
     # The script still loads in a browser as before (the closure runs only with a window).

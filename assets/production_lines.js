@@ -416,8 +416,23 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         if (typeof checkActiveStream === "function") checkActiveStream();
     }
 
+    // Every read of a line's status (the full line view, or the 1 s poll of a trigger camera) is numbered when
+    // it is asked for. One that lands after a newer read was applied is older: its status, and the capture in
+    // it, must not replace the newer one.
+    let statusIssued = 0;
+    let statusApplied = 0;
+
     async function loadDetail() {
-        state.detail = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}`);
+        const issued = ++statusIssued;
+        const detail = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}`);
+        if (issued < statusApplied && state.detail && state.detail.id === detail.id && state.detail.status) {
+            // The newer status stays; the rest of this view (settings, warnings) is as new as it is.
+            detail.status = state.detail.status;
+            detail.enabled = state.detail.enabled;
+        } else {
+            statusApplied = issued;
+        }
+        state.detail = detail;
         state.trigger = state.detail.action_trigger || {};
         const warnings = byId("plSetupWarnings");
         if (warnings) warnings.innerHTML = warningsHtml(state.detail);
@@ -2886,14 +2901,14 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
     // ── Trigger cameras on the Line Dashboard ─────────────────────────────────
     // A camera in trigger mode has no live picture. Its video box says "Waiting for trigger", shows each
     // picture taken (with a caption) for 5 s of the browser's clock, then waits again; the counters sit
-    // under the box. The 1 s refresh reads the line's status and draws it (renderTriggerView).
+    // under the box. The 1 s refresh polls the line's status (refreshTriggerStatus) and draws it (renderTriggerView).
     const trig = {
         key: null,      // line and camera on view; a change starts the view over
         shown: null,    // {id, atMs}: the capture on view and since when
         mode: null, capture: null,
         url: null,      // object URL of the picture on screen
         imgId: null,    // id of the capture that picture belongs to
-        loading: false, // the status is being read
+        loading: false, // the status poll is on its way
     };
     const TRIGGER_TEXT = { waiting: "Waiting for trigger", no_picture: "No picture: Reject", stopped: "The line is stopped" };
 
@@ -2976,8 +2991,15 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         if (counters.dataset.html !== html) { counters.innerHTML = html; counters.dataset.html = html; }
         counters.hidden = false;
         const running = !status || status.state !== "stopped";
-        // A running line whose camera is not connected keeps the video box's own note.
-        if (running && !cam.connected) { view.hidden = true; return; }
+        // A running line whose camera is not connected keeps the video box's own note. The page's status
+        // line writes it when the line view is read (every 5 s), so it is put in here at once.
+        if (running && !cam.connected) {
+            view.hidden = true;
+            byId("noVideoOverlay")?.classList.add("active");
+            const note = byId("noVideoNote");
+            if (note) note.textContent = `${cam.name || cameraName(cam.camera_id)} is not connected.`;
+            return;
+        }
         const now = Date.now();
         const next = triggerViewState(row, trig.shown, now, running);
         const capture = row.capture;
@@ -2995,14 +3017,30 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         if (fetchId !== undefined) fetchTriggerPicture(row.camera_id, fetchId, key);
     }
 
+    // A trigger camera's capture and counters change by the second, the line view is read every 5 s. Each
+    // second the status comes from /lines/overview (every line's summary, no database reads) and replaces
+    // only state.detail.status and enabled: the line view is not read again and pl:detail does not fire.
+    async function refreshTriggerStatus() {
+        if (trig.loading) return;
+        trig.loading = true;
+        const issued = ++statusIssued;
+        const lineId = state.lineId;
+        try {
+            const entry = (((await api("/api/v1/lines/overview")) || {}).lines || []).find((l) => l.id === lineId);
+            if (entry && issued > statusApplied && state.lineId === lineId && state.detail && state.detail.id === lineId) {
+                statusApplied = issued;
+                state.detail.status = entry;
+                state.detail.enabled = entry.enabled;
+            }
+        } catch (_) { /* the view goes on with what it has */ } finally { trig.loading = false; }
+    }
+
     async function refreshLineExtras() {
         if (!dashboardShown() || !state.detail) return;
         ensureStripFeeds();
-        // The status is read every 5 s; a trigger camera's capture and counters are read every second.
         const feed = lineFeedCamera();
-        if (feed && isTriggerCamera(feed.camera_id) && !trig.loading) {
-            trig.loading = true;
-            try { await loadDetail(); } catch (_) { /* the view goes on with what it has */ } finally { trig.loading = false; }
+        if (feed && isTriggerCamera(feed.camera_id)) {
+            await refreshTriggerStatus();
             if (!dashboardShown() || !state.detail) return;
         }
         const status = state.detail.status || {};
