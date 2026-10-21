@@ -528,10 +528,14 @@ input[type="password"]::-ms-reveal, input[type="password"]::-ms-clear { display:
 .danger-zone span { font-size: 13px; color: var(--text-muted); }
 
 /* ── Line status banner ─────────────────────────────────────────────────── */
+/* A grid, so that no part is squeezed by the others: one row where there is room (below), two rows on
+   medium screens (the model, speed and cameras get the whole second row), one column on a phone. */
 .line-status {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    grid-template-areas: "state batch meta actions";
     align-items: center;
-    gap: 20px;
+    gap: 10px 20px;
     padding: 14px 20px;
     margin-bottom: 16px;
     background: var(--card-bg);
@@ -543,17 +547,31 @@ input[type="password"]::-ms-reveal, input[type="password"]::-ms-clear { display:
 .line-status[data-state="running"] { border-left-color: var(--success-color); }
 .line-status[data-state="idle"] { border-left-color: var(--warning-color); }
 .line-status[data-state="fault"] { border-left-color: var(--danger-color); }
-.line-status-state { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.line-status-state { grid-area: state; display: flex; align-items: center; gap: 12px; }
 .line-status-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--neutral-state); }
 [data-state="running"] .line-status-dot { background: var(--success-color); box-shadow: 0 0 0 5px var(--success-tint); }
 [data-state="idle"] .line-status-dot { background: var(--warning-color); box-shadow: 0 0 0 5px var(--warning-tint); }
 [data-state="fault"] .line-status-dot { background: var(--danger-color); box-shadow: 0 0 0 5px var(--danger-tint); }
 .line-status-word { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; }
-.line-status-meta { display: flex; flex-wrap: wrap; gap: 4px 18px; min-width: 0; color: var(--text-muted); font-size: 13.5px; }
+.line-status-meta { grid-area: meta; display: flex; flex-wrap: wrap; gap: 4px 18px; min-width: 0; color: var(--text-muted); font-size: 13.5px; }
 .line-status-meta b { color: var(--text-color); font-weight: 600; }
 .line-status-meta .bad { color: var(--danger-color); }
 .line-status-meta .warn { color: var(--warning-color); }
-.line-status-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; flex-shrink: 0; }
+.line-status-actions { grid-area: actions; display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+@media (max-width: 1599px) {
+    .line-status {
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        grid-template-areas: "state batch actions" "meta meta meta";
+    }
+}
+@media (max-width: 640px) {
+    .line-status {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas: "state" "batch" "meta" "actions";
+    }
+    .line-status-actions { justify-content: flex-start; }
+    .line-status-actions .status-pill { margin-right: auto; }
+}
 .status-pill {
     display: inline-flex;
     align-items: center;
@@ -1251,8 +1269,6 @@ body .pl-used-by { margin-top: 0; margin-bottom: 10px; }
 }
 @media (max-width: 1100px) {
     .pro-status .optional { display: none; }
-    .line-status { flex-wrap: wrap; }
-    .line-status-actions { margin-left: 0; width: 100%; }
 }
 @media (max-width: 992px) {
     .btn-hamburger { display: flex; }
@@ -1277,7 +1293,6 @@ body .pl-used-by { margin-top: 0; margin-bottom: 10px; }
     .kpi-val { font-size: 30px; }
     .line-status { padding: 14px; gap: 10px 14px; }
     .line-status-word { font-size: 20px; }
-    .line-status-actions .status-pill { margin-right: auto; }
     .cam-settings-row, .cam-settings-row.triple { grid-template-columns: 1fr; }
     .comm-proto-selector { grid-template-columns: repeat(2, 1fr); }
     .comm-modal-footer { padding: 10px 14px; flex-wrap: wrap; }
@@ -1452,10 +1467,10 @@ button.status-pill:hover { filter: brightness(1.08); }
 .sig-read-result.bad { font-size: 13px; color: var(--danger-color); }
 
 /* ── Line dashboard: the batch number beside the line state ─────────────── */
-.line-batch { display: flex; align-items: center; gap: 8px; flex-shrink: 0; font-size: 13.5px; color: var(--text-muted); }
+.line-batch { grid-area: batch; display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13.5px; color: var(--text-muted); }
 .line-batch[hidden], .line-batch [hidden] { display: none !important; }
 .line-batch b { max-width: 260px; color: var(--text-color); font-weight: 600; overflow-wrap: anywhere; }
-.line-batch .form-input { width: 160px; padding: 6px 10px; font-size: 13.5px; }
+.line-batch .form-input { flex: 0 1 160px; width: 160px; min-width: 90px; padding: 6px 10px; font-size: 13.5px; }
 @media (max-width: 760px) {
     .line-batch { width: 100%; }
     .line-batch .form-input { flex: 1; width: auto; min-width: 0; }
