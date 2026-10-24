@@ -45,6 +45,29 @@ from app.routes.v1 import products as products_router
 from app.routes.v1 import send_actions as send_actions_router
 from app.routes.v1 import records as records_router
 
+# The API behind a sign-in (Level 1 or higher) and the configuration lock.
+PROTECTED_ROUTERS = (
+    system_router,
+    camera_router,
+    vision_router,
+    models_router,
+    qr_router,
+    rules_router,
+    flows_router,
+    actions_router,
+    control_router,
+    telemetry_router,
+    mqtt_router,
+    counting_router,
+    comms_router,
+    plc_router,
+    health_router,
+    lines_router,
+    products_router,
+    send_actions_router,
+    records_router,
+)
+
 setup_logging()
 logger = logging.getLogger(__name__)
 
@@ -444,27 +467,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router.public_router)
 
     protected_api = APIRouter(prefix=API_PREFIX, dependencies=[Depends(require_operator)])
-    for router_mod in (
-        system_router,
-        camera_router,
-        vision_router,
-        models_router,
-        qr_router,
-        rules_router,
-        flows_router,
-        actions_router,
-        control_router,
-        telemetry_router,
-        mqtt_router,
-        counting_router,
-        comms_router,
-        plc_router,
-        health_router,
-        lines_router,
-        products_router,
-        send_actions_router,
-        records_router,
-    ):
+    for router_mod in PROTECTED_ROUTERS:
         protected_api.include_router(router_mod.router)
     app.include_router(protected_api)
     # WebSockets authenticate with a token in their handshake; browsers cannot
