@@ -221,7 +221,7 @@ class _QRReaderWorker:
         return new_codes
 
     def request_capture(self, track_id: Optional[int] = None, class_name: Optional[str] = None,
-                        wire_line: Optional[int] = None, delay: float = 0.0, test: bool = False,
+                        wire_line: Optional[int] = None, delay: float = 0.0,
                         frame: Optional[Any] = None, trigger_no: Optional[int] = None,
                         sequence: Optional[Any] = None, request_id: Optional[int] = None) -> None:
         """Take one picture after ``delay`` seconds, decode it and hand it to the camera's line.
@@ -237,7 +237,6 @@ class _QRReaderWorker:
                 "track_id": track_id,
                 "class_name": class_name,
                 "wire_line": wire_line,
-                "test": test,
                 "frame": frame,
                 "trigger_no": trigger_no,
                 "sequence": sequence,
@@ -340,7 +339,6 @@ class _QRReaderWorker:
             "track_id": request.get("track_id"),
             "class_name": request.get("class_name"),
             "wire_line": request.get("wire_line"),
-            "test": bool(request.get("test")),
             "status": "read" if codes else ("no_read" if mat is not None else "camera_offline"),
             "codes": codes,
             "decode_ms": round(decode_ms, 2),
@@ -448,7 +446,7 @@ def draw_capture(mat: Any, record: Dict[str, Any], max_width: int = 1280) -> byt
 
     codes = record.get("codes") or []
     when = str(record.get("timestamp") or "")[11:19]
-    parts = ["TEST CAPTURE" if record.get("test") else "CAPTURE"]
+    parts = ["CAPTURE"]
     if record.get("wire_line"):
         parts.append(f"wire line {record['wire_line']}")
     if record.get("track_id") is not None:

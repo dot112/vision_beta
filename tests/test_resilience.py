@@ -413,8 +413,7 @@ def test_video_streams_end_when_shutdown_starts(monkeypatch, fake_camera):
         return [chunk async for chunk in stream]
 
     try:
-        for stream in (CameraStreamPipeline.stream_annotated_mjpeg, CameraStreamPipeline.stream_raw_mjpeg):
-            assert asyncio.run(asyncio.wait_for(drain(stream("cam-stream-end")), 2)) == []
+        assert asyncio.run(asyncio.wait_for(drain(CameraStreamPipeline.stream_annotated_mjpeg("cam-stream-end")), 2)) == []
     finally:
         CameraStreamPipeline.remove_camera("cam-stream-end")
 

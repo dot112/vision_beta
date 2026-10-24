@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_db
@@ -268,31 +267,4 @@ async def grab_frame(
     if not success or not jpeg_bytes:
         raise HTTPException(status_code=400, detail="Failed to grab a frame from the configured camera")
     return Response(content=jpeg_bytes, media_type="image/jpeg")
-
-
-async def _mjpeg_generator(
-    camera_id: str,
-    max_width: int = 640,
-    jpeg_quality: int = 70,
-):
-    """Lock-free 30 FPS raw MJPEG stream via publisher layer (zero OpenCV on event loop)."""
-    from app.services.vision_service import CameraStreamPipeline
-
-    async for chunk in CameraStreamPipeline.stream_raw_mjpeg(camera_id):
-        yield chunk
-
-
-@router.get("/{camera_id}/stream", summary="Live Continuous MJPEG Video Feed (Raw)")
-async def live_mjpeg_stream(
-    camera_id: str,
-    max_width: int = Query(default=640, ge=160, le=3840),
-    quality: int = Query(default=65, ge=20, le=95),
-) -> StreamingResponse:
-    driver = app_state.cameras.get(camera_id)
-    if not driver or not driver.is_connected:
-        raise HTTPException(status_code=404, detail="Camera stream is offline or disconnected")
-    return StreamingResponse(
-        _mjpeg_generator(camera_id, max_width=max_width, jpeg_quality=quality),
-        media_type="multipart/x-mixed-replace; boundary=frame",
-    )
 

@@ -245,13 +245,6 @@ def test_picture_without_a_code_is_a_no_read_when_sync_is_off(monkeypatch):
         CountingService._main_loop = previous
 
 
-def test_test_picture_sends_nothing():
-    runtime = _runtime(trigger="line1")
-    runtime.on_qr_capture("cam-qr", {"test": True, "codes": [{"code": "X", "format": "QR_CODE"}], "status": "read"}, b"j")
-    assert runtime.capture_image()[0]["test"] is True
-    assert runtime.qr_stats["codes_read"] == 0 and runtime.recent_reads() == []
-
-
 # ── Sync ──────────────────────────────────────────────────────────────────────
 
 def test_sync_pairs_a_picture_with_the_product_that_triggered_it():
@@ -301,11 +294,12 @@ def test_capture_routes(client, admin_headers):
         runtime.last_capture, runtime._capture_jpeg = None, None
         assert client.get("/api/v1/lines/line-1/qr/capture", headers=admin_headers).status_code == 404
         assert client.get("/api/v1/lines/line-1/qr/recent", headers=admin_headers).json()["last_capture"] is None
-        # Line 1 has no QR reader in the tests.
-        assert client.post("/api/v1/lines/line-1/qr/capture", headers=admin_headers).status_code == 409
 
-        runtime.on_qr_capture("cam-qr", {"test": True, "t": 1.0, "status": "read", "timestamp": "2026-01-01T00:00:00+00:00",
-                                         "codes": [{"code": "C1", "format": "QR_CODE", "known": False, "polygon": [[0, 0]]}]}, b"\xff\xd8jpeg")
+        with runtime._lock:
+            runtime._capture_seq += 1
+            runtime.last_capture = {"id": runtime._capture_seq, "t": 1.0, "status": "read", "timestamp": "2026-01-01T00:00:00+00:00",
+                                    "codes": [{"code": "C1", "format": "QR_CODE", "known": False, "polygon": [[0, 0]]}]}
+            runtime._capture_jpeg = b"\xff\xd8jpeg"
         res = client.get("/api/v1/lines/line-1/qr/capture", headers=admin_headers)
         assert res.status_code == 200 and res.headers["content-type"] == "image/jpeg" and res.content == b"\xff\xd8jpeg"
         last = client.get("/api/v1/lines/line-1/qr/recent", headers=admin_headers).json()["last_capture"]
@@ -316,4 +310,3 @@ def test_capture_routes(client, admin_headers):
 
 def test_capture_route_scopes():
     assert required_api_key_scopes("GET", "/api/v1/lines/line-1/qr/capture") == {"monitor:read"}
-    assert required_api_key_scopes("POST", "/api/v1/lines/line-1/qr/capture") == {"configuration:write"}

@@ -113,13 +113,7 @@ curl.exe -N "$BaseUrl/api/v1/vision/stream/camera/$CameraId" `
   -H "X-API-Key: $ApiKey"
 ```
 
-The raw camera feed, without YOLO annotations, is:
-
-```http
-GET /api/v1/cameras/{camera_id}/stream
-```
-
-Use the same `X-API-Key` header. A browser's plain `<img src="...">` request cannot set this custom header; use an HTTP client that supports request headers or a trusted backend proxy.
+Send the `X-API-Key` header. A browser's plain `<img src="...">` request cannot set this custom header; use an HTTP client that supports request headers or a trusted backend proxy.
 
 ## Optional: connect a camera through the API
 

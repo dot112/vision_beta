@@ -34,7 +34,7 @@ KEEP = (
     "The Siemens PLC family", "Whether messages to the OPC UA server are signed",
     "The client certificate of a secured OPC UA connection", "The server's certificate, to accept only that server",
     # Line dashboard.
-    "Sets the batch number", "Shows the video with the detections", "Shows the camera picture as it arrives",
+    "Sets the batch number",
     # Apply: the cards only work after it.
     "Saves the send cards of this line and puts them to work", "Saves the output actions of this line and puts them to work",
     "Saves the inputs of this line and starts reading them",
@@ -50,7 +50,7 @@ KEEP = (
     "Whether this camera counts and rejects on its own", "What a product gets when this camera sees nothing of it",
     "What a triggered picture counts as when none", "The direction the products move", "Count crossings in the flow direction only",
     "Takes a still picture to draw the count lines on", "Keeps this camera showing codes only",
-    "Off, or the outfeed this camera watches", "Takes one test picture with the code reader now",
+    "Off, or the outfeed this camera watches",
     "Who takes the picture for each trigger", "The Take a picture input that tells the server a picture is coming",
     # Product sequence and result handshake.
     "The input read for each product's sequence number", "The Take a picture input that starts each handshake",

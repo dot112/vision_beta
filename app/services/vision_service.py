@@ -290,15 +290,11 @@ class _CameraStreamPublisher:
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._subscribers = 0
-        self._annotated_subscribers = 0
-        self._raw_subscribers = 0
         self._last_active_time = time.time()
 
         self._latest_annotated_jpeg: Optional[bytes] = None
-        self._latest_raw_jpeg: Optional[bytes] = None
-        # Each goes up when a picture that differs from the last one is ready to send.
+        # Goes up when a picture that differs from the last one is ready to send.
         self._annotated_seq: int = 0
-        self._raw_seq: int = 0
         # Smaller copies of the latest annotated picture, {width: (seq, jpeg)},
         # so every viewer of a small tile shares one resize per picture.
         self._scaled: Dict[int, Tuple[int, bytes]] = {}
@@ -315,22 +311,14 @@ class _CameraStreamPublisher:
         )
         self._thread.start()
 
-    def add_subscriber(self, stream_type: str = "annotated") -> None:
+    def add_subscriber(self) -> None:
         with self._lock:
             self._subscribers += 1
-            if stream_type == "raw":
-                self._raw_subscribers += 1
-            else:
-                self._annotated_subscribers += 1
             self._last_active_time = time.time()
 
-    def remove_subscriber(self, stream_type: str = "annotated") -> None:
+    def remove_subscriber(self) -> None:
         with self._lock:
             self._subscribers = max(0, self._subscribers - 1)
-            if stream_type == "raw":
-                self._raw_subscribers = max(0, self._raw_subscribers - 1)
-            else:
-                self._annotated_subscribers = max(0, self._annotated_subscribers - 1)
 
     @property
     def has_subscribers(self) -> bool:
@@ -341,11 +329,6 @@ class _CameraStreamPublisher:
         with self._lock:
             self._last_active_time = time.time()
             return self._latest_annotated_jpeg
-
-    def get_latest_raw(self) -> Optional[bytes]:
-        with self._lock:
-            self._last_active_time = time.time()
-            return self._latest_raw_jpeg
 
     _MAX_SCALED_WIDTHS = 4
 
@@ -372,10 +355,10 @@ class _CameraStreamPublisher:
                 self._scaled.pop(next(iter(self._scaled)))
             self._scaled[max_width] = (self._annotated_seq, scaled)
 
-    def get_latest_frame_id(self, stream_type: str = "annotated") -> int:
-        """A number that changes whenever a new picture of that kind is ready to send."""
+    def get_latest_frame_id(self) -> int:
+        """A number that changes whenever a new picture is ready to send."""
         with self._lock:
-            return self._raw_seq if stream_type == "raw" else self._annotated_seq
+            return self._annotated_seq
 
     def _publisher_loop(self) -> None:
         import cv2
@@ -396,7 +379,6 @@ class _CameraStreamPublisher:
                     paused = True
                     with self._lock:
                         self._latest_annotated_jpeg = None
-                        self._latest_raw_jpeg = None
                         self._scaled.clear()
                 time.sleep(0.1)
                 continue
@@ -457,27 +439,17 @@ class _CameraStreamPublisher:
             else:
                 display_mat = mat.copy()
 
-            with self._lock:
-                want_raw = (self._raw_subscribers > 0)
-                want_ann = (self._annotated_subscribers > 0 or self._subscribers == 0)
-
-            # 2. Render Raw JPEG only if raw subscribers exist
-            raw_jpeg = None
-            if want_raw:
-                ret_raw, raw_buf = cv2.imencode(".jpg", display_mat, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
-                raw_jpeg = raw_buf.tobytes() if ret_raw else None
-
-            # 3. Retrieve latest AI detections & tracking info
+            # 2. Retrieve latest AI detections & tracking info
             annotated_jpeg = None
             from app.services.line_service import line_manager
             routed = line_manager.route(self.camera_id)
-            if want_ann and routed and routed[1] == "qr":
+            if routed and routed[1] == "qr":
                 from app.services.qr_service import QRReaderPipeline
                 annotated_mat = QRReaderPipeline.draw_reads(self.camera_id, display_mat, scale_x, scale_y, fps)
                 ret_ann, ann_buf = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
                 annotated_jpeg = ann_buf.tobytes() if ret_ann else None
-            elif want_ann:
-                # 4. Draw annotations directly onto BGR display_mat. A camera that is not
+            else:
+                # 3. Draw annotations directly onto BGR display_mat. A camera that is not
                 # inspected now shows why, not the last results it had (they would stand
                 # still on the moving picture); so does one inspected only on a trigger.
                 engine, _, _ = line_manager.engine_for_camera(self.camera_id)
@@ -503,19 +475,16 @@ class _CameraStreamPublisher:
                     from app.services.qr_service import QRReaderPipeline
                     QRReaderPipeline.draw_reads(self.camera_id, annotated_mat, scale_x, scale_y, banner=False)
 
-                # 5. Render Annotated JPEG (single encode per frame)
+                # 4. Render Annotated JPEG (single encode per frame)
                 ret_ann, ann_buf = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
                 annotated_jpeg = ann_buf.tobytes() if ret_ann else None
 
-            # 6. Atomic update of cached frame bytes. A redraw that came out the
+            # 5. Atomic update of cached frame bytes. A redraw that came out the
             # same as the picture already sent is not sent again.
             with self._lock:
                 if annotated_jpeg is not None and annotated_jpeg != self._latest_annotated_jpeg:
                     self._latest_annotated_jpeg = annotated_jpeg
                     self._annotated_seq += 1
-                if raw_jpeg is not None and raw_jpeg != self._latest_raw_jpeg:
-                    self._latest_raw_jpeg = raw_jpeg
-                    self._raw_seq += 1
 
             # Maintain smooth 30 FPS timing
             elapsed = time.perf_counter() - loop_start
@@ -588,7 +557,7 @@ class CameraStreamPipeline:
         ZERO OpenCV work runs on the FastAPI asyncio event loop.
         """
         publisher = cls.get_publisher(camera_id)
-        publisher.add_subscriber(stream_type="annotated")
+        publisher.add_subscriber()
         last_fid = -1
 
         try:
@@ -611,38 +580,7 @@ class CameraStreamPipeline:
 
                 await asyncio.sleep(0.010)
         finally:
-            publisher.remove_subscriber(stream_type="annotated")
-
-    @classmethod
-    async def stream_raw_mjpeg(cls, camera_id: str) -> AsyncGenerator[bytes, None]:
-        """
-        High-efficiency async generator for raw MJPEG streaming.
-        """
-        publisher = cls.get_publisher(camera_id)
-        publisher.add_subscriber(stream_type="raw")
-        last_fid = -1
-
-        try:
-            while not app_state.shutting_down:
-                driver = app_state.cameras.get(camera_id)
-                if not driver or not getattr(driver, "is_connected", False):
-                    break
-
-                fid = publisher.get_latest_frame_id("raw")
-                jpeg = publisher.get_latest_raw()
-
-                if jpeg and fid != last_fid:
-                    last_fid = fid
-                    header = (
-                        b"--frame\r\n"
-                        b"Content-Type: image/jpeg\r\n"
-                        b"Content-Length: " + str(len(jpeg)).encode("ascii") + b"\r\n\r\n"
-                    )
-                    yield header + jpeg + b"\r\n"
-
-                await asyncio.sleep(0.010)
-        finally:
-            publisher.remove_subscriber(stream_type="raw")
+            publisher.remove_subscriber()
 
     @classmethod
     def render_annotated_frame(
@@ -710,40 +648,6 @@ class CameraStreamPipeline:
         )
 
         ret, buf = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
-        if not ret:
-            return False, None
-
-        return True, buf.tobytes()
-
-    @classmethod
-    def render_raw_frame(
-        cls,
-        camera_id: str,
-        max_width: int = 640,
-        jpeg_quality: int = 70,
-    ) -> Tuple[bool, Optional[bytes]]:
-        """Fast raw video frame without annotations, encoded once."""
-        publisher = cls.get_publisher(camera_id)
-        cached = publisher.get_latest_raw()
-        if cached:
-            return True, cached
-
-        driver = app_state.cameras.get(camera_id)
-        if not driver or not driver.is_connected:
-            return False, None
-
-        import cv2
-        success, mat, _ = driver.grab_raw_frame()
-        if not success or mat is None:
-            return False, None
-
-        h, w = mat.shape[:2]
-        if max_width and max_width > 0 and w > max_width:
-            scale = max_width / float(w)
-            new_h = max(1, int(h * scale))
-            mat = cv2.resize(mat, (max_width, new_h), interpolation=cv2.INTER_LINEAR)
-
-        ret, buf = cv2.imencode(".jpg", mat, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
         if not ret:
             return False, None
 

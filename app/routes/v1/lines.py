@@ -470,36 +470,6 @@ async def last_trigger_capture(
     )
 
 
-@router.post("/{line_id}/qr/capture", summary="Take a test picture with the line's QR reader (sends no events; Level 2+)")
-async def test_qr_capture(line_id: str, user: User = Depends(require_supervisor)) -> Dict[str, Any]:
-    """Take and decode one picture now, to check the QR camera's aim and focus.
-    The result shows on the Line Dashboard; no read, PLC card or message is triggered."""
-    import asyncio
-
-    from app.services.qr_service import QRReaderPipeline
-    from app.state.application_state import app_state
-
-    runtime = _manager().get(line_id)
-    if runtime is None:
-        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
-    # The QR reader, else a vision camera with Read codes on.
-    readers = sorted((c for c in runtime.cameras if reads_codes(c)), key=lambda c: c.get("role") != "qr")
-    qr_camera = readers[0]["camera_id"] if readers else None
-    if qr_camera is None:
-        raise HTTPException(status_code=409, detail="No camera on this line reads codes")
-    if not getattr(app_state.cameras.get(qr_camera), "is_connected", False):
-        raise HTTPException(status_code=409, detail="The camera that reads codes is not connected")
-    before, _ = runtime.capture_image()
-    before_id = before["id"] if before else 0
-    QRReaderPipeline.get_worker(qr_camera).request_capture(test=True)
-    for _ in range(60):  # up to 3 s
-        await asyncio.sleep(0.05)
-        capture, _ = runtime.capture_image()
-        if capture and capture["id"] > before_id:
-            return _capture_view(capture)
-    raise HTTPException(status_code=504, detail="The QR reader did not return a picture in time")
-
-
 # ── PLC signals (inputs) ──────────────────────────────────────────────────────
 
 @router.get("/{line_id}/plc-inputs/status", summary="What each of the line's PLC signals last read")

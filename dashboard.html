@@ -981,13 +981,6 @@
                     <span id="feedCamName">Live camera</span>
                     <span class="live-dot" id="feedLiveDot">Offline</span>
                 </span>
-                <div class="card-actions">
-                    <div class="seg" role="group" aria-label="Video view">
-                        <button type="button" id="feedModeAI" class="on" aria-pressed="true" onclick="setFeedMode(true)" data-help="Shows the video with the detections and count lines drawn on it.">AI view</button>
-                        <button type="button" id="feedModeRaw" aria-pressed="false" onclick="setFeedMode(false)" data-help="Shows the camera picture as it arrives, with nothing drawn on it.">Raw</button>
-                    </div>
-                    <span id="feedModeLabel" class="sr-only">AI view</span>
-                </div>
             </div>
             <div class="video-box" id="videoBox">
                 <button class="video-floating-btn" id="videoFloatBtn" onclick="toggleVideoFullscreen()" title="Full screen video" aria-label="Full screen video">
@@ -1445,7 +1438,6 @@ window.fetch = (input, options = {}) => {
     }
     return _nativeFetch(input, options);
 };
-let isAIFeed            = true;
 let activeCamId         = "aa988383-9852-4983-900b-ee7777f083d4";
 let latestCountersData  = {};
 let modalConfirmCb      = null;
@@ -6883,21 +6875,6 @@ async function _readAuthenticatedMjpeg(url, generation, controller) {
     }
 }
 
-// AI view (detections and count lines drawn by the server) or the raw camera picture.
-function setFeedMode(ai) {
-    const changed = isAIFeed !== Boolean(ai);
-    isAIFeed = Boolean(ai);
-    [["feedModeAI", true], ["feedModeRaw", false]].forEach(([id, value]) => {
-        const btn = document.getElementById(id);
-        if (!btn) return;
-        btn.classList.toggle("on", value === isAIFeed);
-        btn.setAttribute("aria-pressed", String(value === isAIFeed));
-    });
-    setText("feedModeLabel", isAIFeed ? "AI view" : "Raw");
-    if (changed) reloadStream();
-}
-function toggleFeedMode() { setFeedMode(!isAIFeed); }
-
 /* ─── Line Dashboard: the line's state, from assets/production_lines.js ──── */
 const LINE_STATE_VIEW = {
     running:   { word: "Running",             state: "running" },
@@ -7276,9 +7253,7 @@ function reloadStream() {
     _streamPaused = false;
     const bp  = _getStreamBandwidthParams();
     const cameraId = encodeURIComponent(activeCamId);
-    const url = isAIFeed
-        ? `/api/v1/vision/stream/camera/${cameraId}?${bp}&t=${Date.now()}`
-        : `/api/v1/cameras/${cameraId}/stream?${bp}&t=${Date.now()}`;
+    const url = `/api/v1/vision/stream/camera/${cameraId}?${bp}&t=${Date.now()}`;
     const controller = new AbortController();
     _liveStreamController = controller;
     _readAuthenticatedMjpeg(url, _liveStreamGeneration, controller);

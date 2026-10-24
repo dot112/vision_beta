@@ -95,7 +95,6 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         timers: {},
         blobUrls: {},
         codeTypes: [],        // GET /qr/code-types (set to the three groups below until it loads)
-        secondView: {},       // camera_id -> "live" | "capture" on the Line Dashboard
         captureShown: {},     // where a QR picture is shown -> id of the picture on screen
         bigCamera: {},        // line id -> camera shown large on the Line Dashboard (picked in the strip)
     };
@@ -232,9 +231,6 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         .pl-strip-pic .video-img { object-fit:contain; }
         .pl-strip-overlay { font-size:11px; font-weight:700; letter-spacing:1.5px; color:rgba(255,255,255,.75); text-transform:uppercase; }
         .pl-strip-figures { margin-top:8px; }
-        .pl-strip-tools { margin-top:8px; }
-        .pl-strip-tools .pl-seg button { white-space:nowrap; padding:5px 9px; }
-        .pl-strip-test { font-size:11px; padding:4px 10px; }
         .pl-badge { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; border-radius:4px; padding:2px 7px; white-space:nowrap; background:var(--panel-head, rgba(127,127,127,.12)); color:var(--text-muted); border:1px solid var(--border-color); flex:none; }
         .pl-badge.job-counting { color:var(--primary-color); border-color:var(--primary-color); }
         .pl-badge.job-station { color:var(--warning-color); border-color:var(--warning-color); }
@@ -283,9 +279,6 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         .pl-inline-capture { position:relative; margin-bottom:12px; max-width:640px; }
         .pl-inline-capture[hidden] { display:none; }
         .pl-feed-caption { position:absolute; left:0; right:0; bottom:0; z-index:5; display:flex; flex-wrap:wrap; gap:4px 14px; padding:8px 12px; font-size:12px; color:#fff; background:rgba(0,0,0,.62); }
-        .pl-seg { display:inline-flex; border:1px solid var(--border-color); border-radius:6px; overflow:hidden; }
-        .pl-seg button { background:transparent; border:0; padding:5px 11px; font-size:11px; font-weight:600; color:var(--text-muted); cursor:pointer; }
-        .pl-seg button.active { background:var(--primary-color); color:#fff; }
         @media (max-width:992px) { .pl-feed-row { grid-template-columns:1fr; } .pl-strip, .pl-strip.many { grid-template-columns:repeat(2, minmax(0, 1fr)); } }
         @media (max-width:520px) { .pl-cam-grid { grid-template-columns:1fr; } .pl-card { padding:12px; } }
         @media (max-width:700px) { .pl-line-select { margin-left:8px; } .pl-line-select > span { display:none; } .pl-stats { grid-template-columns:repeat(2, 1fr); } }
@@ -2576,12 +2569,6 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
 
     const isTriggered = (cam) => Boolean(readsCodes(cam) && cam.qr_trigger && cam.qr_trigger !== "continuous");
 
-    // A camera that reads codes shows its live picture or the last picture taken for codes.
-    function secondView(cam) {
-        if (!readsCodes(cam)) return "live";
-        return state.secondView[cam.camera_id] || (isTriggered(cam) ? "capture" : "live");
-    }
-
     const stripCameras = () => {
         const big = lineFeedCamera();
         return big ? lineStatusCameras().filter((c) => c.camera_id !== big.camera_id) : [];
@@ -2622,7 +2609,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             state.codeTypesAsked = true;
             loadCodeTypes().then(renderFeedRow);
         }
-        const signature = JSON.stringify([state.lineId, cams.map((c) => [c.camera_id, c.name || cameraName(c.camera_id), c.role, c.counting, c.station, c.join_offset_ms, c.join_window_ms, c.read_codes, c.connected, c.qr_trigger, c.code_type, secondView(c)]), state.codeTypes.length]);
+        const signature = JSON.stringify([state.lineId, cams.map((c) => [c.camera_id, c.name || cameraName(c.camera_id), c.role, c.counting, c.station, c.join_offset_ms, c.join_window_ms, c.read_codes, c.connected, c.qr_trigger, c.code_type]), state.codeTypes.length]);
         if (!cams.length) { stopStripFeeds(); ensureFeedRow(false); return; }
         const row = ensureFeedRow(true);
         if (!row) return;
@@ -2638,14 +2625,8 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         strip.classList.toggle("many", cams.length > 2);
         // Up to two rows of them are made as tall as the main camera together (dashboard.css).
         strip.classList.toggle("fit", cams.length <= 4);
-        const canTest = level() >= 2;
         strip.innerHTML = cams.map((cam) => {
             const name = cam.name || cameraName(cam.camera_id);
-            const view = secondView(cam);
-            const toggle = readsCodes(cam) ? `<div class="pl-seg" data-view-of="${esc(cam.camera_id)}">
-                    <button data-view="capture" class="${view === "capture" ? "active" : ""}">Last picture</button>
-                    <button data-view="live" class="${view === "live" ? "active" : ""}">Live</button></div>` : "";
-            const test = readsCodes(cam) && canTest ? `<button class="btn-action btn-outline pl-strip-test" data-test="${esc(cam.camera_id)}" data-help="Takes one test picture with the code reader now; nothing is sent or counted.">Test picture</button>` : "";
             return `<div class="card-panel pl-strip-tile" data-camera="${esc(cam.camera_id)}">
                 <div class="pl-strip-head">
                     <span class="pl-dot" style="background:${cam.connected ? "var(--success-color)" : "var(--danger-color)"}"></span>
@@ -2655,11 +2636,9 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                 <div class="pl-note pl-strip-detail" title="${esc(tileTitle(cam))}">${esc(tileDetail(cam))}</div>
                 <button type="button" class="video-box pl-strip-pic" title="Show ${esc(name)} large" aria-label="Show ${esc(name)} large">
                     <img class="video-img" alt="${esc(name)}">
-                    <div class="pl-feed-caption" style="display:none"></div>
-                    <div class="no-video-overlay active"><div class="pl-strip-overlay">${cam.connected ? (view === "capture" ? "No picture yet" : "Connecting") : "No signal"}</div></div>
+                    <div class="no-video-overlay active"><div class="pl-strip-overlay">${cam.connected ? "Connecting" : "No signal"}</div></div>
                 </button>
                 <div class="pl-row pl-strip-figures">${tileFigures(cam)}</div>
-                ${toggle || test ? `<div class="pl-inline pl-strip-tools">${toggle}${test}</div>` : ""}
             </div>`;
         }).join("");
         strip.querySelectorAll(".pl-strip-pic").forEach((pic) => pic.addEventListener("click", () => {
@@ -2667,13 +2646,6 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             state.bigCamera[state.lineId] = id;
             refreshFeeds();
         }));
-        strip.querySelectorAll("[data-view-of] button").forEach((b) => b.addEventListener("click", () => {
-            state.secondView[b.parentNode.dataset.viewOf] = b.dataset.view;
-            renderFeedRow();
-            refreshLineExtras();
-        }));
-        strip.querySelectorAll("[data-test]").forEach((b) => b.addEventListener("click", testCapture));
-        state.captureShown = {};
         ensureStripFeeds();
         refreshLineExtras();
     }
@@ -2694,7 +2666,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         if (!dashboardShown()) { stopStripFeeds(); return; }
         stripCameras().forEach((cam) => {
             const img = document.querySelector(`#plStrip .pl-strip-tile[data-camera="${CSS.escape(cam.camera_id)}"] img`);
-            if (img && cam.connected && secondView(cam) === "live") startStripFeed(cam.camera_id, img);
+            if (img && cam.connected) startStripFeed(cam.camera_id, img);
             else stopStripFeed(cam.camera_id);
         });
     }
@@ -2725,13 +2697,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         result_ready: ["Result sent, waiting for the acknowledge", "var(--accent-color, #3b82f6)"],
     };
 
-    // Where a capture is shown: a strip tile of the camera that took it, or the
-    // reads panel when the large camera took it.
-    function tileCaptureTarget(cameraId) {
-        const tile = document.querySelector(`#plStrip .pl-strip-tile[data-camera="${CSS.escape(cameraId)}"]`);
-        if (!tile) return null;
-        return { img: tile.querySelector("img"), caption: tile.querySelector(".pl-feed-caption"), overlay: tile.querySelector(".no-video-overlay"), shown: `tile:${cameraId}`, blob: `tile:${cameraId}` };
-    }
+    // A capture of the large camera is shown in the reads panel.
     const inlineCaptureTarget = () => (byId("plInlineImg")
         ? { img: byId("plInlineImg"), caption: byId("plInlineCaption"), box: byId("plInlineCapture"), shown: "inline", blob: "inlineCapture" }
         : null);
@@ -2743,7 +2709,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         state.captureShown[target.shown] = capture.id;
         if (target.box) target.box.hidden = false;
         const codes = capture.codes || [];
-        const parts = [`<b>${capture.test ? "Test picture" : "Picture"} #${capture.id}</b>`, esc(new Date(capture.timestamp).toLocaleTimeString())];
+        const parts = [`<b>Picture #${capture.id}</b>`, esc(new Date(capture.timestamp).toLocaleTimeString())];
         if (capture.wire_line) parts.push(`wire line ${capture.wire_line}`);
         if (capture.track_id !== null && capture.track_id !== undefined) parts.push(`product #${esc(capture.track_id)}`);
         if (codes.length) {
@@ -2769,27 +2735,6 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         } catch (_) { /* the next refresh tries again */ }
     }
 
-    async function testCapture(e) {
-        const button = e && e.currentTarget;
-        if (button) button.disabled = true;
-        try {
-            const capture = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}/qr/capture`, { method: "POST" });
-            const tile = stripCameras().find((c) => c.camera_id === capture.camera_id);
-            if (tile && readsCodes(tile)) {
-                state.secondView[tile.camera_id] = "capture";
-                renderFeedRow();
-                await showCapture(capture, tileCaptureTarget(tile.camera_id));
-            } else {
-                await showCapture(capture, inlineCaptureTarget());
-            }
-            toast(capture.codes && capture.codes.length ? `Test picture: ${capture.codes.map((c) => c.code).join(", ")}` : "Test picture: no code found", capture.codes && capture.codes.length ? "success" : "warning");
-        } catch (err) {
-            toast(`Test picture failed: ${err.message}`, "warning");
-        } finally {
-            if (button) button.disabled = false;
-        }
-    }
-
     function renderLineExtras() {
         const page = byId("tabDashboard");
         if (!page) return;
@@ -2811,21 +2756,19 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         if (box.dataset.signature === signature) return;
         box.dataset.signature = signature;
         if (state.captureShown) delete state.captureShown.inline;
-        const testBtn = reader && level() >= 2 ? `<button class="btn-action btn-outline" id="plInlineTest" style="font-size:12px;padding:6px 12px" data-help="Takes one test picture with the code reader now; nothing is sent or counted.">Test picture</button>` : "";
         const carton = hasHandshake || hasSorting
             ? `<div class="card-panel" id="plCartonPanel"><div class="card-panel-header"><span class="card-panel-title">${hasHandshake ? "Result handshake" : ""}${hasHandshake && hasSorting ? " · " : ""}${hasSorting ? "Sorting verification" : ""}</span></div>
                 <div class="pl-carton-grid">${hasHandshake ? `<div id="plHsView"></div>` : ""}${hasSorting ? `<div id="plSortView"></div>` : ""}</div></div>`
             : "";
         box.innerHTML = carton + (hasQr
             ? `<div class="card-panel"><div class="card-panel-header"><span class="card-panel-title">Latest code reads</span>
-                    <div class="pl-inline"><span id="plQrStats" style="font-size:12px;color:var(--text-muted)"></span>${testBtn}</div></div>
+                    <div class="pl-inline"><span id="plQrStats" style="font-size:12px;color:var(--text-muted)"></span></div></div>
                 ${reader ? `<div class="video-box pl-inline-capture" id="plInlineCapture" hidden>
                     <img class="video-img" id="plInlineImg" alt="Last picture taken for codes">
                     <div class="pl-feed-caption" id="plInlineCaption"></div></div>` : ""}
                 <div class="table-responsive"><table class="pl-table"><thead><tr><th>Time</th><th>Code</th><th>Code check</th><th>Product</th><th>Batch</th><th>Class</th><th>Product result</th></tr></thead>
                 <tbody id="plQrBody"><tr><td colspan="7">No reads yet.</td></tr></tbody></table></div></div>`
             : "");
-        byId("plInlineTest")?.addEventListener("click", testCapture);
         renderCartonView(status.handshake, status.sorting);
     }
 
@@ -3036,8 +2979,6 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             }).join("") || `<tr><td colspan="7">No reads yet.</td></tr>`;
             const capture = data.last_capture;
             if (capture) {
-                const tile = stripCameras().find((c) => c.camera_id === capture.camera_id);
-                if (tile && readsCodes(tile) && secondView(tile) === "capture") showCapture(capture, tileCaptureTarget(tile.camera_id));
                 const reader = mainCodeReader();
                 if (reader && capture.camera_id === reader.camera_id) showCapture(capture, inlineCaptureTarget());
             }

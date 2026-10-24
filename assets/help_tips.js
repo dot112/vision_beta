@@ -20,7 +20,7 @@
     const MARGIN = 8;                  // the bubble keeps this far from the window's edges
     const GAP = 6;                     // and this far from its icon
     const INSIDE_CLASSES = ["proto-btn", "filter-pill", "pl-fold-head"];
-    const INSIDE_PARENTS = ["seg", "pl-seg"];
+    const INSIDE_PARENTS = ["seg"];
     const FOCUSABLE = ["BUTTON", "SELECT", "A"];
 
     // Menu items, segmented buttons and grid tiles take the icon inside.

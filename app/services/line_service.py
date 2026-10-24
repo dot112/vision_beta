@@ -840,18 +840,12 @@ class LineRuntime:
                 )
 
     def on_qr_capture(self, camera_id: str, capture: Dict[str, Any], jpeg: Optional[bytes]) -> Dict[str, Any]:
-        """A QR reader took its picture (QR reader thread). Keeps it for the dashboard and reports its codes.
-
-        A test capture (capture["test"]) is only kept for viewing: it sends no
-        read, no-read or PLC event.
-        """
+        """A QR reader took its picture (QR reader thread). Keeps it for the dashboard and reports its codes."""
         with self._lock:
             self._capture_seq += 1
             capture = {**capture, "id": self._capture_seq}
             self.last_capture = capture
             self._capture_jpeg = jpeg
-        if capture.get("test"):
-            return capture
         if capture.get("codes"):
             for code in self._deciding_first(camera_id, capture["codes"]):
                 self.on_qr_read(camera_id, code["code"], code["format"], t=capture.get("t"), track_id=capture.get("track_id"),
