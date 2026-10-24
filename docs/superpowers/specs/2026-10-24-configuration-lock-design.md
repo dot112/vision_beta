@@ -94,6 +94,7 @@ the line or sets the batch, the cameras reconnecting, the counters, audit entrie
 ## 3. Lock code
 
 - Set by an Admin on **My account**: at least 6 characters (as account passwords), at most 128.
+  Spaces at both ends are dropped, when the code is set and when it is typed to unlock.
   Stored only as a hash (`hash_password`, as account passwords); never sent back by any route.
 - An Admin can change it (the old code stops working at once) or remove it.
 - **Wrong codes:** after 5 wrong codes in a row, unlocking with a code is refused for
