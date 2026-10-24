@@ -404,6 +404,16 @@ When a code from a list is read, its product goes with the item. The product's m
 
 Nothing has run against real PLCs yet: start the first plant trial with one line on a spare PLC or a simulator. Reading inputs was run against the Modbus TCP simulator in `test codes/plc_simulator.py` (a coil started a line and a counter register counted its products) and, for every protocol, against small stand-in PLCs in the tests; no protocol's read has met a real PLC.
 
+### Configuration lock
+
+While the configuration is **locked**, nobody can change how the system is set up: lines and Line setup (camera cards, count lines, send cards, output actions, inputs, product checks), cameras (settings, adding, removing, Connect), connections, AI models and product lists. Running the line goes on as usual: start and stop, the batch number, Reset counts, triggers, acknowledging alarms, tests (Test, Read now, Software trigger) and the production records. Users & API keys are not locked.
+
+- **Lock**: a Level 2 user or an Admin, with the lock chip in the top bar. **Unlock**: an Admin with one click, or a Level 2 user with the **lock code**. Level 1 can do neither. The Admin is locked too: unlock first, then change.
+- **Lock code**: set, changed or removed by an Admin on **My account** (6 to 128 characters; spaces at both ends are dropped). It is stored hashed and never shown. Without a code only an Admin can unlock. After 5 wrong codes in a row, codes are refused for 5 minutes.
+- It stays unlocked until someone locks it again, and survives a restart. The locked pages show a banner, their fields are read-only and their save buttons say that the configuration is locked; every open dashboard follows a lock or unlock within 2 s.
+- The server checks it, so it holds for API keys and scripts too: a locked change answers **423 Locked**. Each lock, unlock, code change and wrong code is in the **Audit log**.
+- **API**: `GET /api/v1/system/lock` (state: `locked`, `changed_by`, `changed_at`, `code_set`, `retry_after`; also in every `/system/poll-changes` answer as `config_lock`), `POST /api/v1/system/lock`, `POST /api/v1/system/unlock` (`{"code": "..."}` for Level 2), `PUT /api/v1/system/lock/code` (`{"code": "..."}`) and `DELETE /api/v1/system/lock/code` (Admin). An API key can read the state (`monitor:read`) but not lock or unlock. Which routes the lock blocks: `app/security/config_lock.py`.
+
 ### Production records and export
 
 Every product a line decides (good or reject, with its reason, class, confidence and paired code) and every code read that is not part of a product is stored in the `product_records` table. Products seen by an *own station* camera are stored too but marked as not in the line totals (`counted` false). A joined camera's results are in its product's `details.stations`.

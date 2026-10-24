@@ -18,7 +18,7 @@ Select the scope that matches the endpoints the client needs. The key owner must
 
 | Checkbox in the dashboard | Scope sent when creating the key | Minimum owner clearance | Endpoint access examples |
 | --- | --- | --- | --- |
-| Monitoring | `monitor:read` | Level 1 Operator | `GET /api/v1/cameras`; `GET /api/v1/cameras/{camera_id}/status`; `GET /api/v1/vision/stream/camera/{camera_id}`; `GET /api/v1/vision/annotated/camera/{camera_id}`; `GET /api/v1/qr/annotated/camera/{camera_id}`; read routes under `/api/v1/counting/`, `/api/v1/telemetry/` (including `/telemetry/health` and `/telemetry/metrics`), and `/api/v1/plc/`; `GET /api/v1/mqtt/status`; `GET /api/v1/alarms` and `/api/v1/alarms/history`; `GET /api/v1/lines`, `/api/v1/lines/{line_id}` `/api/v1/lines/{line_id}/plc-inputs/status` (what each PLC signal last read) and `/api/v1/lines/{line_id}/handshake` (the result handshake's state) |
+| Monitoring | `monitor:read` | Level 1 Operator | `GET /api/v1/cameras`; `GET /api/v1/cameras/{camera_id}/status`; `GET /api/v1/system/lock` (whether the configuration is locked); `GET /api/v1/vision/stream/camera/{camera_id}`; `GET /api/v1/vision/annotated/camera/{camera_id}`; `GET /api/v1/qr/annotated/camera/{camera_id}`; read routes under `/api/v1/counting/`, `/api/v1/telemetry/` (including `/telemetry/health` and `/telemetry/metrics`), and `/api/v1/plc/`; `GET /api/v1/mqtt/status`; `GET /api/v1/alarms` and `/api/v1/alarms/history`; `GET /api/v1/lines`, `/api/v1/lines/{line_id}` `/api/v1/lines/{line_id}/plc-inputs/status` (what each PLC signal last read) and `/api/v1/lines/{line_id}/handshake` (the result handshake's state) |
 | Inspection history | `inspection:read` | Level 1 Operator | `GET /api/v1/vision/detections` |
 | Production records | `records:read` | Level 1 Operator | `GET /api/v1/records`, `/api/v1/records/summary` and `/api/v1/records/export` (CSV / Excel) |
 | Run inspections | `inspection:trigger` | Level 2 Supervisor | Image and camera detection under `/api/v1/vision/`; QR decode and mobile scan under `/api/v1/qr/`; `/api/v1/control/trigger...`; `POST /api/v1/lines/{line_id}/trigger` (one picture, one product, for the line's cameras in trigger mode) |
@@ -129,5 +129,6 @@ Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/v1/cameras/$CameraId/connect" 
 - `401`: the key is invalid, expired, or revoked. Create a replacement key if needed.
 - `403`: the key is missing `monitor:read`, or its owner does not meet the scope's clearance requirement.
 - `404` from the stream endpoint: the camera ID is wrong, or the camera is offline or disconnected.
+- `423`: the configuration is locked. Changes to lines, cameras, connections, models and product lists wait until an Admin, or a Level 2 user with the lock code, unlocks it in the dashboard; running the line, triggers and tests still work.
 
 For interactive API exploration, open `/docs` when the server is running with `DEBUG=true`.
