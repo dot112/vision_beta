@@ -388,6 +388,22 @@ input[type="password"]::-ms-reveal, input[type="password"]::-ms-clear { display:
 .pro-lamp.warn { background: var(--warning-color); box-shadow: 0 0 0 3px var(--warning-tint); }
 .pro-lamp.bad { background: var(--danger-color); box-shadow: 0 0 0 3px var(--danger-tint); }
 
+/* Configuration lock (assets/config_lock.js): the chip, the banner of the locked pages, locked buttons */
+.config-lock-chip { font: inherit; cursor: pointer; }
+.config-lock-chip[hidden] { display: none; }
+.config-lock-chip .lock-closed, .config-lock-chip.locked .lock-open { display: none; }
+.config-lock-chip.locked .lock-closed { display: inline; }
+.config-lock-chip.locked { color: var(--warning-color); border-color: var(--warning-color); background: var(--warning-tint); }
+.config-lock-banner { display: none; align-items: center; gap: 10px; margin-bottom: 14px; padding: 10px 14px; border: 1px solid var(--warning-color); border-radius: 10px; background: var(--warning-tint); color: var(--text-color); font-size: 13.5px; }
+.config-lock-banner svg { color: var(--warning-color); flex-shrink: 0; }
+.config-lock-banner span { flex: 1; min-width: 0; }
+.config-lock-banner button[hidden] { display: none; }
+body.config-locked:is([data-tab="tabLines"], [data-tab="tabActionTrigger"], [data-tab="tabCameras"], [data-tab="tabModels"], [data-tab="tabComms"], [data-tab="tabProducts"]) .config-lock-banner { display: flex; }
+body.config-locked [data-lock] { opacity: 0.45; cursor: not-allowed; }
+select:disabled + .custom-select-wrap .custom-select-trigger { opacity: 0.55; cursor: not-allowed; }
+.config-lock-error { min-height: 18px; margin: 4px 0 8px; font-size: 12.5px; color: var(--danger-color); }
+@media (max-width: 640px) { .config-lock-chip #configLockText { display: none; } }
+
 /* User menu */
 .user-menu { position: relative; }
 .user-profile-badge {

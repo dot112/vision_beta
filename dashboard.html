@@ -897,6 +897,11 @@
                     <span class="pro-status-cell chip" title="Link between this screen and the vision server"><span class="pro-lamp" id="proLampServer"></span><span class="pro-status-val" id="proServerText">Connecting</span></span>
                     <span class="pro-status-cell optional"><span class="pro-status-val num" id="proClock">--:--:--</span></span>
                 </div>
+                <button type="button" class="pro-status-cell chip config-lock-chip" id="configLockChip" onclick="ConfigLock.openDialog()" aria-haspopup="dialog" hidden>
+                    <svg class="lock-closed" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+                    <svg class="lock-open" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.6-1.7"/></svg>
+                    <span class="pro-status-val" id="configLockText">Unlocked</span>
+                </button>
                 <div class="user-menu" id="userMenu">
                     <button type="button" class="user-profile-badge" title="Account" onclick="toggleMenu('userMenu', event)" aria-haspopup="menu" aria-expanded="false">
                         <span class="user-avatar" id="barAvatar">A</span>
@@ -913,6 +918,11 @@
 
 
         <div class="content-body">
+<div class="config-lock-banner" id="configLockBanner" role="status">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+    <span id="configLockBannerText"></span>
+    <button type="button" class="btn-action btn-outline btn-sm" id="configLockBannerUnlock" onclick="ConfigLock.openDialog()">Unlock</button>
+</div>
 
 <!-- ════════ TAB 1 — LINE DASHBOARD ══════════════════════════════════════ -->
 <div id="tabDashboard" class="tab-page active">
@@ -1417,6 +1427,35 @@
             <div class="form-group"><label class="form-label" for="pwdConfirm">Confirm new password</label><input type="password" id="pwdConfirm" class="form-input" autocomplete="new-password" /></div>
             <button class="btn-action btn-blue" style="margin-top:4px" onclick="changeMyPassword()">Update password</button>
         </div>
+
+        <!-- Configuration lock code (Admin) -->
+        <div class="card-panel" id="configLockCodePanel" hidden>
+            <div class="card-panel-header"><div>
+                <span class="card-panel-title">Configuration lock code</span>
+                <div class="card-panel-sub">A Level 2 user unlocks the configuration with this code. Without a code, only an Admin can unlock.</div>
+            </div></div>
+            <div class="form-group"><span class="form-label">Lock code</span><span id="lockCodeState" class="state-text">No code</span></div>
+            <div class="form-group"><label class="form-label" for="lockCodeNew">New lock code</label><input type="password" id="lockCodeNew" class="form-input" autocomplete="new-password" /><div class="form-hint">At least 6 characters.</div></div>
+            <div class="form-group"><label class="form-label" for="lockCodeConfirm">Confirm lock code</label><input type="password" id="lockCodeConfirm" class="form-input" autocomplete="new-password" /></div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">
+                <button type="button" class="btn-action btn-blue" onclick="ConfigLock.saveCode()">Save code</button>
+                <button type="button" class="btn-action btn-outline" id="lockCodeRemove" onclick="ConfigLock.removeCode()">Remove code</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Configuration lock: lock, or unlock (Admin, or Level 2 with the lock code) -->
+<div class="modal-backdrop" id="configLockDialog" role="dialog" aria-modal="true" aria-labelledby="configLockTitle" onclick="if(event.target===this)ConfigLock.closeDialog()">
+    <div class="modal-card" style="width:440px;text-align:left">
+        <div class="modal-title" id="configLockTitle">Configuration lock</div>
+        <div class="modal-message" id="configLockState"></div>
+        <div class="form-group" id="configLockCodeRow" hidden><label class="form-label" for="configLockCode">Lock code</label><input type="password" id="configLockCode" class="form-input" autocomplete="off" /></div>
+        <div class="config-lock-error" id="configLockError" role="alert"></div>
+        <div class="modal-actions">
+            <button type="button" class="btn-action btn-outline" onclick="ConfigLock.closeDialog()">Close</button>
+            <button type="button" class="btn-action btn-blue" id="configLockAction" onclick="ConfigLock.act()">Lock</button>
+        </div>
     </div>
 </div>
 
@@ -1436,7 +1475,11 @@ window.fetch = (input, options = {}) => {
         if (token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
         options = { ...options, headers };
     }
-    return _nativeFetch(input, options);
+    // 423: the configuration was locked meanwhile (assets/config_lock.js).
+    return _nativeFetch(input, options).then((res) => {
+        if (res.status === 423 && requestUrl.startsWith("/api/v1/") && window.ConfigLock) window.ConfigLock.onLockedAnswer();
+        return res;
+    });
 };
 let activeCamId         = "aa988383-9852-4983-900b-ee7777f083d4";
 let latestCountersData  = {};
@@ -1751,6 +1794,8 @@ function initCustomSelects() {
         function toggleMenu(e) {
             e.stopPropagation();
             const isOpen = wrap.classList.contains('is-open');
+            // A disabled select (no access, or the configuration is locked) does not open.
+            if (select.disabled && !isOpen) return;
             document.querySelectorAll('.custom-select-wrap.is-open').forEach(w => {
                 if (w !== wrap) {
                     w.classList.remove('is-open');
@@ -2173,6 +2218,7 @@ function startStatsPolling() {
 
 function initDashboard() {
     startStatsPolling();
+    if (window.ConfigLock) ConfigLock.refresh();
     loadServerSettings();
     loadCommsEndpoints();
     loadPlcActionCards();
@@ -2460,6 +2506,7 @@ async function pollServerChanges() {
             return;
         }
         const d = await res.json();
+        if (d.config_lock && window.ConfigLock) ConfigLock.apply(d.config_lock);
 
         // Detect server restart -> logout all accounts and reset all sessions
         if (d.boot_id) {
@@ -7374,6 +7421,7 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
 <script src="/assets/plc_signals.js?v=3.6.0"></script>
 <script src="/assets/product_fields.js?v=3.5.0"></script>
 <script src="/assets/production_lines.js?v=3.10.0"></script>
+<script src="/assets/config_lock.js?v=1.0.0"></script>
 <script>
 /* ─── Cameras: Settings / Delete on every row (Connect is on the Line setup camera card) ─
    Runs after assets/production_lines.js has added its Line and Role columns. */
