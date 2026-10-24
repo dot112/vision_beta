@@ -733,7 +733,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                     <span class="card-panel-title">Production lines</span>
                     <div class="pl-inline">
                         <input type="text" id="plNewLineName" class="form-input" maxlength="64" placeholder="New line name, e.g. Packing 2">
-                        <button class="btn-action btn-blue" id="plAddLine">Add line</button>
+                        <button data-lock class="btn-action btn-blue" id="plAddLine">Add line</button>
                     </div>
                 </div>
                 <div class="table-responsive"><table class="pl-table">
@@ -774,9 +774,9 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                 <td><div class="pl-actions">
                     <button class="btn-action btn-blue" data-act="logic" data-id="${esc(l.id)}">Setup</button>
                     <button class="btn-action ${running ? "btn-outline" : "btn-blue"}" data-act="${running ? "stop" : "start"}" data-id="${esc(l.id)}">${running ? "Stop" : "Start"}</button>
-                    <button class="btn-action btn-outline" data-act="rename" data-id="${esc(l.id)}">Rename</button>
-                    <button class="btn-action btn-outline" data-act="clone" data-id="${esc(l.id)}">Clone</button>
-                    ${l.id === PRIMARY ? "" : `<button class="btn-action btn-red" data-act="delete" data-id="${esc(l.id)}">Delete</button>`}
+                    <button data-lock class="btn-action btn-outline" data-act="rename" data-id="${esc(l.id)}">Rename</button>
+                    <button data-lock class="btn-action btn-outline" data-act="clone" data-id="${esc(l.id)}">Clone</button>
+                    ${l.id === PRIMARY ? "" : `<button data-lock class="btn-action btn-red" data-act="delete" data-id="${esc(l.id)}">Delete</button>`}
                 </div></td>
             </tr>`;
         }).join("");
@@ -1162,7 +1162,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                 <div class="pl-warn pl-trigger-warn" hidden>The counting camera takes one picture per trigger and tracks nothing across its count lines, so no product crosses a wire line. Choose "When an input asks".</div>
                 <div class="pl-warn pl-review" hidden><span>Since the upgrade this camera only shows codes. Choose when it reads codes.</span>
                     <span class="pl-review-first"></span>
-                    <button type="button" class="btn-action btn-outline pl-review-keep" style="margin-top:6px" data-help="Keeps this camera showing codes only, and saves the line.">Keep show only</button></div></div>
+                    <button data-lock type="button" class="btn-action btn-outline pl-review-keep" style="margin-top:6px" data-help="Keeps this camera showing codes only, and saves the line.">Keep show only</button></div></div>
             <div class="form-group pl-trigger-delay"><label class="form-label pl-trigger-delay-label">Picture delay after the crossing (ms)</label>
                 <input type="number" class="form-input" data-f="qr_delay" min="0" max="10000" step="10" value="${esc(cam.qr_trigger_delay_ms || 0)}">
                 <div class="pl-note">For a code camera further along the belt: how long the product takes to reach it. 0 = at once.</div></div>
@@ -1192,9 +1192,9 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                         <span class="pl-badge" data-f="badge">${esc(JOBS[job].short)}</span>
                     </div>
                     <div class="pl-card-tools">
-                        <button type="button" class="pl-icon-btn" data-act="up" title="Move up" aria-label="Move up"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg></button>
-                        <button type="button" class="pl-icon-btn" data-act="down" title="Move down" aria-label="Move down"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>
-                        <button type="button" class="pl-icon-btn danger restricted-l2" data-act="remove" title="Remove from the line" aria-label="Remove from the line" ${readOnly ? "disabled" : ""}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+                        <button data-lock type="button" class="pl-icon-btn" data-act="up" title="Move up" aria-label="Move up"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg></button>
+                        <button data-lock type="button" class="pl-icon-btn" data-act="down" title="Move down" aria-label="Move down"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>
+                        <button data-lock type="button" class="pl-icon-btn danger restricted-l2" data-act="remove" title="Remove from the line" aria-label="Remove from the line" ${readOnly ? "disabled" : ""}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
                     </div>
                 </div>
                 <div class="pl-card-sub"></div>
@@ -1956,7 +1956,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                     <div class="pl-note" style="margin:-4px 0 12px">Add USB cameras on the Cameras page, and network and industrial cameras under Communication.</div>
                     <div class="form-group"><label class="form-label">Starting job</label><select class="form-input" data-f="add-job">${START_JOBS.map((j) => option(j, JOBS[j].label, "counting")).join("")}</select>
                         <div class="pl-note">The first vision camera is the counting camera. Everything can be changed on the card.</div></div>
-                    <button type="button" class="btn-action btn-blue" data-act="add">Add camera</button>
+                    <button data-lock type="button" class="btn-action btn-blue" data-act="add">Add camera</button>
                 </div>
             </div>`;
     }
@@ -2171,7 +2171,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                 ${handshakeSetupHtml(d)}
                 <div id="plSetupWarnings">${warningsHtml(d)}</div>
                 <div class="pl-setup-actions">
-                    <button class="btn-action btn-blue restricted-l2" id="plSaveSetup" ${readOnly ? "disabled" : ""}>Save line setup</button>
+                    <button data-lock class="btn-action btn-blue restricted-l2" id="plSaveSetup" ${readOnly ? "disabled" : ""}>Save line setup</button>
                     ${d.enabled
                         ? `<button class="btn-action btn-outline restricted-l2" id="plStopLine" ${readOnly ? "disabled" : ""}>Stop line</button>`
                         : `<button class="btn-action btn-outline restricted-l2" id="plStartLine" ${readOnly ? "disabled" : ""}>Start line</button>`}
@@ -2261,14 +2261,14 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             <div class="pl-check-top">
                 <input type="text" class="form-input pl-check-name" maxlength="64" value="${esc(c.name || "")}" placeholder="Name, for example Wrong bottle" aria-label="Check name">
                 <label class="pl-inline pl-check"><input type="checkbox" class="pl-check-on" ${c.enabled !== false ? "checked" : ""}> On</label>
-                <button type="button" class="btn-action btn-red pl-check-del restricted-l2">Remove</button>
+                <button data-lock type="button" class="btn-action btn-red pl-check-del restricted-l2">Remove</button>
             </div>
             ${CardValues.onlyWhenHtml(c.only_when, choices, null, { emptyText: "Add a rule: a check needs at least one." })}
         </div>`).join("");
         panel.innerHTML = `<div class="card-panel-header"><span class="card-panel-title">Product checks</span></div>
             <div class="pl-note" style="margin-top:0">Reject a product when the rules of a check pass, for example when the class the camera saw is not the product's expected class (<span class="pl-code">class ≠ product.expected_class</span>). The checks run for a product whose code is in a list, after the camera's and the code's own result. The reason is <b>product check</b> (reject reason code 7 for an output action), with the check's name. The line pairs each product with its code (Sync).</div>
             <div class="pl-checks">${items || `<div class="pl-note">No product checks.</div>`}</div>
-            <button type="button" class="btn-action btn-outline pl-check-add restricted-l2" ${readOnly || (setup.checks || []).length >= MAX_PRODUCT_CHECKS ? "disabled" : ""}>Add check</button>`;
+            <button data-lock type="button" class="btn-action btn-outline pl-check-add restricted-l2" ${readOnly || (setup.checks || []).length >= MAX_PRODUCT_CHECKS ? "disabled" : ""}>Add check</button>`;
         if (typeof applyRoleRestrictions === "function") applyRoleRestrictions(panel);
         refreshSelects();
     }
@@ -3071,19 +3071,19 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                     <span class="card-panel-title">Product lists</span>
                     <div class="pl-inline">
                         <button class="btn-action btn-outline" id="plExport">Export CSV</button>
-                        <label class="btn-action btn-blue" id="plImportLabel" style="cursor:pointer"><span id="plImportText">Import CSV as a new list</span><input type="file" id="plImportFile" accept=".csv,text/csv" style="display:none"></label>
+                        <label data-lock class="btn-action btn-blue" id="plImportLabel" style="cursor:pointer"><span id="plImportText">Import CSV as a new list</span><input type="file" id="plImportFile" accept=".csv,text/csv" style="display:none"></label>
                     </div>
                 </div>
                 <div class="pl-note" style="margin-top:0;margin-bottom:12px">Up to <span id="plMaxLists">4</span> lists. Each camera that reads codes checks them against the list chosen for it on Line setup. CSV files need a header row: <span class="pl-code">code,name,description</span>.</div>
                 <div class="pl-inline" style="margin-bottom:6px">
                     <label class="form-label" for="plProdList" style="margin:0">List shown</label>
-                    <select id="plProdList" class="form-input" aria-label="Product list shown"></select>
-                    <button class="btn-action btn-outline" id="plListNew">New list</button>
-                    <button class="btn-action btn-outline" id="plListRename">Rename</button>
+                    <select data-lock-free id="plProdList" class="form-input" aria-label="Product list shown"></select>
+                    <button data-lock class="btn-action btn-outline" id="plListNew">New list</button>
+                    <button data-lock class="btn-action btn-outline" id="plListRename">Rename</button>
                     <button class="btn-action btn-outline" id="plListFields" data-help="Sets the fields of the list shown: a value per product, such as a lane.">Fields</button>
                     <button class="btn-action btn-outline" id="plListFormat" data-help="Sets how the codes of this list are built from a product ID and a batch.">Code format</button>
-                    <label class="btn-action btn-outline" id="plReplaceLabel" style="cursor:pointer">Replace contents<input type="file" id="plReplaceFile" accept=".csv,text/csv" style="display:none"></label>
-                    <button class="btn-action btn-red" id="plListDelete">Delete this list</button>
+                    <label data-lock class="btn-action btn-outline" id="plReplaceLabel" style="cursor:pointer">Replace contents<input type="file" id="plReplaceFile" accept=".csv,text/csv" style="display:none"></label>
+                    <button data-lock class="btn-action btn-red" id="plListDelete">Delete this list</button>
                 </div>
                 <div class="pl-note" id="plListFormatNote" style="margin-bottom:4px"></div>
                 <div class="pl-note" id="plListUsedBy" style="margin-bottom:14px"></div>
@@ -3091,9 +3091,9 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                     <input type="text" id="plProdCode" class="form-input" maxlength="256" placeholder="Code">
                     <input type="text" id="plProdName" class="form-input" maxlength="128" placeholder="Product name">
                     <input type="text" id="plProdDesc" class="form-input" maxlength="512" placeholder="Description (optional)">
-                    <button class="btn-action btn-blue" id="plProdAdd">Add</button>
+                    <button data-lock class="btn-action btn-blue" id="plProdAdd">Add</button>
                 </div>
-                <div class="pl-inline" style="margin-bottom:10px"><input type="search" id="plProdSearch" class="form-input" placeholder="Search code or name"><span id="plProdCount" style="font-size:12px;color:var(--text-muted)"></span></div>
+                <div class="pl-inline" style="margin-bottom:10px"><input data-lock-free type="search" id="plProdSearch" class="form-input" placeholder="Search code or name"><span id="plProdCount" style="font-size:12px;color:var(--text-muted)"></span></div>
                 <div class="table-responsive"><table class="pl-table">
                     <thead><tr id="plProdHeadRow"><th>Code</th><th>Name</th><th>Description</th><th>Actions</th></tr></thead>
                     <tbody id="plProdBody"><tr><td colspan="4">Loading…</td></tr></tbody>
@@ -3192,7 +3192,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             body.innerHTML = data.products.map((p) => `<tr data-id="${esc(p.id)}">
                 <td class="pl-code">${esc(p.code)}</td><td>${esc(p.name)}</td><td style="font-size:12px;color:var(--text-muted)">${esc(p.description || "")}</td>
                 ${fields.map((f) => `<td class="pf-cell">${esc(window.ProductFields.cellText(f, (p.data || {})[f.key]))}</td>`).join("")}
-                <td><div class="pl-actions">${canEdit ? `<button class="btn-action btn-outline" data-act="edit">Edit</button><button class="btn-action btn-red" data-act="delete">Delete</button>` : ""}</div></td>
+                <td><div class="pl-actions">${canEdit ? `<button class="btn-action btn-outline" data-act="edit">Edit</button><button data-lock class="btn-action btn-red" data-act="delete">Delete</button>` : ""}</div></td>
             </tr>`).join("") || `<tr><td colspan="${4 + fields.length}">${state.productSearch ? "No code matches the search." : "This list has no product codes yet."}</td></tr>`;
             body.querySelectorAll("button[data-act]").forEach((b) => b.addEventListener("click", () => {
                 const row = b.closest("tr");
@@ -3234,7 +3234,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
     function productsDialog(id, title, subtitle) {
         let modal = byId(id);
         if (!modal) {
-            document.body.insertAdjacentHTML("beforeend", `<div class="modal-backdrop" id="${id}">
+            document.body.insertAdjacentHTML("beforeend", `<div data-lock-root class="modal-backdrop" id="${id}">
                 <div class="modal-card action-trigger-modal-panel">
                     <div class="comm-modal-header"><div>
                         <div class="pf-title" style="font-size:15px;font-weight:700;color:var(--text-color)"></div>
@@ -3244,7 +3244,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                     <div class="pf-error" role="alert"></div>
                     <div class="comm-modal-footer">
                         <button type="button" class="btn-action btn-outline pf-cancel">Cancel</button>
-                        <div class="comm-modal-footer-actions"><button type="button" class="btn-action btn-blue pf-ok">Save</button></div>
+                        <div class="comm-modal-footer-actions"><button data-lock type="button" class="btn-action btn-blue pf-ok">Save</button></div>
                     </div>
                 </div>
             </div>`);
@@ -3289,7 +3289,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                 <div class="form-group"><label class="form-label">Batch</label><select class="form-input" data-cf="batch_part">${parts(f.mode === "split" ? f.batch_part : 2, true)}</select></div>
             </div>
             <div class="form-group" style="margin-bottom:0"><label class="form-label">Try a code</label>
-                <div class="pl-inline"><input type="text" class="form-input" data-cf="try" maxlength="512" placeholder="P-100;B-2026-07"><button type="button" class="btn-action btn-outline" data-cf="try-btn">Try</button></div>
+                <div class="pl-inline"><input data-lock-free type="text" class="form-input" data-cf="try" maxlength="512" placeholder="P-100;B-2026-07"><button type="button" class="btn-action btn-outline" data-cf="try-btn">Try</button></div>
                 <div class="pl-note" data-cf="result"></div></div>`;
         const field = (name) => body.querySelector(`[data-cf="${name}"]`);
         const read = () => {

@@ -74,6 +74,76 @@ def test_the_script_parses():
     assert run.returncode == 0, run.stderr
 
 
+def _tags_with(text: str, needle: str):
+    """Every opening tag (or template tag) that contains the needle."""
+    tags = []
+    start = text.find(needle)
+    while start != -1:
+        tags.append(text[text.rfind("<", 0, start + 1):text.find(">", start) + 1])
+        start = text.find(needle, start + 1)
+    assert tags, f"{needle!r} not found"
+    return tags
+
+
+def _marked(tag: str) -> bool:
+    return re.search(r"\bdata-lock(?![-\w])", tag) is not None
+
+
+# Buttons that save, add, remove or apply settings of the locked pages, by file.
+SAVE_BUTTONS = {
+    "dashboard.html": [
+        'id="commBtnDelete"', 'id="commSaveBtn"', 'onclick="addSendActionCard()"', 'onclick="applySendActionCards()"',
+        'onclick="addPlcActionCard()"', 'onclick="applyPlcActionCards()"', 'onclick="PlcSignals.add()"',
+        'onclick="PlcSignals.apply()"', 'onclick="openModelUploadModal()"', 'onclick="submitModelUpload()"',
+        'onclick="confirmModelDelete()"', "selectModelById(this.closest('tr').dataset.id);deleteSelectedModel()",
+        'onclick="openAddCommModal(', 'onclick="deleteCommEndpointById(',
+        'onclick="deleteSendActionCard(', 'onclick="deletePlcActionCard(', 'aria-label="Delete ${escapeHtml(cam.name)}"',
+    ],
+    "assets/production_lines.js": [
+        'id="plAddLine"', 'data-act="rename"', 'data-act="clone"', 'data-act="delete" data-id', 'id="plSaveSetup"',
+        'data-act="up"', 'data-act="down"', 'data-act="remove"', 'data-act="add">Add camera',
+        'class="btn-action btn-outline pl-check-add', 'class="btn-action btn-red pl-check-del',
+        'class="btn-action btn-outline pl-review-keep"', 'id="plImportLabel"', 'id="plReplaceLabel"', 'id="plListNew"', 'id="plListRename"',
+        'id="plListDelete"', 'id="plProdAdd"', 'data-act="delete">Delete</button>', 'class="btn-action btn-blue pf-ok"',
+    ],
+    "assets/plc_signals.js": ['onclick="PlcSignals.add()"', 'onclick="PlcSignals.remove('],
+    "assets/product_fields.js": ['class="btn-action btn-outline pf-up"', 'class="btn-action btn-outline pf-down"',
+                                 'class="btn-action btn-red pf-del"', 'class="btn-action btn-outline pf-add"'],
+    "assets/camera_settings.js": ['class="btn-action btn-sm btn-outline cs-roi-reset"'],
+}
+
+# Buttons that run, test or read: usable while locked.
+RUNNING_BUTTONS = {
+    "assets/production_lines.js": ['id="plStartLine"', 'id="plStopLine"', 'id="plResetCounts"', 'data-act="${running ? "stop" : "start"}"'],
+    "assets/plc_signals.js": ['onclick="PlcSignals.readNow('],
+    "assets/camera_settings.js": ['restricted-l2 cs-trigger-btn"'],
+    "dashboard.html": ['onclick="testSendActionCard(', 'onclick="testPlcActionCard(', 'onclick="testEndpointById('],
+}
+
+
+def test_save_buttons_are_marked():
+    missing = []
+    for name, needles in SAVE_BUTTONS.items():
+        text = (ROOT / name).read_text(encoding="utf-8")
+        missing += [(name, needle, tag[:120]) for needle in needles for tag in _tags_with(text, needle) if not _marked(tag)]
+    assert not missing, missing
+
+
+def test_running_buttons_are_not_marked():
+    marked = []
+    for name, needles in RUNNING_BUTTONS.items():
+        text = (ROOT / name).read_text(encoding="utf-8")
+        marked += [(name, needle) for needle in needles for tag in _tags_with(text, needle) if _marked(tag)]
+    assert not marked, marked
+
+
+def test_view_only_fields_stay_free_and_product_dialogs_are_locked():
+    script = (ROOT / "assets" / "production_lines.js").read_text(encoding="utf-8")
+    for needle in ('id="plProdList"', 'id="plProdSearch"', 'data-cf="try"'):
+        assert all("data-lock-free" in tag for tag in _tags_with(script, needle)), needle
+    assert all("data-lock-root" in tag for tag in _tags_with(script, 'class="modal-backdrop" id="${id}"'))
+
+
 def _locked_answer_run(times_ms):
     script = _script()
     code = f"""

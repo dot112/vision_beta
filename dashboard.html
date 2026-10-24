@@ -681,8 +681,8 @@
         <div class="comm-modal-footer">
             <button type="button" class="btn-action btn-outline" onclick="closeCommModal()">Cancel</button>
             <div class="comm-modal-footer-actions">
-                <button type="button" class="btn-action btn-red" id="commBtnDelete" style="display:none" onclick="deleteCurrentCommEndpoint()">Delete</button>
-                <button type="button" class="btn-action btn-blue" id="commSaveBtn" onclick="saveCommEndpoint()">Save connection</button>
+                <button data-lock type="button" class="btn-action btn-red" id="commBtnDelete" style="display:none" onclick="deleteCurrentCommEndpoint()">Delete</button>
+                <button data-lock type="button" class="btn-action btn-blue" id="commSaveBtn" onclick="saveCommEndpoint()">Save connection</button>
             </div>
         </div>
     </div>
@@ -1076,8 +1076,8 @@
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>List
                     </button>
                 </div>
-                <button type="button" class="btn-action btn-outline restricted-l2" onclick="addSendActionCard()">Add card</button>
-                <button type="button" class="btn-action btn-blue restricted-l2" onclick="applySendActionCards()" data-help="Saves the send cards of this line and puts them to work.">Apply</button>
+                <button data-lock type="button" class="btn-action btn-outline restricted-l2" onclick="addSendActionCard()">Add card</button>
+                <button data-lock type="button" class="btn-action btn-blue restricted-l2" onclick="applySendActionCards()" data-help="Saves the send cards of this line and puts them to work.">Apply</button>
             </div>
         </div>
         <div id="sendActionCardsContainer" class="plc-actions-grid">
@@ -1102,8 +1102,8 @@
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>List
                     </button>
                 </div>
-                <button type="button" class="btn-action btn-outline restricted-l2" onclick="addPlcActionCard()">Add action</button>
-                <button type="button" class="btn-action btn-blue restricted-l2" onclick="applyPlcActionCards()" data-help="Saves the output actions of this line and puts them to work.">Apply</button>
+                <button data-lock type="button" class="btn-action btn-outline restricted-l2" onclick="addPlcActionCard()">Add action</button>
+                <button data-lock type="button" class="btn-action btn-blue restricted-l2" onclick="applyPlcActionCards()" data-help="Saves the output actions of this line and puts them to work.">Apply</button>
             </div>
         </div>
         <div id="plcActionCardsContainer" class="plc-actions-grid">
@@ -1128,8 +1128,8 @@
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>List
                     </button>
                 </div>
-                <button type="button" class="btn-action btn-outline restricted-l2" onclick="PlcSignals.add()">Add input</button>
-                <button type="button" class="btn-action btn-blue restricted-l2" onclick="PlcSignals.apply()" data-help="Saves the inputs of this line and starts reading them.">Apply</button>
+                <button data-lock type="button" class="btn-action btn-outline restricted-l2" onclick="PlcSignals.add()">Add input</button>
+                <button data-lock type="button" class="btn-action btn-blue restricted-l2" onclick="PlcSignals.apply()" data-help="Saves the inputs of this line and starts reading them.">Apply</button>
             </div>
         </div>
         <div id="plcSignalCardsContainer" class="plc-actions-grid">
@@ -1186,7 +1186,7 @@
                 <div class="card-panel-sub">A model is active while a camera runs it. Pick the model for each vision camera under Line setup; several models can run at the same time.</div>
             </div>
             <div class="card-actions">
-                <button class="btn-action btn-blue restricted-l2" onclick="openModelUploadModal()">Upload model</button>
+                <button data-lock class="btn-action btn-blue restricted-l2" onclick="openModelUploadModal()">Upload model</button>
             </div>
         </div>
         <div class="seg" role="group" aria-label="Model type" style="margin-bottom:14px">
@@ -1239,7 +1239,7 @@
         <div id="upModelError" style="display:none;color:var(--danger-color);font-size:13px;margin-bottom:12px;padding:8px 12px;background:var(--danger-tint);border-radius:6px"></div>
         <div class="modal-actions">
             <button class="btn-action btn-outline" onclick="closeModelUploadModal()">Cancel</button>
-            <button class="btn-action btn-blue" onclick="submitModelUpload()"><span id="upModelBtnText">Upload and register</span></button>
+            <button data-lock class="btn-action btn-blue" onclick="submitModelUpload()"><span id="upModelBtnText">Upload and register</span></button>
         </div>
     </div>
 </div>
@@ -1253,7 +1253,7 @@
         </div>
         <div class="modal-actions">
             <button class="btn-action btn-outline" onclick="closeModelDeleteModal()">Cancel</button>
-            <button class="btn-action btn-red" onclick="confirmModelDelete()">Delete model</button>
+            <button data-lock class="btn-action btn-red" onclick="confirmModelDelete()">Delete model</button>
         </div>
     </div>
 </div>
@@ -1267,7 +1267,7 @@
                 <div class="card-panel-sub">Controllers (PLCs), MQTT brokers, TCP sockets, network cameras and webhooks the server talks to.</div>
             </div>
             <div class="card-actions">
-                <button class="btn-action btn-blue restricted-l2" onclick="openAddCommModal()">Add connection</button>
+                <button data-lock class="btn-action btn-blue restricted-l2" onclick="openAddCommModal()">Add connection</button>
             </div>
         </div>
 
@@ -2671,7 +2671,7 @@ function renderCommsGrid() {
             <div class="empty-state" style="grid-column:1/-1">
                 <b>${kind ? `No ${kind} connections yet` : "No connections yet"}</b>
                 <p>Add a PLC, MQTT broker, TCP socket, network camera or webhook for the server to talk to.</p>
-                <button class="btn-action btn-blue restricted-l2" onclick="openAddCommModal('${currentFilterProto === "all" ? "tcp" : currentFilterProto}')">Add connection</button>
+                <button data-lock class="btn-action btn-blue restricted-l2" onclick="openAddCommModal('${currentFilterProto === "all" ? "tcp" : currentFilterProto}')">Add connection</button>
             </div>
         `;
         applyRoleRestrictions(grid);
@@ -2767,7 +2767,7 @@ function renderCommsGrid() {
                     <div class="row-actions">
                         <button class="btn-action btn-sm btn-outline restricted-l2" onclick="testEndpointById(this.closest('[data-ep-id]').dataset.epId, event)">Test</button>
                         <button class="btn-action btn-sm btn-outline restricted-l2" onclick="openEditCommModal(this.closest('[data-ep-id]').dataset.epId)">Edit</button>
-                        <button class="btn-action btn-sm btn-red restricted-l2" onclick="deleteCommEndpointById(this.closest('[data-ep-id]').dataset.epId, event)" aria-label="Delete ${escapeHtml(ep.name || "connection")}">Delete</button>
+                        <button data-lock class="btn-action btn-sm btn-red restricted-l2" onclick="deleteCommEndpointById(this.closest('[data-ep-id]').dataset.epId, event)" aria-label="Delete ${escapeHtml(ep.name || "connection")}">Delete</button>
                     </div>
                 </div>
             </div>
@@ -4277,7 +4277,7 @@ function renderSendActionCards() {
             <div class="empty-state">
                 <b>No send cards yet</b>
                 <p>A card sends a message to another system when something happens on the line, for example every rejected product to an MES over TCP. Set up the channels under Connections first.</p>
-                <button type="button" class="btn-action btn-blue restricted-l2" onclick="addSendActionCard()">Add card</button>
+                <button data-lock type="button" class="btn-action btn-blue restricted-l2" onclick="addSendActionCard()">Add card</button>
             </div>`;
         applyRoleRestrictions(container);
         return;
@@ -4304,7 +4304,7 @@ function renderSendActionCards() {
                     <td class="col-actions"><div class="row-actions">
                         <button type="button" class="btn-action btn-sm btn-outline" onclick="openSendActionSettingsModal(this.closest('[data-send-id]').dataset.sendId)">Settings</button>
                         <button type="button" class="btn-action btn-sm btn-outline restricted-l2" onclick="testSendActionCard(this.closest('[data-send-id]').dataset.sendId)">Test</button>
-                        <button type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deleteSendActionCard(this.closest('[data-send-id]').dataset.sendId)" title="Delete this card" aria-label="Delete this card">✕</button>
+                        <button data-lock type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deleteSendActionCard(this.closest('[data-send-id]').dataset.sendId)" title="Delete this card" aria-label="Delete this card">✕</button>
                     </div></td>
                 </tr>`;
         }).join("");
@@ -4327,7 +4327,7 @@ function renderSendActionCards() {
                         <b class="plc-card-name" title="${escapeHtml(c.name || "Send card")}">${escapeHtml(c.name || "Send card")}</b>
                         <div class="row-actions">
                             ${switchHtml(c)}
-                            <button type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deleteSendActionCard(this.closest('[data-send-id]').dataset.sendId)" title="Delete this card" aria-label="Delete this card">✕</button>
+                            <button data-lock type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deleteSendActionCard(this.closest('[data-send-id]').dataset.sendId)" title="Delete this card" aria-label="Delete this card">✕</button>
                         </div>
                     </div>
                     <div class="plc-target">
@@ -5425,7 +5425,7 @@ function renderPlcActionCards() {
             <div class="empty-state">
                 <b>No output actions yet</b>
                 <p>An action writes to a PLC address when something happens on the line, for example a reject pulse when a defect crosses count line B.</p>
-                <button type="button" class="btn-action btn-blue restricted-l2" onclick="addPlcActionCard()">Add action</button>
+                <button data-lock type="button" class="btn-action btn-blue restricted-l2" onclick="addPlcActionCard()">Add action</button>
             </div>
         `;
         applyRoleRestrictions(container);
@@ -5455,7 +5455,7 @@ function renderPlcActionCards() {
                     <td class="col-actions"><div class="row-actions">
                         <button type="button" class="btn-action btn-sm btn-outline" onclick="openPlcActionSettingsModal(this.closest('[data-action-id]').dataset.actionId)">Settings</button>
                         <button type="button" class="btn-action btn-sm btn-outline" onclick="testPlcActionCard(this.closest('[data-action-id]').dataset.actionId)">Test</button>
-                        <button type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deletePlcActionCard(this.closest('[data-action-id]').dataset.actionId)" title="Delete this action" aria-label="Delete this action">✕</button>
+                        <button data-lock type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deletePlcActionCard(this.closest('[data-action-id]').dataset.actionId)" title="Delete this action" aria-label="Delete this action">✕</button>
                     </div></td>
                 </tr>`;
         }).join("");
@@ -5481,7 +5481,7 @@ function renderPlcActionCards() {
                                 <input type="checkbox" aria-label="Action on" ${c.enabled !== false ? 'checked' : ''} onchange="updatePlcCardProp(this.closest('[data-action-id]').dataset.actionId, 'enabled', this.checked); renderPlcActionCards()" />
                                 <span class="slider"></span>
                             </label>
-                            <button type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deletePlcActionCard(this.closest('[data-action-id]').dataset.actionId)" title="Delete this action" aria-label="Delete this action">✕</button>
+                            <button data-lock type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deletePlcActionCard(this.closest('[data-action-id]').dataset.actionId)" title="Delete this action" aria-label="Delete this action">✕</button>
                         </div>
                     </div>
 
@@ -6277,7 +6277,7 @@ function renderModelsTable() {
             : `<span class="type-chip det">Detection</span>`;
 
         const actionHtml = `<div class="row-actions">
-            <button type="button" class="btn-action btn-sm btn-red restricted-l2" onclick="event.stopPropagation();selectModelById(this.closest('tr').dataset.id);deleteSelectedModel()" aria-label="Delete ${escapeHtml(m.name)}"${usedBy.length ? ` title="In use: pick another model for its cameras under Line setup first"` : ""}>Delete</button>
+            <button data-lock type="button" class="btn-action btn-sm btn-red restricted-l2" onclick="event.stopPropagation();selectModelById(this.closest('tr').dataset.id);deleteSelectedModel()" aria-label="Delete ${escapeHtml(m.name)}"${usedBy.length ? ` title="In use: pick another model for its cameras under Line setup first"` : ""}>Delete</button>
         </div>`;
 
         return `<tr class="model-row${isSelected ? ' selected' : ''}" onclick="selectModelById(this.dataset.id)" data-id="${escapeHtml(m.id)}">
@@ -7444,7 +7444,7 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
             if (!cam) return;
             row.insertAdjacentHTML("beforeend", `<td class="col-actions"><div class="row-actions">
                 <button type="button" class="btn-action btn-sm btn-outline" data-act="settings">Settings</button>
-                <button type="button" class="btn-action btn-sm btn-red restricted-l2" data-act="delete" aria-label="Delete ${escapeHtml(cam.name)}">Delete</button>
+                <button data-lock type="button" class="btn-action btn-sm btn-red restricted-l2" data-act="delete" aria-label="Delete ${escapeHtml(cam.name)}">Delete</button>
             </div></td>`);
         });
         table.querySelectorAll("tbody button[data-act]").forEach(btn => {

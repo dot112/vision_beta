@@ -447,7 +447,7 @@
                 <div class="empty-state">
                     <b>No inputs yet</b>
                     <p>A signal reads a PLC address and acts on the line, for example a start button, a product sensor or the batch number the PLC holds.</p>
-                    <button type="button" class="btn-action btn-blue restricted-l2" onclick="PlcSignals.add()">Add input</button>
+                    <button data-lock type="button" class="btn-action btn-blue restricted-l2" onclick="PlcSignals.add()">Add input</button>
                 </div>`;
             if (typeof applyRoleRestrictions === "function") applyRoleRestrictions(container);
             return;
@@ -459,7 +459,7 @@
                 <input type="checkbox" aria-label="Signal on" ${card.enabled !== false ? "checked" : ""} onchange="PlcSignals.setEnabled(${ID_OF}, this.checked)" />
                 <span class="slider"></span>
             </label>`;
-        const deleteHtml = `<button type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="PlcSignals.remove(${ID_OF})" title="Delete this signal" aria-label="Delete this signal">✕</button>`;
+        const deleteHtml = `<button data-lock type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="PlcSignals.remove(${ID_OF})" title="Delete this signal" aria-label="Delete this signal">✕</button>`;
         const readHtml = `<button type="button" class="btn-action btn-sm btn-outline restricted-l2" onclick="PlcSignals.readNow(${ID_OF})" data-help="Reads this address once now and shows its value; nothing is done with it.">Read now</button>`;
         const settingsHtml = `<button type="button" class="btn-action btn-sm btn-outline" onclick="PlcSignals.openDialog(${ID_OF})">Settings</button>`;
 

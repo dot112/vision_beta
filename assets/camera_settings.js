@@ -221,7 +221,7 @@
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
             <span class="form-label" style="margin:0">Enable ROI</span>
             <label class="switch"><input type="checkbox" data-cs="roi_enabled" ${s.roi_enabled ? "checked" : ""}><span class="slider"></span></label>
-            <button type="button" class="btn-action btn-sm btn-outline cs-roi-reset" style="margin-left:auto">Whole picture</button>
+            <button data-lock type="button" class="btn-action btn-sm btn-outline cs-roi-reset" style="margin-left:auto">Whole picture</button>
         </div>
         <div class="cs-roi-fields">
             <div class="cam-settings-row">

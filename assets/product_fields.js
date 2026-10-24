@@ -69,9 +69,9 @@
             <select class="form-input pf-type" aria-label="Type">${TYPES.map(([id, label]) =>
                 `<option value="${id}" ${id === type ? "selected" : ""}>${label}</option>`).join("")}</select>
             <div class="pf-buttons">
-                <button type="button" class="btn-action btn-outline pf-up" title="Move up" aria-label="Move up">&#8593;</button>
-                <button type="button" class="btn-action btn-outline pf-down" title="Move down" aria-label="Move down">&#8595;</button>
-                <button type="button" class="btn-action btn-red pf-del">Delete</button>
+                <button data-lock type="button" class="btn-action btn-outline pf-up" title="Move up" aria-label="Move up">&#8593;</button>
+                <button data-lock type="button" class="btn-action btn-outline pf-down" title="Move down" aria-label="Move down">&#8595;</button>
+                <button data-lock type="button" class="btn-action btn-red pf-del">Delete</button>
             </div>
         </div>`;
     }
@@ -80,7 +80,7 @@
         return `<div class="pf-note">Use a field in output actions, formulas and messages by its key, as <span class="pl-code">product.&lt;key&gt;</span>. A saved field keeps its key; its label can change.</div>
             <div class="pf-head"><span>Label</span><span>Key</span><span>Type</span><span></span></div>
             <div class="pf-rows">${(fields || []).map((f) => fieldRowHtml(f, true)).join("")}</div>
-            <button type="button" class="btn-action btn-outline pf-add">Add field</button>
+            <button data-lock type="button" class="btn-action btn-outline pf-add">Add field</button>
             <div class="pf-count"></div>`;
     }
 
