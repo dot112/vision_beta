@@ -322,6 +322,15 @@ DEFAULT_STATE: Dict[str, Any] = {
     "camera_auto_connect": False,
     # Cameras whose Connect switch (Line setup camera card) is on: connected at start, retried until switched off.
     "cameras_kept_connected": [],
+    # The configuration lock (app/services/config_lock_service.py); code_hash is never sent out.
+    "config_lock": {
+        "locked": False,
+        "changed_by": None,
+        "changed_at": None,
+        "code_hash": None,
+        "code_set_by": None,
+        "code_set_at": None,
+    },
     "audit_logs": [],
 }
 
@@ -857,7 +866,7 @@ class SettingsPersistenceService:
         """Return a deep-copied API-safe view without credentials or auth headers."""
         sensitive = {
             "password", "headers", "header", "authorization", "token", "secret", "private_key",
-            "api_key", "client_secret", "access_token", "refresh_token", "credentials",
+            "api_key", "client_secret", "access_token", "refresh_token", "credentials", "code_hash",
         }
         if isinstance(value, dict):
             redacted = {}
