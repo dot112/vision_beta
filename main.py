@@ -20,7 +20,7 @@ from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.timing import TimingMiddleware
 from app.state.application_state import app_state
 from app.utils.logger import setup_logging
-from app.dependencies import require_operator
+from app.dependencies import enforce_config_lock, require_operator
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 from app.routes.v1 import system as system_router
@@ -44,6 +44,7 @@ from app.routes.v1 import lines as lines_router
 from app.routes.v1 import products as products_router
 from app.routes.v1 import send_actions as send_actions_router
 from app.routes.v1 import records as records_router
+from app.routes.v1 import config_lock as config_lock_router
 
 # The API behind a sign-in (Level 1 or higher) and the configuration lock.
 PROTECTED_ROUTERS = (
@@ -66,6 +67,7 @@ PROTECTED_ROUTERS = (
     products_router,
     send_actions_router,
     records_router,
+    config_lock_router,
 )
 
 setup_logging()
@@ -466,7 +468,8 @@ def create_app() -> FastAPI:
     app.include_router(auth_router.router, prefix=API_PREFIX)
     app.include_router(health_router.public_router)
 
-    protected_api = APIRouter(prefix=API_PREFIX, dependencies=[Depends(require_operator)])
+    # Sign-in first, so a request without one is 401 even while the configuration is locked.
+    protected_api = APIRouter(prefix=API_PREFIX, dependencies=[Depends(require_operator), Depends(enforce_config_lock)])
     for router_mod in PROTECTED_ROUTERS:
         protected_api.include_router(router_mod.router)
     app.include_router(protected_api)

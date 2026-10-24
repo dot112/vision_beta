@@ -96,6 +96,7 @@ def test_level2_without_a_code_set_is_told_only_an_admin_can_unlock():
 def test_five_wrong_codes_wait_five_minutes(fresh):
     ConfigLockService.set_code(ADMIN, "abc123")
     ConfigLockService.lock(ADMIN)
+    before = len(_lock_actions())
     for _ in range(5):
         assert _error(ConfigLockService.unlock, SUPERVISOR, "nope00").status_code == 403
     waiting = _error(ConfigLockService.unlock, SUPERVISOR, "abc123")
@@ -105,8 +106,8 @@ def test_five_wrong_codes_wait_five_minutes(fresh):
     fresh[0] += 301
     assert ConfigLockService.status()["retry_after"] == 0
     assert ConfigLockService.unlock(SUPERVISOR, "abc123")["locked"] is False
-    actions = _lock_actions()
-    assert actions.count("UNLOCK_BLOCKED") == 1 and actions.count("UNLOCK_WRONG_CODE") >= 5
+    actions = _lock_actions()[before:]
+    assert actions.count("UNLOCK_BLOCKED") == 1 and actions.count("UNLOCK_WRONG_CODE") == 5
 
 
 def test_a_right_code_clears_the_wrong_count():

@@ -232,6 +232,21 @@ def require_clearance(min_level: int) -> Callable:
     return _clearance_checker
 
 
+async def enforce_config_lock(request: Request) -> None:
+    """While the configuration is locked, refuse every change that is not on the free list
+    (app/security/config_lock.py). Runs after the sign-in, before the route's own checks."""
+    from app.security.config_lock import LOCKED_MESSAGE, blocks_when_locked
+    from app.services.config_lock_service import ConfigLockService
+
+    route = request.scope.get("route")
+    route_path = getattr(route, "path", None) or request.url.path
+    # FastAPI 0.142 hands over the router module's own route, without the /api/v1 it is included under.
+    if not route_path.startswith("/api/v1/"):
+        route_path = "/api/v1" + route_path
+    if blocks_when_locked(request.method, route_path) and ConfigLockService.is_locked():
+        raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=LOCKED_MESSAGE)
+
+
 require_operator = require_clearance(1)    # Level 1+ (Operator, Supervisor, Admin)
 require_supervisor = require_clearance(2)  # Level 2+ (Supervisor, Admin)
 require_admin = require_clearance(3)       # Level 3 (Admin only)

@@ -53,6 +53,11 @@ LOCK_FREE_ROUTES: FrozenSet[Route] = frozenset({
     ("POST", "/api/v1/mqtt/disconnect"),
     ("POST", "/api/v1/mqtt/publish"),
     ("POST", "/api/v1/mqtt/subscribe"),
+    # The lock itself.
+    ("POST", "/api/v1/system/lock"),
+    ("POST", "/api/v1/system/unlock"),
+    ("PUT", "/api/v1/system/lock/code"),
+    ("DELETE", "/api/v1/system/lock/code"),
 })
 
 LOCKED_ROUTES: FrozenSet[Route] = frozenset({

@@ -1039,14 +1039,19 @@ class SettingsPersistenceService:
 
     @classmethod
     def get_changes_since(cls, since_version: int, client_boot_id: Optional[str] = None) -> Dict[str, Any]:
+        from app.services.config_lock_service import ConfigLockService
+
         state = cls.get_state()
         cur_ver = state.get("version", 1)
+        # In every answer: each open dashboard follows a lock or unlock within its poll.
+        config_lock = ConfigLockService.status()
 
         # Detect if the server restarted since the client connected
         if client_boot_id and client_boot_id != cls._boot_id:
             return {
                 "version": cur_ver,
                 "boot_id": cls._boot_id,
+            "config_lock": config_lock,
                 "server_restarted": True,
                 "has_changes": True,
                 "recent_events": [
@@ -1076,6 +1081,7 @@ class SettingsPersistenceService:
             return {
                 "version": cur_ver,
                 "boot_id": cls._boot_id,
+            "config_lock": config_lock,
                 "server_restarted": False,
                 "has_changes": False,
                 "recent_events": [],
@@ -1085,6 +1091,7 @@ class SettingsPersistenceService:
         return {
             "version": cur_ver,
             "boot_id": cls._boot_id,
+            "config_lock": config_lock,
             "server_restarted": False,
             "has_changes": True,
             "recent_events": cls._recent_changes[-10:],
