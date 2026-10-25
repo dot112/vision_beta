@@ -17,8 +17,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "assets" / "help_tips.js"
 FILES = ("dashboard.html", "assets/production_lines.js", "assets/plc_signals.js", "assets/camera_settings.js",
-         "assets/card_values.js", "assets/product_fields.js",
-         "assets/code_processing.js")
+         "assets/card_values.js", "assets/product_fields.js")
 
 # Only controls whose purpose is not plain from their label have a help icon: technical settings, the
 # choices that decide when a card fires, and the buttons whose effect the label does not say. Each is

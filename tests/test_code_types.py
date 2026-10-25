@@ -134,7 +134,7 @@ def test_reader_worker_reads_only_its_cameras_code_type(monkeypatch):
 
     asked = []
 
-    def decode(mat, hard_budget_ms=0.0, code_type="all", processing=None):
+    def decode(mat, hard_budget_ms=0.0, code_type="all"):
         asked.append(code_type)
         return BarcodeDecodeResponse(total_found=0, codes=[], decode_time_ms=1.0, image_width=10, image_height=10)
 

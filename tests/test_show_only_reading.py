@@ -108,7 +108,7 @@ def _worker_with_codes(monkeypatch, camera_id, codes):
     worker = qr_service._QRReaderWorker(camera_id)
     found = [SimpleNamespace(data=code, code_type="QR_CODE", polygon=[]) for code in codes]
     monkeypatch.setattr(worker._engine, "decode",
-                        lambda mat, hard_budget_ms=0.0, code_type="all", processing=None: SimpleNamespace(codes=found, decode_time_ms=1.0))
+                        lambda mat, hard_budget_ms=0.0, code_type="all": SimpleNamespace(codes=found, decode_time_ms=1.0))
     return worker
 
 

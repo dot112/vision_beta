@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Deque, Dict, Iterable, List, NamedTuple, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.engines.code_processing import is_active, map_points, upright
+from app.engines.code_crop import upright
 from app.engines.qr_engine import QREngine
 from app.schemas.qr import BarcodeDecodeResponse, BarcodeItem, LiveCameraBarcodeResponse
 from app.services.camera_service import CameraService
@@ -42,13 +42,10 @@ KNOWN_COLOR, UNKNOWN_COLOR = (0, 200, 0), (0, 0, 230)
 
 
 class CornerPicture(NamedTuple):
-    """The last code a reader read, cut out straight with a margin, for the corner of its video.
-    ``read_by``: the reading stage that read it; ``processing``: whether processing was on."""
+    """The last code a reader read, cut out of the camera's picture straight with a margin, for the corner of its video."""
     image: Any
     code: str
     known: bool
-    read_by: str
-    processing: bool
 
 
 def _decode_qr(image_input: Any) -> BarcodeDecodeResponse:
@@ -57,72 +54,7 @@ def _decode_qr(image_input: Any) -> BarcodeDecodeResponse:
         return _qr_engine.decode(image_input, hard_budget_ms=SINGLE_PICTURE_HARD_BUDGET_MS)
 
 
-# Line setup's live preview of the image processing: its own decoder, never a running reader's.
-_preview_engine = QREngine()
-_preview_lock = threading.Lock()
-PREVIEW_MAX_WIDTH = 960
-PREVIEW_JPEG_QUALITY = 80
-PREVIEW_VIEWS = ("processed", "original")
-
-
-class CameraNotConnected(LookupError):
-    """The camera is not connected, or gave no picture."""
-
-
 class QRService:
-    @staticmethod
-    def preview(camera_id: str, processing: Any, code_type: str = "all", view: str = "processed") -> Tuple[bytes, Dict[str, str]]:
-        """The camera's latest picture read with these (unsaved) processing settings, as a JPEG with the
-        codes outlined: the processed picture (view "processed") or the camera's own ("original").
-        Returns (JPEG, headers: X-Codes, X-Read-By, X-Read-Ms, Cache-Control).
-        Raises CameraNotConnected, or ValueError for bad settings."""
-        import cv2
-        import numpy as np
-
-        from app.engines.code_processing import normalize_processing
-        from app.engines.inference_engine import overlay_scale
-        from app.state.application_state import app_state
-
-        if view not in PREVIEW_VIEWS:
-            raise ValueError("view must be 'processed' or 'original'")
-        try:
-            settings = normalize_processing(processing)
-        except ValueError as exc:
-            raise ValueError(f"Image processing: {exc}") from None
-        driver = app_state.cameras.get(camera_id)
-        if driver is None or not getattr(driver, "is_connected", False):
-            raise CameraNotConnected(f"Camera {camera_id} is not connected")
-        if hasattr(driver, "get_latest_raw_mat"):
-            ok, mat, _ = driver.get_latest_raw_mat(copy=True)
-        else:
-            ok, mat, _ = driver.grab_raw_frame()
-        if not ok or mat is None:
-            raise CameraNotConnected(f"Camera {camera_id} is not connected")
-        with _preview_lock:
-            response = _preview_engine.decode(mat, hard_budget_ms=SINGLE_PICTURE_HARD_BUDGET_MS, code_type=code_type,
-                                              processing=settings)
-            last = _preview_engine.last_read
-        if view == "processed" and last.processed is not None:
-            picture, outlines = last.processed, [map_points(c.polygon, last.matrix) for c in response.codes]
-        else:
-            picture, outlines = mat, [c.polygon for c in response.codes]
-        img = cv2.cvtColor(picture, cv2.COLOR_GRAY2BGR) if picture.ndim == 2 else picture.copy()
-        h, w = img.shape[:2]
-        thick = max(2, int(round(2 * overlay_scale(w, h))))
-        for outline in outlines:
-            if len(outline) >= 3:
-                cv2.polylines(img, [np.array(outline, np.int32).reshape((-1, 1, 2))], True, KNOWN_COLOR, thick)
-        if w > PREVIEW_MAX_WIDTH:
-            img = cv2.resize(img, (PREVIEW_MAX_WIDTH, max(1, int(round(h * PREVIEW_MAX_WIDTH / w)))), interpolation=cv2.INTER_AREA)
-        ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), PREVIEW_JPEG_QUALITY])
-        headers = {
-            "X-Codes": str(len(response.codes)),
-            "X-Read-By": last.read_by,
-            "X-Read-Ms": f"{response.decode_time_ms:.1f}",
-            "Cache-Control": "no-store",
-        }
-        return buf.tobytes() if ok else b"", headers
-
     @staticmethod
     async def decode_image(image_bytes: bytes) -> BarcodeDecodeResponse:
         return await asyncio.to_thread(_decode_qr, image_bytes)
@@ -265,29 +197,18 @@ class _QRReaderWorker:
         """The product list this camera checks its codes against (Line setup)."""
         return self._camera_entry().get("product_list_id")
 
-    def _processing(self) -> Optional[Dict[str, Any]]:
-        """The steps a copy of each picture goes through before reading (Line setup), or None."""
-        return self._camera_entry().get("code_processing")
-
-    def _keep_corner(self, mat: Any, reads: List[Tuple[BarcodeItem, bool]], processing: Optional[Dict[str, Any]]) -> None:
+    def _keep_corner(self, mat: Any, reads: List[Tuple[BarcodeItem, bool]]) -> None:
         """Keeps the picture of one code just read (the first known one, else the first) for the corner
-        of the video: cut from the picture it was read in, straight, with the crop margin."""
+        of the video: cut out of the camera's picture, straight, with a margin."""
         import cv2
 
         code, known = next(((c, k) for c, k in reads if k), reads[0])
         if not code.polygon or len(code.polygon) != 4:
             return
-        last = self._engine.last_read
-        read_by = last.read_by if last else "original"
-        if last is not None and read_by in ("processed", "straightened") and last.processed is not None:
-            source, outline = last.processed, map_points(code.polygon, last.matrix)
-        else:
-            source, outline = mat, code.polygon
-        margin = int((processing or {}).get("crop_margin_px", DEFAULT_CROP_MARGIN_PX))
-        crop, _ = upright(source, outline, margin, max_long=CORNER_MAX_SIDE)
+        crop, _ = upright(mat, code.polygon, DEFAULT_CROP_MARGIN_PX, max_long=CORNER_MAX_SIDE)
         if crop.ndim == 2:
             crop = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
-        corner = CornerPicture(crop, (code.data or "").strip(), known, read_by, is_active(processing))
+        corner = CornerPicture(crop, (code.data or "").strip(), known)
         with self._state_lock:
             self._corner = corner
 
@@ -311,8 +232,7 @@ class _QRReaderWorker:
 
         clock = time.monotonic()
         hard = CONTINUOUS_HARD_BUDGET_MS if clock - self._hard_missed_at >= CONTINUOUS_HARD_INTERVAL_S else 0.0
-        processing = self._processing()
-        response = self._engine.decode(mat, hard_budget_ms=hard, code_type=self._code_type(), processing=processing)
+        response = self._engine.decode(mat, hard_budget_ms=hard, code_type=self._code_type())
         if hard and not response.codes:
             self._hard_missed_at = clock
         now = clock if now is None else now
@@ -336,7 +256,7 @@ class _QRReaderWorker:
             self._latest = latest
             self._latest_ms = response.decode_time_ms
         if latest:
-            self._keep_corner(mat, latest, processing)
+            self._keep_corner(mat, latest)
         for data in new_codes:
             self.reads += 1
             fmt = next((c.code_type for c, _ in latest if (c.data or "").strip() == data), "UNKNOWN")
@@ -428,7 +348,6 @@ class _QRReaderWorker:
         jpeg: Optional[bytes] = None
         code_type = self._code_type()
         list_id = self._product_list()
-        processing = self._processing()
         given = request.get("frame")
         # A camera on software trigger takes a new picture for every try, which can take longer.
         window = self.CAPTURE_RETRY_WINDOW_S if not self._software_triggered() else self.CAPTURE_FRAMES * 2.0
@@ -439,8 +358,7 @@ class _QRReaderWorker:
             if frame is None:
                 break
             mat, t, frames = frame, time.monotonic(), frames + 1
-            response = self._engine.decode(mat, hard_budget_ms=SINGLE_PICTURE_HARD_BUDGET_MS, code_type=code_type,
-                                           processing=processing)
+            response = self._engine.decode(mat, hard_budget_ms=SINGLE_PICTURE_HARD_BUDGET_MS, code_type=code_type)
             decode_ms += response.decode_time_ms
             seen = set()
             reads: List[Tuple[BarcodeItem, bool]] = []
@@ -459,7 +377,7 @@ class _QRReaderWorker:
                     "polygon": code.polygon,
                 })
             if codes:
-                self._keep_corner(mat, reads, processing)
+                self._keep_corner(mat, reads)
                 break
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -564,7 +482,7 @@ def draw_corner(img: Any, corner: CornerPicture, top: int) -> None:
     pw, ph = max(1, int(round(cw * fit))), max(1, int(round(ch * fit)))
     x0, y0 = pad, top + pad
     font, thick = 0.42 * s, max(1, int(round(s)))
-    text = corner.code[:CORNER_TEXT_CHARS] + ("  original" if corner.processing and corner.read_by == "original" else "")
+    text = corner.code[:CORNER_TEXT_CHARS]
     (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font, thick)
     strip_h = th + int(round(10 * s))
     if box < 8 or y0 + ph + 2 * frame + strip_h > h:

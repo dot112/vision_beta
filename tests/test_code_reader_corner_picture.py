@@ -1,4 +1,4 @@
-"""The code reader with image processing: the corner picture of the last code read, drawn in the
+"""The code reader's corner picture of the last code read (cut out of the camera's picture), drawn in the
 top-left of the video (and of a triggered capture), and the CODE READER banner."""
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import numpy as np
 import pytest
 
 from app.engines import inference_engine
-from app.engines.code_processing import normalize_processing
 from app.engines.inference_engine import status_bar_height
 from app.services import qr_service
 from app.services.line_config import normalize_line
@@ -17,23 +16,27 @@ from app.services.line_service import LineRuntime, line_manager
 from app.services.counting_service import CountingService
 from app.services.product_service import product_catalog
 from app.state.application_state import app_state
-from tests.test_code_processing_read import EAN, _on, _turned, _upright_qr
 from tests.test_qr_trigger import FrameCamera
 
 GREEN, RED = (0, 200, 0), (0, 0, 230)
 BOX = (slice(None), slice(10, 170))
 
 
+def _upright_qr() -> np.ndarray:
+    code = cv2.resize(cv2.QRCodeEncoder.create().encode("PROD-0042"), None, fx=6, fy=6, interpolation=cv2.INTER_NEAREST)
+    code = cv2.copyMakeBorder(code, 40, 40, 40, 40, cv2.BORDER_CONSTANT, value=255)
+    return cv2.cvtColor(code, cv2.COLOR_GRAY2BGR)
+
+
 @pytest.fixture
 def reader(monkeypatch):
-    """A reader worker for "cam-corner" with the given processing settings; stopped afterwards."""
+    """A reader worker for "cam-corner"; stopped afterwards."""
     workers = []
 
-    def make(processing=None, known=False):
+    def make(known=False):
         worker = qr_service._QRReaderWorker("cam-corner")
         workers.append(worker)
-        entry = {"code_processing": processing} if processing else {}
-        monkeypatch.setattr(worker, "_camera_entry", lambda: entry)
+        monkeypatch.setattr(worker, "_camera_entry", lambda: {})
         monkeypatch.setattr(product_catalog, "lookup", lambda code, list_id=None: {"name": "Tea"} if known else None)
         return worker
 
@@ -63,20 +66,18 @@ def _bar():
 
 
 def test_a_read_keeps_a_corner_picture(reader):
-    picture, _ = _turned(45)
-    worker = reader(_on(rotate={"angle": -45}))
+    worker = reader()
     assert worker.corner() is None
-    assert worker.process(picture) == [EAN]
+    assert worker.process(_qr_bottom_right()) == ["PROD-0042"]
     corner = worker.corner()
-    assert corner.code == EAN and corner.read_by == "processed" and corner.processing is True
+    assert corner.code == "PROD-0042" and corner.known is False
     assert corner.image.ndim == 3 and max(corner.image.shape[:2]) <= 240
 
 
 def test_corner_drawn_top_left_below_the_banner(monkeypatch, reader):
-    picture, _ = _turned(45)
     for known, colour in ((True, GREEN), (False, RED)):
-        worker = reader(_on(rotate={"angle": -45}), known=known)
-        worker.process(picture)
+        worker = reader(known=known)
+        worker.process(_qr_bottom_right())
         img = _draw(monkeypatch, worker)
         bar = _bar()
         assert img[bar + 10:bar + 200, 10:170].any()            # the corner picture
@@ -84,39 +85,22 @@ def test_corner_drawn_top_left_below_the_banner(monkeypatch, reader):
         assert tuple(int(v) for v in img[bar + 10, 10]) == colour
 
 
-def test_original_tag(monkeypatch, reader):
-    texts = []
-    real = cv2.putText
-    monkeypatch.setattr(cv2, "putText", lambda img, text, *a, **k: (texts.append(text), real(img, text, *a, **k))[1])
-    worker = reader(_on(binarize={"method": "fixed", "level": 255}))
-    worker.process(_upright_qr())
-    assert worker.corner().read_by == "original"
-    _draw(monkeypatch, worker)
-    assert any("PROD-0042" in t and "original" in t for t in texts)
-    texts.clear()
-    plain = reader(None)
-    plain.process(_upright_qr())
-    assert plain.corner().processing is False
-    _draw(monkeypatch, plain)
-    assert any("PROD-0042" in t for t in texts) and not any("original" in t for t in texts)
-
-
 def test_no_corner_while_stopped(monkeypatch, reader):
-    worker = reader(None)
+    worker = reader()
     worker.process(_upright_qr())
     img = _draw(monkeypatch, worker, enabled=False)
     assert not img[_bar() + 4:300, 10:170].any()
 
 
 def test_corner_shows_while_waiting_for_a_crossing(monkeypatch, reader):
-    worker = reader(None)
+    worker = reader()
     worker.process(_upright_qr())
     img = _draw(monkeypatch, worker, triggers={"cam-corner": (1, 0.0)})
     assert img[_bar() + 10:_bar() + 200, 10:170].any()
 
 
 def test_below_a_vision_bar(monkeypatch, reader):
-    worker = reader(None)
+    worker = reader()
     worker.process(_qr_bottom_right())
     img = _draw(monkeypatch, worker, banner=False, top=60)
     assert not img[:70, 10:170].any()
@@ -126,7 +110,7 @@ def test_below_a_vision_bar(monkeypatch, reader):
 def test_triggered_capture_draws_the_corner(monkeypatch, reader):
     picture = _qr_bottom_right()
     monkeypatch.setitem(app_state.cameras, "cam-corner", FrameCamera(picture))
-    worker = reader(None)
+    worker = reader()
     record, jpeg = worker.capture({"track_id": 1, "wire_line": 1})
     assert record["status"] == "read" and worker.corner().code == "PROD-0042"
     drawn = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
@@ -139,7 +123,7 @@ def test_banner_says_code_reader(monkeypatch, reader):
     seen = []
     real = inference_engine.draw_status_bar
     monkeypatch.setattr(inference_engine, "draw_status_bar", lambda img, parts: (seen.append(parts), real(img, parts))[1])
-    worker = reader(None)
+    worker = reader()
     for enabled, triggers in ((False, None), (True, {"cam-corner": (1, 0.0)}), (True, None)):
         _draw(monkeypatch, worker, enabled=enabled, triggers=triggers)
     assert [parts[0] for parts in seen] == ["CODE READER"] * 3
@@ -160,9 +144,3 @@ def test_corner_picture_is_cleared_when_the_line_starts(monkeypatch):
         assert worker.corner() is None
     finally:
         qr_service.QRReaderPipeline.remove_camera("cam-start")
-
-
-def test_normalized_settings_reach_the_reader(reader):
-    worker = reader(normalize_processing({"enabled": True, "rotate": {"on": True, "angle": -45}}))
-    picture, _ = _turned(45)
-    assert worker.process(picture) == [EAN]

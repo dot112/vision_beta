@@ -160,7 +160,7 @@ def test_continuous_reading_limits_the_second_pass_while_nothing_reads(monkeypat
 
     budgets = []
 
-    def decode(mat, hard_budget_ms=0.0, code_type="all", processing=None):
+    def decode(mat, hard_budget_ms=0.0, code_type="all"):
         budgets.append(hard_budget_ms)
         return BarcodeDecodeResponse(total_found=0, codes=[], decode_time_ms=1.0, image_width=10, image_height=10)
 

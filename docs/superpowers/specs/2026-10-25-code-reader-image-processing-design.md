@@ -1,5 +1,7 @@
 # Code reader image processing
 
+> **Removed on 2026-10-25** at the owner's request: zxing-cpp already binarizes, inverts and turns the picture while it reads, so this stage only made reading slower. What stays: the corner picture (now always cut out of the camera's picture) and the CODE READER banner. See `tests/test_code_processing_removed.py`.
+
 Date: 2026-10-25. Branch `claude/code-processing` (from `main` at `a2ff0b2`).
 
 The owner wants the code reader to process the picture before it looks for codes

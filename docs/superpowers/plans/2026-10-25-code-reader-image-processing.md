@@ -1,5 +1,7 @@
 # Code Reader Image Processing Implementation Plan
 
+> **Removed on 2026-10-25** at the owner's request: zxing-cpp already binarizes, inverts and turns the picture while it reads, so this stage only made reading slower. What stays: the corner picture (now always cut out of the camera's picture) and the CODE READER banner. See `tests/test_code_processing_removed.py`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The code reader processes a copy of each picture (perspective, rotate, scale, grayscale, denoise, contrast, sharpen, binarize) before reading, falls back to the original, shows the cropped code in the video's top-left corner, has a live preview in Line setup, and its banner says CODE READER.
