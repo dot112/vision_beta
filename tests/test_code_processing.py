@@ -140,6 +140,36 @@ def test_points_map_back():
     assert np.allclose(back, [[300, 260], [10, 20]], atol=2)
 
 
+def _warp_calls(monkeypatch):
+    calls = []
+    real = cv2.warpPerspective
+
+    def spy(img, matrix, size, *args, **kwargs):
+        calls.append({"channels": img.ndim, "flags": kwargs.get("flags")})
+        return real(img, matrix, size, *args, **kwargs)
+
+    monkeypatch.setattr(cv2, "warpPerspective", spy)
+    return calls
+
+
+def test_grey_steps_turn_grey_before_the_warp(monkeypatch):
+    """A third of the pixels go through the warp (it is the costly part under load)."""
+    calls = _warp_calls(monkeypatch)
+    prepare(_noise(640, 480), _on(rotate={"angle": -45}, sharpen={}))
+    assert calls and calls[0]["channels"] == 2
+    calls.clear()
+    out, _ = prepare(_noise(640, 480), _on(rotate={"angle": -45}))
+    assert calls[0]["channels"] == 3 and out.ndim == 3      # no grey step: the colours stay
+
+
+def test_turning_at_full_size_uses_linear_interpolation(monkeypatch):
+    calls = _warp_calls(monkeypatch)
+    prepare(_noise(640, 480), _on(rotate={"angle": 30}))
+    assert calls[-1]["flags"] == cv2.INTER_LINEAR
+    prepare(_noise(640, 480), _on(rotate={"angle": 30}, scale={"factor": 2}))
+    assert calls[-1]["flags"] == cv2.INTER_CUBIC          # growing: cubic
+
+
 # ── Upright crop ──────────────────────────────────────────────────────────────
 
 def _turned_rect(cx, cy, w, h, angle):

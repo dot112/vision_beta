@@ -170,7 +170,9 @@ def _warp(img: np.ndarray, settings: Dict[str, Any]) -> Tuple[np.ndarray, np.nda
             return img, np.eye(3)
         if not turned:
             return cv2.resize(img, (out_w, out_h), interpolation=cv2.INTER_CUBIC if factor > 1 else cv2.INTER_AREA), full
-        return cv2.warpPerspective(img, full, (out_w, out_h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE), full
+        # Cubic only where the picture grows; turning it at its own size is linear (cheaper, as sharp).
+        flags = cv2.INTER_CUBIC if factor > 1 else cv2.INTER_LINEAR
+        return cv2.warpPerspective(img, full, (out_w, out_h), flags=flags, borderMode=cv2.BORDER_REPLICATE), full
     # A warp cannot average pixels as it shrinks: it turns at full size, then shrinks by area.
     mid_w, mid_h = max(1, round(cw)), max(1, round(ch))
     mid = cv2.warpPerspective(img, matrix, (mid_w, mid_h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
@@ -183,9 +185,10 @@ def prepare(img: np.ndarray, settings: Dict[str, Any]) -> Tuple[np.ndarray, np.n
     ``settings`` are normalized (normalize_processing). The matrix is the identity
     when no geometric step changes the picture. A step the picture is too small
     for is skipped."""
+    # Turned grey before the warp, not after: a third of the pixels to move, the same picture.
+    if img.ndim == 3 and (settings["grayscale"]["on"] or any(settings[step]["on"] for step in GREY_STEPS)):
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     out, matrix = _warp(img, settings)
-    if out.ndim == 3 and (settings["grayscale"]["on"] or any(settings[step]["on"] for step in GREY_STEPS)):
-        out = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY)
     small = min(out.shape[:2])
     if settings["denoise"]["on"]:
         kernel = 2 * settings["denoise"]["strength"] + 1
