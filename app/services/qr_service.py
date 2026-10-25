@@ -57,7 +57,72 @@ def _decode_qr(image_input: Any) -> BarcodeDecodeResponse:
         return _qr_engine.decode(image_input, hard_budget_ms=SINGLE_PICTURE_HARD_BUDGET_MS)
 
 
+# Line setup's live preview of the image processing: its own decoder, never a running reader's.
+_preview_engine = QREngine()
+_preview_lock = threading.Lock()
+PREVIEW_MAX_WIDTH = 960
+PREVIEW_JPEG_QUALITY = 80
+PREVIEW_VIEWS = ("processed", "original")
+
+
+class CameraNotConnected(LookupError):
+    """The camera is not connected, or gave no picture."""
+
+
 class QRService:
+    @staticmethod
+    def preview(camera_id: str, processing: Any, code_type: str = "all", view: str = "processed") -> Tuple[bytes, Dict[str, str]]:
+        """The camera's latest picture read with these (unsaved) processing settings, as a JPEG with the
+        codes outlined: the processed picture (view "processed") or the camera's own ("original").
+        Returns (JPEG, headers: X-Codes, X-Read-By, X-Read-Ms, Cache-Control).
+        Raises CameraNotConnected, or ValueError for bad settings."""
+        import cv2
+        import numpy as np
+
+        from app.engines.code_processing import normalize_processing
+        from app.engines.inference_engine import overlay_scale
+        from app.state.application_state import app_state
+
+        if view not in PREVIEW_VIEWS:
+            raise ValueError("view must be 'processed' or 'original'")
+        try:
+            settings = normalize_processing(processing)
+        except ValueError as exc:
+            raise ValueError(f"Image processing: {exc}") from None
+        driver = app_state.cameras.get(camera_id)
+        if driver is None or not getattr(driver, "is_connected", False):
+            raise CameraNotConnected(f"Camera {camera_id} is not connected")
+        if hasattr(driver, "get_latest_raw_mat"):
+            ok, mat, _ = driver.get_latest_raw_mat(copy=True)
+        else:
+            ok, mat, _ = driver.grab_raw_frame()
+        if not ok or mat is None:
+            raise CameraNotConnected(f"Camera {camera_id} is not connected")
+        with _preview_lock:
+            response = _preview_engine.decode(mat, hard_budget_ms=SINGLE_PICTURE_HARD_BUDGET_MS, code_type=code_type,
+                                              processing=settings)
+            last = _preview_engine.last_read
+        if view == "processed" and last.processed is not None:
+            picture, outlines = last.processed, [map_points(c.polygon, last.matrix) for c in response.codes]
+        else:
+            picture, outlines = mat, [c.polygon for c in response.codes]
+        img = cv2.cvtColor(picture, cv2.COLOR_GRAY2BGR) if picture.ndim == 2 else picture.copy()
+        h, w = img.shape[:2]
+        thick = max(2, int(round(2 * overlay_scale(w, h))))
+        for outline in outlines:
+            if len(outline) >= 3:
+                cv2.polylines(img, [np.array(outline, np.int32).reshape((-1, 1, 2))], True, KNOWN_COLOR, thick)
+        if w > PREVIEW_MAX_WIDTH:
+            img = cv2.resize(img, (PREVIEW_MAX_WIDTH, max(1, int(round(h * PREVIEW_MAX_WIDTH / w)))), interpolation=cv2.INTER_AREA)
+        ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), PREVIEW_JPEG_QUALITY])
+        headers = {
+            "X-Codes": str(len(response.codes)),
+            "X-Read-By": last.read_by,
+            "X-Read-Ms": f"{response.decode_time_ms:.1f}",
+            "Cache-Control": "no-store",
+        }
+        return buf.tobytes() if ok else b"", headers
+
     @staticmethod
     async def decode_image(image_bytes: bytes) -> BarcodeDecodeResponse:
         return await asyncio.to_thread(_decode_qr, image_bytes)

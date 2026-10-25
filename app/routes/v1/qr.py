@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+from typing import Any, Dict, Optional
+
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_db
 from app.schemas.qr import BarcodeDecodeResponse, LiveCameraBarcodeResponse
-from app.services.qr_service import QRService
+from app.services.qr_service import CameraNotConnected, QRService
 from app.config import settings
 from app.utils.logger import get_logger
 from app.utils.upload_limits import read_upload_limited
@@ -62,6 +65,25 @@ async def get_annotated_frame(
         return Response(content=jpeg_bytes, media_type="image/jpeg")
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/preview/camera/{camera_id}", summary="A camera's picture after image processing, codes outlined (JPEG)")
+async def preview_camera(camera_id: str, body: Optional[Dict[str, Any]] = None) -> Response:
+    """Line setup's live preview: reads the camera's latest picture with the image processing
+    settings in ``processing`` (not saved) and answers it as a JPEG, the processed picture
+    (``view`` "processed") or the camera's own ("original"), codes outlined. ``X-Codes``,
+    ``X-Read-By`` and ``X-Read-Ms`` say what was read. Saves nothing."""
+    body = body or {}
+    try:
+        jpeg, headers = await asyncio.to_thread(
+            QRService.preview, camera_id, body.get("processing"),
+            str(body.get("code_type") or "all"), str(body.get("view") or "processed"),
+        )
+    except CameraNotConnected as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return Response(content=jpeg, media_type="image/jpeg", headers=headers)
 
 
 @router.post("/mobile-scan", summary="Receive 1D/2D Barcode Scan from Android Mobile Scanner")
