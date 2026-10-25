@@ -12,6 +12,8 @@ import glob
 import logging
 import os
 import re
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -268,3 +270,93 @@ def take_reading(ps: Any = psutil, nvml: Any = None, root: str = "/", data_dir: 
         "gpus": gpu_readings(nvml, root),
         "server": server_reading(ps, process or _this_process()),
     }
+
+
+# ── Sampler ───────────────────────────────────────────────────────────────────
+
+class UsageSampler:
+    """Takes a reading every ``interval`` s on its own thread, shared by every dashboard.
+
+    The thread starts with the first request and ends ``idle_stop`` s after the
+    last one, so the machine does no work for it while no dashboard is open.
+    An answer never waits for a reading in progress, only for the very first one.
+    """
+
+    def __init__(self, read=take_reading, prime=prime, interval: float = 2.0, first_wait: float = 0.5,
+                 idle_stop: float = 60.0, clock=time.monotonic):
+        self._read = read
+        self._prime = prime
+        self._interval = interval
+        self._first_wait = first_wait
+        self._idle_stop = idle_stop
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._reading: Optional[Dict[str, Any]] = None
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+        self._first = threading.Event()
+        self._last_request = clock()
+
+    @property
+    def running(self) -> bool:
+        with self._lock:
+            return self._thread is not None
+
+    def latest(self, wait: float = 3.0) -> Dict[str, Any]:
+        """The latest reading ({} when the first one has not come in ``wait`` s)."""
+        with self._lock:
+            self._last_request = self._clock()
+            if self._thread is None:
+                self._reading = None              # a reading from before a stop is old
+                self._stop, self._first = threading.Event(), threading.Event()
+                self._thread = threading.Thread(target=self._loop, args=(self._stop, self._first),
+                                                name="SystemUsage", daemon=True)
+                self._thread.start()
+            first, reading = self._first, self._reading
+        if reading is None:
+            first.wait(wait)
+            with self._lock:
+                reading = self._reading
+        return reading or {}
+
+    def _finish(self) -> None:
+        with self._lock:
+            if self._thread is threading.current_thread():
+                self._thread = None
+
+    def _loop(self, stop: threading.Event, first: threading.Event) -> None:
+        try:
+            self._prime()
+        except Exception as exc:
+            _source_errors.log(logger, logging.WARNING, "prime", "System usage could not start: %s: %s", type(exc).__name__, exc)
+        if stop.wait(self._first_wait):
+            self._finish()
+            return
+        while True:
+            try:
+                reading = self._read()
+            except Exception as exc:
+                _source_errors.log(logger, logging.WARNING, "read", "System usage could not be read: %s: %s",
+                                   type(exc).__name__, exc)
+                reading = None
+            with self._lock:
+                if reading is not None:
+                    self._reading = reading
+                first.set()
+                if stop.is_set() or self._clock() - self._last_request > self._idle_stop:
+                    if self._thread is threading.current_thread():
+                        self._thread = None
+                    return
+            if stop.wait(self._interval):
+                self._finish()
+                return
+
+    def stop(self) -> None:
+        with self._lock:
+            thread, self._thread = self._thread, None
+            self._stop.set()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=1.0)
+
+
+usage_sampler = UsageSampler()
