@@ -6,11 +6,12 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, Iterable, List, NamedTuple, Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.engines.code_processing import is_active, map_points, upright
 from app.engines.qr_engine import QREngine
-from app.schemas.qr import BarcodeDecodeResponse, LiveCameraBarcodeResponse
+from app.schemas.qr import BarcodeDecodeResponse, BarcodeItem, LiveCameraBarcodeResponse
 from app.services.camera_service import CameraService
 from app.utils.logger import LogThrottle, get_logger
 from app.utils.threads import run_supervised
@@ -29,6 +30,25 @@ SINGLE_PICTURE_HARD_BUDGET_MS = 150.0
 # While the second pass finds nothing (no product in view, a busy background), a
 # continuously reading camera tries it at most this often, to bound its CPU use.
 CONTINUOUS_HARD_INTERVAL_S = 0.1
+
+# The picture of the last code read, shown in the top-left of the video: kept at most this long
+# (px), drawn in at most CORNER_BOX px (times overlay_scale) and 35% of the video's width and height.
+CORNER_MAX_SIDE = 240
+CORNER_BOX = 160
+CORNER_SHARE = 0.35
+CORNER_TEXT_CHARS = 24
+DEFAULT_CROP_MARGIN_PX = 16
+KNOWN_COLOR, UNKNOWN_COLOR = (0, 200, 0), (0, 0, 230)
+
+
+class CornerPicture(NamedTuple):
+    """The last code a reader read, cut out straight with a margin, for the corner of its video.
+    ``read_by``: the reading stage that read it; ``processing``: whether processing was on."""
+    image: Any
+    code: str
+    known: bool
+    read_by: str
+    processing: bool
 
 
 def _decode_qr(image_input: Any) -> BarcodeDecodeResponse:
@@ -123,6 +143,7 @@ class _QRReaderWorker:
         self._last_seen: dict = {}
         self._latest: List[Tuple[Any, bool]] = []
         self._latest_ms = 0.0
+        self._corner: Optional[CornerPicture] = None
         self._hard_missed_at = float("-inf")
         self.reads = 0
         self._captures: Deque[Dict[str, Any]] = collections.deque(maxlen=32)
@@ -179,6 +200,41 @@ class _QRReaderWorker:
         """The product list this camera checks its codes against (Line setup)."""
         return self._camera_entry().get("product_list_id")
 
+    def _processing(self) -> Optional[Dict[str, Any]]:
+        """The steps a copy of each picture goes through before reading (Line setup), or None."""
+        return self._camera_entry().get("code_processing")
+
+    def _keep_corner(self, mat: Any, reads: List[Tuple[BarcodeItem, bool]], processing: Optional[Dict[str, Any]]) -> None:
+        """Keeps the picture of one code just read (the first known one, else the first) for the corner
+        of the video: cut from the picture it was read in, straight, with the crop margin."""
+        import cv2
+
+        code, known = next(((c, k) for c, k in reads if k), reads[0])
+        if not code.polygon or len(code.polygon) != 4:
+            return
+        last = self._engine.last_read
+        read_by = last.read_by if last else "original"
+        if last is not None and read_by in ("processed", "straightened") and last.processed is not None:
+            source, outline = last.processed, map_points(code.polygon, last.matrix)
+        else:
+            source, outline = mat, code.polygon
+        margin = int((processing or {}).get("crop_margin_px", DEFAULT_CROP_MARGIN_PX))
+        crop, _ = upright(source, outline, margin, max_long=CORNER_MAX_SIDE)
+        if crop.ndim == 2:
+            crop = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
+        corner = CornerPicture(crop, (code.data or "").strip(), known, read_by, is_active(processing))
+        with self._state_lock:
+            self._corner = corner
+
+    def corner(self) -> Optional[CornerPicture]:
+        """The picture of the last code read, or None (nothing read since the line started)."""
+        with self._state_lock:
+            return self._corner
+
+    def clear_corner(self) -> None:
+        with self._state_lock:
+            self._corner = None
+
     def process(self, mat: Any, now: Optional[float] = None) -> List[str]:
         """Decode one frame and show its new reads on the camera's line. Returns the new codes.
 
@@ -190,7 +246,8 @@ class _QRReaderWorker:
 
         clock = time.monotonic()
         hard = CONTINUOUS_HARD_BUDGET_MS if clock - self._hard_missed_at >= CONTINUOUS_HARD_INTERVAL_S else 0.0
-        response = self._engine.decode(mat, hard_budget_ms=hard, code_type=self._code_type())
+        processing = self._processing()
+        response = self._engine.decode(mat, hard_budget_ms=hard, code_type=self._code_type(), processing=processing)
         if hard and not response.codes:
             self._hard_missed_at = clock
         now = clock if now is None else now
@@ -213,6 +270,8 @@ class _QRReaderWorker:
                 del self._last_seen[data]
             self._latest = latest
             self._latest_ms = response.decode_time_ms
+        if latest:
+            self._keep_corner(mat, latest, processing)
         for data in new_codes:
             self.reads += 1
             fmt = next((c.code_type for c, _ in latest if (c.data or "").strip() == data), "UNKNOWN")
@@ -304,6 +363,7 @@ class _QRReaderWorker:
         jpeg: Optional[bytes] = None
         code_type = self._code_type()
         list_id = self._product_list()
+        processing = self._processing()
         given = request.get("frame")
         # A camera on software trigger takes a new picture for every try, which can take longer.
         window = self.CAPTURE_RETRY_WINDOW_S if not self._software_triggered() else self.CAPTURE_FRAMES * 2.0
@@ -314,15 +374,18 @@ class _QRReaderWorker:
             if frame is None:
                 break
             mat, t, frames = frame, time.monotonic(), frames + 1
-            response = self._engine.decode(mat, hard_budget_ms=SINGLE_PICTURE_HARD_BUDGET_MS, code_type=code_type)
+            response = self._engine.decode(mat, hard_budget_ms=SINGLE_PICTURE_HARD_BUDGET_MS, code_type=code_type,
+                                           processing=processing)
             decode_ms += response.decode_time_ms
             seen = set()
+            reads: List[Tuple[BarcodeItem, bool]] = []
             for code in response.codes:
                 data = (code.data or "").strip()
                 if not data or data in seen:
                     continue
                 seen.add(data)
                 product = product_catalog.lookup(data, list_id)
+                reads.append((code, product is not None))
                 codes.append({
                     "code": data,
                     "format": code.code_type,
@@ -331,6 +394,7 @@ class _QRReaderWorker:
                     "polygon": code.polygon,
                 })
             if codes:
+                self._keep_corner(mat, reads, processing)
                 break
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -350,7 +414,7 @@ class _QRReaderWorker:
             if request.get(key) is not None:
                 record[key] = request[key]
         if mat is not None:
-            jpeg = draw_capture(mat, record, self.CAPTURE_MAX_WIDTH)
+            jpeg = draw_capture(mat, record, self.CAPTURE_MAX_WIDTH, corner=self.corner() if codes else None)
         return record, jpeg
 
     def _software_triggered(self) -> bool:
@@ -419,8 +483,41 @@ class _QRReaderWorker:
             self._thread.join(timeout=1.0)
 
 
-def draw_capture(mat: Any, record: Dict[str, Any], max_width: int = 1280) -> bytes:
-    """A captured picture with a box around every code: green for known products, red for unknown."""
+def draw_corner(img: Any, corner: CornerPicture, top: int) -> None:
+    """The picture of the last code read in the top-left of ``img``, ``top`` px down (below a bar):
+    framed green (known) or red (unknown), its text in a dark strip under it. Draws in place."""
+    import cv2
+
+    from app.engines.inference_engine import STATUS_BAR_COLOR, overlay_scale
+
+    h, w = img.shape[:2]
+    s = overlay_scale(w, h)
+    pad, frame = int(round(10 * s)), max(1, int(round(2 * s)))
+    box = min(CORNER_BOX * s, CORNER_SHARE * w, CORNER_SHARE * h)
+    ch, cw = corner.image.shape[:2]
+    fit = box / max(cw, ch)
+    pw, ph = max(1, int(round(cw * fit))), max(1, int(round(ch * fit)))
+    x0, y0 = pad, top + pad
+    font, thick = 0.42 * s, max(1, int(round(s)))
+    text = corner.code[:CORNER_TEXT_CHARS] + ("  original" if corner.processing and corner.read_by == "original" else "")
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font, thick)
+    strip_h = th + int(round(10 * s))
+    if box < 8 or y0 + ph + 2 * frame + strip_h > h:
+        return   # no room on a tiny video
+    color = KNOWN_COLOR if corner.known else UNKNOWN_COLOR
+    cv2.rectangle(img, (x0, y0), (x0 + pw + 2 * frame - 1, y0 + ph + 2 * frame - 1), color, -1)
+    small = cv2.resize(corner.image, (pw, ph), interpolation=cv2.INTER_AREA if fit < 1 else cv2.INTER_LINEAR)
+    img[y0 + frame:y0 + frame + ph, x0 + frame:x0 + frame + pw] = small
+    y1 = y0 + ph + 2 * frame
+    right = min(w - 1, x0 + max(pw + 2 * frame, tw + int(round(10 * s))) - 1)
+    cv2.rectangle(img, (x0, y1), (right, y1 + strip_h - 1), STATUS_BAR_COLOR, -1)
+    cv2.putText(img, text, (x0 + int(round(5 * s)), y1 + strip_h - int(round(5 * s))), cv2.FONT_HERSHEY_SIMPLEX, font,
+                (255, 255, 255), thick)
+
+
+def draw_capture(mat: Any, record: Dict[str, Any], max_width: int = 1280, corner: Optional[CornerPicture] = None) -> bytes:
+    """A captured picture with a box around every code: green for known products, red for unknown.
+    ``corner``: the picture of the code read, drawn in the top-left below the banner."""
     import cv2
     import numpy as np
 
@@ -457,6 +554,8 @@ def draw_capture(mat: Any, record: Dict[str, Any], max_width: int = 1280) -> byt
     banner_h = int(30 * scale)
     cv2.rectangle(img, (0, 0), (w, banner_h), (20, 24, 33) if codes else (0, 0, 150), -1)
     cv2.putText(img, "  |  ".join(parts), (int(10 * scale), int(21 * scale)), cv2.FONT_HERSHEY_SIMPLEX, font, (255, 255, 255), max(1, thickness // 2))
+    if corner is not None:
+        draw_corner(img, corner, banner_h)
 
     if max_width and w > max_width:
         img = cv2.resize(img, (max_width, max(1, int(h * max_width / w))), interpolation=cv2.INTER_AREA)
@@ -492,6 +591,14 @@ class QRReaderPipeline:
             worker.stop()
 
     @classmethod
+    def clear_corners(cls, camera_ids: Iterable[str]) -> None:
+        """Forgets the corner pictures of these cameras (their line starts: a picture from before is not new)."""
+        for camera_id in camera_ids:
+            worker = cls.peek(camera_id)
+            if worker is not None:
+                worker.clear_corner()
+
+    @classmethod
     def stop_all(cls) -> None:
         with cls._lock:
             workers = list(cls._workers.values())
@@ -501,9 +608,10 @@ class QRReaderPipeline:
 
     @classmethod
     def draw_reads(cls, camera_id: str, img: Any, scale_x: float = 1.0, scale_y: float = 1.0, fps: float = 0.0,
-                   banner: bool = True) -> Any:
-        """Outline each code in green when known and red when unknown. Draws on img and returns it.
-        banner=False leaves out the QR READER bar (a vision camera's video has its own)."""
+                   banner: bool = True, top: int = 0) -> Any:
+        """Outline each code in green when known and red when unknown, and show the picture of the
+        last code read in the top-left. Draws on img and returns it.
+        banner=False leaves out the CODE READER bar (a vision camera's video has its own, ``top`` px high)."""
         import cv2
         import numpy as np
 
@@ -512,23 +620,24 @@ class QRReaderPipeline:
 
         worker = cls.peek(camera_id)
         reads, decode_ms = worker.latest() if worker else ([], 0.0)
+        corner = worker.corner() if worker else None
         h, w = img.shape[:2]
         s = overlay_scale(w, h)
         routed = line_manager.route(camera_id)
         trigger = routed[0].capture_triggers.get(camera_id) if routed else None
         if routed and not getattr(routed[0], "enabled", False):
             # Nothing is read while the line is stopped: the last codes would stand still on the picture.
-            reads = []
-            parts = ["QR READER", STATUS_STOPPED]
+            reads, corner = [], None
+            parts = ["CODE READER", STATUS_STOPPED]
         elif trigger:
             # The codes are drawn on the captured picture, not on live video.
             reads = []
-            parts = ["QR READER", f"CAPTURES WHEN A PRODUCT CROSSES WIRE LINE {trigger[0]}"]
+            parts = ["CODE READER", f"CAPTURES WHEN A PRODUCT CROSSES WIRE LINE {trigger[0]}"]
         else:
-            parts = ["QR READER", f"CODES: {len(reads)}", f"{decode_ms:.0f}ms"]
+            parts = ["CODE READER", f"CODES: {len(reads)}", f"{decode_ms:.0f}ms"]
         if fps > 0:
             parts.append(f"FPS: {fps:.1f}")
-        top = draw_status_bar(img, parts) if banner else 0
+        top = draw_status_bar(img, parts) if banner else top
         font, thick = 0.5 * s, max(1, int(round(s)))
         for code, known in reads:
             color = (0, 200, 0) if known else (0, 0, 230)
@@ -543,4 +652,6 @@ class QRReaderPipeline:
                 cv2.rectangle(img, (x, y - int(round(20 * s))), (x + lw + int(round(8 * s)), y), color, -1)
                 cv2.putText(img, label, (x + int(round(4 * s)), y - int(round(6 * s))), cv2.FONT_HERSHEY_SIMPLEX, font,
                             (255, 255, 255), thick)
+        if corner is not None:
+            draw_corner(img, corner, top)
         return img

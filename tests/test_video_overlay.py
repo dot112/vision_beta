@@ -184,7 +184,7 @@ def test_the_code_readers_video_of_a_stopped_line_shows_no_old_codes(monkeypatch
 
     code = SimpleNamespace(data="439108237", polygon=[[100, 100], [200, 100], [200, 200], [100, 200]],
                            bbox=SimpleNamespace(x1=100, y1=100))
-    worker = SimpleNamespace(latest=lambda: ([(code, True)], 4.0))
+    worker = SimpleNamespace(latest=lambda: ([(code, True)], 4.0), corner=lambda: None)
     monkeypatch.setattr(QRReaderPipeline, "peek", classmethod(lambda cls, cid: worker))
     stopped = SimpleNamespace(enabled=False, capture_triggers={})
     running = SimpleNamespace(enabled=True, capture_triggers={})
@@ -206,5 +206,5 @@ def test_the_code_readers_bar_has_the_same_size_on_screen(monkeypatch):
     monkeypatch.setattr(line_manager, "route", lambda cid: (SimpleNamespace(enabled=True, capture_triggers={}), "qr"))
     for w, h in ((640, 480), (1759, 1573), (300, 720)):
         img = QRReaderPipeline.draw_reads("qr-1", np.zeros((h, w, 3), np.uint8))
-        lines = len(status_bar_layout(["QR READER", "CODES: 0", "0ms"], w, h)[0])
+        lines = len(status_bar_layout(["CODE READER", "CODES: 0", "0ms"], w, h)[0])
         assert _on_screen(img) == pytest.approx(6 + 26 * lines, abs=2.5), (w, h)

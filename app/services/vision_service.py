@@ -472,8 +472,15 @@ class _CameraStreamPublisher:
 
                 # Codes a vision camera read beside its model are outlined on its video too.
                 if routed and routed[1] == "vision" and routed[0].reads_codes(self.camera_id):
+                    from app.engines.inference_engine import hud_parts, status_bar_height
                     from app.services.qr_service import QRReaderPipeline
-                    QRReaderPipeline.draw_reads(self.camera_id, annotated_mat, scale_x, scale_y, banner=False)
+                    # The picture of the last code read goes below the vision bar.
+                    try:
+                        bar = status_bar_height(hud_parts(line_manager.counter_for_camera(self.camera_id), fps, latency_ms, status),
+                                                annotated_mat.shape[1], annotated_mat.shape[0])
+                    except Exception:
+                        bar = 0
+                    QRReaderPipeline.draw_reads(self.camera_id, annotated_mat, scale_x, scale_y, banner=False, top=bar)
 
                 # 4. Render Annotated JPEG (single encode per frame)
                 ret_ann, ann_buf = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), quality])

@@ -528,10 +528,15 @@ class LineRuntime:
         from app.services.settings_persistence_service import counting_config_from_dict
 
         self.name = line.get("name") or self.id
+        started = bool(line.get("enabled", True)) and not self.enabled
         self.enabled = bool(line.get("enabled", True))
         self.min_fps = float(line.get("min_fps") or 0.0)
         self.yield_target = float(line.get("yield_target") or 0.0)
         self.cameras = copy.deepcopy(line.get("cameras") or [])
+        if started:
+            # A code picture from before the stop is not shown as a new read.
+            from app.services.qr_service import QRReaderPipeline
+            QRReaderPipeline.clear_corners(c["camera_id"] for c in self.cameras)
         self.counter.line_id = self.id
         self.counter.line_name = self.name
 
