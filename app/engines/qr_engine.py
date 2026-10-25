@@ -7,6 +7,7 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 import cv2
 import numpy as np
 
+from app.engines.code_processing import is_active, map_points, prepare, upright
 from app.schemas.qr import BarcodeDecodeResponse, BarcodeItem
 from app.schemas.vision import BoundingBox
 from app.utils.logger import get_logger
@@ -186,6 +187,21 @@ def _sharpened_x2(gray: np.ndarray) -> np.ndarray:
     return cv2.addWeighted(big, 3.0, cv2.GaussianBlur(big, (0, 0), 2.0), -2.0, 0)
 
 
+# Codes found but not decoded in the processed picture that are straightened and read again.
+MAX_STRAIGHTENED = 3
+# A straightened code is enlarged until its short side is this long (at most 4 times).
+STRAIGHTENED_SHORT_SIDE = 120
+
+
+class LastRead(NamedTuple):
+    """What the last decode read in: the processed picture (None when processing was off), the
+    matrix from the camera picture to it, and the stage that read ("processed", "straightened",
+    "original" or "none")."""
+    processed: Optional[np.ndarray]
+    matrix: Optional[np.ndarray]
+    read_by: str
+
+
 class QREngine:
     """
     Industrial Barcode & QR Code Localization and Decoding Engine.
@@ -197,6 +213,7 @@ class QREngine:
         # (length, axis) of the deblurring that last read a code. A camera's
         # blur barely changes from product to product, so it is tried first.
         self._last_deblur: Optional[Tuple[int, int]] = None
+        self.last_read: Optional[LastRead] = None
         self._qr_detector = cv2.QRCodeDetector()
         try:
             self._barcode_detector = cv2.barcode.BarcodeDetector()
@@ -220,20 +237,28 @@ class QREngine:
             bbox=BoundingBox(x1=x1, y1=y1, x2=x2, y2=y2, width=x2 - x1, height=y2 - y1),
         )
 
-    def _decode_zxing(self, img: np.ndarray, w: int, h: int, only: CodeFilter) -> Optional[List[BarcodeItem]]:
+    def _decode_zxing(self, img: np.ndarray, w: int, h: int, only: CodeFilter,
+                      errors: Optional[List[List[List[int]]]] = None) -> Optional[List[BarcodeItem]]:
+        """The codes read. With ``errors``, the corners of each code found but not decoded go there."""
+        kwargs: Dict[str, Any] = {} if only.formats is None else {"formats": only.formats}
+        if errors is not None:
+            kwargs["return_errors"] = True
         try:
-            results = zxingcpp.read_barcodes(img, formats=only.formats) if only.formats is not None else zxingcpp.read_barcodes(img)
+            results = zxingcpp.read_barcodes(img, **kwargs)
         except Exception as exc:
             logger.debug("zxing-cpp decoding exception: %s", exc)
             return None
         codes: List[BarcodeItem] = []
         for r in results:
             text = getattr(r, "text", "") or ""
-            if not text or getattr(r, "valid", True) is False:
-                continue
             p = r.position
             pts = [[int(c.x), int(c.y)] for c in (p.top_left, p.top_right, p.bottom_right, p.bottom_left)]
-            codes.append(self._item(_format_name(r.format), text, pts, w, h))
+            if getattr(r, "valid", True) is False:
+                if errors is not None:
+                    errors.append(pts)
+                continue
+            if text:
+                codes.append(self._item(_format_name(r.format), text, pts, w, h))
         return codes
 
     def _decode_opencv(self, img: np.ndarray, w: int, h: int, only: CodeFilter) -> List[BarcodeItem]:
@@ -266,9 +291,33 @@ class QREngine:
                 logger.debug("1D Barcode decoding exception: %s", exc)
         return codes
 
-    def _read(self, img: np.ndarray, w: int, h: int, only: CodeFilter) -> List[BarcodeItem]:
-        codes = self._decode_zxing(img, w, h, only) if zxingcpp is not None else None
+    def _read(self, img: np.ndarray, w: int, h: int, only: CodeFilter,
+              errors: Optional[List[List[List[int]]]] = None) -> List[BarcodeItem]:
+        """The codes read. ``errors`` collects the corners of codes found but not decoded
+        (zxing-cpp only: OpenCV does not report them)."""
+        codes = self._decode_zxing(img, w, h, only, errors) if zxingcpp is not None else None
         return codes if codes is not None else self._decode_opencv(img, w, h, only)
+
+    def _moved(self, code: BarcodeItem, matrix: np.ndarray, w: int, h: int) -> BarcodeItem:
+        """The code with its outline moved by ``matrix`` into a w x h picture."""
+        return self._item(code.code_type, code.data, map_points(code.polygon, matrix), w, h)
+
+    def _decode_processed(self, processed: np.ndarray, matrix: np.ndarray, w: int, h: int, only: CodeFilter,
+                          margin_px: int) -> Tuple[List[BarcodeItem], str]:
+        """Stages 1 and 2: the processed picture, then each code it found but could not decode,
+        straightened. Outlines come back in the w x h camera picture."""
+        back = np.linalg.inv(matrix)
+        errors: List[List[List[int]]] = []
+        found = self._read(processed, processed.shape[1], processed.shape[0], only, errors=errors)
+        if found:
+            return [self._moved(c, back, w, h) for c in found], "processed"
+        for outline in errors[:MAX_STRAIGHTENED]:
+            crop, to_crop = upright(processed, outline, margin_px, min_short=STRAIGHTENED_SHORT_SIDE)
+            found = self._read(crop, crop.shape[1], crop.shape[0], only)
+            if found:
+                to_camera = back @ np.linalg.inv(to_crop)
+                return [self._moved(c, to_camera, w, h) for c in found], "straightened"
+        return [], "none"
 
     def _decode_hard(self, img: np.ndarray, w: int, h: int, budget_ms: float, only: CodeFilter) -> List[BarcodeItem]:
         """Second pass for codes the first pass cannot read, mostly motion blur from a
@@ -303,13 +352,19 @@ class QREngine:
                     ]
         return []
 
-    def decode(self, image_input: Any, hard_budget_ms: float = 0.0, code_type: str = CODE_TYPE_ALL) -> BarcodeDecodeResponse:
+    def decode(self, image_input: Any, hard_budget_ms: float = 0.0, code_type: str = CODE_TYPE_ALL,
+               processing: Optional[Dict[str, Any]] = None) -> BarcodeDecodeResponse:
         """
         Decodes all 1D (EAN/UPC/Code128) and 2D (QR) barcodes in the image.
         With hard_budget_ms, a picture where nothing reads gets a second, slower
         pass (sharpening and motion deblurring) of at most that many milliseconds.
         code_type limits the reader to the 2D types ("2d"), the 1D types ("1d") or
         one type (see code_type_options); codes of any other type are ignored.
+        processing (normalized settings, code_processing.py), when switched on: the
+        processed picture is read first, then the codes it found but could not decode,
+        straightened; only when those read nothing is the picture itself read, as
+        without processing. Outlines are always in the picture's own coordinates.
+        last_read says what read.
         """
         if isinstance(image_input, bytes):
             nparr = np.frombuffer(image_input, np.uint8)
@@ -325,9 +380,17 @@ class QREngine:
         h, w = img.shape[:2]
         only = code_filter(code_type)
         start_time = time.perf_counter()
-        codes = self._read(img, w, h, only)
-        if not codes and hard_budget_ms > 0:
-            codes = self._decode_hard(img, w, h, hard_budget_ms, only)
+        codes: List[BarcodeItem] = []
+        processed = matrix = None
+        if is_active(processing):
+            processed, matrix = prepare(img, processing)
+            codes, read_by = self._decode_processed(processed, matrix, w, h, only, processing["crop_margin_px"])
+        if not codes:
+            codes = self._read(img, w, h, only)
+            if not codes and hard_budget_ms > 0:
+                codes = self._decode_hard(img, w, h, hard_budget_ms, only)
+            read_by = "original" if codes else "none"
+        self.last_read = LastRead(processed, matrix, read_by)
         decode_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
         return BarcodeDecodeResponse(
