@@ -141,6 +141,60 @@ def test_status_line():
                    "No code read · 31 ms"]
 
 
+PREVIEW_LOOP = r"""
+// The fold's preview loop on a fake clock: a request answers after 60 ms; the view is switched three times.
+let now = 0, inFlight = 0, maxInFlight = 0;
+const requests = [], answers = [], listeners = {};
+const el = (extra = {}) => ({ value: "", checked: false, hidden: false, dataset: {}, classList: { contains: () => true, toggle() {} },
+  addEventListener(type, f) { (listeners[type] = listeners[type] || []).push(f); }, querySelector: () => el(), querySelectorAll: () => [],
+  getContext: () => ({ setTransform() {}, clearRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, closePath() {}, stroke() {}, arc() {}, fill() {} }),
+  setAttribute() {}, contains: () => true, closest: () => null, clientWidth: 0, clientHeight: 0, ...extra });
+const fold = el();
+const card = { isConnected: true, dataset: { camera: "c1" }, querySelector: (s) => (s.includes("pl-fold") ? fold : el()), querySelectorAll: () => [] };
+const timers = [];
+let ids = 0;
+global.setTimeout = (f, ms) => { const t = { id: ++ids, at: now + (ms || 0), f }; timers.push(t); return t.id; };
+global.clearTimeout = (h) => { const i = timers.findIndex((t) => t.id === h); if (i >= 0) timers.splice(i, 1); };
+global.URL = { createObjectURL: () => "blob:x", revokeObjectURL() {} };
+global.window = { document: { body: { dataset: { tab: "tabActionTrigger" } }, hidden: false, head: null },
+  fetch: () => { requests.push(now); inFlight += 1; maxInFlight = Math.max(maxInFlight, inFlight);
+    return new Promise((done) => setTimeout(() => { inFlight -= 1; answers.push(now);
+      done({ ok: true, status: 200, blob: async () => ({}), headers: { get: () => "0" } }); }, 60)); } };
+async function run(until) {
+  for (;;) {
+    await new Promise((r) => setImmediate(r));
+    timers.sort((a, b) => a.at - b.at);
+    const t = timers[0];
+    if (!t || t.at > until) break;
+    timers.shift(); now = t.at; t.f();
+  }
+  now = until;
+}
+const api = require("./assets/code_processing.js");
+(async () => {
+  api.open(card);
+  await run(1000);
+  for (const at of [1100, 1700, 2300]) {
+    await run(at);
+    const view = el({ dataset: { act: "proc-view", view: at === 1700 ? "processed" : "original" } });
+    for (const f of listeners.click || []) f({ target: { closest: () => view } });
+  }
+  await run(6000);
+  let gap = Infinity;
+  for (const r of requests) { const last = answers.filter((a) => a <= r).pop(); if (last !== undefined) gap = Math.min(gap, r - last); }
+  process.stdout.write(JSON.stringify({ late: requests.filter((t) => t >= 3000).length, gap, maxInFlight }));
+})();
+"""
+
+
+def test_switching_the_view_keeps_one_refresh_loop():
+    """Review finding: each Processed/Original click started another refresh loop beside the first."""
+    got = _node(PREVIEW_LOOP)
+    assert got["maxInFlight"] == 1
+    assert got["gap"] >= 250                        # never sooner than 250 ms after the last answer
+    assert got["late"] <= 10                        # one loop: about 3000 / (60 + 250) requests in 3 s
+
+
 def test_defaults_match_the_server():
     got = _node("""
         const api = require("./assets/code_processing.js");

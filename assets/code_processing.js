@@ -169,6 +169,7 @@
 
     async function tick(card) {
         const st = stateOf(card);
+        clearTimeout(st.timer);
         st.timer = null;
         if (st.busy) return;
         if (!seen(card)) { schedule(card, IDLE_MS); return; }
@@ -277,7 +278,7 @@
                 st.view = button.dataset.view;
                 fold.querySelectorAll('[data-act="proc-view"]').forEach((b) => b.setAttribute("aria-pressed", b === button ? "true" : "false"));
                 drawCorners(card);
-                if (!st.busy) tick(card);
+                schedule(card, PREVIEW_GAP_MS);     // the loop's own timer: never a second loop
             } else if (button.dataset.act === "proc-reset-corners" && !locked()) {
                 setCorners(card, copy(DEFAULTS.perspective.corners));
             }
