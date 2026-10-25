@@ -93,6 +93,18 @@ def test_level2_without_a_code_set_is_told_only_an_admin_can_unlock():
     assert ConfigLockService.status()["retry_after"] == 0
 
 
+def test_an_empty_code_is_not_counted_as_wrong():
+    ConfigLockService.set_code(ADMIN, "abc123")
+    ConfigLockService.lock(ADMIN)
+    before = len(_lock_actions())
+    for code in [None, "", "   "] * 3:
+        error = _error(ConfigLockService.unlock, SUPERVISOR, code)
+        assert (error.status_code, error.detail) == (403, "Type the lock code to unlock.")
+    assert ConfigLockService.status()["retry_after"] == 0
+    assert _lock_actions()[before:] == []
+    assert ConfigLockService.unlock(SUPERVISOR, "abc123")["locked"] is False
+
+
 def test_five_wrong_codes_wait_five_minutes(fresh):
     ConfigLockService.set_code(ADMIN, "abc123")
     ConfigLockService.lock(ADMIN)

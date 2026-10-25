@@ -21,10 +21,17 @@
     const FIELDS = "input, select, textarea";
     const WARN_EVERY_MS = 3000;
 
-    const state = { status: null, warnedAt: 0, observer: null, scheduled: false };
+    // level: this tab's user's level, as the server answered it (see level()).
+    const state = { status: null, level: null, warnedAt: 0, observer: null, scheduled: false };
     const byId = (id) => document.getElementById(id);
-    const level = () => parseInt(localStorage.getItem("clearance_level") || "1", 10) || 1;
     const locked = () => Boolean(state.status && state.status.locked);
+
+    // This tab's level. The page keeps its sign-in per tab but the level in storage shared by
+    // every tab of the browser: another account signed in on another tab changes the stored one.
+    // So the server's answer to this tab's sign-in counts; the stored level only until it comes.
+    function level() {
+        return state.level || parseInt(localStorage.getItem("clearance_level") || "1", 10) || 1;
+    }
 
     function toast(msg, kind) {
         if (typeof showToast === "function") showToast(msg, kind || "info");
@@ -165,6 +172,8 @@
 
     function apply(status) {
         if (!status || typeof status !== "object") return;
+        // The lock routes say whose answer it is; the poll's copy of the state does not.
+        if (Number.isInteger(status.level)) state.level = status.level;
         state.status = status;
         document.body.classList.toggle("config-locked", locked());
         if (locked()) {

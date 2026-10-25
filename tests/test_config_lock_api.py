@@ -122,6 +122,17 @@ def test_lock_routes_by_level(client, admin_headers, supervisor, operator):
     assert client.delete(f"{API}/system/lock/code", headers=admin_headers).json()["code_set"] is False
 
 
+def test_lock_answers_tell_the_caller_its_level(client, admin_headers, supervisor, operator):
+    # The page keeps its sign-in per tab but the level in storage shared by every tab, so the
+    # lock dialog asks the server which level this tab's user has.
+    assert client.get(f"{API}/system/lock", headers=supervisor).json()["level"] == 2
+    assert client.get(f"{API}/system/lock", headers=operator).json()["level"] == 1
+    assert client.get(f"{API}/system/lock", headers=admin_headers).json()["level"] == 3
+    assert client.post(f"{API}/system/lock", headers=supervisor).json()["level"] == 2
+    assert client.post(f"{API}/system/unlock", headers=admin_headers).json()["level"] == 3
+    assert "level" not in client.get(f"{API}/system/poll-changes?since_version=0", headers=supervisor).json()["config_lock"]
+
+
 def test_level2_unlock_without_a_code_set(client, admin_headers, supervisor):
     client.post(f"{API}/system/lock", headers=admin_headers)
     for _ in range(6):

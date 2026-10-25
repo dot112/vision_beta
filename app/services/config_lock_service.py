@@ -112,6 +112,9 @@ class ConfigLockService:
         code_hash = cls._state()["code_hash"]
         if not code_hash:
             raise LockError(403, "No lock code is set: only an Admin can unlock.")
+        # Nothing typed is not a guess: it is not counted as a wrong code.
+        if not (code or "").strip():
+            raise LockError(403, "Type the lock code to unlock.")
         with cls._lock:
             wait = cls._retry_after()
             if wait:

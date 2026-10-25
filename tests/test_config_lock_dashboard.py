@@ -144,6 +144,36 @@ def test_view_only_fields_stay_free_and_product_dialogs_are_locked():
     assert all("data-lock-root" in tag for tag in _tags_with(script, 'class="modal-backdrop" id="${id}"'))
 
 
+def _dialog_run(stored_level, server_level):
+    script = _script()
+    code = f"""
+        const els = {{}};
+        const byId = (id) => (els[id] = els[id] || {{ id, hidden: false, disabled: false, textContent: "", value: "" }});
+        const localStorage = {{ getItem: (k) => (k === "clearance_level" ? {json.dumps(stored_level)} : null) }};
+        const state = {{ status: {{ locked: true, code_set: true, changed_by: "admin", changed_at: null, retry_after: 0 }}, level: {json.dumps(server_level)} }};
+        const locked = () => true;
+        {_function(script, "level")}
+        {_function(script, "when")}
+        {_function(script, "showError")}
+        {_function(script, "renderDialog")}
+        byId("configLockDialog");
+        renderDialog();
+        console.log(JSON.stringify({{ codeRow: !byId("configLockCodeRow").hidden, action: byId("configLockAction").hidden ? null : byId("configLockAction").textContent,
+            message: byId("configLockState").textContent, level: level() }}));
+    """
+    return _node(code)
+
+
+def test_the_dialog_follows_this_tab_s_level_not_another_tab_s():
+    # An Admin signed in on another tab of the same browser wrote level 3 to the shared storage.
+    shown = _dialog_run("3", 2)
+    assert shown["level"] == 2 and shown["codeRow"] is True and shown["action"] == "Unlock"
+    assert "Type the lock code" in shown["message"]
+    # Before the server has answered, the stored level is used.
+    assert _dialog_run("2", None)["codeRow"] is True
+    assert _dialog_run("3", None)["codeRow"] is False
+
+
 def _locked_answer_run(times_ms):
     script = _script()
     code = f"""
