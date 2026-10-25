@@ -897,6 +897,17 @@
                     <span class="pro-status-cell chip" title="Link between this screen and the vision server"><span class="pro-lamp" id="proLampServer"></span><span class="pro-status-val" id="proServerText">Connecting</span></span>
                     <span class="pro-status-cell optional"><span class="pro-status-val num" id="proClock">--:--:--</span></span>
                 </div>
+                <div class="user-menu usage-menu" id="usageMenu">
+                    <button type="button" class="usage-ring usage-none" data-usage="cpu" onclick="toggleMenu('usageMenu', event)" aria-haspopup="true" aria-expanded="false" title="CPU usage: open the details">
+                        <span class="usage-ring-dial"><svg viewBox="0 0 30 30" aria-hidden="true"><circle class="usage-ring-bg" cx="15" cy="15" r="13"/><circle class="usage-ring-fg" cx="15" cy="15" r="13" stroke-dasharray="0 82"/></svg><span class="usage-ring-val">—</span></span>
+                        <span class="usage-ring-label">CPU</span>
+                    </button>
+                    <button type="button" class="usage-ring usage-none" data-usage="gpu" onclick="toggleMenu('usageMenu', event)" aria-haspopup="true" aria-expanded="false" title="GPU usage: open the details">
+                        <span class="usage-ring-dial"><svg viewBox="0 0 30 30" aria-hidden="true"><circle class="usage-ring-bg" cx="15" cy="15" r="13"/><circle class="usage-ring-fg" cx="15" cy="15" r="13" stroke-dasharray="0 82"/></svg><span class="usage-ring-val">—</span></span>
+                        <span class="usage-ring-label">GPU</span>
+                    </button>
+                    <div class="user-menu-panel usage-panel" id="usagePanel" role="dialog" aria-label="System usage"></div>
+                </div>
                 <button type="button" class="pro-status-cell chip config-lock-chip" id="configLockChip" onclick="ConfigLock.openDialog()" aria-haspopup="dialog" hidden>
                     <svg class="lock-closed" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
                     <svg class="lock-open" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.6-1.7"/></svg>
@@ -2238,6 +2249,7 @@ function startStatsPolling() {
 function initDashboard() {
     startStatsPolling();
     if (window.ConfigLock) ConfigLock.refresh();
+    if (window.SystemUsage) SystemUsage.start();
     loadServerSettings();
     loadCommsEndpoints();
     loadPlcActionCards();
@@ -7441,6 +7453,7 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
 <script src="/assets/product_fields.js?v=3.5.0"></script>
 <script src="/assets/production_lines.js?v=3.12.0"></script>
 <script src="/assets/config_lock.js?v=1.0.0"></script>
+<script src="/assets/system_usage.js?v=1.0.0"></script>
 <script>
 /* ─── Cameras: Settings / Delete on every row (Connect is on the Line setup camera card) ─
    Runs after assets/production_lines.js has added its Line and Role columns. */

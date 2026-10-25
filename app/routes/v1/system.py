@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.db.models.user import User
@@ -11,6 +12,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/system", tags=["System Settings & Real-Time Sync"])
+
+
+@router.get("/usage", summary="How busy the machine is: CPU, RAM, disks, GPUs and this server (top bar)")
+async def get_system_usage(user: User = Depends(require_operator)) -> Dict[str, Any]:
+    """The latest reading, taken every 2 s while someone asks (app/services/system_usage.py).
+    503 while the very first reading has not come yet."""
+    from app.services.system_usage import usage_sampler
+
+    reading = await asyncio.to_thread(usage_sampler.latest)
+    if not reading:
+        raise HTTPException(status_code=503, detail="No usage reading yet")
+    return reading
 
 
 @router.get("/settings", summary="Get current persistent server settings")
