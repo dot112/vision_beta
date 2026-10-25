@@ -20,12 +20,16 @@
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     const known = (value) => value !== null && value !== undefined && Number.isFinite(Number(value));
 
+    // The colour follows the whole percent shown: a ring that says "90%" is red.
     function level(percent) {
         if (!known(percent)) return "none";
-        return percent >= HIGH ? "high" : percent >= WARN ? "warn" : "ok";
+        const shown = Math.round(percent);
+        return shown >= HIGH ? "high" : shown >= WARN ? "warn" : "ok";
     }
 
     const ringText = (percent) => (known(percent) ? `${Math.round(percent)}%` : "—");
+    // "100%" needs a smaller font to fit inside the ring.
+    const wideText = (percent) => known(percent) && Math.round(percent) >= 100;
     const isStale = (lastAnswerMs, nowMs) => nowMs - lastAnswerMs > STALE_MS;
 
     function busiestGpu(gpus) {
@@ -90,7 +94,10 @@
         const fg = button.querySelector(".usage-ring-fg");
         if (fg) fg.setAttribute("stroke-dasharray", `${known(percent) ? (RING * Math.max(0, Math.min(100, percent))) / 100 : 0} ${RING}`);
         const value = button.querySelector(".usage-ring-val");
-        if (value) value.textContent = ringText(percent);
+        if (value) {
+            value.textContent = ringText(percent);
+            value.classList.toggle("wide", wideText(percent));
+        }
     }
 
     const state = { running: false, timer: null, reading: null, lastAnswer: 0 };
@@ -147,7 +154,7 @@
         state.timer = null;
     }
 
-    const api = { level, ringText, busiestGpu, formatBytes, isStale, panelHtml, start, stop };
+    const api = { level, ringText, wideText, busiestGpu, formatBytes, isStale, panelHtml, start, stop };
     root.SystemUsage = api;
     if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

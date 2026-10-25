@@ -62,8 +62,16 @@ def test_script_is_valid_and_loaded():
 
 
 def test_ring_levels():
-    assert _api("[69, 70, 89.9, 90, 100, null].map(api.level)") == ["ok", "warn", "warn", "high", "high", "none"]
+    assert _api("[69, 70, 89.4, 90, 100, null].map(api.level)") == ["ok", "warn", "warn", "high", "high", "none"]
+    # Live check finding: a ring showing "90%" (89.6) was amber. The colour follows the number shown.
+    assert _api("[69.6, 89.6].map(api.level)") == ["warn", "high"]
     assert _api("[api.ringText(23.4), api.ringText(0), api.ringText(null)]") == ["23%", "0%", "—"]
+
+
+def test_three_digits_get_the_small_font():
+    """Live check finding: "100%" was wider than the 30 px ring."""
+    assert _api("[api.wideText(99.4), api.wideText(99.6), api.wideText(100), api.wideText(null)]") == [False, True, True, False]
+    assert ".usage-ring-val.wide {" in CSS.read_text(encoding="utf-8")
 
 
 def test_busiest_gpu():
@@ -142,3 +150,13 @@ def test_polling_stops_on_401():
 def test_ring_labels_hide_on_phones():
     css = CSS.read_text(encoding="utf-8")
     assert re.search(r"@media \(max-width: 640px\) \{[^}]*\.usage-ring-label \{ display: none; \}", css)
+
+
+def test_panel_fits_a_phone():
+    """Live check finding: at 375 px the panel, aligned to the rings' right edge, ran off the screen's left."""
+    css = CSS.read_text(encoding="utf-8")
+    phone = re.search(r"@media \(max-width: 640px\) \{(.*?)\n\}", css[css.index(".usage-ring {"):], re.S)
+    assert phone, "no phone rules for the usage panel"
+    # `.usage-menu .usage-panel`: the account menu's later `.user-menu-panel` rule (position: absolute) must not win.
+    assert re.search(r"\.usage-menu \.usage-panel \{[^}]*position: fixed;[^}]*left: 12px;[^}]*right: 12px;", phone.group(1))
+    assert ".usage-menu .usage-panel { width: 320px;" in css
