@@ -406,6 +406,14 @@ When a code from a list is read, its product goes with the item. The product's m
 
 Nothing has run against real PLCs yet: start the first plant trial with one line on a spare PLC or a simulator. Reading inputs was run against the Modbus TCP simulator in `test codes/plc_simulator.py` (a coil started a line and a counter register counted its products) and, for every protocol, against small stand-in PLCs in the tests; no protocol's read has met a real PLC.
 
+### System usage
+
+The top bar shows two small rings, **CPU** and **GPU**, with the whole machine's usage in percent inside: green, amber from 70% and red from 90%. The GPU ring shows the busiest GPU, or "—" when the server cannot read one. A click on either ring opens the details: the CPU (total, each core, cores, clock, and on Linux the load average and temperature), each GPU (usage, memory, temperature), the RAM and swap, every disk (the one holding the server's `data` folder is marked *server data*) and this server's own CPU and RAM share. Everyone signed in sees them; they change nothing.
+
+- CPU, RAM and disks come from `psutil`, the same on Windows and Linux. GPUs: NVIDIA cards through NVIDIA's management library (`nvidia-ml-py`; Windows, Linux, and Docker with the GPU given to the container), Jetson boards and AMD cards on Linux through their system files. Other GPUs (Intel, AMD on Windows) show "—". In Docker the disks are the container's.
+- The server reads every 2 s while a dashboard asks and stops a minute after the last request. The dashboard asks every 2 s while it is shown; the rings turn grey after 10 s without an answer.
+- `GET /api/v1/system/usage` answers the latest reading (any signed-in user; API keys need `monitor:read`).
+
 ### Configuration lock
 
 While the configuration is **locked**, nobody can change how the system is set up: lines and Line setup (camera cards, count lines, send cards, output actions, inputs, product checks), cameras (settings, adding, removing, Connect), connections, AI models and product lists. Running the line goes on as usual: start and stop, the batch number, Reset counts, triggers, acknowledging alarms, tests (Test, Read now, Software trigger) and the production records. Users & API keys are not locked.
