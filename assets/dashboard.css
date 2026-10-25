@@ -404,6 +404,42 @@ select:disabled + .custom-select-wrap .custom-select-trigger { opacity: 0.55; cu
 .config-lock-error { min-height: 18px; margin: 4px 0 8px; font-size: 12.5px; color: var(--danger-color); }
 @media (max-width: 640px) { .config-lock-chip #configLockText { display: none; } }
 
+/* System usage (assets/system_usage.js): the CPU and GPU rings in the top bar and their details panel */
+.usage-menu { position: relative; display: flex; align-items: center; gap: 6px; }
+.usage-ring { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px 2px 2px; font: inherit; font-size: 12px; color: var(--text-muted); background: none; border: 1px solid transparent; border-radius: 999px; cursor: pointer; }
+.usage-ring:hover, .usage-menu.open .usage-ring { background: var(--panel-head); border-color: var(--border-color); }
+.usage-ring-dial { position: relative; width: 30px; height: 30px; flex-shrink: 0; }
+.usage-ring-dial svg { width: 30px; height: 30px; transform: rotate(-90deg); }
+.usage-ring-bg, .usage-ring-fg { fill: none; stroke-width: 3; }
+.usage-ring-bg { stroke: var(--border-color); }
+.usage-ring-fg { stroke-linecap: round; transition: stroke-dasharray .4s ease; }
+.usage-ring-val { position: absolute; inset: 0; display: grid; place-items: center; font-size: 9.5px; font-weight: 700; color: var(--text-color); }
+.usage-ok .usage-ring-fg { stroke: var(--success-color); }
+.usage-warn .usage-ring-fg { stroke: var(--warning-color); }
+.usage-high .usage-ring-fg { stroke: var(--danger-color); }
+.usage-none .usage-ring-val, .usage-menu.stale .usage-ring-val { color: var(--text-faint); }
+.usage-menu.stale .usage-ring-fg { stroke: var(--neutral-state); }
+.usage-panel { width: 320px; max-width: calc(100vw - 24px); max-height: 75vh; overflow-y: auto; padding: 10px 12px; }
+.usage-sec { padding: 8px 0; border-bottom: 1px solid var(--border-color); }
+.usage-sec:last-child { border-bottom: 0; }
+.usage-sec-head, .usage-item-head { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 5px; font-size: 13px; }
+.usage-item-head { font-size: 12.5px; color: var(--text-muted); }
+.usage-item-head span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-item { margin-top: 6px; }
+.usage-bar { display: block; height: 6px; border-radius: 3px; background: var(--panel-head); overflow: hidden; }
+.usage-bar > span { display: block; height: 100%; border-radius: 3px; background: var(--neutral-state); }
+.usage-bar.usage-ok > span { background: var(--success-color); }
+.usage-bar.usage-warn > span { background: var(--warning-color); }
+.usage-bar.usage-high > span { background: var(--danger-color); }
+.usage-cores { display: flex; gap: 2px; height: 22px; margin-top: 6px; }
+.usage-core { flex: 1; display: flex; }
+.usage-bar.usage-bar-v { width: 100%; height: 100%; display: flex; align-items: flex-end; border-radius: 2px; }
+.usage-bar.usage-bar-v > span { width: 100%; border-radius: 2px; }
+.usage-facts { display: flex; flex-wrap: wrap; gap: 2px 12px; margin-top: 5px; font-size: 12px; color: var(--text-faint); }
+.usage-tag { margin-left: 4px; padding: 0 6px; border-radius: 999px; font-style: normal; font-size: 11px; color: var(--primary-color); background: var(--primary-tint); }
+.usage-empty { font-size: 12.5px; color: var(--text-faint); }
+@media (max-width: 640px) { .usage-ring-label { display: none; } .usage-ring { padding: 2px; } }
+
 /* User menu */
 .user-menu { position: relative; }
 .user-profile-badge {
