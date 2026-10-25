@@ -95,6 +95,26 @@ def test_ruined_processing_falls_back_to_the_original():
     assert engine.last_read.processed is not None
 
 
+def test_processing_failure_falls_back_to_the_original():
+    """Settings missing keys (a hand-edited settings file) make processing fail: the picture is still read."""
+    engine = QREngine()
+    result = engine.decode(_upright_qr(), processing={"enabled": True, "rotate": {"on": True, "angle": 30}})
+    assert [c.data for c in result.codes] == ["PROD-0042"]
+    assert engine.last_read.read_by == "original"
+    assert engine.last_read.processed is None
+
+
+def test_a_step_that_raises_falls_back_to_the_original(monkeypatch):
+    def broken(img, settings):
+        raise cv2.error("a step failed")
+
+    monkeypatch.setattr(qr_engine, "prepare", broken)
+    engine = QREngine()
+    result = engine.decode(_upright_qr(), processing=_on(grayscale={}))
+    assert [c.data for c in result.codes] == ["PROD-0042"]
+    assert engine.last_read.read_by == "original"
+
+
 def test_straightened_stage(monkeypatch):
     """A code the processed picture only finds (with an error) is read from its straightened crop."""
     picture = np.random.default_rng(3).integers(0, 256, (300, 400, 3), dtype=np.uint8)

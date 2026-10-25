@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import logging
 import re
 import time
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
@@ -10,9 +11,10 @@ import numpy as np
 from app.engines.code_processing import is_active, map_points, prepare, upright
 from app.schemas.qr import BarcodeDecodeResponse, BarcodeItem
 from app.schemas.vision import BoundingBox
-from app.utils.logger import get_logger
+from app.utils.logger import LogThrottle, get_logger
 
 logger = get_logger(__name__)
+_processing_error_log = LogThrottle(60.0)
 
 try:
     # zxing-cpp reads QR, Data Matrix, Aztec, PDF417 and the 1D retail and
@@ -383,8 +385,15 @@ class QREngine:
         codes: List[BarcodeItem] = []
         processed = matrix = None
         if is_active(processing):
-            processed, matrix = prepare(img, processing)
-            codes, read_by = self._decode_processed(processed, matrix, w, h, only, processing["crop_margin_px"])
+            try:
+                processed, matrix = prepare(img, processing)
+                codes, read_by = self._decode_processed(processed, matrix, w, h, only, processing["crop_margin_px"])
+            except Exception as exc:
+                # Processing never stops the reading: the picture itself is read as without it.
+                _processing_error_log.log(logger, logging.WARNING, "processing",
+                                          "Image processing failed, the picture is read without it: %s: %s",
+                                          type(exc).__name__, exc)
+                codes, processed, matrix = [], None, None
         if not codes:
             codes = self._read(img, w, h, only)
             if not codes and hard_budget_ms > 0:
