@@ -1361,7 +1361,9 @@ body .pl-used-by { margin-top: 0; margin-bottom: 10px; }
     .table-mobile-cards td.col-actions { width: auto; padding-top: 8px; }
     .table-mobile-cards tbody tr:hover td { background: none; }
     .table-mobile-cards td[data-label]::before { content: attr(data-label); display: block; font-family: var(--font-ui); font-size: 12px; color: var(--text-faint); }
-    body .pl-line-select .custom-select-wrap, body .pl-line-select select { min-width: 140px; max-width: 46vw; }
+    /* The line picker gives way to the usage rings: it shrinks and cuts its name with "…". */
+    body .pl-line-select { min-width: 0; flex: 0 1 auto; }
+    body .pl-line-select .custom-select-wrap, body .pl-line-select select { min-width: 0; max-width: 46vw; }
     /* On a phone a dropdown fills its row, like every other field. */
     .custom-select-wrap { max-width: none; }
     .custom-select-menu { right: 0; width: auto; max-width: none; }
