@@ -172,6 +172,43 @@ def test_amd_without_a_name(tmp_path):
     assert gpu["name"] == "AMD GPU (card1)" and gpu["memory_total"] is None and gpu["temp_c"] is None
 
 
+# ── Final review findings ─────────────────────────────────────────────────────
+
+def test_docker_shows_each_disk_once(tmp_path):
+    """In a container, Docker's file mounts and every volume of the same host disk were listed as separate disks."""
+    hosts = tmp_path / "hosts"
+    hosts.write_text("127.0.0.1 localhost", encoding="utf-8")
+    parts = [Part("/dev/sda1", str(hosts), "ext4", "rw"),                 # /etc/hosts: a file, not a disk
+             Part("/dev/sda1", "/app/logs", "ext4", "rw"),
+             Part("/dev/sda1", "/app/data", "ext4", "rw"),
+             Part("/dev/sda1", "/app/model_store", "ext4", "rw"),
+             Part("/dev/sdb1", "/mnt/archive", "xfs", "rw")]
+    disks = disk_readings(_ps(WINDOWS=False, parts=parts), "/app/data")
+    assert [(d["mount"], d["server_data"]) for d in disks] == [("/app/data", True), ("/mnt/archive", False)]
+
+
+def test_same_device_keeps_the_shortest_mount_without_the_data():
+    parts = [Part("/dev/sda1", "/home", "btrfs", "rw"), Part("/dev/sda1", "/", "btrfs", "rw")]
+    assert [d["mount"] for d in disk_readings(_ps(WINDOWS=False, parts=parts), "/srv/data")] == ["/"]
+
+
+def test_jetson_orin_jetpack6_gpu_path(tmp_path):
+    """JetPack 6 on Orin puts the GPU's load under /sys/devices/platform/bus@0/gpu.0."""
+    _write(tmp_path, "sys/devices/platform/bus@0/gpu.0/load", "250\n")
+    _write(tmp_path, "proc/device-tree/model", "NVIDIA Jetson AGX Orin Developer Kit\x00")
+    (gpu,) = jetson_gpus(str(tmp_path))
+    assert gpu["percent"] == 25.0 and gpu["name"] == "NVIDIA Jetson AGX Orin Developer Kit"
+
+
+def test_jetson_cpu_temperature_is_not_the_power_chip():
+    """On a Jetson Nano the highest zone is PMIC-Die, which always reads 100 °C."""
+    nano = {"PMIC-Die": [Temp("", 100.0, None, None)], "CPU-therm": [Temp("", 41.5, None, None)],
+            "GPU-therm": [Temp("", 40.0, None, None)]}
+    orin = {"tj-thermal": [Temp("", 52.0, None, None)], "cpu-thermal": [Temp("", 47.25, None, None)]}
+    assert cpu_reading(_ps(WINDOWS=False, sensors_temperatures=lambda: nano))["temp_c"] == 41.5
+    assert cpu_reading(_ps(WINDOWS=False, sensors_temperatures=lambda: orin))["temp_c"] == 47.2
+
+
 # ── Review Focus ──────────────────────────────────────────────────────────────
 
 def test_a_source_failing_mid_reading_is_skipped(tmp_path):

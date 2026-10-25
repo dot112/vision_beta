@@ -25,11 +25,14 @@ from app.utils.logger import LogThrottle, get_logger
 logger = get_logger(__name__)
 _source_errors = LogThrottle(60.0)
 
-# The CPU's own temperature sensors, in the order they are preferred (Linux).
-CPU_SENSORS = ("coretemp", "k10temp", "cpu_thermal", "soc_thermal")
+# The CPU's own temperature sensors, in the order they are preferred (Linux; CPU-therm on a Jetson
+# Nano or Xavier, cpu-thermal on an Orin). Without one, a sensor named like the CPU, then the highest.
+CPU_SENSORS = ("coretemp", "k10temp", "cpu_thermal", "soc_thermal", "CPU-therm", "cpu-thermal")
 # Read-only loop mounts of packages (Linux), not disks.
 SKIPPED_FSTYPES = ("squashfs",)
+# A Jetson GPU's load: Nano and Xavier, Orin on JetPack 5; JetPack 6 puts it one bus deeper (JETSON_LOAD_GLOB).
 JETSON_LOAD_FILES = ("sys/devices/gpu.0/load", "sys/devices/platform/gpu.0/load")
+JETSON_LOAD_GLOB = ("sys", "devices", "platform", "*", "gpu.0", "load")
 JETSON_GPU_ZONES = ("GPU-therm", "gpu-thermal")
 
 _process: Optional[Any] = None
@@ -75,6 +78,10 @@ def _cpu_temperature(ps: Any) -> Optional[float]:
     for name in CPU_SENSORS:
         if sensors.get(name):
             return _round(sensors[name][0].current)
+    for name, entries in sensors.items():
+        if "cpu" in name.lower() and entries:
+            return _round(entries[0].current)
+    # Not every zone is the CPU's (a Jetson's PMIC-Die always says 100 °C): the highest is the last resort.
     readings = [t.current for entries in sensors.values() for t in entries if t.current is not None]
     return _round(max(readings)) if readings else None
 
@@ -131,6 +138,8 @@ def disk_readings(ps: Any, data_dir: str) -> List[Dict[str, Any]]:
     for part in ps.disk_partitions(all=False):
         if part.fstype in SKIPPED_FSTYPES or part.mountpoint.startswith("/snap/"):
             continue
+        if os.path.isfile(part.mountpoint):
+            continue   # a file mounted into a container (/etc/hosts), not a disk
         try:
             usage = ps.disk_usage(part.mountpoint)
         except Exception:
@@ -144,7 +153,15 @@ def disk_readings(ps: Any, data_dir: str) -> List[Dict[str, Any]]:
                or norm(d["mount"]) == sep]
     if holding:
         max(holding, key=lambda d: len(d["mount"]))["server_data"] = True
-    return disks
+    # One row per device: Docker volumes and bind mounts, or btrfs subvolumes, of one disk show the
+    # same numbers. The row holding the server's data stays, else the shortest mount point.
+    kept: Dict[str, Dict[str, Any]] = {}
+    for disk in disks:
+        key = disk["device"] or disk["mount"]
+        best = kept.get(key)
+        if best is None or (disk["server_data"], -len(disk["mount"])) > (best["server_data"], -len(best["mount"])):
+            kept[key] = disk
+    return [d for d in disks if kept.get(d["device"] or d["mount"]) is d]
 
 
 def server_reading(ps: Any, process: Any) -> Dict[str, Any]:
@@ -197,8 +214,10 @@ def nvidia_gpus(nvml: Any = None) -> List[Dict[str, Any]]:
 
 def jetson_gpus(root: str = "/") -> List[Dict[str, Any]]:
     """A Jetson board's GPU: its load file counts tenths of a percent; its memory is the CPU's."""
-    for rel in JETSON_LOAD_FILES:
-        load = _read_int(os.path.join(root, rel))
+    candidates = [os.path.join(root, rel) for rel in JETSON_LOAD_FILES]
+    candidates += sorted(glob.glob(os.path.join(root, *JETSON_LOAD_GLOB)))
+    for path in candidates:
+        load = _read_int(path)
         if load is None:
             continue
         temp = None
