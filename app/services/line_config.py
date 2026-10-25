@@ -18,6 +18,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from app.engines.code_processing import normalize_processing
 from app.services.product_fields import VALUE_NAME_RE
 
 PRIMARY_LINE_ID = "line-1"
@@ -235,7 +236,7 @@ CAMERA_KEPT_KEYS = CAMERA_MODEL_KEYS + (
     "picture_source", "picture_delay_ms", "notice_trigger", "picture_wait_ms",
 ) + JOIN_KEYS
 # Settings of a camera that reads codes that a client written before them does not send.
-READER_KEPT_KEYS = ("qr_trigger_review", "code_sets_batch", "sorting_lane")
+READER_KEPT_KEYS = ("qr_trigger_review", "code_sets_batch", "sorting_lane", "code_processing")
 # A camera that reads codes may watch one outfeed instead (sorting verification): its reads check
 # that each product went the way its result sent it. One camera per outfeed on a line.
 SORTING_LANES = ("accepted", "rejected")
@@ -475,6 +476,13 @@ def normalize_camera(raw: Any, index: int) -> Dict[str, Any]:
         # A listed product's batch (from its code, by its list's code format) becomes the line's batch.
         if _bool(raw.get("code_sets_batch"), f"{label} code sets the line's batch", False):
             camera["code_sets_batch"] = True
+        # The steps a copy of the picture goes through before codes are read (code_processing.py).
+        # A camera that never had them stores nothing and reads the picture as it comes.
+        if raw.get("code_processing") is not None:
+            try:
+                camera["code_processing"] = normalize_processing(raw["code_processing"])
+            except ValueError as exc:
+                raise ValueError(f"{label} image processing: {exc}") from None
         # Sorting verification: the camera watches one outfeed. It reports, it never decides,
         # so it does not check codes, sets no batch, and reads Continuously too (no v9 flag).
         lane = raw.get("sorting_lane")
