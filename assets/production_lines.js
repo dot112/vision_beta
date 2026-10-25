@@ -894,7 +894,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         ["video", "Video"],
     ];
     // Which folds a job shows.
-    const foldShown = (fold, job) => (fold === "model" || fold === "counting" ? isVisionJob(job) : fold === "codes" ? JOBS[job].codes : true);
+    const foldShown = (fold, job) => (fold === "model" || fold === "counting" ? isVisionJob(job) : fold === "codes" || fold === "processing" ? JOBS[job].codes : true);
 
     const setup = {
         lineId: null,
@@ -1205,6 +1205,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                     ${fold("model", "AI model and classes", modelBody)}
                     ${fold("counting", "Counting", countingBody)}
                     ${fold("codes", "Codes", codesBody)}
+                    ${fold("processing", "Image processing", CodeProcessing.foldBody(cam))}
                     ${fold("image", "Image", `<div data-f="image-form"></div>`)}
                     ${fold("video", "Video", `<div data-f="video-form"></div>`)}
                 </div>
@@ -1735,8 +1736,9 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         renderClassLists(card);
         bindCard(card);
         if (cam.isNew) rememberFolds(card);
-        // A Counting fold remembered open shows its picture at once.
+        // A Counting fold remembered open shows its picture at once; so does an Image processing fold its preview.
         if (card.querySelector('.pl-fold[data-fold="counting"]').classList.contains("open")) requestAnimationFrame(() => loadLinesPicture(card));
+        if (card.querySelector('.pl-fold[data-fold="processing"]').classList.contains("open")) requestAnimationFrame(() => CodeProcessing.open(card));
         return card;
     }
 
@@ -1771,6 +1773,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                 rememberFolds(card);
                 if (open && fold.dataset.fold === "image") setup.cards.get(card.dataset.key)?.imageForm?.loadPicture(() => card.isConnected);
                 if (open && fold.dataset.fold === "counting") loadLinesPicture(card);
+                if (open && fold.dataset.fold === "processing") CodeProcessing.open(card);
                 refreshSelects();
                 return;
             }
@@ -2379,6 +2382,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                 entry.qr_action = "report";
                 entry.code_sets_batch = false;
             }
+            entry.code_processing = CodeProcessing.collect(card);
         }
         // The triggers ticked on the card, while the camera takes one picture per trigger.
         const onTrigger = entry.count_mode === "trigger" || (spec.codes && entry.qr_trigger === "signal");
