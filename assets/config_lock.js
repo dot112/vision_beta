@@ -26,11 +26,10 @@
     const byId = (id) => document.getElementById(id);
     const locked = () => Boolean(state.status && state.status.locked);
 
-    // This tab's level. The page keeps its sign-in per tab but the level in storage shared by
-    // every tab of the browser: another account signed in on another tab changes the stored one.
-    // So the server's answer to this tab's sign-in counts; the stored level only until it comes.
+    // This tab's level. The server's answer to this tab's sign-in counts; the level the page
+    // keeps for this tab (sessionStorage) only until it comes.
     function level() {
-        return state.level || parseInt(localStorage.getItem("clearance_level") || "1", 10) || 1;
+        return state.level || parseInt(sessionStorage.getItem("clearance_level") || "1", 10) || 1;
     }
 
     function toast(msg, kind) {

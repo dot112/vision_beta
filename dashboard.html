@@ -1498,8 +1498,8 @@ function notifyFlutterAuthState(loggedIn) {
         const msg = JSON.stringify({
             event: loggedIn ? "AUTH_LOGIN" : "AUTH_LOGOUT",
             isLoggedIn: loggedIn,
-            username: localStorage.getItem("username") || "",
-            level: parseInt(localStorage.getItem("clearance_level") || "1")
+            username: sessionStorage.getItem("username") || "",
+            level: parseInt(sessionStorage.getItem("clearance_level") || "1")
         });
         if (window.VisionMobileBridge) {
             window.VisionMobileBridge.postMessage(msg);
@@ -1645,32 +1645,7 @@ window.addEventListener("DOMContentLoaded", () => {
     } catch (_) {}
 
     // Check if user already has an active session (preserves session on page refresh)
-    const existingToken = sessionStorage.getItem("access_token");
-    if (existingToken) {
-        currentAuthToken = existingToken;
-        const loginScreen = document.getElementById("loginScreen");
-        if (loginScreen) loginScreen.style.display = "none";
-        updateUserUI();
-        notifyFlutterAuthState(true);
-        initDashboard();
-        // Silently verify session validity in background
-        fetch("/api/v1/auth/me", {
-            headers: { Authorization: `Bearer ${existingToken}` }
-        }).then(res => {
-            if (res.ok) {
-                res.json().then(d => {
-                    ["username","clearance_level","role","full_name"].forEach(k => {
-                        if (d[k] !== undefined) localStorage.setItem(k, d[k] || "");
-                    });
-                    updateUserUI();
-                });
-            } else if (res.status === 401) {
-                handleLogout();
-            }
-        }).catch(() => {});
-    } else {
-        showLoginScreen();
-    }
+    resumeSession();
 
     startStatsPolling();
 });
@@ -2035,6 +2010,49 @@ function showLoginScreen() {
     if (pInput) pInput.value = "";
 }
 
+// The signed-in user is kept per tab with its token: two tabs of one browser can be signed in
+// to two accounts. Older pages kept the user in localStorage, which every tab shares; those
+// copies are dropped.
+const USER_KEYS = ["username", "clearance_level", "role", "full_name"];
+
+function storeUser(d) {
+    USER_KEYS.forEach(k => {
+        if (d[k] !== undefined) sessionStorage.setItem(k, d[k] || "");
+        localStorage.removeItem(k);
+    });
+}
+
+// After a reload: show the pages for this tab's sign-in and silently check it still holds.
+// A tab signed in by an older page has only its token here: it waits for the server's answer
+// instead of drawing the pages at no level or another tab's.
+function resumeSession() {
+    const existingToken = sessionStorage.getItem("access_token");
+    if (!existingToken) return showLoginScreen();
+    currentAuthToken = existingToken;
+    const loginScreen = document.getElementById("loginScreen");
+    if (loginScreen) loginScreen.style.display = "none";
+    let shown = false;
+    const show = () => {
+        updateUserUI();
+        if (shown) return;
+        shown = true;
+        notifyFlutterAuthState(true);
+        initDashboard();
+    };
+    if (sessionStorage.getItem("clearance_level") !== null) show();
+    fetch("/api/v1/auth/me", {
+        headers: { Authorization: `Bearer ${existingToken}` }
+    }).then(res => {
+        if (res.ok) {
+            res.json().then(d => { storeUser(d); show(); });
+        } else if (res.status === 401) {
+            handleLogout();
+        } else {
+            show();
+        }
+    }).catch(show);
+}
+
 async function handleLogin(force = false) {
     const u = document.getElementById("loginUser").value.trim();
     const p = document.getElementById("loginPass").value;
@@ -2045,7 +2063,8 @@ async function handleLogin(force = false) {
         });
         if (res.ok) {
             const d = await res.json();
-            ["access_token","username","clearance_level","role","full_name"].forEach(k => (k === "access_token" ? sessionStorage : localStorage).setItem(k, d[k]||""));
+            sessionStorage.setItem("access_token", d.access_token || "");
+            storeUser(d);
             currentAuthToken = d.access_token;
 
             document.getElementById("loginScreen").style.display = "none";
@@ -2075,21 +2094,21 @@ async function handleLogout() {
     if (currentAuthToken) {
         try { await fetch("/api/v1/auth/logout", {method:"POST", headers:{Authorization:`Bearer ${currentAuthToken}`}}); } catch {}
     }
-    ["access_token", "username", "clearance_level", "role", "full_name"].forEach(k => (k === "access_token" ? sessionStorage : localStorage).removeItem(k));
+    ["access_token", ...USER_KEYS].forEach(k => sessionStorage.removeItem(k));
     currentAuthToken = "";
     notifyFlutterAuthState(false);
     showLoginScreen();
 }
 
 const ROLE_NAMES = { operator: "Operator", supervisor: "Supervisor", admin: "Admin" };
-const clearanceLevel = () => parseInt(localStorage.getItem("clearance_level") || "1", 10) || 1;
+const clearanceLevel = () => parseInt(sessionStorage.getItem("clearance_level") || "1", 10) || 1;
 const canConfigure = () => clearanceLevel() >= 2;
 
 function updateUserUI() {
-    const u   = localStorage.getItem("username") || "user";
+    const u   = sessionStorage.getItem("username") || "user";
     const lvl = clearanceLevel();
-    const r   = localStorage.getItem("role") || "operator";
-    const fn  = localStorage.getItem("full_name") || u;
+    const r   = sessionStorage.getItem("role") || "operator";
+    const fn  = sessionStorage.getItem("full_name") || u;
     const roleName = ROLE_NAMES[r] || (r.charAt(0).toUpperCase() + r.slice(1));
     const levelText = `Level ${lvl} · ${roleName}`;
 
@@ -2522,7 +2541,7 @@ async function pollServerChanges() {
 
         if (d.version > lastKnownStateVer || d.has_changes) {
             if (lastKnownStateVer > 0 && d.recent_events?.length) {
-                const currentU = localStorage.getItem("username") || "";
+                const currentU = sessionStorage.getItem("username") || "";
                 const ev = d.recent_events[d.recent_events.length - 1];
                 const isSelf = (ev.username === currentU);
                 const author = isSelf ? "You" : `${ev.username} (${ev.role || "User"})`;
@@ -6525,7 +6544,7 @@ async function loadAuditLogs() {
 
 /* ─── User Management (Admin L3) ─────────────────────────────────────────── */
 async function loadUsers() {
-    if (parseInt(localStorage.getItem("clearance_level")||"1") < 3) return;
+    if (clearanceLevel() < 3) return;
     try {
         const res = await fetch("/api/v1/auth/users", { headers: { Authorization: `Bearer ${currentAuthToken}` } });
         if (!res.ok) return;
@@ -6570,7 +6589,7 @@ const selectedApiKeyIds = new Set();
 
 async function loadApiKeys() {
     const tbody = document.getElementById("apiKeyTableBody");
-    if (!tbody || parseInt(localStorage.getItem("clearance_level")||"1") < 3) return;
+    if (!tbody || clearanceLevel() < 3) return;
     try {
         const res = await fetch("/api/v1/auth/api-keys", { headers: { Authorization: `Bearer ${currentAuthToken}` } });
         if (!res.ok) return;

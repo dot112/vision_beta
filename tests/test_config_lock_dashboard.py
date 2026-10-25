@@ -149,7 +149,7 @@ def _dialog_run(stored_level, server_level):
     code = f"""
         const els = {{}};
         const byId = (id) => (els[id] = els[id] || {{ id, hidden: false, disabled: false, textContent: "", value: "" }});
-        const localStorage = {{ getItem: (k) => (k === "clearance_level" ? {json.dumps(stored_level)} : null) }};
+        const sessionStorage = {{ getItem: (k) => (k === "clearance_level" ? {json.dumps(stored_level)} : null) }};
         const state = {{ status: {{ locked: true, code_set: true, changed_by: "admin", changed_at: null, retry_after: 0 }}, level: {json.dumps(server_level)} }};
         const locked = () => true;
         {_function(script, "level")}
@@ -165,7 +165,7 @@ def _dialog_run(stored_level, server_level):
 
 
 def test_the_dialog_follows_this_tab_s_level_not_another_tab_s():
-    # An Admin signed in on another tab of the same browser wrote level 3 to the shared storage.
+    # The stored level says 3 (an older page kept it in storage shared by every tab); the server's answer counts.
     shown = _dialog_run("3", 2)
     assert shown["level"] == 2 and shown["codeRow"] is True and shown["action"] == "Unlock"
     assert "Type the lock code" in shown["message"]

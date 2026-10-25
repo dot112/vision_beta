@@ -104,7 +104,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
     const esc = (value) => (typeof escapeHtml === "function"
         ? escapeHtml(value === null || value === undefined ? "" : String(value))
         : String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])));
-    const level = () => parseInt(localStorage.getItem("clearance_level") || "1", 10);
+    const level = () => parseInt(sessionStorage.getItem("clearance_level") || "1", 10);
     const toast = (msg, kind) => { if (typeof showToast === "function") showToast(msg, kind || "info"); };
     const byId = (id) => document.getElementById(id);
     const isTab = (id) => byId(id)?.classList.contains("active");
