@@ -90,6 +90,8 @@ def required_api_key_scopes(method: str, path: str) -> set[str] | None:
 
     if path == "/api/v1/system/lock" and method in {"GET", "HEAD"}:
         return {"monitor:read"}
+    if path == "/api/v1/system/usage" and method in {"GET", "HEAD"}:
+        return {"monitor:read"}
     if path in {"/api/v1/system/lock", "/api/v1/system/unlock"} or path.startswith("/api/v1/system/lock/"):
         return None  # locking, unlocking and the lock code are for signed-in users only
 
