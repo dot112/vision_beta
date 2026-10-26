@@ -8,8 +8,11 @@ import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from app.events.alarm_events import AlarmCode, AlarmSeverity, raise_alarm
+from app.services import storage_state
 from app.services.line_config import (
     OLD_CLASS_KEYS,
     OLD_SEND_KEYS,
@@ -190,6 +193,8 @@ def _restore_redacted_url(value: str, original: str) -> str:
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data")
 STATE_FILE = os.path.join(DATA_DIR, "system_state.json")
+# A settings history copy: the UTC time with microseconds, so names sort by time.
+_HISTORY_NAME = re.compile(r"system_state-(\d{8}T\d{12}Z)\.json")
 
 def _sqlite_path(database_url: str) -> Optional[str]:
     """File path of a SQLite database URL, or None for other databases and in-memory ones."""
@@ -336,6 +341,10 @@ DEFAULT_STATE: Dict[str, Any] = {
 
 
 class SettingsPersistenceService:
+    # The settings history: the newest copies kept, and the newest of each day for this many days.
+    HISTORY_KEEP = 20
+    HISTORY_DAYS = 30
+
     _state: Dict[str, Any] = {}
     _recent_changes: List[Dict[str, Any]] = []
     _boot_id: str = str(uuid.uuid4())[:8]
@@ -362,47 +371,202 @@ class SettingsPersistenceService:
         cls._state["audit_logs"] = retained
 
     @classmethod
+    def _history_dir(cls) -> str:
+        return os.path.join(DATA_DIR, "settings-history")
+
+    @classmethod
+    def _history_copies(cls) -> List[Tuple[str, datetime]]:
+        """The copies in the history folder, newest first, each as (file name, the time in its name)."""
+        try:
+            names = os.listdir(cls._history_dir())
+        except FileNotFoundError:
+            return []
+        copies = []
+        for name in names:
+            match = _HISTORY_NAME.fullmatch(name)
+            if match:
+                try:
+                    copies.append((name, datetime.strptime(match.group(1), "%Y%m%dT%H%M%S%fZ").replace(tzinfo=timezone.utc)))
+                except ValueError:
+                    continue  # the digits are not a date: not one of ours
+        return sorted(copies, reverse=True)
+
+    @classmethod
+    def _copy_to_history(cls, now: Optional[datetime] = None) -> Optional[str]:
+        """Keep a copy of the settings file as it is on disk, before a save replaces it.
+
+        Returns the copy's path; None when there is no file or it is not a JSON object
+        (a damaged file is no use as a copy). Raises OSError when the copy cannot be written.
+        """
+        try:
+            with open(STATE_FILE, "rb") as f:
+                data = f.read()
+        except FileNotFoundError:
+            return None
+        try:
+            if not isinstance(json.loads(data.decode("utf-8")), dict):
+                return None
+        except ValueError:
+            return None
+        name = f"system_state-{storage_state.stamp(now or datetime.now(timezone.utc), micro=True)}.json"
+        path = os.path.join(cls._history_dir(), name)
+        os.makedirs(cls._history_dir(), exist_ok=True)
+        storage_state.write_atomic(Path(path), data)
+        return path
+
+    @classmethod
+    def _trim_history(cls, now: datetime) -> None:
+        """Keep the HISTORY_KEEP newest copies and the newest copy of each UTC day of the last HISTORY_DAYS days."""
+        copies = cls._history_copies()
+        keep = {name for name, _ in copies[:cls.HISTORY_KEEP]}
+        cutoff = now - timedelta(days=cls.HISTORY_DAYS)
+        days = set()
+        for name, when in copies:
+            if when < cutoff:
+                break
+            if when.date() not in days:
+                # Newest first, so the first copy of a day is its newest.
+                days.add(when.date())
+                keep.add(name)
+        for name, _ in copies:
+            if name not in keep:
+                try:
+                    os.remove(os.path.join(cls._history_dir(), name))
+                except OSError as exc:
+                    logger.warning("Could not delete the old settings copy %s: %s", name, exc)
+
+    @classmethod
+    def _load_file(cls, path: str, upgraded: Optional[List[bool]] = None) -> Dict[str, Any]:
+        """Read a settings file, merge it with the defaults and upgrade it. Raises when any of that fails.
+
+        ``upgraded`` is a list that gets one item when the upgrade changed the settings.
+        """
+        with open(path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        if not isinstance(loaded, dict):
+            raise ValueError("it does not hold a JSON object")
+        # Deep copy: nested defaults must not be shared with the live state.
+        merged = copy.deepcopy(DEFAULT_STATE)
+        if "send_actions" not in loaded:
+            # The upgrade below makes this list from the file's old send settings.
+            del merged["send_actions"]
+        merged.update(loaded)
+        before = merged.get("schema_version", 1)
+        if upgrade_state(merged):
+            logger.info("Settings upgraded from version %s to %s", before, merged.get("schema_version"))
+            if upgraded is not None:
+                upgraded.append(True)
+        return merged
+
+    @classmethod
+    def _adopt(cls, path: str) -> bool:
+        """Make a settings file the live settings; True when its upgrade changed it. Raises when it does not load."""
+        upgraded: List[bool] = []
+        cls._state = cls._load_file(path, upgraded)
+        cls._prune_expired_audit_logs()
+        return bool(upgraded)
+
+    @classmethod
+    def _keep_broken_file(cls) -> Optional[str]:
+        """Rename the settings file that did not load to system_state.broken-<time>.json, so that
+        nothing writes over it. Returns the new name; None when the file could not be renamed."""
+        folder = os.path.dirname(STATE_FILE)
+        now = datetime.now(timezone.utc)
+        name = f"system_state.broken-{storage_state.stamp(now)}.json"
+        if os.path.exists(os.path.join(folder, name)):
+            name = f"system_state.broken-{storage_state.stamp(now, micro=True)}.json"
+        try:
+            os.rename(STATE_FILE, os.path.join(folder, name))
+        except OSError as exc:
+            logger.error("Could not rename the damaged settings file %s: %s", STATE_FILE, exc)
+            return None
+        storage_state.fsync_dir(Path(folder))
+        return name
+
+    @classmethod
+    def _restore_from_history(cls) -> Optional[str]:
+        """Make the newest history copy that loads the live settings. Returns its file name; None when none does."""
+        try:
+            copies = cls._history_copies()
+        except OSError as exc:
+            logger.error("Could not read the settings history: %s", exc)
+            return None
+        for name, _ in copies:
+            try:
+                cls._adopt(os.path.join(cls._history_dir(), name))
+                return name
+            except Exception as exc:
+                logger.warning("The settings copy %s does not load either: %s", name, exc)
+        return None
+
+    @classmethod
+    def _report_damage(cls, error: Exception, broken: Optional[str], restored_from: Optional[str]) -> None:
+        """Raise the alarm and keep the notice that the settings file did not load, and what was loaded instead."""
+        what = f"was kept as {broken}" if broken else "could not be moved aside"
+        outcome = f"the settings were restored from the copy {restored_from}" if restored_from \
+            else "no good copy was found; the defaults were loaded"
+        message = f"The settings file could not be read ({error}) and {what}; {outcome}."
+        details = {"error": str(error), "broken_file": broken, "restored_from": restored_from}
+        raise_alarm(AlarmCode.STORAGE_SETTINGS_RESTORED, storage_state.STORAGE_SOURCE, message, AlarmSeverity.CRITICAL, details)
+        try:
+            storage_state.add_notice(AlarmCode.STORAGE_SETTINGS_RESTORED, message, details)
+        except OSError as exc:
+            # Loading the settings goes on without the notice; the alarm is raised.
+            logger.error("Could not keep the notice about the damaged settings file: %s", exc)
+
+    @classmethod
     def load(cls) -> Dict[str, Any]:
         os.makedirs(DATA_DIR, exist_ok=True)
+        # Left by a save that was cut short. The settings file is whole: the old one or the new one.
+        try:
+            os.remove(STATE_FILE + ".tmp")
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.warning("Could not delete %s.tmp: %s", STATE_FILE, exc)
+
+        failure: Optional[Exception] = None
+        broken: Optional[str] = None
+        restored_from: Optional[str] = None
         if os.path.exists(STATE_FILE):
             try:
-                with open(STATE_FILE, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
+                upgraded = cls._adopt(STATE_FILE)
+            except Exception as exc:
+                failure = exc
+                logger.error("Error loading system_state.json: %s. Looking for a good copy.", exc)
+            else:
                 # The file is closed before an upgrade is saved: Windows does not
                 # replace a file that is still open.
-                # Merge with default state structure
-                # Deep copy: nested defaults must not be shared with the live state.
-                merged = copy.deepcopy(DEFAULT_STATE)
-                if "send_actions" not in loaded:
-                    # The upgrade below makes this list from the file's old send settings.
-                    del merged["send_actions"]
-                merged.update(loaded)
-                cls._state = merged
-                cls._prune_expired_audit_logs()
-                before = cls._state.get("schema_version", 1)
-                if upgrade_state(cls._state):
-                    logger.info("Settings upgraded from version %s to %s", before, cls._state.get("schema_version"))
+                if upgraded:
                     cls.save()
                 cls._apply_to_runtime_services()
                 return cls._state
-            except Exception as exc:
-                logger.error("Error loading system_state.json: %s. Using default state.", exc)
+            # Kept as it was, and renamed first: nothing below saves over it.
+            broken = cls._keep_broken_file()
+            restored_from = cls._restore_from_history()
 
-        cls._state = copy.deepcopy(DEFAULT_STATE)
-        upgrade_state(cls._state)
-        cls._state["audit_logs"] = [
-            {
-                "id": str(uuid.uuid4())[:8],
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "username": "system",
-                "role": "SYSTEM",
-                "clearance_level": 3,
-                "action": "SYSTEM_INIT",
-                "category": "System",
-                "details": "Initialized factory state and persistent telemetry engine.",
-            }
-        ]
-        cls.save()
+        if restored_from is None:
+            cls._state = copy.deepcopy(DEFAULT_STATE)
+            upgrade_state(cls._state)
+            cls._state["audit_logs"] = [
+                {
+                    "id": str(uuid.uuid4())[:8],
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "username": "system",
+                    "role": "SYSTEM",
+                    "clearance_level": 3,
+                    "action": "SYSTEM_INIT",
+                    "category": "System",
+                    "details": "Initialized factory state and persistent telemetry engine.",
+                }
+            ]
+        # A file that could not be renamed is not saved over.
+        if failure is None or broken is not None:
+            cls.save()
+        if failure is not None:
+            cls._report_damage(failure, broken, restored_from)
+        if restored_from is not None:
+            cls._apply_to_runtime_services()
         return cls._state
 
     @classmethod
@@ -410,8 +574,15 @@ class SettingsPersistenceService:
         try:
             os.makedirs(DATA_DIR, exist_ok=True)
             cls._prune_expired_audit_logs()
-            cls._state["last_updated"] = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(timezone.utc)
+            cls._state["last_updated"] = now.isoformat()
             cls._state["version"] = cls._state.get("version", 0) + 1
+            try:
+                # The file about to be replaced is kept, so that a bad save can be undone.
+                cls._copy_to_history(now)
+                cls._trim_history(now)
+            except Exception as exc:
+                logger.error("Could not keep a copy of the settings file: %s", exc)
             temp_file = STATE_FILE + ".tmp"
             with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(cls._state, f, indent=2)
@@ -422,6 +593,7 @@ class SettingsPersistenceService:
                 os.replace(temp_file, STATE_FILE)
             else:
                 os.rename(temp_file, STATE_FILE)
+            storage_state.fsync_dir(Path(os.path.dirname(STATE_FILE)))
         except Exception as exc:
             logger.error("Failed to save system state: %s", exc)
 

@@ -162,6 +162,29 @@ def data_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture
+def settings_file(tmp_path, monkeypatch):
+    """The settings service on an empty data/ folder with nothing loaded yet. Gives the path of system_state.json.
+
+    The line runtimes and the Line 1 counter that load() sets up are the test's own, and the
+    session's are put back afterwards, so the shared test client is not touched.
+    """
+    import app.services.line_service as line_module
+    from app.events.alarm_events import alarm_manager
+    from app.services.counting_service import counting_service
+
+    path = tmp_path / "system_state.json"
+    monkeypatch.setattr(_persistence, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(_persistence, "STATE_FILE", str(path))
+    monkeypatch.setattr(_persistence.SettingsPersistenceService, "_state", {})
+    monkeypatch.setattr(line_module, "line_manager", line_module.LineManager())
+    saved_config = counting_service.config
+    alarm_manager.reset()
+    yield str(path)
+    alarm_manager.reset()
+    counting_service.update_config(saved_config)
+
+
 # ── API client ────────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="session")
