@@ -155,6 +155,13 @@ def fake_camera(monkeypatch):
     return _attach
 
 
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+    """An empty data/ folder: the services that keep files there use this one for the test."""
+    monkeypatch.setattr(_persistence, "DATA_DIR", str(tmp_path))
+    return tmp_path
+
+
 # ── API client ────────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="session")

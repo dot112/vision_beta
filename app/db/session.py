@@ -47,6 +47,8 @@ def _sqlite_pragmas(dbapi_connection, _connection_record) -> None:
         row = cursor.fetchone()
         mode = str(row[0]).upper() if row else "?"
         cursor.execute(f"PRAGMA synchronous = {settings.SQLITE_SYNCHRONOUS}")
+        # The -wal file shrinks back to 64 MB after a checkpoint instead of keeping its biggest size.
+        cursor.execute("PRAGMA journal_size_limit = 67108864")
         if not _journal_mode_reported:
             _journal_mode_reported = True
             if mode == settings.SQLITE_JOURNAL_MODE or mode == "MEMORY":

@@ -75,6 +75,15 @@ class AlarmCode:
     LINE_ACK_TIMEOUT = "line.ack_timeout"
     LINE_HANDSHAKE_FAULT = "line.handshake_fault"
     LINE_SORTING_MISMATCH = "line.sorting_mismatch"
+    STORAGE_LOW = "storage.low"
+    STORAGE_FULL = "storage.full"
+    STORAGE_RECORDS_LOST = "storage.records_lost"
+    STORAGE_CLOCK_CHECK = "storage.clock_check"
+    STORAGE_SETTINGS_RESTORED = "storage.settings_restored"
+    STORAGE_DATABASE_RESTORED = "storage.database_restored"
+    STORAGE_ARCHIVE_FAILED = "storage.archive_failed"
+    STORAGE_BACKUP_FAILED = "storage.backup_failed"
+    STORAGE_COPY_FAILED = "storage.copy_failed"
 
 
 # Every well-known alarm, for pick-lists such as a PLC action's "Alarm" trigger.
@@ -175,6 +184,33 @@ ALARM_CATALOG: List[Dict[str, str]] = [
     {"code": "records.write_failed", "label": "Product records not written", "group": "Records",
      "severity": "critical", "scope": "server",
      "description": "The product records could not be written to the database several times in a row; they are kept and retried."},
+    {"code": "storage.low", "label": "Disk nearly full", "group": "Storage",
+     "severity": "warning", "scope": "server",
+     "description": "The disk that holds the server's data is nearly full."},
+    {"code": "storage.full", "label": "Disk below its free-space floor", "group": "Storage",
+     "severity": "critical", "scope": "server",
+     "description": "Less free space than the floor is left; the oldest data is being deleted to make room."},
+    {"code": "storage.records_lost", "label": "Records deleted for space", "group": "Storage",
+     "severity": "critical", "scope": "server",
+     "description": "Records that were in no archive file were deleted early to keep the disk from filling."},
+    {"code": "storage.clock_check", "label": "Clock check: deleting paused", "group": "Storage",
+     "severity": "warning", "scope": "server",
+     "description": "The clock looks wrong, so old data is not deleted by age until an Admin confirms the clock on Data and backups."},
+    {"code": "storage.settings_restored", "label": "Settings restored from a copy", "group": "Storage",
+     "severity": "critical", "scope": "server",
+     "description": "The settings file could not be read; a saved copy (or the defaults) was loaded and the damaged file kept."},
+    {"code": "storage.database_restored", "label": "Database rebuilt", "group": "Storage",
+     "severity": "critical", "scope": "server",
+     "description": "The database was damaged; it was set aside and rebuilt from the newest backup and the archive."},
+    {"code": "storage.archive_failed", "label": "Records archive failed", "group": "Storage",
+     "severity": "warning", "scope": "server",
+     "description": "Records could not be written to their archive file; old records are kept until it works."},
+    {"code": "storage.backup_failed", "label": "Backup failed", "group": "Storage",
+     "severity": "warning", "scope": "server",
+     "description": "A backup could not be made; it is tried again every hour."},
+    {"code": "storage.copy_failed", "label": "Second backup folder not written", "group": "Storage",
+     "severity": "warning", "scope": "server",
+     "description": "Backups and archive files could not be copied to the second folder (BACKUP_COPY_DIR)."},
 ]
 
 
