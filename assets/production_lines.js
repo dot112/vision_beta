@@ -3558,7 +3558,12 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         return result;
     };
 
-    // ── Audit Logs: Line column and filter ────────────────────────────────────
+    // ── Audit Logs: Line column, line filter and Load older ───────────────────
+
+    const AUDIT_PAGE = 100;
+    let auditRows = [];      // the entries on screen, newest first
+    let auditMore = false;   // there may be entries older than the last one on screen
+    let auditSeq = 0;        // the newest request; the answer to an earlier one is dropped
 
     function auditCategoryClass(category) {
         const c = String(category || "");
@@ -3568,23 +3573,61 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         return "badge-cat-comms";
     }
 
-    // Same table as before, plus a Line column and a line filter.
-    window.loadAuditLogs = async function () {
+    function auditRow(l) {
+        return `<tr>
+            <td data-label="Timestamp" style="font-family:monospace;font-size:11px;color:var(--text-muted)">${esc(new Date(l.timestamp).toLocaleString())}</td>
+            <td data-label="User Account"><b>${esc(l.username)}</b></td>
+            <td data-label="Clearance"><span class="clearance-pill pill-lvl-${Number(l.clearance_level) || 1}">L${Number(l.clearance_level) || 1}: ${esc(l.role)}</span></td>
+            <td data-label="Category"><span class="badge-audit ${auditCategoryClass(l.category)}">${esc(l.category)}</span></td>
+            <td data-label="Details" style="font-size:12px">${esc(l.details)}</td>
+            <td data-label="Line" style="font-size:12px">${esc(l.line_id ? lineName(l.line_id) : "")}</td></tr>`;
+    }
+
+    // The page refreshes itself every few seconds. The newest page it gets goes on top of the entries
+    // Load older added, from where the two meet; when they do not meet, the list starts again.
+    function auditWithFresh(page) {
+        const at = page.length ? auditRows.findIndex((r) => r.id === page[page.length - 1].id) : -1;
+        if (at < 0) {
+            auditMore = page.length >= AUDIT_PAGE;
+            return page;
+        }
+        return page.concat(auditRows.slice(at + 1));
+    }
+
+    function showAuditMore() {
+        const row = byId("plAuditMoreRow");
+        if (row) row.hidden = !auditMore || !auditRows.length;
+        const button = byId("plAuditMore");
+        if (button) button.disabled = false;
+    }
+
+    // Same table as before, plus a Line column and a line filter. It shows the newest 100 entries;
+    // loadAuditLogs(true), the Load older button, adds the 100 before the oldest one shown.
+    window.loadAuditLogs = async function (older) {
         decorateAuditTable();
         const tbody = byId("auditTableBody");
         if (!tbody) return;
+        const loadOlder = older === true && auditRows.length > 0;
+        const seq = ++auditSeq;
+        if (loadOlder) byId("plAuditMore").disabled = true;
+        let page = null;
         try {
             const filter = state.auditLine ? `&line_id=${encodeURIComponent(state.auditLine)}` : "";
-            const logs = await api(`/api/v1/system/audit-logs?limit=100${filter}`);
-            tbody.innerHTML = logs.map((l) => `<tr>
-                <td data-label="Timestamp" style="font-family:monospace;font-size:11px;color:var(--text-muted)">${esc(new Date(l.timestamp).toLocaleString())}</td>
-                <td data-label="User Account"><b>${esc(l.username)}</b></td>
-                <td data-label="Clearance"><span class="clearance-pill pill-lvl-${Number(l.clearance_level) || 1}">L${Number(l.clearance_level) || 1}: ${esc(l.role)}</span></td>
-                <td data-label="Category"><span class="badge-audit ${auditCategoryClass(l.category)}">${esc(l.category)}</span></td>
-                <td data-label="Details" style="font-size:12px">${esc(l.details)}</td>
-                <td data-label="Line" style="font-size:12px">${esc(l.line_id ? lineName(l.line_id) : "")}</td></tr>`).join("")
-                || `<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:18px">No activity logged${state.auditLine ? " for this line" : " yet"}.</td></tr>`;
+            const before = loadOlder ? `&before=${encodeURIComponent(auditRows[auditRows.length - 1].timestamp)}` : "";
+            page = await api(`/api/v1/system/audit-logs?limit=${AUDIT_PAGE}${filter}${before}`);
         } catch (_) { /* keep the last view */ }
+        if (seq !== auditSeq) return;   // a newer request has taken over
+        if (page) {
+            if (loadOlder) {
+                auditRows = auditRows.concat(page);
+                auditMore = page.length >= AUDIT_PAGE;
+            } else {
+                auditRows = auditWithFresh(page);
+            }
+            tbody.innerHTML = auditRows.map(auditRow).join("")
+                || `<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:18px">No activity logged${state.auditLine ? " for this line" : " yet"}.</td></tr>`;
+        }
+        showAuditMore();
     };
 
     function decorateAuditTable() {
@@ -3597,8 +3640,18 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         if (panelHeader && !byId("plAuditLine")) {
             panelHeader.insertAdjacentHTML("beforeend", `<div class="pl-inline" style="font-size:12px;color:var(--text-muted)">Line
                 <select id="plAuditLine" class="form-input" style="min-width:150px" aria-label="Show the audit log of one line"></select></div>`);
-            byId("plAuditLine").addEventListener("change", (e) => { state.auditLine = e.target.value; window.loadAuditLogs(); });
+            byId("plAuditLine").addEventListener("change", (e) => {
+                state.auditLine = e.target.value;
+                auditRows = [];   // another line: start again from its newest entries
+                auditMore = false;
+                window.loadAuditLogs();
+            });
             refreshSelects();
+        }
+        if (!byId("plAuditMore")) {
+            (table.closest(".table-responsive") || table).insertAdjacentHTML("afterend", `<div id="plAuditMoreRow" style="text-align:center;margin:12px 0 4px" hidden>
+                <button type="button" id="plAuditMore" class="btn-action btn-outline">Load older</button></div>`);
+            byId("plAuditMore").addEventListener("click", () => window.loadAuditLogs(true));
         }
         const select = byId("plAuditLine");
         if (select) {

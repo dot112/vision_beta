@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from app.events.alarm_events import AlarmCode, AlarmSeverity, raise_alarm
-from app.services import storage_state
+from app.services import audit_log, storage_state
 from app.services.line_config import (
     OLD_CLASS_KEYS,
     OLD_SEND_KEYS,
@@ -336,7 +336,6 @@ DEFAULT_STATE: Dict[str, Any] = {
         "code_set_by": None,
         "code_set_at": None,
     },
-    "audit_logs": [],
 }
 
 
@@ -349,26 +348,6 @@ class SettingsPersistenceService:
     _recent_changes: List[Dict[str, Any]] = []
     _boot_id: str = str(uuid.uuid4())[:8]
     _boot_time: str = datetime.now(timezone.utc).isoformat()
-
-    @classmethod
-    def _prune_expired_audit_logs(cls) -> None:
-        """Removes all audit log entries older than 24 hours."""
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-        logs = cls._state.get("audit_logs", [])
-        retained = []
-        for entry in logs:
-            ts_str = entry.get("timestamp")
-            if not ts_str:
-                continue
-            try:
-                entry_dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                if entry_dt.tzinfo is None:
-                    entry_dt = entry_dt.replace(tzinfo=timezone.utc)
-                if entry_dt >= cutoff:
-                    retained.append(entry)
-            except Exception:
-                continue
-        cls._state["audit_logs"] = retained
 
     @classmethod
     def _history_dir(cls) -> str:
@@ -459,12 +438,29 @@ class SettingsPersistenceService:
         return merged
 
     @classmethod
+    def _move_audit_logs(cls) -> bool:
+        """Move the audit entries that an earlier version kept in the settings into the audit files.
+        True when that took them out of the settings."""
+        if "audit_logs" not in cls._state:
+            return False
+        entries = cls._state["audit_logs"]
+        try:
+            moved = audit_log.move_from_state(entries if isinstance(entries, list) else [])
+        except Exception as exc:
+            # Loading goes on. The entries stay in the settings and are moved at the next start.
+            logger.error("Could not move the audit entries out of the settings file: %s", exc)
+            return False
+        del cls._state["audit_logs"]
+        logger.info("Moved %d audit entries from the settings file to the audit files", moved)
+        return True
+
+    @classmethod
     def _adopt(cls, path: str) -> bool:
-        """Make a settings file the live settings; True when its upgrade changed it. Raises when it does not load."""
+        """Make a settings file the live settings; True when loading changed them (an upgrade, or audit
+        entries moved out) so that they need saving. Raises when the file does not load."""
         upgraded: List[bool] = []
         cls._state = cls._load_file(path, upgraded)
-        cls._prune_expired_audit_logs()
-        return bool(upgraded)
+        return cls._move_audit_logs() or bool(upgraded)
 
     @classmethod
     def _keep_broken_file(cls) -> Optional[str]:
@@ -548,8 +544,8 @@ class SettingsPersistenceService:
         if restored_from is None:
             cls._state = copy.deepcopy(DEFAULT_STATE)
             upgrade_state(cls._state)
-            cls._state["audit_logs"] = [
-                {
+            try:
+                audit_log.append({
                     "id": str(uuid.uuid4())[:8],
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "username": "system",
@@ -558,8 +554,9 @@ class SettingsPersistenceService:
                     "action": "SYSTEM_INIT",
                     "category": "System",
                     "details": "Initialized factory state and persistent telemetry engine.",
-                }
-            ]
+                })
+            except OSError as exc:
+                logger.error("Could not write the first audit entry: %s", exc)
         # A file that could not be renamed is not saved over.
         if failure is None or broken is not None:
             cls.save()
@@ -573,7 +570,6 @@ class SettingsPersistenceService:
     def save(cls) -> None:
         try:
             os.makedirs(DATA_DIR, exist_ok=True)
-            cls._prune_expired_audit_logs()
             now = datetime.now(timezone.utc)
             cls._state["last_updated"] = now.isoformat()
             cls._state["version"] = cls._state.get("version", 0) + 1
@@ -1173,8 +1169,6 @@ class SettingsPersistenceService:
         if not cls._state:
             cls.load()
 
-        cls._prune_expired_audit_logs()
-
         event = {
             "id": str(uuid.uuid4())[:8],
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1188,10 +1182,11 @@ class SettingsPersistenceService:
         if line_id:
             event["line_id"] = line_id
 
-        logs = cls._state.setdefault("audit_logs", [])
-        logs.insert(0, event)
-        if len(logs) > 500:
-            cls._state["audit_logs"] = logs[:500]
+        try:
+            audit_log.append(event)
+        except OSError as exc:
+            # The action being written down goes on, and the entry still reaches the recent changes below.
+            logger.error("Could not write the audit entry %s: %s", action, exc)
 
         # Record in recent changes ring for multi-client polling
         cls._recent_changes.append(event)
@@ -1201,13 +1196,14 @@ class SettingsPersistenceService:
         return event
 
     @classmethod
-    def get_audit_logs(cls, limit: int = 100, line_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        state = cls.get_state()
-        cls._prune_expired_audit_logs()
-        logs = state.get("audit_logs", [])
-        if line_id:
-            logs = [entry for entry in logs if entry.get("line_id") == line_id]
-        return logs[:limit]
+    def get_audit_logs(
+        cls, limit: int = 100, line_id: Optional[str] = None, before: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """Up to ``limit`` audit entries, newest first; only the entries older than ``before`` (a time with
+        a zone) and, when given, those of ``line_id``."""
+        if not cls._state:
+            cls.load()  # moves the entries an earlier version kept in the settings
+        return audit_log.read(limit=limit, before=before, line_id=line_id)
 
     @classmethod
     def get_changes_since(cls, since_version: int, client_boot_id: Optional[str] = None) -> Dict[str, Any]:

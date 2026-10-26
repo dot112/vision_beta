@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.db.models.user import User
 from app.dependencies import get_current_user, get_db, require_operator, require_supervisor
+from app.services.production_records_service import parse_time
 from app.services.settings_persistence_service import SettingsPersistenceService
 from app.utils.logger import get_logger
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -68,10 +69,16 @@ async def _apply_ip_camera_addresses() -> None:
 async def get_audit_logs(
     limit: int = Query(default=100, ge=1, le=500),
     line_id: Optional[str] = Query(default=None, description="Only entries for this production line"),
+    before: Optional[str] = Query(default=None, description="Only entries older than this time, ISO 8601 with a time zone: the next page"),
     user: User = Depends(require_supervisor),
 ) -> List[Dict[str, Any]]:
-    """Returns chronological audit log of configuration updates, logins, and hardware actions."""
-    return SettingsPersistenceService.get_audit_logs(limit=limit, line_id=line_id)
+    """Returns chronological audit log of configuration updates, logins, and hardware actions, newest first."""
+    older_than = None
+    if before is not None:
+        older_than = parse_time(before)
+        if older_than is None:
+            raise HTTPException(status_code=422, detail="before must be an ISO 8601 time with a time zone, e.g. 2026-10-09T06:00:00Z")
+    return SettingsPersistenceService.get_audit_logs(limit=limit, line_id=line_id, before=older_than)
 
 
 @router.get("/poll-changes", summary="Poll for server configuration changes across connected clients")

@@ -167,7 +167,8 @@ def settings_file(tmp_path, monkeypatch):
     """The settings service on an empty data/ folder with nothing loaded yet. Gives the path of system_state.json.
 
     The line runtimes and the Line 1 counter that load() sets up are the test's own, and the
-    session's are put back afterwards, so the shared test client is not touched.
+    session's are put back afterwards (the counter's settings, line and event sink), so the shared
+    test client is not touched.
     """
     import app.services.line_service as line_module
     from app.events.alarm_events import alarm_manager
@@ -179,10 +180,13 @@ def settings_file(tmp_path, monkeypatch):
     monkeypatch.setattr(_persistence.SettingsPersistenceService, "_state", {})
     monkeypatch.setattr(line_module, "line_manager", line_module.LineManager())
     saved_config = counting_service.config
+    # load() configures Line 1's runtime, which names the shared counter and gives it an event sink.
+    saved_line = (counting_service.line_id, counting_service.line_name, counting_service.event_sink)
     alarm_manager.reset()
     yield str(path)
     alarm_manager.reset()
     counting_service.update_config(saved_config)
+    counting_service.line_id, counting_service.line_name, counting_service.event_sink = saved_line
 
 
 # ── API client ────────────────────────────────────────────────────────────────
