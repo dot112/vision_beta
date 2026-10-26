@@ -78,7 +78,10 @@ async def get_audit_logs(
         older_than = parse_time(before)
         if older_than is None:
             raise HTTPException(status_code=422, detail="before must be an ISO 8601 time with a time zone, e.g. 2026-10-09T06:00:00Z")
-    return SettingsPersistenceService.get_audit_logs(limit=limit, line_id=line_id, before=older_than)
+    # Reads the month files (and loads the settings the first time): off the event loop.
+    return await asyncio.to_thread(
+        SettingsPersistenceService.get_audit_logs, limit=limit, line_id=line_id, before=older_than
+    )
 
 
 @router.get("/poll-changes", summary="Poll for server configuration changes across connected clients")
