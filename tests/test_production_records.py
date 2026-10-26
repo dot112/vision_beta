@@ -22,6 +22,7 @@ import app.services.line_service as line_module
 import app.services.production_records_service as records_module
 import app.services.records_export as export_module
 import app.services.settings_persistence_service as persistence_module
+from app.db.models.kept_total import KeptTotal
 from app.db.models.production_record import ProductRecord
 from app.events.alarm_events import AlarmCode, alarm_manager
 from app.services.counting_service import CountingService, counting_service
@@ -47,12 +48,13 @@ NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
 @pytest.fixture
 def sessions(tmp_path):
-    """A throwaway database with only the product_records table. Gives its session factory."""
+    """A throwaway database with only the product_records and kept_totals tables. Gives its session factory."""
     engine = create_async_engine(f"sqlite+aiosqlite:///{(tmp_path / 'records.db').as_posix()}", poolclass=NullPool)
 
     async def create():
         async with engine.begin() as conn:
             await conn.run_sync(lambda sync: ProductRecord.__table__.create(sync))
+            await conn.run_sync(lambda sync: KeptTotal.__table__.create(sync))
 
     asyncio.run(create())
     factory = async_sessionmaker(engine, expire_on_commit=False)

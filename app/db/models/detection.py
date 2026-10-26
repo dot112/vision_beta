@@ -3,13 +3,15 @@
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, func
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
 
 class DetectionLog(Base):
     __tablename__ = "detections"
+    # Old rows are deleted by age (revision 0009 adds the index to older databases).
+    __table_args__ = (Index("ix_detections_created_at", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     camera_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
