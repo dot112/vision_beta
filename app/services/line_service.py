@@ -27,12 +27,14 @@ from app.services.counting_service import CountingService, counting_service
 from app.services.line_config import (
     CODE_REASONS,
     DEFAULT_PICTURE_WAIT_MS,
+    DEFAULT_QR_HOLD_MS,
     DEFAULT_SYNC_WINDOW_MS,
     PRIMARY_LINE_ID,
     REASON_INSPECTION_TIMEOUT,
     REASON_PRODUCT_CHECK,
     REASON_SORTING_MISMATCH,
     REASON_VISION,
+    camera_model_id,
     camera_station,
     code_checks,
     code_verdict,
@@ -56,6 +58,9 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 _FPS_WINDOW_SECONDS = 5.0
+# The latest text reads a line keeps, and how long a field's text is remembered for the hold time.
+TEXT_READS_KEPT = 50
+TEXT_SEEN_FORGET_S = 60.0
 # What a camera without a loaded model reports as its model.
 NO_MODEL_NAME = "No model"
 
@@ -509,6 +514,10 @@ class LineRuntime:
         self._capture_jpeg: Optional[bytes] = None
         self._capture_seq = 0
         self.qr_recent: Deque[Dict[str, Any]] = collections.deque(maxlen=100)
+        # Text readers: the latest reads (shown_only for a continuous reader), and when each field's
+        # text was last seen ({(camera_id, field, text): monotonic time}) for the hold time.
+        self.text_recent: Deque[Dict[str, Any]] = collections.deque(maxlen=TEXT_READS_KEPT)
+        self._text_seen: Dict[Tuple[str, str, str], float] = {}
         # Sorting verification: {camera_id: "accepted" / "rejected"}, the last products that had a
         # code ({"code", "sequence", "result", "at", "verified"}), and what the cameras found.
         self.sorting_lanes: Dict[str, str] = {}
@@ -535,8 +544,10 @@ class LineRuntime:
         self.cameras = copy.deepcopy(line.get("cameras") or [])
         if started:
             # A code picture from before the stop is not shown as a new read.
+            from app.services.ocr_service import OcrReaderPipeline
             from app.services.qr_service import QRReaderPipeline
             QRReaderPipeline.clear_corners(c["camera_id"] for c in self.cameras)
+            OcrReaderPipeline.clear_corners(c["camera_id"] for c in self.cameras)
         self.counter.line_id = self.id
         self.counter.line_name = self.name
 
@@ -661,9 +672,10 @@ class LineRuntime:
         return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
     def model_id_for(self, camera_id: Optional[str]) -> Optional[str]:
-        """The model a vision camera of this line runs (None: it has none, or it is not one)."""
+        """The YOLO model a camera of this line runs: a vision camera's, or the one a text reader finds its
+        fields with (None: it has none)."""
         entry = self.camera_entry(camera_id) if camera_id else None
-        return entry.get("model_id") if entry and entry.get("role") == "vision" else None
+        return camera_model_id(entry) if entry else None
 
     def counter_for(self, camera_id: Optional[str]) -> CountingService:
         if camera_id and camera_id in self.aux_counters:
@@ -1981,6 +1993,50 @@ class LineRuntime:
         with self._lock:
             return list(self.qr_recent)[:limit]
 
+    @staticmethod
+    def _text_entry(camera_id: str, result: Any, shown_only: bool,
+                    answer: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        answer = answer or {}
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "camera_id": camera_id,
+            "fields": [{"name": f.name, "text": f.text, "fits": f.fits} for f in result.fields],
+            "status": result.status,
+            "result": answer.get("result"),
+            "reason": answer.get("reject_reason"),
+            "track_id": answer.get("track_id"),
+            "shown_only": shown_only,
+        }
+
+    def show_text_read(self, camera_id: str, result: Any, now: Optional[float] = None) -> bool:
+        """A continuous text reader's read: only shown (the latest text reads). Listed when a field's text
+        is new or was last seen more than the camera's hold time ago; a read with no text is not listed.
+        Returns True when listed."""
+        now = time.monotonic() if now is None else now
+        entry = self.camera_entry(camera_id) or {}
+        hold = int(entry.get("qr_hold_ms") or DEFAULT_QR_HOLD_MS) / 1000.0
+        texts = [(camera_id, f.name, f.text) for f in result.fields if f.text is not None]
+        if not texts:
+            return False
+        with self._lock:
+            fresh = any(now - self._text_seen.get(key, float("-inf")) > hold for key in texts)
+            for key in texts:
+                self._text_seen[key] = now
+            for key in [k for k, t in self._text_seen.items() if now - t > max(hold, TEXT_SEEN_FORGET_S)]:
+                del self._text_seen[key]
+            if fresh:
+                self.text_recent.appendleft(self._text_entry(camera_id, result, shown_only=True))
+        return fresh
+
+    def remember_text_read(self, camera_id: str, result: Any, answer: Optional[Dict[str, Any]] = None) -> None:
+        """A triggered text reader's read, with its product's result, reason and number."""
+        with self._lock:
+            self.text_recent.appendleft(self._text_entry(camera_id, result, False, answer))
+
+    def recent_text_reads(self, limit: int = TEXT_READS_KEPT) -> List[Dict[str, Any]]:
+        with self._lock:
+            return [dict(entry) for entry in list(self.text_recent)[:limit]]
+
     def reset(self) -> None:
         self.counter.reset_counts()
         for aux in self.aux_counters.values():
@@ -1991,6 +2047,7 @@ class LineRuntime:
             for key in self.qr_stats:
                 self.qr_stats[key] = 0
             self.qr_recent.clear()
+            self.text_recent.clear()
             # The products waiting for their sorting verification are forgotten too.
             self._sorting_memory.clear()
             for key in self._sorting_stats:

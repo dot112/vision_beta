@@ -426,6 +426,18 @@ async def recent_qr_reads(
     }
 
 
+@router.get("/{line_id}/ocr/recent", summary="The line's latest text reads: what each text reader read, and its product's result")
+async def recent_text_reads(
+    line_id: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    user: User = Depends(require_operator),
+) -> Dict[str, Any]:
+    runtime = _manager().get(line_id)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    return {"line_id": line_id, "reads": runtime.recent_text_reads(limit)}
+
+
 def _capture_view(capture: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not capture:
         return None

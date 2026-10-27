@@ -537,8 +537,10 @@ class CameraStreamPipeline:
             worker.stop()
         if publisher:
             publisher.stop()
+        from app.services.ocr_service import OcrReaderPipeline
         from app.services.qr_service import QRReaderPipeline
         QRReaderPipeline.remove_camera(camera_id)
+        OcrReaderPipeline.remove_camera(camera_id)
 
     @classmethod
     def stop_all(cls) -> None:
@@ -552,8 +554,10 @@ class CameraStreamPipeline:
             worker.stop()
         for publisher in publishers:
             publisher.stop()
+        from app.services.ocr_service import OcrReaderPipeline
         from app.services.qr_service import QRReaderPipeline
         QRReaderPipeline.stop_all()
+        OcrReaderPipeline.stop_all()
 
     @classmethod
     async def stream_annotated_mjpeg(cls, camera_id: str) -> AsyncGenerator[bytes, None]:
@@ -804,6 +808,22 @@ class ContinuousVisionRunner:
 
         cur_fid = driver.get_latest_frame_id() if hasattr(driver, "get_latest_frame_id") else getattr(driver, "_latest_frame_id", 0)
         if cur_fid == 0:
+            return
+
+        # A text reader: read Continuously, it gets the newest frame whenever it is free; on One picture
+        # per trigger its pictures come from the triggers.
+        if role == "ocr":
+            entry = runtime.camera_entry(camera_id) or {}
+            if entry.get("count_mode") != "trigger" and (driver, cur_fid) != last_code_fids.get(camera_id):
+                from app.services.ocr_service import OcrReaderPipeline
+                reader = OcrReaderPipeline.get_worker(camera_id)
+                if not reader.is_busy:
+                    if hasattr(driver, "get_latest_raw_mat"):
+                        success, mat, fid = driver.get_latest_raw_mat(copy=False)
+                    else:
+                        success, mat, fid = driver.grab_raw_frame()
+                    if success and mat is not None and reader.submit_frame_if_idle(mat, fid):
+                        last_code_fids[camera_id] = (driver, fid)
             return
 
         # Codes: a QR reader, or a vision camera with Read codes on. A camera
