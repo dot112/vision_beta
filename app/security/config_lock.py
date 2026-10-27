@@ -33,6 +33,9 @@ LOCK_FREE_ROUTES: FrozenSet[Route] = frozenset({
     ("POST", "/api/v1/qr/decode"),
     ("POST", "/api/v1/qr/decode/camera/{camera_id}"),
     ("POST", "/api/v1/qr/mobile-scan"),
+    # Line setup's text reader: a held picture and the reading of unsaved settings (nothing saved).
+    ("POST", "/api/v1/ocr/picture/camera/{camera_id}"),
+    ("POST", "/api/v1/ocr/preview/camera/{camera_id}"),
     # Tests and checks: they send a test or read something, and save nothing.
     ("POST", "/api/v1/system/endpoints/{endpoint_id}/test"),
     ("POST", "/api/v1/send/actions/{card_id}/test"),
