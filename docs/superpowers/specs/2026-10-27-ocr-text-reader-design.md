@@ -82,7 +82,8 @@ What this decides:
 |---|---|
 | `app/engines/text_format.py` (new) | The format notation: parse, look-alike fixes, fit, the characters a format allows, a format suggested from a reading. No runtime imports. |
 | `app/engines/ocr_engine.py` (new) | Wraps RapidOCR: one engine per reader model and device, shared by all text readers, one call at a time. Reads a picture or cut-outs, with the character limit and Join dots. |
-| `app/services/ocr_service.py` (new) | One reader thread per text reader camera (like `_QRReaderWorker`): finds each field's area, reads, matches lines to fields, keeps the latest result and the corner picture, draws the video overlay. |
+| `app/engines/text_reading.py` (new) | Reading one picture: each field's area, the reads, the lines matched to fields, the result. No thread, no line. |
+| `app/services/ocr_service.py` (new) | One reader thread per text reader camera (like `_QRReaderWorker`): reads with `text_reading`, keeps the latest result and the corner picture, draws the video overlay. |
 | `app/services/line_config.py` | Role `ocr`: `normalize_camera` validates its settings; station, join, picture and trigger settings shared with triggered inspection stations; kept keys. |
 | `app/services/line_service.py` | A text reader's continuous reads (shown only) and triggered results (own product, or joined); the line's latest text reads. |
 | `app/services/trigger_inspection.py` | A trigger for a text reader takes its picture the same way, and hands it to the reader instead of a YOLO model. |
@@ -105,7 +106,7 @@ stays 9: a new role and new keys need no upgrade step.
   "camera_id": "c1",
   "role": "ocr",
   "qr_hold_ms": 1500,
-  "ocr_read": "trigger",
+  "count_mode": "trigger",
   "station": "own",
   "picture_source": "system", "picture_delay_ms": 0, "picture_wait_ms": 1000, "notice_trigger": null,
   "triggers": [1],
@@ -124,8 +125,9 @@ stays 9: a new role and new keys need no upgrade step.
 }
 ```
 
-- `ocr_read`: `continuous` (shows the text, never decides) or `trigger` (one picture per trigger,
-  decides). Default `continuous`.
+- `count_mode`, as for a vision camera: `trigger` (one picture per trigger, decides); left out (or
+  `track`), continuously (shows the text, never decides). (The plan replaced an `ocr_read` key with
+  it, so every trigger and station path that tests `count_mode` serves a text reader too.)
 - With `trigger`: `station` `own` or `join` (default `own`); with `join`, `join_offset_ms`,
   `join_window_ms`, `join_missing` as for a joined inspection station; the picture settings
   (`picture_source`, `picture_delay_ms`, `picture_wait_ms`, `notice_trigger`) and `triggers` as for
@@ -150,7 +152,7 @@ stays 9: a new role and new keys need no upgrade step.
     or ROI changes.
   - `yolo_class` (with `yolo`): one class name of the locator model.
   - `format`: 1–64 characters (section 3).
-- A client that leaves `ocr`, `ocr_read` or a picture setting out keeps what is saved (kept keys,
+- A client that leaves `ocr`, `count_mode` or a picture setting out keeps what is saved (kept keys,
   as for vision cameras). A camera's role can change between jobs; a role change drops the old
   role's settings, as now.
 - A locator model in use by a text reader cannot be deleted (the model-in-use check counts it).
@@ -177,7 +179,7 @@ stays 9: a new role and new keys need no upgrade step.
 
 ## 4. Reading one picture
 
-`ocr_service` with `ocr_engine`:
+`text_reading` with `ocr_engine`:
 
 1. **Areas.** Each field's area: its region cut out of the picture; for `yolo`, every box of its
    class that the locator model finds in this picture (the model runs once per picture, on demand,
@@ -188,11 +190,11 @@ stays 9: a new role and new keys need no upgrade step.
    only with `upside_down`), with the character limit. The engine keeps lines down to 0.30; lines
    under the camera's `min_confidence` are dropped.
    Boxes are mapped back to the camera picture.
-4. **Match** lines to fields, in field order, each line to one field at most: a field takes, among
-   the lines in its area, the one that fits its format (the highest confidence when several do);
-   when none fits, the line with the fewest differences from the format (positions that do not
-   fit after the look-alike fixes, plus the difference in length; to show what is wrong);
-   when its area has no line, nothing.
+4. **Match** lines to fields, each line to one field at most, in two passes over the fields in
+   order: first each field takes, among the unused lines in its area, the one that fits its format
+   (the highest confidence when several do); then a field still without one takes the unused line
+   with the fewest differences from the format (positions that do not fit after the look-alike
+   fixes, plus the difference in length; to show what is wrong); when there is none, nothing.
 5. **Result** per field: `text`, `raw` (as read), `fits`, `confidence`, `box`. The picture is
    **good** when every field fits; otherwise **reject** with the first field's problem in field
    order: `text_wrong` (its line does not fit) or `no_text` (no line).
