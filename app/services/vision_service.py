@@ -448,6 +448,11 @@ class _CameraStreamPublisher:
                 annotated_mat = QRReaderPipeline.draw_reads(self.camera_id, display_mat, scale_x, scale_y, fps)
                 ret_ann, ann_buf = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
                 annotated_jpeg = ann_buf.tobytes() if ret_ann else None
+            elif routed and routed[1] == "ocr":
+                from app.services.ocr_service import OcrReaderPipeline
+                annotated_mat = OcrReaderPipeline.draw_reads(self.camera_id, display_mat, scale_x, scale_y, fps)
+                ret_ann, ann_buf = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+                annotated_jpeg = ann_buf.tobytes() if ret_ann else None
             else:
                 # 3. Draw annotations directly onto BGR display_mat. A camera that is not
                 # inspected now shows why, not the last results it had (they would stand

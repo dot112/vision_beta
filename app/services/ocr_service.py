@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Callable, Dict, Iterable, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
 from app.engines.code_crop import upright
 from app.engines.ocr_engine import engine_for
 from app.engines.text_reading import TextResult, error_result, read_picture
-from app.services.qr_service import CORNER_MAX_SIDE, DEFAULT_CROP_MARGIN_PX, CornerPicture
+from app.services.qr_service import CORNER_MAX_SIDE, DEFAULT_CROP_MARGIN_PX, CornerPicture, draw_corner
 from app.utils.logger import LogThrottle, get_logger
 from app.utils.threads import run_supervised
 
@@ -25,6 +25,10 @@ logger = get_logger(__name__)
 _error_log = LogThrottle(60.0)
 
 NOT_A_READER = "the camera is not a text reader on a line"
+BANNER = "TEXT READER"
+READER_NOT_READY = "READER NOT READY"
+FITS_COLOR, WRONG_COLOR, REGION_COLOR = (0, 200, 0), (0, 0, 230), (200, 200, 200)
+LABEL_CHARS = 40
 
 
 def _entry(camera_id: str) -> Tuple[Any, Dict[str, Any]]:
@@ -181,6 +185,94 @@ class OcrReaderWorker:
             self._thread.join(timeout=1.0)
 
 
+def _reader_ready(camera_id: str, ocr: Dict[str, Any]) -> bool:
+    """The reader's model can read, and so can the YOLO model when a field finds its text by class."""
+    from app.services.line_service import line_manager
+
+    if not engine_for(ocr.get("model") or "small").ready:
+        return False
+    if any(field.get("find") == "yolo" for field in ocr.get("fields") or []):
+        return bool(getattr(line_manager.engine_for_camera(camera_id)[0], "is_loaded", False))
+    return True
+
+
+def _state(camera_id: str) -> Tuple[List[str], Dict[str, Any], bool]:
+    """(what the bar says, the reader's ocr settings ({} off a line), whether its latest result is shown)."""
+    from app.engines.inference_engine import STATUS_NO_LINE, STATUS_STOPPED, STATUS_WAITING_TRIGGER
+
+    runtime, entry = _entry(camera_id)
+    ocr = entry.get("ocr") if entry.get("role") == "ocr" else None
+    if runtime is None or not ocr:
+        return [BANNER, STATUS_NO_LINE], {}, False
+    if not runtime.enabled:
+        return [BANNER, STATUS_STOPPED], ocr, False
+    if not _reader_ready(camera_id, ocr):
+        return [BANNER, READER_NOT_READY], ocr, False
+    if entry.get("count_mode") == "trigger":
+        # The result is drawn on the picture the trigger took, not on the moving video.
+        return [BANNER, STATUS_WAITING_TRIGGER], ocr, False
+    worker = OcrReaderPipeline.peek(camera_id)
+    result = worker.latest() if worker else None
+    if result is None:
+        return [BANNER], ocr, True
+    ok = sum(1 for field in result.fields if field.fits)
+    return [BANNER, f"FIELDS {ok}/{len(result.fields)} OK", f"{result.ms:.0f}ms"], ocr, True
+
+
+def bar_parts(camera_id: str) -> List[str]:
+    """What the TEXT READER bar of a camera's video says."""
+    return _state(camera_id)[0]
+
+
+def _draw_fields(img: np.ndarray, result: Optional[TextResult], ocr: Dict[str, Any], sx: float, sy: float) -> int:
+    """The regions (light grey) and each field's line (green: fits, red: does not) with its name and text.
+    Returns the overlay scale's label height in px."""
+    import cv2
+
+    from app.engines.inference_engine import overlay_scale
+
+    h, w = img.shape[:2]
+    s = overlay_scale(w, h)
+    thick = max(2, int(round(2 * s)))
+    for field in ocr.get("fields") or []:
+        if field.get("find") == "region":
+            x1, y1, x2, y2 = field["region"]
+            cv2.rectangle(img, (int(round(x1 * w)), int(round(y1 * h))), (int(round(x2 * w)) - 1, int(round(y2 * h)) - 1),
+                          REGION_COLOR, max(1, int(round(s))))
+    font, text_thick = 0.5 * s, max(1, int(round(s)))
+    for field in (result.fields if result else []):
+        if not field.box:
+            continue
+        color = FITS_COLOR if field.fits else WRONG_COLOR
+        pts = np.array([[int(round(x * sx)), int(round(y * sy))] for x, y in field.box], np.int32)
+        cv2.polylines(img, [pts.reshape((-1, 1, 2))], isClosed=True, color=color, thickness=thick)
+        label = f"{field.name}: {field.text or ''}"[:LABEL_CHARS]
+        x, y = int(pts[:, 0].min()), max(int(round(20 * s)), int(pts[:, 1].min()))
+        (lw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font, text_thick)
+        cv2.rectangle(img, (x, y - int(round(20 * s))), (x + lw + int(round(8 * s)), y), color, -1)
+        cv2.putText(img, label, (x + int(round(4 * s)), y - int(round(6 * s))), cv2.FONT_HERSHEY_SIMPLEX, font,
+                    (255, 255, 255), text_thick)
+    return int(round(20 * s))
+
+
+def render_capture(frame: Any, result: TextResult) -> Optional[bytes]:
+    """The picture a trigger took for a text reader, with each field's line drawn (JPEG; None on any failure)."""
+    try:
+        import cv2
+
+        if frame is None:
+            return None
+        img = frame.copy()
+        if img.ndim == 2:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        _draw_fields(img, result, {}, 1.0, 1.0)
+        ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        return buf.tobytes() if ok else None
+    except Exception as exc:  # noqa: BLE001 - a picture that cannot be drawn is not shown
+        logger.warning("The text reader's picture could not be drawn: %s: %s", type(exc).__name__, exc)
+        return None
+
+
 class OcrReaderPipeline:
     """The text readers, one per camera with the text reader role."""
 
@@ -222,3 +314,23 @@ class OcrReaderPipeline:
             cls._workers.clear()
         for worker in workers:
             worker.stop()
+
+    @classmethod
+    def draw_reads(cls, camera_id: str, img: np.ndarray, scale_x: float = 1.0, scale_y: float = 1.0,
+                   fps: float = 0.0) -> np.ndarray:
+        """A text reader's video: its regions, its latest fields while it reads Continuously on a running
+        line, the TEXT READER bar, and the corner picture of the last line read. Draws on img and returns it."""
+        from app.engines.inference_engine import STATUS_STOPPED, draw_status_bar
+
+        parts, ocr, shown = _state(camera_id)
+        worker = cls.peek(camera_id)
+        result = worker.latest() if (shown and worker) else None
+        if ocr and parts[1:2] != [STATUS_STOPPED]:
+            _draw_fields(img, result, ocr, scale_x, scale_y)
+        if fps > 0:
+            parts = parts + [f"FPS: {fps:.1f}"]
+        top = draw_status_bar(img, parts)
+        corner = worker.corner() if (shown and worker) else None
+        if corner is not None:
+            draw_corner(img, corner, top)
+        return img
