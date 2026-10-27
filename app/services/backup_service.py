@@ -9,8 +9,9 @@ The folder is built as ``<name>.partial`` and renamed, so a backup is whole or n
 read from one read transaction of the live database (WAL lets the server keep writing). Each kind
 keeps its newest few folders; the rest are deleted.
 
-mirror() copies backups/, archive/ and audit/ to a second folder (a USB stick or a network share) and
-removes there what is gone from data/. It touches nothing else in that folder.
+mirror() copies backups/, archive/ and audit/ to a second folder (a USB stick or a network share). It
+keeps a list of the files it copied there (in storage_state.json) and later removes only those of them
+that are gone from data/. It touches nothing else in that folder.
 
 Every function blocks: callers run them in a thread.
 """
@@ -28,7 +29,7 @@ import zipfile
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -55,6 +56,8 @@ _CHUNK = 1000
 _ZIP_MEMORY = 8 * 1024 * 1024
 # A FAT stick keeps file times in 2 second steps: times this close count as the same.
 _TIME_TOLERANCE = 2.0
+# The key in storage_state.json of the files mirror() copied, per second folder.
+_MIRRORED = "mirrored"
 
 # One backup, trim or zip at a time. A thread that holds it may take it again.
 _lock = threading.RLock()
@@ -216,6 +219,10 @@ def _write_config_db(source: str, target: Path) -> Tuple[Dict[str, int], Optiona
         for (sql,) in src.execute("SELECT sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL "
                                   "AND name NOT LIKE 'sqlite_%' ORDER BY rowid").fetchall():
             dst.execute(sql)
+        # None today; a later revision's trigger or view must not be lost.
+        for (sql,) in src.execute("SELECT sql FROM sqlite_master WHERE type IN ('trigger', 'view') "
+                                  "AND sql IS NOT NULL ORDER BY rowid").fetchall():
+            dst.execute(sql)
         dst.execute("COMMIT")
     return counts, revision, [table for table in BIG_TABLES if table in counts]
 
@@ -373,6 +380,7 @@ def _copy_file(source: Path, target: Path) -> bool:
         shutil.copy2(source, partial)
         _fsync_file(partial)
         os.replace(partial, target)
+        storage_state.fsync_dir(target.parent)
     except BaseException as exc:
         try:
             partial.unlink()
@@ -384,8 +392,12 @@ def _copy_file(source: Path, target: Path) -> bool:
     return True
 
 
-def _copy_tree(source: Path, target: Path) -> int:
-    """Copy the new and changed files under ``source`` to ``target``. Gives how many were copied."""
+def _copy_tree(source: Path, target: Path, relative: str, present: Set[str]) -> int:
+    """Copy the new and changed files under ``source`` to ``target``. Gives how many were copied.
+
+    ``present`` gets the path (``relative``/...) of every file that is now in the second folder and
+    still in the data folder.
+    """
     try:
         with os.scandir(source) as entries:
             found = list(entries)
@@ -396,56 +408,104 @@ def _copy_tree(source: Path, target: Path) -> int:
         # A .partial file or folder is still being written; a link is not ours to copy.
         if entry.name.endswith(_PARTIAL) or _is_link(entry.path):
             continue
+        name = f"{relative}/{entry.name}"
         if entry.is_dir(follow_symlinks=False):
-            copied += _copy_tree(Path(entry.path), target / entry.name)
+            copied += _copy_tree(Path(entry.path), target / entry.name, name, present)
         elif entry.is_file(follow_symlinks=False):
             copied += _copy_file(Path(entry.path), target / entry.name)
+            if os.path.lexists(entry.path) and (target / entry.name).is_file():
+                present.add(name)
     return copied
 
 
-def _remove_gone(source: Path, target: Path) -> int:
-    """Delete the files under ``target`` that no longer exist under ``source``, and the folders that empties.
+def _plain_file(target: Path, name: str) -> bool:
+    """True when ``target``/``name`` is a regular file reached through no link: safe to delete."""
+    parts = name.split("/")
+    if parts[0] not in SUBFOLDERS or any(part in ("", ".", "..") for part in parts):
+        return False
+    path = target
+    for part in parts:
+        path = path / part
+        if _is_link(path):
+            return False
+    return path.is_file()
 
-    Never follows a link, and deletes nothing but files and empty folders. Gives how many files went.
+
+def _remove_empty_folders(folder: Path, top: Path) -> None:
+    """Remove ``folder`` and the folders above it that it leaves empty, up to (not) ``top``."""
+    while folder != top and _is_inside(folder, top):
+        try:
+            os.rmdir(folder)  # only when empty
+        except OSError:
+            return
+        folder = folder.parent
+
+
+def _remove_gone(source: Path, target: Path, listed: Iterable[str]) -> Tuple[int, Set[str]]:
+    """Delete from ``target`` the files of ``listed`` (files mirror() copied there) that are gone from ``source``.
+
+    Only those: a file mirror() never copied (the owner's own, or one an earlier data folder copied)
+    is never touched. Nothing is deleted for a folder that is missing from the data folder (a fault to
+    look at, not a clean-up), nothing through a link, and only files; the folders that empties go.
+    Gives (files deleted, the listed paths still to keep track of).
     """
-    try:
-        with os.scandir(target) as entries:
-            found = list(entries)
-    except FileNotFoundError:
-        return 0
     removed = 0
-    for entry in found:
-        if _is_link(entry.path):
+    keep: Set[str] = set()
+    for name in sorted(listed):
+        sub = name.split("/", 1)[0]
+        if sub in SUBFOLDERS and not (source / sub).is_dir():
+            keep.add(name)
             continue
-        twin = source / entry.name
-        if entry.is_dir(follow_symlinks=False):
-            removed += _remove_gone(twin, Path(entry.path))
-            if not os.path.lexists(twin):
-                try:
-                    os.rmdir(entry.path)  # only when empty
-                except OSError:
-                    pass
-        elif entry.is_file(follow_symlinks=False) and not os.path.lexists(twin):
-            os.unlink(entry.path)
-            removed += 1
-    return removed
+        if os.path.lexists(source / name):
+            keep.add(name)  # back again: copied next time
+            continue
+        if not _plain_file(target, name):
+            continue  # gone already, or not a plain file any more: stop tracking it
+        copied = target / name
+        os.unlink(copied)
+        removed += 1
+        # A copy a power cut left half written next to it goes too.
+        leftover = copied.with_name(copied.name + _PARTIAL)
+        if leftover.is_file() and not _is_link(leftover):
+            leftover.unlink()
+        _remove_empty_folders(copied.parent, target / sub)
+    return removed, keep
+
+
+def _mirror_key(target: Path) -> str:
+    return os.path.normcase(str(target.resolve()))
+
+
+def _listed(key: str) -> Set[str]:
+    mirrored = storage_state.load().get(_MIRRORED)
+    names = mirrored.get(key) if isinstance(mirrored, dict) else None
+    return {str(name) for name in names} if isinstance(names, list) else set()
+
+
+def _remember(key: str, names: Set[str]) -> None:
+    def change(state: Dict[str, Any]) -> None:
+        mirrored = state.get(_MIRRORED) if isinstance(state.get(_MIRRORED), dict) else {}
+        mirrored[key] = sorted(names)
+        state[_MIRRORED] = mirrored
+    storage_state.update(change)
 
 
 def mirror(copy_dir: str) -> Dict[str, int]:
-    """Make backups/, archive/ and audit/ in ``copy_dir`` the same as in the data folder. Gives {"copied", "removed"}.
+    """Copy backups/, archive/ and audit/ of the data folder to ``copy_dir``. Gives {"copied", "removed"}.
 
-    New and changed files are copied (``.partial``, then renamed); files gone from the data folder are
-    deleted there. Everything is copied first, so a copy that fails leaves the second folder with
-    more files, never fewer. Only files inside those three folders of ``copy_dir`` are ever deleted,
-    and only when the same file is gone from the same folder of the data folder: other files in
-    ``copy_dir`` are not touched, and no link is followed. A folder missing from the data folder is
-    not mirrored and nothing is deleted for it (that is a fault to look at, not a clean-up).
+    New and changed files are copied (``.partial``, then renamed), and the files copied are listed in
+    storage_state.json. A listed file that is gone from the data folder is deleted from ``copy_dir``;
+    nothing else ever is, so the owner's own files there, and the copies an earlier data folder made
+    (a new disk, a reinstall), stay. Everything is copied first, so a copy that fails leaves the second
+    folder with more files, never fewer. No link is followed. A folder missing from the data folder is
+    not mirrored and nothing is deleted for it.
 
-    Raises OSError when the folder cannot be written, is not there (a stick that is not plugged in:
-    its parent folder is missing) or is the data folder or inside backups/, archive/ or audit/.
+    Raises OSError when the folder is not set, cannot be written, is not there (a stick that is not
+    plugged in: its parent folder is missing) or is the data folder or inside backups/, archive/ or
+    audit/, and when the list cannot be saved.
     """
     if not copy_dir or not copy_dir.strip():
-        raise ValueError("The second folder is not set")
+        raise OSError(errno.EINVAL, "The second folder is not set")
     source = storage_state.data_dir()
     target = Path(copy_dir)
     for name in SUBFOLDERS:
@@ -455,10 +515,12 @@ def mirror(copy_dir: str) -> Dict[str, int]:
     with _mirror_lock:
         # Only the folder itself is made: a missing parent means the stick or the share is not there.
         target.mkdir(exist_ok=True)
-        folders = [name for name in SUBFOLDERS if (source / name).is_dir()]
-        copied = sum(_copy_tree(source / name, target / name) for name in folders)
-        removed = sum(_remove_gone(source / name, target / name)
-                      for name in folders if (target / name).is_dir() and not _is_link(target / name))
+        key = _mirror_key(target)
+        present: Set[str] = set()
+        copied = sum(_copy_tree(source / name, target / name, name, present)
+                     for name in SUBFOLDERS if (source / name).is_dir())
+        removed, keep = _remove_gone(source, target, _listed(key) - present)
+        _remember(key, present | keep)
     if copied or removed:
         logger.info("Second folder %s: %d file(s) copied, %d removed", target, copied, removed)
     return {"copied": copied, "removed": removed}
