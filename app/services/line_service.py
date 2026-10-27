@@ -37,6 +37,7 @@ from app.services.line_config import (
     camera_model_id,
     camera_station,
     code_checks,
+    is_text_reader,
     code_verdict,
     join_settings,
     joined_cameras,
@@ -1485,6 +1486,10 @@ class LineRuntime:
                 self.qr_stats["code_rejects"] += 1
         if product is not None:
             fields["stations"] = self._station_rows(product)
+            text, text_status = self._joined_text(product)
+            if text is not None:
+                fields["text"] = plc_fields["text"] = text
+                fields["text_status"] = plc_fields["text_status"] = text_status
             fields["reject_camera_id"] = reject_camera
             plc_fields["reject_camera_id"] = reject_camera
             # A card that names a joined camera fires for the products it takes part in.
@@ -1762,6 +1767,21 @@ class LineRuntime:
         if sequence is not None:
             payload["sequence"] = plc_event["sequence"] = sequence
         self._publish(("handshake",), payload, plc_event)
+
+    def _joined_text(self, product: _Product) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+        """What the joined text readers read of a product: their texts merged in card order, and the first
+        status that is not "good" ("none" for a reader that saw nothing of it); (None, None) without one."""
+        readers = [st for st in product.stations if is_text_reader(self.camera_entry(st.camera_id) or {})]
+        if not readers:
+            return None, None
+        text: Dict[str, str] = {}
+        status = "good"
+        for station in readers:
+            seen = product.seen.get(station.camera_id) or {}
+            text.update(seen.get("text") or {})
+            if status == "good":
+                status = seen.get("text_status") or "none"
+        return text, status
 
     @staticmethod
     def _station_rows(product: _Product) -> List[Dict[str, Any]]:

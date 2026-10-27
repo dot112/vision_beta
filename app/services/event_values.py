@@ -8,6 +8,7 @@ message template and an only-when rule:
     code, code_status                    the code read (known / unknown / no_read)
     product_id                           the product ID the code holds (by its list's code format)
     sequence                             the product sequence number the PLC held for the item
+    text.<field>, text_status            what a text reader read (good / wrong / none)
     good_count, reject_count, total_count, batch, line, camera
     product.name, product.code, product.list, product.<field>   the product of a known code
     input.<value name>                   the last value an input of the line read
@@ -52,6 +53,13 @@ def values_for(event: Dict[str, Any]) -> Dict[str, Any]:
         values["product_id"] = event["product_id"]
     if event.get("sequence") not in (None, ""):
         values["sequence"] = event["sequence"]
+    if event.get("text_status"):
+        values["text_status"] = event["text_status"]
+    text = event.get("text")
+    if isinstance(text, dict):
+        for name, value in text.items():
+            if value not in (None, ""):
+                values[f"text.{name}"] = value
 
     line_id = str(event.get("line_id") or PRIMARY_LINE_ID)
     runtime = _runtime(line_id)

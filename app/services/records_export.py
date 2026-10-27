@@ -52,6 +52,7 @@ _FIELDS: Tuple[Tuple[str, Callable[[ProductRecord], Any]], ...] = (
     ("product_data", lambda r: _product_data(r.details)),
     ("product_check", lambda r: (r.details or {}).get("product_check") if isinstance(r.details, dict) else None),
     ("sequence", lambda r: (r.details or {}).get("sequence") if isinstance(r.details, dict) else None),
+    ("text", lambda r: _text(r.details)),
     ("id", lambda r: r.id),
 )
 
@@ -61,6 +62,14 @@ def _stations(details: Any) -> Optional[str]:
     if not stations:
         return None
     return json.dumps(stations, separators=(",", ":"), ensure_ascii=False)
+
+
+def _text(details: Any) -> Optional[str]:
+    """What a text reader read of the product: 'Expiry=12/03/2027; Lot=A12345'."""
+    text = details.get("text") if isinstance(details, dict) else None
+    if not isinstance(text, dict) or not text:
+        return None
+    return "; ".join(f"{name}={value}" for name, value in text.items())
 
 
 def _product_data(details: Any) -> Optional[str]:
