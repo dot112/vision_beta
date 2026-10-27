@@ -267,6 +267,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         production_recorder.start()
         # The data keeper: cleanup, archive, backups, the free-space floor (first tick in a minute).
         from app.services.data_keeper import data_keeper
+        try:
+            # The newest record before the lines write any: the clock check judges the start by it.
+            await data_keeper.note_start()
+        except Exception:
+            logger.exception("Could not read the newest record for the clock check")
         data_keeper.start()
 
         # 2. Seed Default 3-Level Access Clearance Users & Reset Active Sessions

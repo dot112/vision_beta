@@ -10,8 +10,9 @@ read from one read transaction of the live database (WAL lets the server keep wr
 keeps its newest few folders; the rest are deleted.
 
 mirror() copies backups/, archive/ and audit/ to a second folder (a USB stick or a network share). It
-keeps a list of the files it copied there (in storage_state.json) and later removes only those of them
-that are gone from data/. It touches nothing else in that folder.
+keeps a list of the files it copied there (in storage_state.json) and later removes only those: a backup
+once it is gone from data/, an archive or audit file once it is past its own retention (the main disk
+may drop it early for space; the second folder keeps it). It touches nothing else in that folder.
 
 Every function blocks: callers run them in a thread.
 """
@@ -27,7 +28,7 @@ import tempfile
 import threading
 import zipfile
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -35,7 +36,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 from app.config import settings
-from app.services import settings_persistence_service, storage_state
+from app.services import audit_log, records_archive, settings_persistence_service, storage_state
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -441,13 +442,27 @@ def _remove_empty_folders(folder: Path, top: Path) -> None:
         folder = folder.parent
 
 
-def _remove_gone(source: Path, target: Path, listed: Iterable[str]) -> Tuple[int, Set[str]]:
+def _past_retention(name: str, now: datetime) -> bool:
+    """True for an archive or audit copy older than its retention (ARCHIVE_ / AUDIT_RETENTION_DAYS)."""
+    sub, _, file = name.partition("/")
+    if sub == "archive":
+        days = records_archive.retention_days()
+        day = records_archive._day_of(file)
+        return bool(days) and day is not None and day < (now - timedelta(days=days)).date()
+    if sub == "audit":
+        start = audit_log._month_start(file)
+        return start is not None and audit_log._month_end(start) < now - timedelta(days=settings.AUDIT_RETENTION_DAYS)
+    return False
+
+
+def _remove_gone(source: Path, target: Path, listed: Iterable[str], now: datetime) -> Tuple[int, Set[str]]:
     """Delete from ``target`` the files of ``listed`` (files mirror() copied there) that are gone from ``source``.
 
     Only those: a file mirror() never copied (the owner's own, or one an earlier data folder copied)
-    is never touched. Nothing is deleted for a folder that is missing from the data folder (a fault to
-    look at, not a clean-up), nothing through a link, and only files; the folders that empties go.
-    Gives (files deleted, the listed paths still to keep track of).
+    is never touched. An archive or audit copy stays until it is past its own retention, however early
+    the main disk dropped it. Nothing is deleted for a folder that is missing from the data folder (a
+    fault to look at, not a clean-up), nothing through a link, and only files; the folders that empties
+    go. Gives (files deleted, the listed paths still to keep track of).
     """
     removed = 0
     keep: Set[str] = set()
@@ -458,6 +473,9 @@ def _remove_gone(source: Path, target: Path, listed: Iterable[str]) -> Tuple[int
             continue
         if os.path.lexists(source / name):
             keep.add(name)  # back again: copied next time
+            continue
+        if sub != "backups" and not _past_retention(name, now):
+            keep.add(name)  # the second folder may hold the only copy left
             continue
         if not _plain_file(target, name):
             continue  # gone already, or not a plain file any more: stop tracking it
@@ -490,13 +508,14 @@ def _remember(key: str, names: Set[str]) -> None:
     storage_state.update(change)
 
 
-def mirror(copy_dir: str) -> Dict[str, int]:
+def mirror(copy_dir: str, now: Optional[datetime] = None) -> Dict[str, int]:
     """Copy backups/, archive/ and audit/ of the data folder to ``copy_dir``. Gives {"copied", "removed"}.
 
     New and changed files are copied (``.partial``, then renamed), and the files copied are listed in
-    storage_state.json. A listed file that is gone from the data folder is deleted from ``copy_dir``;
-    nothing else ever is, so the owner's own files there, and the copies an earlier data folder made
-    (a new disk, a reinstall), stay. Everything is copied first, so a copy that fails leaves the second
+    storage_state.json. A listed backup file that is gone from the data folder is deleted from
+    ``copy_dir``, and a listed archive or audit file once it is gone and past its retention; nothing
+    else ever is, so the owner's own files there, and the copies an earlier data folder made (a new
+    disk, a reinstall), stay. Everything is copied first, so a copy that fails leaves the second
     folder with more files, never fewer. No link is followed. A folder missing from the data folder is
     not mirrored and nothing is deleted for it.
 
@@ -519,7 +538,8 @@ def mirror(copy_dir: str) -> Dict[str, int]:
         present: Set[str] = set()
         copied = sum(_copy_tree(source / name, target / name, name, present)
                      for name in SUBFOLDERS if (source / name).is_dir())
-        removed, keep = _remove_gone(source, target, _listed(key) - present)
+        when = now.astimezone(timezone.utc) if now is not None else datetime.now(timezone.utc)
+        removed, keep = _remove_gone(source, target, _listed(key) - present, when)
         _remember(key, present | keep)
     if copied or removed:
         logger.info("Second folder %s: %d file(s) copied, %d removed", target, copied, removed)

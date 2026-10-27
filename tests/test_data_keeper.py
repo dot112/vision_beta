@@ -6,7 +6,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import sqlalchemy as sa
+
 from app.config import settings
+from app.db import recovery
+from app.db.models.production_record import ProductRecord
 from app.events.alarm_events import alarm_manager
 from app.services import (
     audit_log,
@@ -19,7 +23,7 @@ from app.services import (
 from app.services.backup_service import mirror as real_mirror
 from app.services.data_keeper import ClockGuard, DataKeeper
 from app.services.production_records_service import ProductionRecorder
-from tests.test_production_records import sessions  # noqa: F401  (a fixture)
+from tests.test_production_records import _product, sessions  # noqa: F401  (sessions is a fixture)
 
 NOW = datetime(2026, 10, 26, 12, tzinfo=timezone.utc)
 UNTIL = datetime(2026, 10, 25, tzinfo=timezone.utc)
@@ -70,8 +74,17 @@ def test_records_inside_the_kept_days_and_no_records_do_not_pause():
 def test_a_forward_jump_while_running_pauses():
     g = ClockGuard()
     assert g.check_jump(NOW, 1000.0, newest=NOW) is None
-    assert g.check_jump(NOW + timedelta(days=3), 1060.0, newest=NOW) == "clock_jumped"
+    # The line goes on writing: at the next tick the newest record already carries the jumped time.
+    jumped = NOW + timedelta(days=3)
+    assert g.check_jump(jumped, 1060.0, newest=jumped) == "clock_jumped"
     assert g.paused() and _active("storage.clock_check")
+
+
+def test_a_device_without_a_clock_battery_off_for_days_does_not_pause():
+    g = ClockGuard()
+    boot = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    g.check_jump(boot, 10.0, newest=NOW - timedelta(days=5))          # off five days, booted in the year 2000
+    assert g.check_jump(NOW, 70.0, newest=NOW - timedelta(days=5)) is None and not g.paused()
 
 
 def test_small_corrections_do_not_pause():
@@ -170,7 +183,14 @@ def spies(monkeypatch, backups):
     monkeypatch.setattr(records_archive, "archive_pending", spy("archive_pending", []))
     monkeypatch.setattr(records_archive, "archived_until", spy("archived_until", UNTIL))
     monkeypatch.setattr(records_archive, "prune_files", sync_spy("prune_files", 0))
-    monkeypatch.setattr(backup_service, "make_backup", sync_spy("make_backup", {"name": "b", "kind": "nightly"}))
+    def make_backup(kind, db_path=None, now=None):
+        # Like the real one: the backup is then in the list.
+        calls.append(("make_backup", (kind, db_path, now), {}))
+        entry = {"name": "b", "kind": kind, "made_at": (now or NOW).isoformat(), "size": 1}
+        backups.append(entry)
+        return entry
+
+    monkeypatch.setattr(backup_service, "make_backup", make_backup)
     monkeypatch.setattr(backup_service, "list_backups", lambda: list(backups))
     monkeypatch.setattr(backup_service, "mirror", sync_spy("mirror", {"copied": 0, "removed": 0}))
     monkeypatch.setattr(audit_log, "prune", sync_spy("audit.prune", 0))
@@ -366,3 +386,88 @@ def test_start_and_stop(keeper):
 def test_the_records_writer_no_longer_prunes():
     assert not hasattr(ProductionRecorder, "RETENTION_SECONDS")
     assert not hasattr(ProductionRecorder, "FIRST_RETENTION_SECONDS")
+
+
+# ── Fixes from the whole-branch review ───────────────────────────────────────
+
+def _add(sessions, when):
+    async def run():
+        async with sessions() as db:
+            await db.execute(sa.insert(ProductRecord), [_product(recorded_at=when)])
+            await db.commit()
+    asyncio.run(run())
+
+
+def test_a_start_with_the_clock_far_ahead_pauses_although_the_line_writes_records(keeper, spies, sessions):
+    _add(sessions, NOW - timedelta(days=120))            # the newest record from before the start
+    asyncio.run(keeper.note_start())
+    _add(sessions, NOW)                                  # the line writes with the wrong clock before the first check
+    asyncio.run(keeper.hourly(NOW))
+    assert keeper.clock_guard.paused() and "records.prune" not in _names(spies)
+
+
+def test_the_start_check_runs_once_per_start(keeper, spies, sessions):
+    asyncio.run(keeper.note_start())                     # no records yet
+    asyncio.run(keeper.hourly(NOW))
+    _add(sessions, NOW - timedelta(days=200))            # an old record re-imported later is no start-up question
+    asyncio.run(keeper.hourly(NOW + timedelta(hours=1)))
+    assert not keeper.clock_guard.paused()
+
+
+def test_a_failed_archive_is_tried_again_at_the_next_hour(keeper, spies, monkeypatch):
+    async def full(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+    real = records_archive.archive_pending
+    monkeypatch.setattr(records_archive, "archive_pending", full)
+    asyncio.run(keeper.nightly(NOW))
+    assert _active("storage.archive_failed")
+    monkeypatch.setattr(records_archive, "archive_pending", real)
+    spies.clear()
+    asyncio.run(keeper.hourly(NOW + timedelta(hours=1)))
+    assert "archive_pending" in _names(spies) and not _active("storage.archive_failed")
+
+
+def test_a_failed_nightly_backup_is_made_at_the_next_hour(keeper, spies, monkeypatch):
+    def full(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+    real = backup_service.make_backup
+    monkeypatch.setattr(backup_service, "make_backup", full)
+    asyncio.run(keeper.nightly(NOW))
+    assert _active("storage.backup_failed")
+    monkeypatch.setattr(backup_service, "make_backup", real)
+    spies.clear()
+    asyncio.run(keeper.hourly(NOW + timedelta(hours=1)))
+    assert [c[1][0] for c in spies if c[0] == "make_backup"] == ["nightly"] and not _active("storage.backup_failed")
+
+
+def test_no_nightly_backup_is_made_by_an_hour_before_the_night_jobs(keeper, spies):
+    asyncio.run(keeper.hourly(NOW))
+    assert "make_backup" not in _names(spies) and "archive_pending" not in _names(spies)
+
+
+def test_a_pending_rebuild_is_tried_again_every_hour(keeper, spies, monkeypatch):
+    calls = []
+
+    async def finish(session_factory):
+        calls.append(session_factory)
+        return {"salvaged": 0, "reimported": 0}
+    monkeypatch.setattr(recovery, "finish_rebuild", finish)
+    asyncio.run(keeper.hourly(NOW))
+    asyncio.run(keeper.hourly(NOW + timedelta(hours=1)))
+    assert len(calls) == 2
+
+
+def test_archive_files_are_kept_at_least_as_long_as_the_records(keeper, spies, monkeypatch):
+    monkeypatch.setattr(settings, "ARCHIVE_RETENTION_DAYS", 30)     # RECORDS_RETENTION_DAYS is 90
+    asyncio.run(keeper.hourly(NOW))
+    assert [c[1] for c in spies if c[0] == "prune_files"] == [(90, NOW)]
+    for archive_days, record_days, used in ((0, 90, 0), (30, 0, 30), (365, 90, 365)):
+        monkeypatch.setattr(settings, "ARCHIVE_RETENTION_DAYS", archive_days)
+        monkeypatch.setattr(settings, "RECORDS_RETENTION_DAYS", record_days)
+        assert records_archive.retention_days() == used
+
+
+def test_the_first_tick_checks_the_floor_before_the_night_jobs(keeper, spies):
+    asyncio.run(keeper.tick())
+    names = _names(spies)
+    assert names.index("guard.check") < names.index("archive_pending")

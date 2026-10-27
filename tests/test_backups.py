@@ -387,17 +387,59 @@ def test_a_failed_upgrade_backup_raises_the_alarm_and_the_start_goes_on(tmp_path
 
 # ── The second folder ─────────────────────────────────────────────────────────
 
-def test_mirror_copies_new_and_changed_files_and_removes_gone_ones(data_dir, tmp_path):
+def test_mirror_copies_new_and_changed_files_and_removes_gone_backups(data_dir, tmp_path):
     _seed(data_dir, {"archive/records-2026-03-02.csv.gz": b"a", "backups/20261026T001000Z-nightly/config.db": b"b", "audit/audit-2026-10.jsonl": b"c"})
     copy = tmp_path / "usb"
-    assert backup_service.mirror(str(copy)) == {"copied": 3, "removed": 0}
-    assert backup_service.mirror(str(copy)) == {"copied": 0, "removed": 0}
+    assert backup_service.mirror(str(copy), now=NOW) == {"copied": 3, "removed": 0}
+    assert backup_service.mirror(str(copy), now=NOW) == {"copied": 0, "removed": 0}
     (data_dir / "audit/audit-2026-10.jsonl").write_bytes(b"cc")
-    (data_dir / "archive/records-2026-03-02.csv.gz").unlink()
-    assert backup_service.mirror(str(copy)) == {"copied": 1, "removed": 1}
-    assert (copy / "audit/audit-2026-10.jsonl").read_bytes() == b"cc" and not (copy / "archive/records-2026-03-02.csv.gz").exists()
-    assert (copy / "backups/20261026T001000Z-nightly/config.db").read_bytes() == b"b"
-    assert _files_under(copy) == ["audit/audit-2026-10.jsonl", "backups/20261026T001000Z-nightly/config.db"]
+    (data_dir / "backups/20261026T001000Z-nightly/config.db").unlink()       # a backup trimmed away
+    (data_dir / "backups/20261026T001000Z-nightly").rmdir()
+    assert backup_service.mirror(str(copy), now=NOW) == {"copied": 1, "removed": 1}
+    assert (copy / "audit/audit-2026-10.jsonl").read_bytes() == b"cc"
+    assert _files_under(copy) == ["archive/records-2026-03-02.csv.gz", "audit/audit-2026-10.jsonl"]
+
+
+def test_archive_and_audit_copies_stay_when_the_local_file_goes(data_dir, tmp_path):
+    # The floor deleted the archive file to make room on the main disk: the stick keeps the only copy left.
+    files = {"archive/records-2026-10-20.csv.gz": b"a", "audit/audit-2026-10.jsonl": b"c",
+             "backups/20261026T001000Z-nightly/config.db": b"b"}
+    _seed(data_dir, files)
+    copy = tmp_path / "usb"
+    backup_service.mirror(str(copy), now=NOW)
+    for relative in files:
+        (data_dir / relative).unlink()
+    (data_dir / "backups/20261026T001000Z-nightly").rmdir()
+    assert backup_service.mirror(str(copy), now=NOW) == {"copied": 0, "removed": 1}
+    assert _files_under(copy) == ["archive/records-2026-10-20.csv.gz", "audit/audit-2026-10.jsonl"]
+
+
+def test_archive_and_audit_copies_go_at_their_own_retention(data_dir, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "ARCHIVE_RETENTION_DAYS", 365)
+    monkeypatch.setattr(settings, "RECORDS_RETENTION_DAYS", 90)
+    monkeypatch.setattr(settings, "AUDIT_RETENTION_DAYS", 365)
+    files = ("archive/records-2025-09-01.csv.gz", "archive/records-2026-10-20.csv.gz",
+             "audit/audit-2025-08.jsonl", "audit/audit-2026-10.jsonl")
+    _seed(data_dir, {relative: b"x" for relative in files})
+    copy = tmp_path / "usb"
+    backup_service.mirror(str(copy), now=NOW)
+    for relative in files:
+        (data_dir / relative).unlink()
+    assert backup_service.mirror(str(copy), now=NOW) == {"copied": 0, "removed": 2}
+    assert _files_under(copy) == ["archive/records-2026-10-20.csv.gz", "audit/audit-2026-10.jsonl"]
+    # Kept until the disk needs the space: the copy stays however old it is.
+    monkeypatch.setattr(settings, "ARCHIVE_RETENTION_DAYS", 0)
+    _seed(data_dir, {"archive/records-2024-01-01.csv.gz": b"x"})
+    backup_service.mirror(str(copy), now=NOW)
+    (data_dir / "archive/records-2024-01-01.csv.gz").unlink()
+    assert backup_service.mirror(str(copy), now=NOW) == {"copied": 0, "removed": 0}
+
+
+def test_an_old_copy_is_not_deleted_while_the_local_file_is_there(data_dir, tmp_path):
+    _seed(data_dir, {"archive/records-2024-01-01.csv.gz": b"x"})
+    copy = tmp_path / "usb"
+    assert backup_service.mirror(str(copy), now=NOW) == {"copied": 1, "removed": 0}
+    assert backup_service.mirror(str(copy), now=NOW) == {"copied": 0, "removed": 0}
 
 
 def test_mirror_never_touches_other_files_in_the_copy_folder(data_dir, tmp_path):
@@ -430,20 +472,18 @@ def test_mirror_does_not_copy_what_the_server_is_still_writing(data_dir, tmp_pat
 
 def test_mirror_removes_the_folders_it_empties_and_a_copy_a_crash_left(data_dir, tmp_path):
     copy = tmp_path / "usb"
-    old = ("backups/20260101T000000Z-nightly/config.db", "backups/20260101T000000Z-nightly/manifest.json",
-           "archive/records-2026-03-02.csv.gz", "audit/audit-2026-01.jsonl")
+    old = ("backups/20260101T000000Z-nightly/config.db", "backups/20260101T000000Z-nightly/manifest.json")
     _seed(data_dir, {relative: b"old" for relative in old})
-    assert backup_service.mirror(str(copy)) == {"copied": 4, "removed": 0}
-    (copy / "archive/records-2026-03-02.csv.gz.partial").write_bytes(b"half")     # a power cut during a copy
+    assert backup_service.mirror(str(copy), now=NOW) == {"copied": 2, "removed": 0}
+    (copy / "backups/20260101T000000Z-nightly/config.db.partial").write_bytes(b"half")     # a power cut during a copy
     for relative in old:
         (data_dir / relative).unlink()
     (data_dir / "backups/20260101T000000Z-nightly").rmdir()
     _seed(data_dir, {"backups/20261026T001000Z-nightly/config.db": b"b"})
-    assert backup_service.mirror(str(copy)) == {"copied": 1, "removed": 4}
+    assert backup_service.mirror(str(copy), now=NOW) == {"copied": 1, "removed": 2}
     assert _files_under(copy) == ["backups/20261026T001000Z-nightly/config.db"]
     assert not (copy / "backups/20260101T000000Z-nightly").exists()
-    # The three folders stay, empty, with the copy.
-    assert (copy / "archive").is_dir() and (copy / "audit").is_dir()
+    assert (copy / "backups").is_dir()
 
 
 def test_mirror_keeps_a_folder_that_still_exists_locally(data_dir, tmp_path):
@@ -469,17 +509,18 @@ def test_mirror_copies_a_file_whose_time_changed_but_not_a_rounded_time(data_dir
 
 
 def test_mirror_leaves_the_copy_alone_when_a_local_folder_is_missing(data_dir, tmp_path):
-    # A data folder with no archive/ is a fault to look at, not the owner deleting every archive file.
+    # A data folder with no backups/ is a fault to look at, not the owner deleting every backup.
     copy = tmp_path / "usb"
-    _seed(data_dir, {"archive/records-2026-03-02.csv.gz": b"a", "audit/audit-2026-10.jsonl": b"c"})
-    assert backup_service.mirror(str(copy)) == {"copied": 2, "removed": 0}
-    (data_dir / "archive/records-2026-03-02.csv.gz").unlink()
-    (data_dir / "archive").rmdir()
-    assert backup_service.mirror(str(copy)) == {"copied": 0, "removed": 0}
-    assert (copy / "archive/records-2026-03-02.csv.gz").exists()
-    # Once the local folder is back and the file is not, the copy the mirror made goes.
-    (data_dir / "archive").mkdir()
-    assert backup_service.mirror(str(copy)) == {"copied": 0, "removed": 1}
+    _seed(data_dir, {"backups/20261026T001000Z-nightly/config.db": b"b", "audit/audit-2026-10.jsonl": b"c"})
+    assert backup_service.mirror(str(copy), now=NOW) == {"copied": 2, "removed": 0}
+    (data_dir / "backups/20261026T001000Z-nightly/config.db").unlink()
+    (data_dir / "backups/20261026T001000Z-nightly").rmdir()
+    (data_dir / "backups").rmdir()
+    assert backup_service.mirror(str(copy), now=NOW) == {"copied": 0, "removed": 0}
+    assert (copy / "backups/20261026T001000Z-nightly/config.db").exists()
+    # Once the local folder is back and the backup is not, the copy the mirror made goes.
+    (data_dir / "backups").mkdir()
+    assert backup_service.mirror(str(copy), now=NOW) == {"copied": 0, "removed": 1}
 
 
 def test_a_fresh_data_folder_never_deletes_the_copies_an_earlier_one_made(data_dir, tmp_path):
@@ -500,16 +541,17 @@ def test_a_fresh_data_folder_never_deletes_the_copies_an_earlier_one_made(data_d
 
 
 def test_the_list_of_copied_files_is_kept_per_second_folder(data_dir, tmp_path):
-    _seed(data_dir, {"archive/records-2026-03-02.csv.gz": b"a"})
+    _seed(data_dir, {"backups/20261026T001000Z-nightly/config.db": b"b"})
     first, second = tmp_path / "usb", tmp_path / "share"
-    backup_service.mirror(str(first))
-    # The owner moves to another folder that already holds a file of that name (copied by hand).
-    (second / "archive").mkdir(parents=True)
-    (second / "archive/records-2026-03-01.csv.gz").write_bytes(b"by hand")
-    (data_dir / "archive/records-2026-03-02.csv.gz").unlink()
-    assert backup_service.mirror(str(second)) == {"copied": 0, "removed": 0}
-    assert (second / "archive/records-2026-03-01.csv.gz").exists()
-    assert backup_service.mirror(str(first)) == {"copied": 0, "removed": 1}
+    backup_service.mirror(str(first), now=NOW)
+    # The owner moves to another folder that already holds a backup (copied by hand).
+    (second / "backups/20260101T000000Z-manual").mkdir(parents=True)
+    (second / "backups/20260101T000000Z-manual/config.db").write_bytes(b"by hand")
+    (data_dir / "backups/20261026T001000Z-nightly/config.db").unlink()
+    (data_dir / "backups/20261026T001000Z-nightly").rmdir()
+    assert backup_service.mirror(str(second), now=NOW) == {"copied": 0, "removed": 0}
+    assert (second / "backups/20260101T000000Z-manual/config.db").exists()
+    assert backup_service.mirror(str(first), now=NOW) == {"copied": 0, "removed": 1}
 
 
 def test_a_blank_second_folder_is_an_os_error(data_dir):
@@ -540,11 +582,12 @@ def test_mirror_refuses_a_folder_that_would_hold_a_copy_inside_itself(data_dir, 
 
 
 def test_a_copy_that_fails_leaves_the_old_copy_and_no_partial_file(data_dir, tmp_path, monkeypatch):
-    _seed(data_dir, {"audit/audit-2026-10.jsonl": b"old", "archive/records-2026-03-02.csv.gz": b"a"})
+    _seed(data_dir, {"audit/audit-2026-10.jsonl": b"old", "backups/20261026T001000Z-nightly/config.db": b"b"})
     copy = tmp_path / "usb"
     backup_service.mirror(str(copy))
     (data_dir / "audit/audit-2026-10.jsonl").write_bytes(b"new and longer")
-    (data_dir / "archive/records-2026-03-02.csv.gz").unlink()
+    (data_dir / "backups/20261026T001000Z-nightly/config.db").unlink()
+    (data_dir / "backups/20261026T001000Z-nightly").rmdir()
     real = backup_service.shutil.copy2
 
     def half(src, dst, **kwargs):
@@ -557,7 +600,7 @@ def test_a_copy_that_fails_leaves_the_old_copy_and_no_partial_file(data_dir, tmp
     monkeypatch.setattr(backup_service.shutil, "copy2", real)
     assert (copy / "audit/audit-2026-10.jsonl").read_bytes() == b"old"
     # Nothing was removed after the failure: the copy is not made smaller until it is complete.
-    assert _files_under(copy) == ["archive/records-2026-03-02.csv.gz", "audit/audit-2026-10.jsonl"]
+    assert _files_under(copy) == ["audit/audit-2026-10.jsonl", "backups/20261026T001000Z-nightly/config.db"]
     assert backup_service.mirror(str(copy)) == {"copied": 1, "removed": 1}
 
 
@@ -628,18 +671,21 @@ def test_mirror_does_not_delete_through_a_linked_subfolder(data_dir, tmp_path, l
 
 def test_a_listed_file_is_never_deleted_through_a_link(data_dir, tmp_path, link_dir):
     copy = tmp_path / "usb"
-    _seed(data_dir, {"archive/records-2026-03-02.csv.gz": b"a"})
+    name = "backups/20261026T001000Z-nightly/config.db"
+    _seed(data_dir, {name: b"b"})
     backup_service.mirror(str(copy))
-    # The owner swaps the copy's archive/ for a link to a share holding a file of the same name.
+    # The owner swaps the copy's backups/ for a link to a share holding a file of the same name.
     share = tmp_path / "nas"
-    share.mkdir()
-    (share / "records-2026-03-02.csv.gz").write_bytes(b"on the share")
-    (copy / "archive" / "records-2026-03-02.csv.gz").unlink()
-    (copy / "archive").rmdir()
-    link_dir(copy / "archive", share)
-    (data_dir / "archive" / "records-2026-03-02.csv.gz").unlink()
+    (share / "20261026T001000Z-nightly").mkdir(parents=True)
+    (share / "20261026T001000Z-nightly" / "config.db").write_bytes(b"on the share")
+    (copy / name).unlink()
+    (copy / "backups" / "20261026T001000Z-nightly").rmdir()
+    (copy / "backups").rmdir()
+    link_dir(copy / "backups", share)
+    (data_dir / name).unlink()
+    (data_dir / "backups" / "20261026T001000Z-nightly").rmdir()
     assert backup_service.mirror(str(copy)) == {"copied": 0, "removed": 0}
-    assert (share / "records-2026-03-02.csv.gz").read_bytes() == b"on the share"
+    assert (share / "20261026T001000Z-nightly" / "config.db").read_bytes() == b"on the share"
 
 
 def test_a_trigger_and_a_view_come_back_too(db_at_head, data_dir):

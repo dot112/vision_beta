@@ -363,3 +363,8 @@ def test_the_archive_needs_a_sign_in(client, data_dir):
     _write_dummy(date(2026, 3, 2))
     assert client.get("/api/v1/records/archive").status_code == 401
     assert client.get("/api/v1/records/archive/2026-03-02").status_code == 401
+
+
+def test_the_archive_reads_at_most_1000_records_at_a_time():
+    # Each chunk is turned into rows on the event loop: a small chunk keeps the line's work flowing.
+    assert records_archive.CHUNK == 1000

@@ -14,9 +14,11 @@ copy) and the job is tried again later; the next good run clears the alarm.
 Every delete of records happens here, one after the other on this one task, so nothing else races
 the keeping of line totals (production_records_service.delete_chunk).
 
-The clock guard pauses deleting by age when the clock looks wrong: when the cleanup would delete
-every record, or when the clock jumps forward by more than a day while the server runs. An Admin
-confirms the clock (Data and backups page) to go on; the free-space floor keeps working meanwhile.
+The clock guard pauses deleting by age when the clock looks wrong: when, at a start, the newest record
+from before the start is older than the records are kept (the cleanup would delete every record), or
+when the clock jumps forward by more than a day while the server runs. Both judge against records
+written before the clock moved, since a running line stamps its new records with the wrong time. An
+Admin confirms the clock (Data and backups page) to go on; the free-space floor keeps working meanwhile.
 """
 from __future__ import annotations
 
@@ -56,6 +58,9 @@ _PAUSE_MESSAGES = {
 }
 # A jump forward bigger than this pauses deleting by age.
 JUMP_LIMIT = timedelta(days=1)
+# A clock this far behind its own newest record was wrong (a device without a clock battery): a jump
+# forward is then its correction.
+BEHIND = timedelta(hours=1)
 
 
 def _iso(when: Optional[datetime]) -> Optional[str]:
@@ -79,7 +84,7 @@ class ClockGuard:
     """Pauses deleting by age when the clock looks wrong. The pause is kept in storage_state.json."""
 
     def __init__(self) -> None:
-        self._last: Optional[tuple] = None          # (wall clock, monotonic) at the last jump check
+        self._last: Optional[tuple] = None          # (wall clock, monotonic, newest record) at the last jump check
         self._held: Optional[str] = None            # a pause the state file could not keep
 
     @staticmethod
@@ -122,16 +127,20 @@ class ClockGuard:
         return self._pause(WOULD_DELETE_EVERYTHING, now)
 
     def check_jump(self, wall: datetime, mono: float, newest: Optional[datetime]) -> Optional[str]:
-        """Pause when the clock ran ahead of the server's own running time by more than a day. Gives the new reason, or None."""
+        """Pause when the clock ran ahead of the server's own running time by more than a day. Gives the new reason, or None.
+
+        ``newest`` is the newest record now; the check uses the one seen at the previous check, since the
+        records a line writes after a jump carry the jumped time.
+        """
         wall = utc(wall)
-        last, self._last = self._last, (wall, mono)
+        last, self._last = self._last, (wall, mono, utc(newest) if newest is not None else None)
         if last is None or self.paused():
             return None
-        expected = last[0] + timedelta(seconds=mono - last[1])
-        if wall - expected <= JUMP_LIMIT:
+        last_wall, last_mono, last_newest = last
+        if wall - (last_wall + timedelta(seconds=mono - last_mono)) <= JUMP_LIMIT:
             return None
-        if newest is not None and wall <= utc(newest) + JUMP_LIMIT:
-            return None  # a clock that was behind, corrected: it now lands next to the newest record
+        if last_newest is not None and last_wall < last_newest - BEHIND:
+            return None  # the clock was behind its own records before: this is its correction
         return self._pause(CLOCK_JUMPED, wall)
 
     def confirm(self, newest: Optional[datetime], now: datetime) -> None:
@@ -172,6 +181,9 @@ class DataKeeper:
         self._first_done = False
         self._next_hour: Optional[float] = None
         self._night_done: Optional[date] = None
+        # The newest record from before the lines started, for the start-up clock check.
+        self._start_newest: Optional[datetime] = None
+        self._start_pending = False
 
     # The real database, recorder and guard, looked up on use so tests can give their own.
     def _sessions(self) -> Callable[[], Any]:
@@ -206,6 +218,11 @@ class DataKeeper:
         self._task = asyncio.get_running_loop().create_task(self._run(), name="data_keeper")
         logger.info("Data keeper started")
 
+    async def note_start(self) -> None:
+        """Note the newest record before the lines start writing (main.py, at the start), for the clock check."""
+        self._start_newest = await self.newest_record()
+        self._start_pending = True
+
     async def stop(self) -> None:
         task, self._task = self._task, None
         if task is not None:
@@ -223,12 +240,12 @@ class DataKeeper:
     # ── The schedule ──────────────────────────────────────────────────────────
 
     async def tick(self) -> None:
-        if not self._first_done:
-            self._first_done = True
-            await self.first_run()
         now = self._now()
         self.clock_guard.check_jump(now, self._monotonic(), await self._attempt("newest record", self.newest_record))
+        # The floor first: the first run's archive can take a while on a big database.
         await self._attempt("free-space check", lambda: self.guard.check(now))
+        if not self._first_done:
+            await self.first_run()
         mono = self._monotonic()
         if self._next_hour is None or mono >= self._next_hour:
             self._next_hour = mono + self.HOUR_SECONDS
@@ -250,35 +267,52 @@ class DataKeeper:
         await self.nightly(now)
 
     async def hourly(self, now: datetime) -> None:
-        if not self.clock_guard.paused():
-            newest = await self._attempt("newest record", self.newest_record)
-            self.clock_guard.check_start(newest, now, settings.RECORDS_RETENTION_DAYS)
+        if self._start_pending:
+            # Once per start, against the newest record from before the lines started.
+            self._start_pending = False
+            self.clock_guard.check_start(self._start_newest, now, settings.RECORDS_RETENTION_DAYS)
+        # A rebuild whose records could not all come back yet is tried again (nothing to do otherwise).
+        await self._attempt("putting the records back after a rebuild", lambda: recovery.finish_rebuild(self._sessions()))
         if self.clock_guard.paused():
             logger.info("Deleting by age is paused until an Admin confirms the clock")
         else:
             await self._age_cleanup(now)
+        await self._retry_night_jobs(now)
         await self._copy(now)
 
     async def nightly(self, now: datetime, force_backup: bool = False) -> None:
         """Archive the finished days (when ARCHIVE_RECORDS is on), make the nightly backup (unless one was made that UTC day), copy."""
-        if settings.ARCHIVE_RECORDS:
-            try:
-                days = await records_archive.archive_pending(self._sessions(), now)
-                clear_alarm(AlarmCode.STORAGE_ARCHIVE_FAILED, SOURCE, "the archive run worked")
-                _keep_last("archive", now)
-                if days:
-                    logger.info("Archived %d day(s) of records", len(days))
-            except Exception as exc:
-                logger.exception("Could not archive the records")
-                raise_alarm(AlarmCode.STORAGE_ARCHIVE_FAILED, SOURCE, f"Records could not be archived: {exc}",
-                            AlarmSeverity.WARNING, {"error": str(exc)})
-        else:
-            clear_alarm(AlarmCode.STORAGE_ARCHIVE_FAILED, SOURCE, "the archive is switched off")
+        await self._archive(now)
         if force_backup or not await self._backed_up_on(now.date()):
             await self._backup("nightly", now)
         await self._copy(now)
         if now.time() >= self.NIGHT_AFTER:
             self._night_done = now.date()
+
+    async def _retry_night_jobs(self, now: datetime) -> None:
+        """After tonight's jobs ran: an archive run that failed, and a nightly backup that was not made, are tried again."""
+        if self._night_done != now.date():
+            return
+        if settings.ARCHIVE_RECORDS and alarm_manager.get(AlarmCode.STORAGE_ARCHIVE_FAILED, SOURCE) is not None:
+            await self._archive(now)
+        if not await self._backed_up_on(now.date()):
+            await self._backup("nightly", now)
+
+    async def _archive(self, now: datetime) -> None:
+        if not settings.ARCHIVE_RECORDS:
+            clear_alarm(AlarmCode.STORAGE_ARCHIVE_FAILED, SOURCE, "the archive is switched off")
+            return
+        try:
+            days = await records_archive.archive_pending(self._sessions(), now)
+        except Exception as exc:
+            logger.exception("Could not archive the records")
+            raise_alarm(AlarmCode.STORAGE_ARCHIVE_FAILED, SOURCE, f"Records could not be archived: {exc}",
+                        AlarmSeverity.WARNING, {"error": str(exc)})
+            return
+        clear_alarm(AlarmCode.STORAGE_ARCHIVE_FAILED, SOURCE, "the archive run worked")
+        _keep_last("archive", now)
+        if days:
+            logger.info("Archived %d day(s) of records", len(days))
 
     # ── The jobs ──────────────────────────────────────────────────────────────
 
@@ -310,7 +344,7 @@ class DataKeeper:
         await self._attempt("detections cleanup",
                             lambda: detections_cleanup.prune(sessions, settings.DETECTIONS_RETENTION_DAYS, now))
         await self._attempt("archive files cleanup",
-                            lambda: asyncio.to_thread(records_archive.prune_files, settings.ARCHIVE_RETENTION_DAYS, now))
+                            lambda: asyncio.to_thread(records_archive.prune_files, records_archive.retention_days(), now))
         await self._attempt("audit files cleanup",
                             lambda: asyncio.to_thread(audit_log.prune, settings.AUDIT_RETENTION_DAYS, now))
         _keep_last("cleanup", now)
@@ -408,7 +442,7 @@ class DataKeeper:
             "database": {"size": await asyncio.to_thread(self._database_size), "oldest": _iso(oldest), "newest": _iso(newest)},
             "archive": {"enabled": bool(settings.ARCHIVE_RECORDS), "days": len(days), "size": sum(d["size"] for d in days),
                         "oldest": days[0]["day"] if days else None, "newest": days[-1]["day"] if days else None,
-                        "retention_days": settings.ARCHIVE_RETENTION_DAYS},
+                        "retention_days": records_archive.retention_days()},
             "backups": backups,
             "copy": {"dir": folder, "ok": copy_ok, "last": last.get("copy")},
             "clock": self.clock_guard.status(),

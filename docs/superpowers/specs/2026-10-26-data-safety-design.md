@@ -153,7 +153,9 @@ inside the database (`PRAGMA freelist_count` × `page_size`).
   button. Kept: `BACKUP_KEEP_NIGHTLY` (7) nightly, 3 upgrade, 5 manual.
 - **Second folder:** when `BACKUP_COPY_DIR` is set, `backups/`, `archive/` and `audit/` are
   mirrored there after each backup and archive run and every hour: new or changed files are copied
-  (`.partial`, then renamed), files gone from `data/` are removed there. If the folder cannot be
+  (`.partial`, then renamed). A backup gone from `data/` is removed there; an archive or audit copy
+  stays until it is past its own retention, even when the main disk dropped it earlier for space
+  (changed after the whole-branch review, 2026-10-27). Only files the server copied are ever removed. If the folder cannot be
   written, `storage.copy_failed` (warning) is raised; it clears on the next good copy. The local
   files are always made first.
 - **Who:** backups hold password hashes, encrypted API key secrets and connection settings, so

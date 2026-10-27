@@ -27,6 +27,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from sqlalchemy import func, insert, select
 
+from app.config import settings
 from app.db.models.production_record import ProductRecord
 from app.services import records_export, storage_state
 from app.services.production_records_service import COLUMNS, RecordFilter, normalize_row, parse_time, utc
@@ -36,7 +37,8 @@ logger = get_logger(__name__)
 
 HEADER = ["id", *COLUMNS]
 # Rows read from the table per chunk when a day is written, and put back per insert (tests lower it).
-CHUNK = records_export.CHUNK_ROWS
+# Rows read per chunk. Each chunk becomes rows on the event loop, so it is kept small.
+CHUNK = 1000
 
 _FILE_NAME = re.compile(r"records-([0-9]{4})-([0-9]{2})-([0-9]{2})\.csv\.gz")
 _TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
@@ -153,6 +155,19 @@ def _files() -> Dict[date, int]:
 def list_days() -> List[Dict[str, Any]]:
     """The archived days, oldest first: each {"day": "YYYY-MM-DD", "size": bytes}."""
     return [{"day": day.isoformat(), "size": size} for day, size in sorted(_files().items())]
+
+
+def retention_days() -> int:
+    """Days an archive file is kept: ARCHIVE_RETENTION_DAYS, but not fewer than RECORDS_RETENTION_DAYS.
+
+    A file deleted while its records are still in the database would hold their age cleanup back for
+    good (it deletes only archived days). 0 = until the disk needs the space.
+    """
+    archive = max(0, int(settings.ARCHIVE_RETENTION_DAYS))
+    records = max(0, int(settings.RECORDS_RETENTION_DAYS))
+    if not archive:
+        return 0
+    return max(archive, records) if records else archive
 
 
 def prune_files(days: int, now: datetime) -> int:
