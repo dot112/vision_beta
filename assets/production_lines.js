@@ -3710,6 +3710,10 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                     <div class="pl-inline">
                         <button class="btn-action btn-outline" id="recExportCsv" type="button">Export CSV</button>
                         <button class="btn-action btn-outline" id="recExportXlsx" type="button">Export Excel</button>
+                        <span class="pl-inline" id="recArchive" hidden>
+                            <input type="date" id="recArchiveDay" class="form-input" aria-label="Archived day">
+                            <button class="btn-action btn-outline" id="recArchiveGet" type="button">Download archived day</button>
+                        </span>
                     </div>
                 </div>
                 <div class="rec-quick seg" role="group" aria-label="Time range">
@@ -3771,6 +3775,8 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         byId("recNext").addEventListener("click", () => { records.offset += RECORDS_PAGE_SIZE; refreshRecords(); });
         byId("recExportCsv").addEventListener("click", () => exportRecords("csv"));
         byId("recExportXlsx").addEventListener("click", () => exportRecords("xlsx"));
+        byId("recArchiveGet").addEventListener("click", downloadArchivedDay);
+        loadArchivedDays();
         setRecordRange(records.quick, false);
     }
 
@@ -3929,6 +3935,53 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         byId("recCount").textContent = data.total ? `${count(first)}–${count(last)} of ${count(data.total)}` : "";
         byId("recPrev").disabled = records.offset === 0;
         byId("recNext").disabled = last >= data.total;
+    }
+
+    // ── Archived days: one gzip CSV per UTC day, kept after the records leave the database ──
+
+    async function loadArchivedDays() {
+        const box = byId("recArchive");
+        if (!box) return;
+        try {
+            const archive = await api("/api/v1/records/archive");
+            const input = byId("recArchiveDay");
+            box.hidden = !archive.days.length;
+            if (!archive.days.length) return;
+            input.min = archive.oldest;
+            input.max = archive.newest;
+            if (!input.value) input.value = archive.newest;
+        } catch (_) {
+            box.hidden = true;
+        }
+    }
+
+    async function downloadArchivedDay() {
+        const day = byId("recArchiveDay").value;
+        if (!day) return;
+        const button = byId("recArchiveGet");
+        const label = button.textContent;
+        button.disabled = true;
+        button.textContent = "Preparing…";
+        try {
+            // fetch (not a plain link): the API needs the Authorization header the dashboard adds.
+            const res = await fetch(`/api/v1/records/archive/${encodeURIComponent(day)}`);
+            if (res.status === 404) throw new Error(`There is no archive file for ${day}.`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const url = URL.createObjectURL(await res.blob());
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `records-${day}.csv.gz`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 10000);
+            toast(`Downloaded records-${day}.csv.gz`, "success");
+        } catch (e) {
+            toast(e.message, "error");
+        } finally {
+            button.disabled = false;
+            button.textContent = label;
+        }
     }
 
     async function refreshRecords() {

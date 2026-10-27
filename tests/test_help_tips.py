@@ -17,7 +17,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "assets" / "help_tips.js"
 FILES = ("dashboard.html", "assets/production_lines.js", "assets/plc_signals.js", "assets/camera_settings.js",
-         "assets/card_values.js", "assets/product_fields.js")
+         "assets/card_values.js", "assets/product_fields.js", "assets/data_backups.js")
 
 # Only controls whose purpose is not plain from their label have a help icon: technical settings, the
 # choices that decide when a card fires, and the buttons whose effect the label does not say. Each is
@@ -55,6 +55,8 @@ KEEP = (
     # Product sequence and result handshake.
     "The input read for each product's sequence number", "The Take a picture input that starts each handshake",
     "The input the PLC acknowledges each result with", "What happens when a result is not ready in time",
+    # Data and backups: what confirming the clock does.
+    "Lets old data be deleted by age again",
     # Products and records.
     "Sets the fields of the list shown", "Sets how the codes of this list are built", "How a code is built",
     "Shows the products, the code reads, or both",

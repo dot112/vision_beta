@@ -1633,3 +1633,27 @@ body .pl-line-select > .help-tip { display: inline-flex; }
     pointer-events: none;
 }
 .help-tip-bubble[hidden] { display: none; }
+
+/* ── Data and backups (assets/data_backups.js) ─────────────────────────────── */
+.dbk-page { display: flex; flex-direction: column; gap: 16px; }
+.dbk-page > .card-panel { margin-bottom: 0; }
+.dbk-notice { display: flex; align-items: flex-start; gap: 12px; border-left: 3px solid var(--danger-color); }
+.dbk-notice-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.dbk-bar { position: relative; height: 10px; margin: 4px 0 14px; border-radius: 5px; background: var(--panel-head); }
+.dbk-bar > span { display: block; height: 100%; border-radius: 5px; background: var(--success-color); }
+.dbk-bar.warn > span { background: var(--warning-color); }
+.dbk-bar.high > span { background: var(--danger-color); }
+.dbk-bar > i { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text-color); opacity: 0.6; }
+.dbk-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 24px; }
+.dbk-row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-bottom: 1px solid var(--border-color); }
+.dbk-label { color: var(--text-muted); white-space: nowrap; }
+.dbk-value { text-align: right; min-width: 0; overflow-wrap: anywhere; }
+#dbkMessage:empty { display: none; }
+/* The Records page's archived-day control, hidden while there are no archive files. */
+#recArchive[hidden] { display: none; }
+@media (max-width: 640px) {
+    .dbk-grid { grid-template-columns: minmax(0, 1fr); }
+    .dbk-row { flex-direction: column; gap: 2px; }
+    .dbk-value { text-align: left; }
+    .dbk-notice { flex-direction: column; }
+}
