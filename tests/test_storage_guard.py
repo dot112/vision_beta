@@ -186,6 +186,16 @@ def test_space_is_freed_in_order_until_1_25_times_the_floor(guard, disk, room, f
     assert notice["code"] == "storage.records_lost" and notice["details"]["deleted"] == 2
 
 
+def test_records_of_archived_days_go_before_archive_files_even_after_a_gap(guard, disk, room, full_db):
+    # An older day that has no archive file (its archive failed) must not keep the archived days' records in
+    # the database while the archive files, perhaps the only copy of older days, are deleted.
+    _insert(full_db, [_product(n=9, recorded_at=NOW - timedelta(days=20)), _product(n=10, recorded_at=NOW - timedelta(days=20, hours=-1))])
+    room.rows_at_start = 11
+    disk.free, room.per_row, disk.per_file = 1000 * MB, 200 * MB, 100 * MB
+    steps = asyncio.run(guard.free_space(TARGET, NOW))
+    assert steps[:2] == [{"step": "detections", "deleted": 3}, {"step": "archived_records", "deleted": 2}]
+
+
 def test_freeing_stops_as_soon_as_there_is_enough(guard, disk, room, full_db):
     disk.free, room.per_row = 2400 * MB, 200 * MB
     assert asyncio.run(guard.free_space(TARGET, NOW)) == [{"step": "detections", "deleted": 3}]

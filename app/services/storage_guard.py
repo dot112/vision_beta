@@ -20,11 +20,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import psutil
-from sqlalchemy import func, select, text
+from sqlalchemy import and_, func, select, text
 
 from app.config import settings
 from app.db.models.production_record import ProductRecord
@@ -160,17 +160,22 @@ class StorageGuard:
         lines = saved_lines()
         free = await self._free()
         steps: List[Dict[str, Any]] = []
-        archived_until = await records_archive.archived_until(self._sessions())
+        # Oldest first. Every archived day counts, also after an older day whose archive failed.
+        archived_days = sorted(date.fromisoformat(entry["day"]) for entry in await asyncio.to_thread(records_archive.list_days))
         lost: Dict[str, Any] = {}
 
         async def detections() -> int:
             return await detections_cleanup.delete_oldest(self._sessions(), detections_cleanup.CHUNK)
 
         async def archived_records() -> int:
-            if archived_until is None:
-                return 0  # no records at all
-            count, _ = await self._records().delete_chunk(ProductRecord.recorded_at < archived_until, lines)
-            return count
+            while archived_days:
+                start = datetime(archived_days[0].year, archived_days[0].month, archived_days[0].day, tzinfo=timezone.utc)
+                count, _ = await self._records().delete_chunk(
+                    and_(ProductRecord.recorded_at >= start, ProductRecord.recorded_at < start + timedelta(days=1)), lines)
+                if count:
+                    return count
+                archived_days.pop(0)  # that day's records are gone: the next archived day
+            return 0
 
         async def archive_files() -> int:
             return 1 if await asyncio.to_thread(records_archive.delete_oldest_file) else 0
