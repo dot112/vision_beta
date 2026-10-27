@@ -140,9 +140,17 @@ class StorageGuard:
         if not floor or free >= floor:
             clear_alarm(AlarmCode.STORAGE_FULL, storage_state.STORAGE_SOURCE, "free space is back above the floor")
 
+        return self._report(reading, room)
+
+    async def status(self) -> Dict[str, Any]:
+        """The same reading as ``check`` gives, without raising, clearing or deleting anything."""
+        reading, room = await self._measure()
+        return self._report(reading, room)
+
+    def _report(self, reading: DiskReading, room: int) -> Dict[str, Any]:
         state = "full" if _active(AlarmCode.STORAGE_FULL) else "low" if _active(AlarmCode.STORAGE_LOW) else "ok"
         return {"total": reading.total, "free": reading.free, "room": room, "used_percent": reading.used_percent,
-                "floor": floor, "warn_percent": warn, "state": state}
+                "floor": self.floor(), "warn_percent": float(settings.STORAGE_WARN_PERCENT), "state": state}
 
     # ── Freeing space ─────────────────────────────────────────────────────────
 

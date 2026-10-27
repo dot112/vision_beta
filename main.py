@@ -251,6 +251,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Product records: queued by the counters from here on, written once a second.
         from app.services.production_records_service import production_recorder
         production_recorder.start()
+        # The data keeper: cleanup, archive, backups, the free-space floor (first tick in a minute).
+        from app.services.data_keeper import data_keeper
+        data_keeper.start()
 
         # 2. Seed Default 3-Level Access Clearance Users & Reset Active Sessions
         async with AsyncSessionLocal() as db:
@@ -431,6 +434,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await asyncio.to_thread(_release_cameras)
     except Exception:
         logger.exception("Failed to release cameras cleanly")
+
+    try:
+        from app.services.data_keeper import data_keeper
+        await data_keeper.stop()
+    except Exception:
+        logger.exception("Failed to stop the data keeper cleanly")
 
     try:
         # The last product records, while the database is still open.

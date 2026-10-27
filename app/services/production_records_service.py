@@ -3,9 +3,10 @@
 ``ProductionRecorder.record()`` is what the counters and the lines call. It
 only queues the row (inference threads call it, so it never waits on the
 database); a task on the main loop writes the queue in one insert per second,
-or as soon as FLUSH_ROWS rows wait. The same task deletes rows older than
-RECORDS_RETENTION_DAYS once an hour. The products a counter still holds are
-counted into kept_totals as they are deleted, so the line totals stay exact.
+or as soon as FLUSH_ROWS rows wait. The data keeper (data_keeper.py) deletes
+rows older than RECORDS_RETENTION_DAYS through ``prune``. The products a counter
+still holds are counted into kept_totals as they are deleted, so the line
+totals stay exact.
 
 The rest of the module reads the table: the filters of the Records API, the
 summary, and the line totals a counter gets back after a restart.
@@ -15,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import collections
 import threading
-import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
@@ -172,9 +172,6 @@ class ProductionRecorder:
 
     FLUSH_SECONDS = 1.0
     FLUSH_ROWS = 500
-    RETENTION_SECONDS = 3600.0
-    # The first clean-up runs this long after the start, not during it.
-    FIRST_RETENTION_SECONDS = 60.0
     DELETE_CHUNK = 5000
     FAILURES_BEFORE_ALARM = 3
 
@@ -196,7 +193,6 @@ class ProductionRecorder:
         self._wake: Optional[asyncio.Event] = None
         self._wake_pending = False
         self._task: Optional[asyncio.Task] = None
-        self._next_retention = 0.0
 
     @property
     def limit(self) -> int:
@@ -400,7 +396,6 @@ class ProductionRecorder:
         self._loop = asyncio.get_running_loop()
         self._wake = asyncio.Event()
         self._wake_pending = False
-        self._next_retention = time.monotonic() + self.FIRST_RETENTION_SECONDS
         self.running = True
         self._task = self._loop.create_task(self._run(), name="production_records")
         logger.info("Product records writer started (keeping %s)",
@@ -420,12 +415,6 @@ class ProductionRecorder:
                 await self.flush()
             except Exception:
                 logger.exception("Product records writer error")
-            if time.monotonic() >= self._next_retention:
-                self._next_retention = time.monotonic() + self.RETENTION_SECONDS
-                try:
-                    await self.prune()
-                except Exception:
-                    logger.exception("Could not delete old product records")
 
     async def stop(self) -> None:
         """Stop the task and write what is left (at shutdown, before the database closes)."""

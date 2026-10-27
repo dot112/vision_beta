@@ -197,7 +197,8 @@ def client():
     from fastapi.testclient import TestClient
 
     from app.services import (
-        camera_service, discovery_service, health_service, plc_failsafe_service, plc_input_service, vision_service,
+        camera_service, data_keeper, discovery_service, health_service, plc_failsafe_service, plc_input_service,
+        vision_service,
     )
     import main
 
@@ -215,6 +216,8 @@ def client():
         (vision_service.ContinuousVisionRunner, "start", staticmethod(lambda *a, **k: None)),
         # Background camera retries would reconnect whatever cameras tests leave behind.
         (camera_service.CameraReconnector, "start", classmethod(lambda cls: None)),
+        # The data keeper would clean up and back up whatever test data is about a minute later.
+        (data_keeper.DataKeeper, "start", lambda self: None),
     ]
     originals = [(obj, name, obj.__dict__[name]) for obj, name, _ in patches]
     for obj, name, value in patches:
