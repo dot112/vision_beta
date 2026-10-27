@@ -38,7 +38,17 @@ import asyncio
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.services.line_config import REASON_NO_PICTURE, REASON_NOTHING_DETECTED, REASON_VISION, picture_source
+from app.services.line_config import (
+    REASON_NO_PICTURE,
+    REASON_NO_TEXT,
+    REASON_NOTHING_DETECTED,
+    REASON_READER_ERROR,
+    REASON_TEXT_WRONG,
+    REASON_VISION,
+    is_text_reader,
+    picture_per_trigger,
+    picture_source,
+)
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -51,6 +61,11 @@ TRIGGER_INFERENCE_TIMEOUT_S = 10.0
 NOTHING_CLASS = "nothing detected"
 # The class of the product a trigger makes when its picture never came.
 NO_PICTURE_CLASS = "no picture"
+# A text reader's product: its class by what its picture's text says.
+TEXT_CLASSES = {None: "text ok", REASON_TEXT_WRONG: "text wrong", REASON_NO_TEXT: "no text",
+                REASON_READER_ERROR: "reader error"}
+# Why a text reader's trigger got no result: the reader did not get through the picture in time.
+READER_TOO_SLOW = "the text reader did not finish in time"
 
 _POLL_S = 0.01
 # The clock and the sleep of a trigger's waits, and the wall clock of its times (a test runs them on a clock of its own).
@@ -108,6 +123,8 @@ def product_from_result(runtime: Any, camera_id: str, detections: List[Any],
     and that is ignored), with ``result``, ``class_name``, ``reject_reason``, ``track_id``
     and ``detections`` (how many). Safe to call from a camera's inference thread.
     """
+    if is_text_reader(runtime.camera_entry(camera_id) or {}):
+        return text_product(runtime, camera_id, detections, arrived_at, trigger_no, sequence, request_id)
     answer: Dict[str, Any] = {"status": "nothing", "result": None, "class_name": None, "reject_reason": None,
                               "track_id": None, "detections": len(detections)}
     if trigger_no is not None:
@@ -132,6 +149,46 @@ def product_from_result(runtime: Any, camera_id: str, detections: List[Any],
         "reject_reason": (verdict["reject_reason"] or REASON_VISION) if verdict["is_defect"] else None,
         "track_id": track_id,
     })
+    return answer
+
+
+def text_product(runtime: Any, camera_id: str, result: Any, arrived_at: Optional[float] = None,
+                 trigger_no: Optional[int] = None, sequence: Any = None, request_id: Optional[int] = None) -> Dict[str, Any]:
+    """Make the product one picture of a text reader shows: good when every field's text fits its format,
+    else a reject with the picture's reason (text_wrong, no_text, reader_error). The product carries the
+    texts (``text``: {field: text}) and ``text_status``; the read goes into the line's latest text reads.
+    Returns the answer as product_from_result does, plus ``text`` and ``text_status``. Safe from any thread."""
+    from app.engines.text_reading import text_values
+
+    counter = runtime.counter_for(camera_id)
+    track_id = _next_track_id(runtime)
+    reject = result.result != "good"
+    read = [f for f in result.fields if f.text is not None]
+    box = next((f.box for f in read if f.box), None)
+    bbox = None
+    if box:
+        xs, ys = [p[0] for p in box], [p[1] for p in box]
+        bbox = {"x1": min(xs), "y1": min(ys), "x2": max(xs), "y2": max(ys),
+                "width": max(xs) - min(xs), "height": max(ys) - min(ys)}
+    class_name = TEXT_CLASSES.get(result.reason, "text wrong")
+    crossing = counter.make_crossing(
+        class_name, reject, track_id=track_id, confidence=min((f.confidence or 0.0) for f in read) if read else 0.0,
+        bbox=bbox, camera_id=camera_id, arrived_at=arrived_at,
+    )
+    if reject:
+        crossing["reject_reason"] = result.reason
+    crossing["text"] = text_values(result)
+    crossing["text_status"] = result.status
+    _add_context(crossing, trigger_no, sequence, request_id)
+    counter.emit_crossing(crossing)
+    answer: Dict[str, Any] = {
+        "status": "inspected", "result": "reject" if reject else "good", "class_name": class_name,
+        "reject_reason": result.reason if reject else None, "track_id": track_id, "detections": len(read),
+        "text": crossing["text"], "text_status": result.status,
+    }
+    if trigger_no is not None:
+        answer["trigger_no"] = trigger_no
+    runtime.remember_text_read(camera_id, result, answer)
     return answer
 
 
@@ -207,6 +264,10 @@ def render_trigger_capture(camera_id: str, frame: Any, detections: List[Any]) ->
 
         if frame is None:
             return None
+        routed = line_service.line_manager.route(camera_id)
+        if routed and routed[1] == "ocr":
+            from app.services.ocr_service import render_capture
+            return render_capture(frame, detections)
         engine = line_service.line_manager.engine_for_camera(camera_id)[0]
         annotated = engine.draw_annotations_mat(frame.copy(), detections, 0.0, draw_wirelines=False, camera_id=camera_id)
         ok, buf = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
@@ -332,8 +393,9 @@ async def _stream_shot(driver: Any, worker: Any, runtime: Any, camera_id: str,
 
 
 async def _take_picture(runtime: Any, camera_id: str, timeout: float) -> Tuple[List[Any], float, float, Any]:
-    """The picture of one trigger, now, through the camera's model (see _software_shot and _stream_shot)."""
-    from app.services.vision_service import CameraStreamPipeline
+    """The picture of one trigger, now, through the camera's model or text reader (see _software_shot and
+    _stream_shot)."""
+    from app.services.vision_service import picture_worker
     from app.state.application_state import app_state
 
     driver = app_state.cameras.get(camera_id)
@@ -342,7 +404,7 @@ async def _take_picture(runtime: Any, camera_id: str, timeout: float) -> Tuple[L
     mode = getattr(driver, "trigger_mode", "off")
     if mode == "hardware":
         raise _hardware_refusal(camera_id)        # set to Hardware while this trigger waited
-    worker = CameraStreamPipeline.get_worker(camera_id)
+    worker = picture_worker(camera_id, is_text_reader(runtime.camera_entry(camera_id) or {}))
     if mode == "software":
         # The server takes the picture itself: that picture, and no other, is the product's.
         return await _software_shot(driver, worker, runtime, camera_id, timeout)
@@ -350,11 +412,8 @@ async def _take_picture(runtime: Any, camera_id: str, timeout: float) -> Tuple[L
 
 
 def trigger_cameras(runtime: Any) -> List[str]:
-    """The line's vision cameras in trigger mode, in card order."""
-    return [
-        cam["camera_id"] for cam in runtime.cameras
-        if cam.get("role", "vision") == "vision" and cam.get("count_mode") == "trigger"
-    ]
+    """The line's vision cameras and text readers on One picture per trigger, in card order."""
+    return [cam["camera_id"] for cam in runtime.cameras if picture_per_trigger(cam)]
 
 
 def system_trigger_cameras(runtime: Any) -> List[str]:
@@ -417,9 +476,11 @@ async def trigger_camera(runtime: Any, camera_id: str, timeout: Optional[float] 
     from app.state.application_state import app_state
 
     if camera_id not in trigger_cameras(runtime):
-        raise ValueError(f"Camera '{camera_id}' is not a vision camera of this line with Count mode 'One picture per trigger'")
+        raise ValueError(f"Camera '{camera_id}' is not a vision camera or a text reader of this line with "
+                         f"'One picture per trigger'")
     _still_running(runtime)
     entry = runtime.camera_entry(camera_id) or {}
+    text_reader = is_text_reader(entry)
     mode = getattr(app_state.cameras.get(camera_id), "trigger_mode", "off")
     if mode == "hardware":
         raise _hardware_refusal(camera_id)
@@ -427,7 +488,8 @@ async def trigger_camera(runtime: Any, camera_id: str, timeout: Optional[float] 
         raise ValueError(f"Camera '{camera_id}' takes its pictures itself (Picture taken by: Camera trigger), "
                          "so the server does not take one")
     engine, _, _ = line_service.line_manager.engine_for_camera(camera_id)
-    if not getattr(engine, "is_loaded", True):
+    # A text reader that cannot read answers each trigger with a "reader_error" product instead.
+    if not text_reader and not getattr(engine, "is_loaded", True):
         raise ValueError(f"Camera '{camera_id}' has no vision model loaded, so its picture cannot be inspected")
     timeout = TRIGGER_TIMEOUT_S if timeout is None else timeout
     delay = int(entry.get("picture_delay_ms") or 0) / 1000.0
@@ -452,8 +514,15 @@ async def trigger_camera(runtime: Any, camera_id: str, timeout: Optional[float] 
             _still_running(runtime)
             if missing.taken:
                 runtime.count_trigger(camera_id, "pictures")    # a frame was taken; the model did not finish it
-            answer.update(no_picture_product(runtime, camera_id, str(missing), trigger_no, sequence, request_id,
-                                             at=picture_at))
+            if missing.taken and text_reader:
+                from app.engines.text_reading import error_result
+                answer.update(text_product(runtime, camera_id, error_result(entry.get("ocr") or {}, READER_TOO_SLOW),
+                                           picture_at, trigger_no, sequence, request_id))
+                runtime.count_trigger(camera_id, "results")
+                runtime.remember_trigger_capture(camera_id, answer, None)
+            else:
+                answer.update(no_picture_product(runtime, camera_id, str(missing), trigger_no, sequence, request_id,
+                                                 at=picture_at))
             answer["waited_ms"] = round((_now() - started) * 1000, 2)
             if with_detections:
                 answer["detection_items"] = []
@@ -464,7 +533,9 @@ async def trigger_camera(runtime: Any, camera_id: str, timeout: Optional[float] 
             "waited_ms": round((_now() - started) * 1000, 2),
         })
         if with_detections:
-            answer["detection_items"] = [d.model_dump() if hasattr(d, "model_dump") else d for d in detections]
+            # A text reader's picture has fields, not detections.
+            answer["detection_items"] = [] if text_reader else [
+                d.model_dump() if hasattr(d, "model_dump") else d for d in detections]
         answer.update(product_from_result(runtime, camera_id, detections, arrived_at, trigger_no, sequence, request_id))
         runtime.count_trigger(camera_id, "pictures")
         runtime.count_trigger(camera_id, "results")

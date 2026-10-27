@@ -674,6 +674,14 @@ class CameraStreamPipeline:
 OVERRUN_CLEAR_S = 60.0
 
 
+def picture_worker(camera_id: str, text_reader: bool) -> Any:
+    """Where a triggered picture of a camera goes: its text reader, or its model's inference worker."""
+    if text_reader:
+        from app.services.ocr_service import OcrReaderPipeline
+        return OcrReaderPipeline.get_worker(camera_id)
+    return CameraStreamPipeline.get_worker(camera_id)
+
+
 def _hardware_result(camera_id: str, frame_id: int, detections: List[Any], inference_ms: float,
                      arrived_at: Optional[float], context: Optional[Dict[str, Any]] = None) -> None:
     """The model got through a picture a hardware trigger took: it is one product of the camera's line.
@@ -691,7 +699,11 @@ def _hardware_result(camera_id: str, frame_id: int, detections: List[Any], infer
         return      # the line was stopped while the model ran
     runtime = routed[0]
     # Not get_worker: a result that comes after the camera was removed must not start a new worker.
-    frame = getattr(CameraStreamPipeline._workers.get(camera_id), "last_inferred_frame", None)
+    if routed[1] == "ocr":
+        from app.services.ocr_service import OcrReaderPipeline
+        frame = getattr(OcrReaderPipeline.peek(camera_id), "last_inferred_frame", None)
+    else:
+        frame = getattr(CameraStreamPipeline._workers.get(camera_id), "last_inferred_frame", None)
     context = context or {}
     answer = product_from_result(runtime, camera_id, detections, arrived_at, context.get("trigger_no"),
                                  context.get("sequence"), context.get("request_id"))
@@ -802,7 +814,7 @@ class ContinuousVisionRunner:
         every_model = every_reader = False
         if trigger != "off":
             entry = runtime.camera_entry(camera_id) or {}
-            every_model = role != "qr" and entry.get("count_mode") == "trigger"
+            every_model = role in ("vision", "ocr") and entry.get("count_mode") == "trigger"
             every_reader = reads and camera_id in runtime.signal_readers
         if trigger == "hardware":
             if every_model or every_reader:
@@ -887,7 +899,8 @@ class ContinuousVisionRunner:
         notice = to_model and runtime.has_notice(camera_id)
         if notice:
             runtime.drain_pairs(camera_id)
-        worker = CameraStreamPipeline.get_worker(camera_id) if to_model and not notice else None
+        text_reader = (runtime.camera_entry(camera_id) or {}).get("role") == "ocr"
+        worker = picture_worker(camera_id, text_reader) if to_model and not notice else None
         reader = QRReaderPipeline.get_worker(camera_id) if to_reader else None
         if (worker is not None and worker.is_busy) or (reader is not None and reader.capture_busy):
             return

@@ -40,6 +40,7 @@ from app.services.line_config import (
     code_verdict,
     join_settings,
     joined_cameras,
+    picture_per_trigger,
     picture_source,
     product_result,
     product_reader,
@@ -556,7 +557,8 @@ class LineRuntime:
         counting = self.camera_entry(self.counting_camera_id) if self.counting_camera_id else None
         self._set_config(self.counter, counting_config_from_dict(trigger or {}, counting))
 
-        aux_ids = {c["camera_id"] for c in self.cameras if c.get("role") == "vision" and not c.get("counting")}
+        # The stations: vision cameras that do not count, and text readers on One picture per trigger.
+        aux_ids = {c["camera_id"] for c in self.cameras if camera_station(c)}
         for cid in list(self.aux_counters):
             if cid not in aux_ids:
                 self.aux_counters.pop(cid)
@@ -690,7 +692,7 @@ class LineRuntime:
         """True for a vision camera on One picture per trigger whose picture the system takes: its model
         runs only on the picture a trigger takes, not on every frame (trigger_inspection)."""
         entry = self.camera_entry(camera_id)
-        if not entry or entry.get("role", "vision") != "vision" or entry.get("count_mode") != "trigger":
+        if not entry or not picture_per_trigger(entry):
             return False
         from app.state.application_state import app_state
         return picture_source(entry, getattr(app_state.cameras.get(camera_id), "trigger_mode", "off")) == "system"
@@ -971,7 +973,7 @@ class LineRuntime:
         wanted: Dict[str, float] = {}
         if self.enabled:
             for cam in self.cameras:
-                if cam.get("role", "vision") == "vision" and cam.get("count_mode") == "trigger" \
+                if picture_per_trigger(cam) \
                         and cam.get("notice_trigger") is not None and cam.get("picture_source") != "system":
                     wanted[cam["camera_id"]] = int(cam.get("picture_wait_ms") or DEFAULT_PICTURE_WAIT_MS) / 1000.0
         for camera_id in self._paired_cameras():
@@ -1205,14 +1207,14 @@ class LineRuntime:
 
         Called when a pair is made, by the camera runner on each pass (_push_triggered), and by a line timer
         while pairs wait, so pairs do not wait for a camera that disconnected. One at a time, in order."""
-        from app.services.vision_service import CameraStreamPipeline, _hardware_result
+        from app.services.vision_service import _hardware_result, picture_worker
 
         with self._pair_lock:
             queue = self._pair_queues.get(camera_id)
             if not queue:
                 return
             picture, context, arrived = queue[0]
-            worker = CameraStreamPipeline.get_worker(camera_id)
+            worker = picture_worker(camera_id, (self.camera_entry(camera_id) or {}).get("role") == "ocr")
             if worker.submit_frame_if_idle(picture.frame, picture.frame_id, conf_thresh=self.confidence_for(camera_id),
                                            copy=False, arrived_at=arrived,
                                            on_result=functools.partial(_hardware_result, camera_id, context=context),
@@ -2646,6 +2648,9 @@ class LineManager:
                 row["model_error"] = model_state["error"]
                 row["expected_classes"] = list(cam.get("expected_classes") or [])
                 row["defect_classes"] = list(cam.get("defect_classes") or [])
+            if row["role"] == "ocr" and cam.get("count_mode") == "trigger":
+                row["count_mode"] = "trigger"
+            if row["role"] in ("vision", "ocr"):
                 station = camera_station(cam)
                 aux = runtime.aux_counters.get(cam["camera_id"])
                 if station:

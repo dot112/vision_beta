@@ -209,8 +209,8 @@ async def _check_picture_sources(raw: Dict[str, Any]) -> None:
         (index, str(cam.get("camera_id") or "").strip())
         for index, cam in enumerate(cameras if isinstance(cameras, list) else [])
         if isinstance(cam, dict) and str(cam.get("picture_source") or "").strip().lower() == "camera"
-        # The key counts only on a vision camera with One picture per trigger (else the save drops it).
-        and str(cam.get("role") or "vision").strip().lower() == "vision"
+        # The key counts only on a vision camera or a text reader with One picture per trigger (else the save drops it).
+        and str(cam.get("role") or "vision").strip().lower() in ("vision", "ocr")
         and str(cam.get("count_mode") or "trigger").strip().lower() == "trigger"
     ]
     if not asked:
