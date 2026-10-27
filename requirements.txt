@@ -43,6 +43,7 @@ opencv-python-headless>=5.0.0.93   # headless (server); swap for opencv-python o
 numpy>=2.5.3
 pillow>=12.3.0
 zxing-cpp>=2.2,<4             # QR / Data Matrix / 1D code reader with corner points (wheels for x86-64 and arm64)
+rapidocr==3.10.*             # OCR: PaddleOCR's PP-OCR models on ONNX Runtime (text reader cameras)
 
 # Use one ONNX Runtime distribution per platform to avoid provider-package conflicts.
 onnxruntime-directml>=1.24.4; platform_system == "Windows"

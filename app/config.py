@@ -65,6 +65,7 @@ class Settings(BaseSettings):
 
     # ── Model / Inference ─────────────────────────────────────────────────────
     MODEL_STORE_PATH: str = "./model_store"
+    OCR_MODEL_DIR: str = "./model_store/ocr"   # the text reader's tiny and medium models
     MAX_MODEL_UPLOAD_BYTES: int = 536870912
     MAX_IMAGE_UPLOAD_BYTES: int = 10485760
     INFERENCE_DEVICE: str = "auto"   # "auto" = GPU if available (DirectML/CUDA), else CPU
