@@ -45,6 +45,7 @@ from app.routes.v1 import products as products_router
 from app.routes.v1 import send_actions as send_actions_router
 from app.routes.v1 import records as records_router
 from app.routes.v1 import config_lock as config_lock_router
+from app.routes.v1 import data_backups as data_backups_router
 
 # The API behind a sign-in (Level 1 or higher) and the configuration lock.
 PROTECTED_ROUTERS = (
@@ -68,6 +69,7 @@ PROTECTED_ROUTERS = (
     send_actions_router,
     records_router,
     config_lock_router,
+    data_backups_router,
 )
 
 setup_logging()

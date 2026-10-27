@@ -53,6 +53,10 @@ LOCK_FREE_ROUTES: FrozenSet[Route] = frozenset({
     ("POST", "/api/v1/mqtt/disconnect"),
     ("POST", "/api/v1/mqtt/publish"),
     ("POST", "/api/v1/mqtt/subscribe"),
+    # Data and backups: they change no configuration.
+    ("POST", "/api/v1/system/backups"),
+    ("POST", "/api/v1/system/data/clock-ok"),
+    ("POST", "/api/v1/system/data/notices/{code}/ok"),
     # The lock itself.
     ("POST", "/api/v1/system/lock"),
     ("POST", "/api/v1/system/unlock"),

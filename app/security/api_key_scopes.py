@@ -95,6 +95,10 @@ def required_api_key_scopes(method: str, path: str) -> set[str] | None:
     if path in {"/api/v1/system/lock", "/api/v1/system/unlock"} or path.startswith("/api/v1/system/lock/"):
         return None  # locking, unlocking and the lock code are for signed-in users only
 
+    if path in {"/api/v1/system/data", "/api/v1/system/backups"} or path.startswith(
+            ("/api/v1/system/data/", "/api/v1/system/backups/")):
+        return None  # backups hold password hashes and connection settings: signed-in Admins only
+
     if path.startswith("/api/v1/system/settings"):
         return {"configuration:read"} if method in {"GET", "HEAD"} else {"configuration:write"}
     if path.startswith("/api/v1/system/audit-logs") or path.startswith("/api/v1/system/poll-changes"):
