@@ -260,17 +260,20 @@ class DataKeeper:
         await self._copy(now)
 
     async def nightly(self, now: datetime, force_backup: bool = False) -> None:
-        """Archive the finished days, make the nightly backup (unless one was made that UTC day), copy."""
-        try:
-            days = await records_archive.archive_pending(self._sessions(), now)
-            clear_alarm(AlarmCode.STORAGE_ARCHIVE_FAILED, SOURCE, "the archive run worked")
-            _keep_last("archive", now)
-            if days:
-                logger.info("Archived %d day(s) of records", len(days))
-        except Exception as exc:
-            logger.exception("Could not archive the records")
-            raise_alarm(AlarmCode.STORAGE_ARCHIVE_FAILED, SOURCE, f"Records could not be archived: {exc}",
-                        AlarmSeverity.WARNING, {"error": str(exc)})
+        """Archive the finished days (when ARCHIVE_RECORDS is on), make the nightly backup (unless one was made that UTC day), copy."""
+        if settings.ARCHIVE_RECORDS:
+            try:
+                days = await records_archive.archive_pending(self._sessions(), now)
+                clear_alarm(AlarmCode.STORAGE_ARCHIVE_FAILED, SOURCE, "the archive run worked")
+                _keep_last("archive", now)
+                if days:
+                    logger.info("Archived %d day(s) of records", len(days))
+            except Exception as exc:
+                logger.exception("Could not archive the records")
+                raise_alarm(AlarmCode.STORAGE_ARCHIVE_FAILED, SOURCE, f"Records could not be archived: {exc}",
+                            AlarmSeverity.WARNING, {"error": str(exc)})
+        else:
+            clear_alarm(AlarmCode.STORAGE_ARCHIVE_FAILED, SOURCE, "the archive is switched off")
         if force_backup or not await self._backed_up_on(now.date()):
             await self._backup("nightly", now)
         await self._copy(now)

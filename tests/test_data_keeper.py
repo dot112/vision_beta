@@ -265,6 +265,12 @@ def test_nightly_runs_once_per_utc_day_after_00_10(keeper, spies, clock):
     assert [c[1][0] for c in spies if c[0] == "make_backup"] == ["nightly", "nightly"]
 
 
+def test_with_the_archive_off_no_file_is_written(keeper, spies, monkeypatch):
+    monkeypatch.setattr(settings, "ARCHIVE_RECORDS", False)
+    asyncio.run(keeper.nightly(NOW))
+    assert "archive_pending" not in _names(spies) and "make_backup" in _names(spies)
+
+
 def test_first_run_archives_and_backs_up_only_without_a_nightly_backup_today(keeper, spies, backups):
     backups.append({"name": "20261026T001000Z-nightly", "kind": "nightly", "made_at": "2026-10-26T00:10:00+00:00", "size": 1})
     asyncio.run(keeper.first_run())
