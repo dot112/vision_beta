@@ -18,6 +18,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from app.engines.text_format import check_format
 from app.services.product_fields import VALUE_NAME_RE
 
 PRIMARY_LINE_ID = "line-1"
@@ -33,7 +34,18 @@ PRIMARY_LINE_ID = "line-1"
 #      tracking, whether defect names reject); the line's count lines are copied into it
 SCHEMA_VERSION = 9
 MAX_CAMERAS_PER_LINE = 8
-CAMERA_ROLES = ("vision", "qr")
+CAMERA_ROLES = ("vision", "qr", "ocr")
+# A text reader (role "ocr") reads printed text (dates, lot codes) in up to MAX_TEXT_FIELDS fields and
+# checks each against a format (app.engines.text_format). Read Continuously it only shows the text;
+# with count_mode "trigger" it reads one picture per trigger and is a station, own or joined.
+OCR_MODELS = ("tiny", "small", "medium")
+OCR_FIND = ("region", "yolo", "all")
+OCR_INK = ("dark", "light")
+MAX_TEXT_FIELDS = 4
+JOIN_DOTS_LIMITS = (3, 15)
+TEXT_CONFIDENCE_LIMITS = (0.30, 0.99)
+DEFAULT_TEXT_CONFIDENCE = 0.5
+MIN_REGION = 0.02
 # What a vision camera that is not the counting camera does with its result:
 #   own   counts and rejects on its own and fires only the cards that name it
 #   join  looks at the counting camera's products, before or after it on the belt:
@@ -84,8 +96,13 @@ REASON_PRODUCT_CHECK = "product_check"
 REASON_INSPECTION_TIMEOUT = "inspection_timeout"
 # A trigger camera's trigger came and no picture followed (a notice with no picture, or a camera that did not answer).
 REASON_NO_PICTURE = "no_picture"
+# A text reader's picture: a field's text does not fit its format, a field has no text, the reader could not read.
+REASON_TEXT_WRONG = "text_wrong"
+REASON_NO_TEXT = "no_text"
+REASON_READER_ERROR = "reader_error"
 REJECT_REASONS = (REASON_VISION, REASON_NOT_LISTED, REASON_LISTED, REASON_NO_CODE, REASON_STATION_NO_RESULT,
-                  REASON_NOTHING_DETECTED, REASON_PRODUCT_CHECK, REASON_INSPECTION_TIMEOUT, REASON_NO_PICTURE)
+                  REASON_NOTHING_DETECTED, REASON_PRODUCT_CHECK, REASON_INSPECTION_TIMEOUT, REASON_NO_PICTURE,
+                  REASON_TEXT_WRONG, REASON_NO_TEXT, REASON_READER_ERROR)
 # A sorting verification camera saw a product in the other outfeed (a record's reason; no product gets it).
 REASON_SORTING_MISMATCH = "sorting_mismatch"
 # The reasons that come from a product's code.
@@ -104,7 +121,8 @@ IF_MISSING = ("skip", "default")
 # A rejected product's reason as a number for the PLC (0: not rejected, 9: any other reason).
 REJECT_REASON_CODES = {REASON_VISION: 1, REASON_NOT_LISTED: 2, REASON_LISTED: 3, REASON_NO_CODE: 4,
                        REASON_STATION_NO_RESULT: 5, REASON_NOTHING_DETECTED: 6, REASON_PRODUCT_CHECK: 7,
-                       REASON_INSPECTION_TIMEOUT: 8, REASON_NO_PICTURE: 10}
+                       REASON_INSPECTION_TIMEOUT: 8, REASON_NO_PICTURE: 10,
+                       REASON_TEXT_WRONG: 11, REASON_NO_TEXT: 12, REASON_READER_ERROR: 13}
 # Product checks: up to MAX_PRODUCT_CHECKS per line, each "reject when these rules pass".
 MAX_PRODUCT_CHECKS = 10
 # A product check decides the result, so its rules cannot use it.
@@ -236,6 +254,9 @@ CAMERA_KEPT_KEYS = CAMERA_MODEL_KEYS + (
 ) + JOIN_KEYS
 # Settings of a camera that reads codes that a client written before them does not send.
 READER_KEPT_KEYS = ("qr_trigger_review", "code_sets_batch", "sorting_lane")
+# Settings of a text reader that a client written before them does not send: kept when left out.
+TEXT_READER_KEPT_KEYS = ("ocr", "count_mode", "station", "picture_source", "picture_delay_ms", "notice_trigger",
+                         "picture_wait_ms") + JOIN_KEYS
 # A camera that reads codes may watch one outfeed instead (sorting verification): its reads check
 # that each product went the way its result sent it. One camera per outfeed on a line.
 SORTING_LANES = ("accepted", "rejected")
@@ -434,7 +455,7 @@ def normalize_camera(raw: Any, index: int) -> Dict[str, Any]:
         raise ValueError(f"{label} needs a camera_id")
     role = str(raw.get("role") or "vision").strip().lower()
     if role not in CAMERA_ROLES:
-        raise ValueError(f"{label} role must be 'vision' or 'qr'")
+        raise ValueError(f"{label} role must be 'vision', 'qr' or 'ocr'")
     camera: Dict[str, Any] = {
         "camera_id": camera_id,
         "role": role,
@@ -546,6 +567,8 @@ def normalize_camera(raw: Any, index: int) -> Dict[str, Any]:
                 camera["count_mode"] = "trigger"
                 camera["no_product"] = no_product
                 camera.update(_picture_settings(raw, label))
+    if role == "ocr":
+        camera.update(_text_reader_reading(raw, label))
     # The triggers ("Take a picture" inputs, by their number) that take this camera's picture.
     sent = raw.get("triggers")
     if sent not in (None, "", []) and (camera.get("count_mode") == "trigger"
@@ -559,6 +582,115 @@ def normalize_camera(raw: Any, index: int) -> Dict[str, Any]:
         notice = camera.get("notice_trigger")
         camera["triggers"] = [notice] if notice else []
     return camera
+
+
+def _text_reader_reading(raw: Dict[str, Any], label: str) -> Dict[str, Any]:
+    """A text reader's reading mode (count_mode "trigger", else Continuously), its station and picture
+    settings when it reads one picture per trigger, and its ``ocr`` settings."""
+    settings: Dict[str, Any] = {}
+    count_mode = raw.get("count_mode")
+    if count_mode not in (None, ""):
+        count_mode = str(count_mode).strip().lower()
+        if count_mode not in COUNT_MODES:
+            raise ValueError(f"{label} count mode must be 'track' (continuously) or 'trigger' (one picture per trigger)")
+    if count_mode == "trigger":
+        settings["count_mode"] = "trigger"
+        settings.update(_picture_settings(raw, label))
+        station = str(raw.get("station") or "own").strip().lower()
+        if station not in STATIONS:
+            raise ValueError(f"{label} station must be 'own' (its own result) or 'join' (joins the product result)")
+        settings["station"] = station
+        if station == "join":
+            settings.update(_join_settings(raw, label))
+    settings["ocr"] = normalize_text_reader(raw.get("ocr"), label)
+    return settings
+
+
+def _text_field(raw: Any, index: int, label: str) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError(f"{label} text field {index + 1} must be an object")
+    name = raw.get("name")
+    if not isinstance(name, str) or not VALUE_NAME_RE.fullmatch(name.strip()):
+        raise ValueError(f"{label} text field {index + 1}: the name must start with a letter and have only "
+                         f"letters, digits and _ (at most 32)")
+    name = name.strip()
+    where = f"{label} text field '{name}'"
+    find = str(raw.get("find") or "").strip().lower()
+    if find not in OCR_FIND:
+        raise ValueError(f"{where} must find its text in a 'region', by 'yolo' class or in 'all' the picture")
+    field: Dict[str, Any] = {"name": name, "find": find}
+    if find == "region":
+        region = raw.get("region")
+        bad = ValueError(f"{where}: the region must be [x1, y1, x2, y2] inside the picture (0 to 1), "
+                         f"at least {MIN_REGION:g} wide and high")
+        if not isinstance(region, (list, tuple)) or len(region) != 4 \
+                or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in region):
+            raise bad
+        x1, y1, x2, y2 = (float(v) for v in region)
+        if not (0 <= x1 < x2 <= 1 and 0 <= y1 < y2 <= 1) or x2 - x1 < MIN_REGION or y2 - y1 < MIN_REGION:
+            raise bad
+        field["region"] = [round(x1, 4), round(y1, 4), round(x2, 4), round(y2, 4)]
+    elif find == "yolo":
+        cls = raw.get("yolo_class")
+        if not isinstance(cls, str) or not cls.strip() or len(cls.strip()) > 128:
+            raise ValueError(f"{where}: choose the YOLO class it reads in")
+        field["yolo_class"] = cls.strip()
+    field["format"] = check_format(raw.get("format"), where)
+    return field
+
+
+def normalize_text_reader(raw: Any, label: str) -> Dict[str, Any]:
+    """A text reader's ``ocr`` settings: model, YOLO model, orientation, Join dots, ink, lowest
+    confidence, and 1 to MAX_TEXT_FIELDS fields (name, where to find the text, format)."""
+    if not isinstance(raw, dict):
+        raise ValueError(f"{label} text reader settings must be an object")
+    model = str(raw.get("model") or "small").strip().lower()
+    if model not in OCR_MODELS:
+        raise ValueError(f"{label} reader model must be 'tiny', 'small' or 'medium'")
+    low, high = JOIN_DOTS_LIMITS
+    join = raw.get("join_dots")
+    join = 0 if join in (None, "") else join
+    if isinstance(join, bool) or not isinstance(join, (int, float)) or join != int(join) \
+            or (join and not (low <= join <= high and int(join) % 2 == 1)):
+        raise ValueError(f"{label} join dots must be 0 (off) or an odd size from {low} to {high} px")
+    ink = str(raw.get("ink") or "dark").strip().lower()
+    if ink not in OCR_INK:
+        raise ValueError(f"{label} ink must be 'dark' or 'light'")
+    low, high = TEXT_CONFIDENCE_LIMITS
+    confidence = _number(raw.get("min_confidence"), f"{label} lowest confidence", DEFAULT_TEXT_CONFIDENCE, low, high)
+    fields = raw.get("fields")
+    if not isinstance(fields, list) or not 1 <= len(fields) <= MAX_TEXT_FIELDS:
+        raise ValueError(f"{label} needs 1 to {MAX_TEXT_FIELDS} text fields")
+    normalized = [_text_field(field, i, label) for i, field in enumerate(fields)]
+    seen = set()
+    for field in normalized:
+        if field["name"].lower() in seen:
+            raise ValueError(f"{label}: two text fields are named '{field['name']}'")
+        seen.add(field["name"].lower())
+    locator = None
+    if any(field["find"] == "yolo" for field in normalized):
+        locator = raw.get("locator_model_id")
+        if not isinstance(locator, str) or not locator.strip() or len(locator.strip()) > 64:
+            raise ValueError(f"{label}: choose the YOLO model whose boxes its fields read in")
+        locator = locator.strip()
+    return {
+        "model": model,
+        "locator_model_id": locator,
+        "upside_down": _bool(raw.get("upside_down"), f"{label} text can be upside down", False),
+        "join_dots": int(join),
+        "ink": ink,
+        "min_confidence": round(confidence, 2),
+        "fields": normalized,
+    }
+
+
+def is_text_reader(camera: Dict[str, Any]) -> bool:
+    return camera.get("role") == "ocr"
+
+
+def picture_per_trigger(camera: Dict[str, Any]) -> bool:
+    """A vision camera or a text reader that takes one picture per trigger (count_mode "trigger")."""
+    return camera.get("role", "vision") in ("vision", "ocr") and camera.get("count_mode") == "trigger"
 
 
 def _picture_settings(raw: Dict[str, Any], label: str) -> Dict[str, Any]:
@@ -607,7 +739,7 @@ def trigger_mode_for_card(camera: Dict[str, Any], current_mode: str = "off") -> 
     Only a card with count mode "trigger" controls the Trigger (``locks_trigger_mode``); what a save
     does for the others is ``trigger_mode_to_set``.
     """
-    if camera.get("role", "vision") != "vision" or camera.get("count_mode") != "trigger":
+    if not picture_per_trigger(camera):
         return "off"
     return "hardware" if picture_source(camera, current_mode) == "camera" else "software"
 
@@ -616,7 +748,7 @@ def locks_trigger_mode(camera: Dict[str, Any]) -> bool:
     """True when the camera's card controls the camera's Trigger: it sets it and the camera's own Settings
     may not change it. Only a vision camera with Count mode "One picture per trigger" does (the card
     says how its pictures are taken); any other card leaves the Trigger to the camera (``trigger_mode_to_set``)."""
-    return camera.get("role", "vision") == "vision" and camera.get("count_mode") == "trigger"
+    return picture_per_trigger(camera)
 
 
 def trigger_mode_to_set(camera: Dict[str, Any], current_mode: str = "off") -> Optional[str]:
@@ -628,10 +760,10 @@ def trigger_mode_to_set(camera: Dict[str, Any], current_mode: str = "off") -> Op
       except Software that nothing on the card triggers and that reads no codes, which is Off.
     - A QR reader keeps its own Trigger.
     """
-    if camera.get("role", "vision") != "vision":
-        return None
     if locks_trigger_mode(camera):
         return trigger_mode_for_card(camera, current_mode)
+    if camera.get("role", "vision") != "vision":
+        return None
     if current_mode == "software" and not takes_a_picture_on_a_trigger(camera) and not reads_codes(camera):
         return "off"
     return None
@@ -664,7 +796,10 @@ def joined_cameras(cameras: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def camera_station(camera: Dict[str, Any]) -> Optional[str]:
-    """'own' or 'join' for a vision camera that is not the counting camera, else None."""
+    """'own' or 'join' for a vision camera that is not the counting camera, or a text reader that reads
+    one picture per trigger; else None."""
+    if is_text_reader(camera):
+        return (camera.get("station") or "own") if camera.get("count_mode") == "trigger" else None
     if camera.get("role", "vision") != "vision" or camera.get("counting"):
         return None
     return camera.get("station") or "own"
@@ -1206,8 +1341,9 @@ def _check_signal_cameras(inputs: List[Dict[str, Any]], cameras: List[Dict[str, 
             cam = cameras[index]
             if not takes_a_picture_on_a_trigger(cam):
                 raise ValueError(
-                    f"{label} takes a picture with Camera {index + 1}, so that camera must be a vision camera with "
-                    f"Count mode 'One picture per trigger', or read codes with Read codes set to 'When an input asks'"
+                    f"{label} takes a picture with Camera {index + 1}, so that camera must be a vision camera or "
+                    f"a text reader with 'One picture per trigger', or read codes with Read codes set to "
+                    f"'When an input asks'"
                 )
             cam["triggers"] = sorted({*(cam.get("triggers") or []), card["trigger_no"]})
 
@@ -1222,6 +1358,18 @@ def _keep_camera_triggers(cameras: List[Any], saved: List[Dict[str, Any]]) -> Li
             for key in ("triggers",) + READER_KEPT_KEYS:
                 if key not in cam and kept.get(key):
                     cam = {**cam, key: kept[key]}
+        filled.append(cam)
+    return filled
+
+
+def _keep_text_reader_settings(cameras: List[Any], saved: List[Dict[str, Any]]) -> List[Any]:
+    """Text readers sent by a client, with the TEXT_READER_KEPT_KEYS it left out as they are saved."""
+    by_id = {c.get("camera_id"): c for c in saved if isinstance(c, dict) and c.get("role") == "ocr"}
+    filled = []
+    for cam in cameras:
+        if isinstance(cam, dict) and str(cam.get("role") or "").strip().lower() == "ocr":
+            kept = by_id.get(str(cam.get("camera_id") or "").strip()) or {}
+            cam = {**{key: kept[key] for key in TEXT_READER_KEPT_KEYS if key in kept}, **cam}
         filled.append(cam)
     return filled
 
@@ -1254,10 +1402,19 @@ def require_camera_models(line: Dict[str, Any]) -> None:
             raise ValueError(f"Camera {index + 1}: choose the vision model that runs on this camera")
 
 
+def camera_model_id(camera: Dict[str, Any]) -> Optional[str]:
+    """The YOLO model a camera runs: a vision camera's model, a text reader's model for its YOLO fields."""
+    if camera.get("role") == "vision":
+        return camera.get("model_id") or None
+    if is_text_reader(camera):
+        return (camera.get("ocr") or {}).get("locator_model_id") or None
+    return None
+
+
 def vision_models(line: Dict[str, Any]) -> List[str]:
-    """The models a line's vision cameras run, each once, in camera order."""
+    """The models a line's vision cameras and text readers run, each once, in camera order."""
     return list(dict.fromkeys(
-        cam["model_id"] for cam in line.get("cameras") or [] if cam.get("role") == "vision" and cam.get("model_id")
+        camera_model_id(cam) for cam in line.get("cameras") or [] if camera_model_id(cam)
     ))
 
 
@@ -1351,6 +1508,7 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
         raise ValueError(f"A line can have at most {MAX_CAMERAS_PER_LINE} cameras")
     if "cameras" in raw:
         raw_cameras = _fill_camera_models(raw_cameras, base.get("cameras") or [], raw.get("model_id"))
+        raw_cameras = _keep_text_reader_settings(raw_cameras, base.get("cameras") or [])
         raw_cameras = _keep_camera_triggers(raw_cameras, base.get("cameras") or [])
     elif raw.get("model_id") not in (None, ""):
         # Such a client changes "the line's model": every vision camera of the line runs it.
@@ -1871,12 +2029,13 @@ def readers_using_list(lines: Iterable[Dict[str, Any]], list_id: str) -> List[Tu
 
 
 def cameras_using_model(lines: Iterable[Dict[str, Any]], model_id: str) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
-    """(line, camera) for every vision camera that runs this model."""
+    """(line, camera) for every vision camera that runs this model, and every text reader that finds its
+    fields with it."""
     return [
         (line, camera)
         for line in lines
         for camera in line.get("cameras") or []
-        if camera.get("role") == "vision" and camera.get("model_id") == model_id
+        if camera_model_id(camera) == model_id
     ]
 
 
@@ -1954,13 +2113,13 @@ def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any
     answers = _answers_someone(line, send_protocols or {})
     for index, cam in enumerate(cameras):
         mode = modes.get(cam.get("camera_id"), "off")
-        if answers and cam.get("role", "vision") == "vision" and cam.get("count_mode") == "trigger":
+        if answers and picture_per_trigger(cam):
             if picture_source(cam, mode) == "camera" and not cam.get("notice_trigger"):
                 warnings.append(
                     f"Camera {index + 1} takes its own pictures without a trigger notice: a missed or double trigger "
                     f"cannot be seen. Use a trigger notice when a PLC or robot waits for each answer."
                 )
-            if cam.get("no_product", "ignore") == "ignore":
+            if cam.get("role", "vision") == "vision" and cam.get("no_product", "ignore") == "ignore":
                 warnings.append(
                     f"Camera {index + 1} ignores a picture with nothing in it: A trigger with nothing found gets no "
                     f"answer. Set When nothing is found to Reject."
@@ -1985,13 +2144,12 @@ def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any
                 f"Camera {index + 1} takes a picture on its own input, but Read codes 'Continuously' only shows "
                 f"the codes. Set Read codes to 'When an input asks': every picture it takes is then read."
             )
-        if (cam.get("role", "vision") == "vision" and cam.get("count_mode") == "trigger"
-                and picture_source(cam, mode) == "system" and not cam.get("triggers")
+        if (picture_per_trigger(cam) and picture_source(cam, mode) == "system" and not cam.get("triggers")
                 and cam.get("camera_id") not in capturing):
             warnings.append(
                 f"Camera {index + 1} takes one picture per trigger, but no trigger is ticked on its card: only the "
-                f"API can take its picture. Tick a trigger under Counting, or add an input with the action "
-                f"'Take a picture'."
+                f"API can take its picture. Tick a trigger under {'Reading' if is_text_reader(cam) else 'Counting'}, "
+                f"or add an input with the action 'Take a picture'."
             )
         for number in cam.get("triggers") or []:
             if number not in numbers:
