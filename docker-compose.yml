@@ -76,6 +76,9 @@ services:
       - vision-uploads:/app/uploads
       - vision-certs:/app/certs
       - vision-logs:/app/logs
+      # A second folder for copies of the backups and archive files (a USB stick or a network
+      # share mounted on the host), with BACKUP_COPY_DIR=/backup-copy under environment:
+      # - /media/usb/vision-backups:/backup-copy
 
     # The code and libraries are read-only; only the volumes above and /tmp
     # can be written. Large uploads spill to uploads/.tmp (TMPDIR), not RAM.

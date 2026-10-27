@@ -428,7 +428,7 @@ While the configuration is **locked**, nobody can change how the system is set u
 Every product a line decides (good or reject, with its reason, class, confidence and paired code) and every code read that is not part of a product is stored in the `product_records` table. Products seen by an *own station* camera are stored too but marked as not in the line totals (`counted` false). A joined camera's results are in its product's `details.stations`.
 
 - **Writing never slows the line down.** The cameras' threads only queue a row; a background task writes the queue once a second (or as soon as 500 rows wait) in one transaction. If the database cannot keep up, at most `RECORDS_QUEUE_LIMIT` rows (default 100000) wait; past that the oldest are dropped and the alarm **records.dropped** is raised. When writes fail three times in a row the alarm **records.write_failed** is raised; the rows are kept and retried every second. Rows still waiting at shutdown are written before the database closes.
-- **Retention.** Rows older than `RECORDS_RETENTION_DAYS` (default 90; 0 keeps them for ever) are deleted once an hour, 5000 at a time, so the database is never locked for long. Count about 400 bytes per row with its indexes: a line counting one product a second makes about 7.8 million rows (some 3 GB) in 90 days.
+- **Retention.** Rows older than `RECORDS_RETENTION_DAYS` (default 90; 0 keeps them for ever) are deleted once an hour, 5000 at a time, so the database is never locked for long, and only once their day is in an archive file (see *Data safety*). Count about 465 bytes per row with its indexes: a line counting one product a second makes about 7.8 million rows (some 3.6 GB) in 90 days.
 - **Counters survive a restart.** Each line keeps `counts_reset_at` (when its counters were last reset) in its entry in `data/system_state.json`, Line 1 too. At startup each line's counters, and each own station's, are rebuilt from the records since then. **Reset counts** (the dashboard, `POST /api/v1/counting/reset` or a Sparkplug command) sets it to now; resetting single classes is kept too (`counts_reset_classes`). The upgrade to this version sets it to the upgrade time, so the counters start from 0 once and are kept from then on. Products per minute is not kept (it is a one-minute window).
 
 **Production records page** (sidebar, under *Run*; every signed-in user): pick the line (or *All lines*), **From** and **To** (in the browser's time zone) or a quick range (*Last hour*, *This shift* = last 8 hours, *Today*, *Yesterday*, *Last 7 days*; these follow the clock while the page is open), and filter by result, kind, camera, batch and code. The tiles show the line totals of the range, then products per hour (per day for ranges over 48 hours), rejects by type, and the records, 50 per page, newest first. **Export CSV** and **Export Excel** download the same range and filters.
@@ -443,6 +443,48 @@ Every product a line decides (good or reject, with its reason, class, confidence
 | `GET /api/v1/records/export?format=xlsx&tz=…` | An Excel workbook: a **Records** sheet (times as Excel dates, numbers as numbers) and a **Summary** sheet (the summary above). An Excel sheet holds 1,048,575 rows: a larger range is refused with `413`; export it as CSV or choose a shorter range. |
 
 An unknown `tz` falls back to UTC; the response then says so in its `X-Records-Timezone-Note` header. The file name is `records_<line>_<from>_<to>.<csv|xlsx>`. Columns: `line_id`, `line_name`, `camera_id`, `camera_name`, `kind`, `counted`, `result`, `reject_reason`, `class_name`, `confidence`, `track_id`, `code`, `code_format`, `code_status` (`known` / `unknown` / `no_read`), `product_name`, `product_list_id`, `batch` (filled once the line has a batch number), `reject_camera_id`, `stations` (JSON), `product_data` (the product's values when it passed, `key=value; key=value`), `product_check` (the product check that rejected it) and `id`.
+
+### Data safety
+
+The server looks after its own data, for a device nobody watches: the disk never fills, a damaged settings file or database is replaced from a good copy, records deleted from the database can still be downloaded, and the line keeps running whatever happens to the data. The Admin page **Data and backups** (sidebar, under *Admin*) shows all of it.
+
+What is kept in `data/`:
+
+| Path | What |
+| --- | --- |
+| `factory_data.db` | The database (`DATABASE_URL`). |
+| `system_state.json` | The settings. `settings-history/` holds the 20 newest saved copies plus one a day for 30 days; a settings file that fails to load is kept as `system_state.broken-<time>.json`. |
+| `archive/records-YYYY-MM-DD.csv.gz` | Every record of one UTC day. |
+| `backups/<time>-<kind>/` | A backup: `config.db`, `system_state.json`, `manifest.json`. |
+| `broken/<time>/` | A damaged database, moved aside with its `-wal` and `-shm` files. |
+| `audit/audit-YYYY-MM.jsonl` | The audit log, one file per month. |
+| `storage_state.json` | The clock guard, open notices, the last runs, the files copied to the second folder. |
+
+- **Free-space floor.** Every minute the server reads the disk that holds `data/`; space SQLite freed inside the database counts as free, because deleting rows does not make the file smaller (new rows reuse the room). Below `STORAGE_MIN_FREE_MB` (alarm **storage.full**) it deletes, oldest first, until 1.25 times the floor is free: detections, then records whose day is archived, then archive files, then, as a last resort, records in no archive file but never those of the last 24 hours (alarm **storage.records_lost** and a notice). **storage.low** warns at `STORAGE_WARN_PERCENT`. Recording never stops.
+- **Daily archive.** Each night after 00:10 UTC every finished day goes to `archive/records-YYYY-MM-DD.csv.gz`: all columns, `id` first, times in UTC (`…Z`), details as JSON, UTF-8 with a byte order mark; a cell that a spreadsheet would run as a formula (or that starts with `'`) gets a `'` in front. About 25 bytes a record: a line at 1 product a second makes some 0.8 GB a year. Records leave the database at 90 days only once their day has a file. Files are kept `ARCHIVE_RETENTION_DAYS`. Download a day on the **Production records** page (*Download archived day*) or with `GET /api/v1/records/archive/{day}`.
+- **Backups** are small: every table except `product_records` and `detections` (the archive keeps those), the settings file and a manifest. One a night, one before every database upgrade, and **Back up now**. Kept: `BACKUP_KEEP_NIGHTLY` nightly, 3 upgrade, 5 manual. Admins download them as a zip on **Data and backups**.
+- **Second folder.** Set `BACKUP_COPY_DIR` to a USB stick or a network share and the backups, archive files and audit files are copied there after each backup and archive run and every hour. The server deletes there only files it copied itself and that are gone from `data/`; the folder's other files, and the copies an earlier `data/` made (a new disk, a reinstall), stay. If it cannot be written (a stick pulled out), alarm **storage.copy_failed**; the local files are made anyway. In Docker, mount the folder into the container (the commented `/backup-copy` lines in `docker-compose.yml`).
+- **A damaged settings file** is kept as `system_state.broken-<time>.json` and the newest good copy from `settings-history/` is loaded (alarm **storage.settings_restored** and a notice); only with no good copy the defaults are loaded, and nothing is overwritten. While that notice is open, old records are not deleted by age (lines missing from the restored settings would lose their totals).
+- **A damaged database.** `data/.server_running` is there while the server runs. After a run that did not end cleanly (power cut, crash) the database gets `PRAGMA quick_check` before anything opens it. A damaged database, or an upgrade that fails on a damaged file, is moved to `broken/<time>/` and rebuilt from the newest backup; the server starts and the lines run. A minute later the newest records are read out of the damaged file as far as they read, the archived days inside `RECORDS_RETENTION_DAYS` are put back and the counters are restored (alarm **storage.database_restored** and a notice with the numbers). With no backup the database starts empty, and an admin account comes only from `ADMIN_INITIAL_PASSWORD`.
+- **Totals past 90 days.** When records leave the database, the products a line's counters still hold are added to `kept_totals`, so the totals after a restart are exact however long ago the counters were reset.
+- **Clock guard.** Deleting by age trusts the clock. It pauses (alarm **storage.clock_check**) when it would delete every record, or when the clock jumps forward more than a day while the server runs; an Admin presses **The clock is right** on Data and backups to go on. The free-space floor keeps working meanwhile.
+- **Audit log** entries are kept `AUDIT_RETENTION_DAYS` in `audit/`; the Audit log page has **Load older**.
+- **Notices** (records deleted for space, settings restored, database rebuilt) stay on Data and backups, and their alarm stays raised, until an Admin presses **OK**.
+
+**Restoring a backup by hand**: stop the server; download the backup (or take its folder from `data/backups/` or the second folder); copy `config.db` over the database file (delete its `-wal` and `-shm` files) and `system_state.json` over `data/system_state.json`; start the server. Older records: download their days on the Records page. On another machine use the same `SECRET_KEY` in `.env`: API key secrets are encrypted with it.
+
+| Setting | Default | |
+| --- | --- | --- |
+| `STORAGE_MIN_FREE_MB` | 2048 | The free-space floor; 0 = off. |
+| `STORAGE_WARN_PERCENT` | 85 | storage.low at this much of the disk used (1 to 100). |
+| `DETECTIONS_RETENTION_DAYS` | 30 | 0 = for ever. |
+| `ARCHIVE_RECORDS` | true | Off: no files; records are deleted at `RECORDS_RETENTION_DAYS` as before. |
+| `ARCHIVE_RETENTION_DAYS` | 365 | 0 = until the disk needs the space. |
+| `BACKUP_KEEP_NIGHTLY` | 7 | At least 1. |
+| `BACKUP_COPY_DIR` | empty | The second folder; empty = none. |
+| `AUDIT_RETENTION_DAYS` | 365 | At least 1. |
+
+**API** (signed-in Admins only; API keys cannot reach these, as a backup holds password hashes and connection settings): `GET /api/v1/system/data` (disk, database, archive, backups, second folder, clock, notices, last runs), `POST /api/v1/system/backups` (a backup now), `GET /api/v1/system/backups/{name}` (a zip), `POST /api/v1/system/data/clock-ok` and `POST /api/v1/system/data/notices/{code}/ok`. They work while the configuration is locked. `GET /api/v1/records/archive` lists the archived days and `GET /api/v1/records/archive/{day}` downloads one (Operator; API keys need `records:read`). Making or downloading a backup, confirming the clock and closing a notice are in the Audit log.
 
 ### Sparkplug B (Ignition and other SCADA hosts)
 
