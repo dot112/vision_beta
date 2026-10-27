@@ -2,7 +2,8 @@
 
 It ticks every minute (the first tick a minute after the start):
   every tick                 the clock-jump check, then the free-space floor (storage_guard);
-  first tick after a start   the alarms of open notices and of a clock pause come back; then the
+  first tick after a start   the alarms of open notices and of a clock pause come back; the records
+                             come back after a rebuild of a damaged database (recovery.py); then the
                              night jobs (the nightly backup only if none was made that UTC day);
   every hour                 the age cleanup (records up to the archived days, detections, kept
                              totals, archive files, audit files), then the copy to the second folder;
@@ -28,6 +29,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from sqlalchemy import func, select
 
 from app.config import settings
+from app.db import recovery
 from app.db.models.production_record import ProductRecord
 from app.events.alarm_events import ALARM_CATALOG, AlarmCode, AlarmSeverity, alarm_manager, clear_alarm, raise_alarm
 from app.services import (
@@ -243,6 +245,8 @@ class DataKeeper:
                         notice.get("details") or {})
         if self.clock_guard.paused():
             self.clock_guard.raise_alarm(self.clock_guard.reason() or CLOCK_JUMPED)
+        # After a rebuild of a damaged database: the records come back, then the counters.
+        await self._attempt("putting the records back after a rebuild", lambda: recovery.finish_rebuild(self._sessions()))
         await self.nightly(now)
 
     async def hourly(self, now: datetime) -> None:

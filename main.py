@@ -243,8 +243,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await _backup_before_upgrade()
 
         alembic_config = Config(str(Path(__file__).resolve().parent / "alembic.ini"))
-        async with engine.begin() as conn:
-            await conn.run_sync(lambda sync_conn: _upgrade_schema(command, alembic_config, sync_conn))
+
+        async def upgrade() -> None:
+            async with engine.begin() as conn:
+                await conn.run_sync(lambda sync_conn: _upgrade_schema(command, alembic_config, sync_conn))
+
+        # A SQLite database is checked first (fully after an unclean end) and rebuilt from the newest
+        # backup when it is damaged: the server starts and the lines run whatever happened to the file.
+        from app.db import recovery
+        from app.services.settings_persistence_service import _sqlite_path
+        db_path = _sqlite_path(settings.DATABASE_URL)
+        if db_path:
+            await recovery.open_database(db_path, upgrade=upgrade, dispose=engine.dispose)
+        else:
+            await upgrade()
         app_state.db_ready = True
         logger.info("Database ready and schema verified")
 
@@ -450,6 +462,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     from app.db.session import engine
     await engine.dispose()
+    # A clean end: the next start needs no full check of the database.
+    from app.db import recovery
+    recovery.mark_stopped()
     from app.events.system_events import set_event_loop
     set_event_loop(None)
     logger.info("Shutdown complete")
