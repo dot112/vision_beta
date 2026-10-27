@@ -172,6 +172,34 @@ def _upgrade_schema(command_module, alembic_config, sync_connection) -> None:
     command_module.upgrade(alembic_config, "head")
 
 
+async def _backup_before_upgrade() -> None:
+    """Before the database is upgraded: a small backup of the settings and the configuration tables.
+
+    Only for a SQLite database that holds data and is not at the newest revision. A failed backup
+    raises the storage.backup_failed alarm and does not stop the start.
+    """
+    import asyncio
+    from app.events.alarm_events import AlarmCode, AlarmSeverity, raise_alarm
+    from app.services import backup_service, storage_state
+    from app.services.settings_persistence_service import _sqlite_path
+
+    db_path = _sqlite_path(settings.DATABASE_URL)
+    if not db_path:
+        return
+
+    def run() -> None:
+        if backup_service.needs_upgrade_backup(db_path, backup_service.script_head()):
+            backup_service.make_backup("upgrade", db_path)
+
+    try:
+        await asyncio.to_thread(run)
+    except Exception as exc:
+        logger.exception("Could not make the backup before the database upgrade; continuing with the upgrade")
+        raise_alarm(AlarmCode.STORAGE_BACKUP_FAILED, storage_state.STORAGE_SOURCE,
+                    f"The backup before the database upgrade could not be made: {exc}", AlarmSeverity.WARNING,
+                    {"error": str(exc), "kind": "upgrade"})
+
+
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -209,6 +237,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             backup_v1_files(settings.DATABASE_URL)
         except Exception:
             logger.exception("Could not write the version 1 backup; continuing with the upgrade")
+
+        # Then a small backup of the settings and the configuration tables, when the database
+        # is about to be upgraded.
+        await _backup_before_upgrade()
 
         alembic_config = Config(str(Path(__file__).resolve().parent / "alembic.ini"))
         async with engine.begin() as conn:
