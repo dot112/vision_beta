@@ -165,7 +165,8 @@ def test_a_disconnected_reader_is_a_no_picture_reject(lines, text_workers, fake_
 
 
 def test_a_joined_text_reader_decides_the_counting_cameras_product(lines, workers, text_workers, fake_camera):  # noqa: F811
-    runtime = _line(lines, [_trigger_cam(), {**_reader("t1"), **_joined("t1", 0, 80, "reject")}])
+    # A window wide enough for the reader's result on a busy machine (80 ms failed under the full suite).
+    runtime = _line(lines, [_trigger_cam(), {**_reader("t1"), **_joined("t1", 0, 500, "reject")}])
     fake_camera("vis")
     fake_camera("t1")
 
@@ -180,7 +181,7 @@ def test_a_joined_text_reader_decides_the_counting_cameras_product(lines, worker
         await asyncio.sleep(0.03)
         CameraStreamPipeline.get_worker("vis").process("bottle")
         await task
-        await asyncio.sleep(0.3)                           # the text reader reads nothing of it
+        await asyncio.sleep(1.0)                           # the text reader reads nothing of it
 
     _run(steps)
     assert len(runtime.sent) == 2
