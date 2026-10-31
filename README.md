@@ -38,10 +38,13 @@ source .venv/bin/activate       # Linux/macOS
 # 2. Copy .env.example to .env and set unique SECRET_KEY and ADMIN_INITIAL_PASSWORD values
 #    SECRET_KEY must be at least 32 characters; initial admin password at least 20.
 
-# 3. Run from the project directory
+# 3. Fetch the text reader's tiny and medium OCR models once (optional: small comes with the package)
+python -m app.engines.ocr_models --fetch
+
+# 4. Run from the project directory
 uvicorn main:app
 
-# 4. Sign in to the dashboard using the initial admin password configured in .env
+# 5. Sign in to the dashboard using the initial admin password configured in .env
 #    http://localhost:8000/dashboard
 ```
 
@@ -306,6 +309,24 @@ A triggered camera can be silent for hours without an alarm. It is asked every 5
 **Limits.** Level triggers, pulse-width (bulb) exposure, the trigger divider, CoaXPress and PTP-timed triggers are not built. The Line dashboard's camera tile shows the last picture as a still, and nothing before the first trigger (the card on Line setup says "waiting for a trigger"). On Software trigger, a camera that both counts per trigger and reads codes on a signal takes two pictures per signal. Clearing the strobe output does not switch the camera's line back until the camera is powered off and on.
 
 **Without a camera.** `GENTL_CTI_PATH=simulator` gives two stand-in cameras (a picture every 2 seconds on Hardware, one per trigger on Software) to learn the screens with. `python "test codes/industrial_camera_check.py"` lists the real cameras the server would find and prints what one offers.
+
+#### Text reader (OCR)
+
+A camera whose job is **Text reader** (`role: "ocr"`) reads printed text, such as an expiry date or a lot code, and checks it against a format. It uses RapidOCR 3.10: PaddleOCR's PP-OCRv6 models on ONNX Runtime, the runtime of the YOLO models.
+
+- **Reading** (the card's **Reading**, `count_mode`). *Continuously* only shows the text: on the camera's video (a TEXT READER bar, each field's line in a box, green when it fits and red when not, and the first field's line in the corner) and under **Latest text reads** on the Line dashboard. Nothing is decided, sent or saved; the same text of a field within the camera's hold time (`qr_hold_ms`) is listed once. *One picture per trigger* makes each trigger's picture one product, like a triggered inspection station: its own station, or joined to the counting camera's product (`station`, the join settings, the picture settings and the triggers are the ones of a triggered vision camera). The product is rejected when a field's text does not fit its format (`text_wrong`, PLC reason code 11), when no field has any text (`no_text`, 12), or when the reader cannot read (`reader_error`, 13).
+- **Fields**, up to 4. A name (the value `text.<name>` in messages, PLC values and send cards), where its text is: a **Region** dragged on the picture, a **YOLO class** (the boxes of that class found by the YOLO model the card names, such as a `datebox` model) or the **Whole picture**, and a **Format**. Each field takes the line in its place that fits its format, else the nearest one.
+- **Format**: one sign for each character of the text: `9` a digit, `A` a letter, `X` either, `*` any character; any other character must be there as it is. Spaces are ignored and the text is read in capitals: `LOT A99999`, `EXP 99/99/9999`. Where the format has a `9`, a read `O`, `Q` or `D` counts as `0`, `I` and `L` as `1`, `S` as `5`, `B` as `8`, `Z` as `2`, `G` as `6`; where it has an `A`, the other way round. Without a `*` the reader only reads the characters the formats can hold.
+- **Reader**: the model, *tiny* (fastest; a new reader gets it when the server has it), *small* (comes with the `rapidocr` package, always there) or *medium* (reads the most, for a GPU); **Lowest confidence** (0.30 to 0.99, default 0.50: a line read with less is ignored); **The text can be upside down** (a little slower); **Join dots** (Off, or 3 to 15 px) with its print, dark on light or light on dark. Inkjet dot-matrix print is not found without Join dots; with it the lines are found, but characters can still be misread. Reading the line's own dot-matrix print well needs a model trained on its pictures (a later part).
+- **Setting up**: the card's picture is **Live** (a new picture every second) or held (**Take a picture**). What the card's settings read, saved or not, is drawn over it after each change: the regions in grey, every line found in blue, each field's line green or red with its text, and the read time. **Read** lists every line found; a click on one gives the selected field that line's format (each digit a `9`). A Region field's region is dragged on the picture, and moved or resized by its corners.
+- **Speed and memory**, measured on a Windows PC with detection limited to 640 px: *tiny* 50 ms a picture on the CPU and 30 ms with DirectML, *small* 170 to 285 ms on the CPU, *medium* 2.6 s on the CPU. A model takes 66 MiB (*tiny*) to 97 MiB (*small*) once per model and device, shared by every text reader.
+- **Models.** *tiny* and *medium* are fetched once into `OCR_MODEL_DIR` (after `pip install -r requirements.txt`): `python -m app.engines.ocr_models --fetch`. `start_server.bat` does it when it creates the virtual environment; an existing install runs it once. It checks every file against the SHA-256 the `rapidocr` package lists and removes a download cut short, so after a network error it says which model is missing and fails; run it again. The Docker image has them. Without the reader (the package or a model missing or broken), the video says READER NOT READY, the alarm **camera.model_unavailable** names the text reader, and a triggered product is rejected `reader_error`. A YOLO model a text reader uses cannot be deleted.
+
+| Setting | Default | |
+| --- | --- | --- |
+| `OCR_MODEL_DIR` | `./model_store/ocr` | Where `--fetch` puts *tiny* and *medium* and the server looks for them. The Docker image sets `/opt/ocr-models`. |
+
+**API.** A text reader's entry on a line has `count_mode`, and with `trigger` the `station`, join and picture keys and `triggers`, and `ocr`: `{"model", "locator_model_id", "upside_down", "join_dots", "ink" ("dark" or "light"), "min_confidence", "fields": [{"name", "find" ("region", "yolo" or "all"), "region" ([x1, y1, x2, y2], fractions of the picture, at least 0.02 wide and high) or "yolo_class", "format"}]}`. A product's event carries `text` (`{name: text}`) and `text_status` (`good`, `wrong` or `none`): a send card's text message takes `{text.<name>}` and `{text_status}`, a JSON card's field *Read text* sends both, and output cards and Only when rules have the values `text.<name>` and `text_status`; a record keeps them in its `details`, and the CSV export has a `text` column. `GET /api/v1/lines/{line_id}/ocr/recent` (Operator) gives the latest text reads. Line setup's routes (Supervisor, dashboard sign-in only, allowed while the configuration is locked: they save nothing): `POST /api/v1/ocr/picture/camera/{camera_id}` keeps the camera's newest picture (JPEG; dropped after 10 minutes unused), `GET` the same path with `?held=1` gives it again (`held=0` a new one), `POST /api/v1/ocr/preview/camera/{camera_id}` with `{"settings": <the camera's entry>, "held": true}` reads it with those settings, and `GET /api/v1/ocr/models` lists the models on disk.
 
 #### Trigger numbers: which input takes which camera's picture
 

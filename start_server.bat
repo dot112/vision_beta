@@ -60,6 +60,11 @@ if %errorlevel% neq 0 (
 ) else (
     echo [OK] All dependencies installed successfully!
 )
+echo [*] Fetching the text reader's OCR models (tiny and medium)...
+"%VENV_PYTHON%" -m app.engines.ocr_models --fetch
+if %errorlevel% neq 0 (
+    echo [WARNING] The OCR models were not fetched: text readers can use the small model. Later: .venv\Scripts\python -m app.engines.ocr_models --fetch
+)
 
 :VENV_EXISTS
 echo [OK] Virtual environment detected: %VENV_DIR%

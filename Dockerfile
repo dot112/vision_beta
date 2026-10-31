@@ -37,6 +37,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         echo "ACCEL must be cpu or nvidia, not '$ACCEL'" >&2; exit 1 ;; \
     esac
 
+# The text reader's tiny and medium OCR models, fetched once into the image (small comes with the
+# rapidocr package). The fetch needs only its own module; without a .env it takes OCR_MODEL_DIR.
+COPY app/__init__.py /tmp/fetch/app/__init__.py
+COPY app/config.py /tmp/fetch/app/config.py
+COPY app/engines /tmp/fetch/app/engines
+RUN cd /tmp/fetch && OCR_MODEL_DIR=/opt/ocr-models python -m app.engines.ocr_models --fetch \
+    && rm -rf /tmp/fetch
+
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM python:3.12-slim
 
@@ -49,6 +57,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=8000 \
     WORKERS=1 \
     INFERENCE_DEVICE=cpu \
+    OCR_MODEL_DIR=/opt/ocr-models \
     TMPDIR=/app/uploads/.tmp
 
 # Unprivileged user; it owns only the directories the server writes to.
@@ -56,6 +65,7 @@ RUN groupadd --system --gid 10001 vision \
     && useradd --system --uid 10001 --gid vision --home-dir /app --shell /usr/sbin/nologin vision
 
 COPY --from=build /opt/venv /opt/venv
+COPY --from=build /opt/ocr-models /opt/ocr-models
 # In the nvidia build CUDA and cuDNN are Python packages; tell the dynamic
 # loader where their libraries are so ONNX Runtime finds them. (The cpu build
 # has none, and the list stays empty.)
