@@ -2386,18 +2386,14 @@ class LineManager:
             return None, f"{type(exc).__name__}: {exc}"
 
     async def refresh_models(self) -> Dict[str, str]:
-        """Load every model a vision camera runs (one copy each) and drop the ones no camera runs.
+        """Load every model a camera runs (one copy each): a vision camera's, and a text reader's for its YOLO
+        fields. Drop the ones no camera runs.
 
         Returns {model_id: problem} for the models that could not be loaded.
         Nothing is detected on their cameras: each such camera of a running
         line raises an alarm, and so does a vision camera without a model.
         """
-        wanted = {
-            cam["model_id"]
-            for runtime in self.all()
-            for cam in runtime.cameras
-            if cam.get("role") == "vision" and cam.get("model_id")
-        }
+        wanted = {model_id for runtime in self.all() for cam in runtime.cameras if (model_id := camera_model_id(cam))}
         problems: Dict[str, str] = {}
         for model_id in wanted - set(self._engines):
             if self._api_model is not None and self._api_model[0] == model_id:
@@ -2429,7 +2425,7 @@ class LineManager:
             if not runtime.enabled:
                 continue
             for cam in runtime.cameras:
-                entry = self._engines.get(cam.get("model_id"))
+                entry = self._engines.get(camera_model_id(cam))
                 if entry is None or entry["engine"] in self._warmed or not runtime.infers_on_demand(cam["camera_id"]):
                     continue
                 self._warmed.add(entry["engine"])

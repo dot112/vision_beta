@@ -130,6 +130,19 @@ def test_system_trigger_sets_software_and_track_sets_off(client, admin_headers, 
     assert _wait_until(lambda: driver.trigger_mode == "off")
 
 
+def test_a_text_reader_card_sets_the_trigger_as_a_vision_card_does(client, admin_headers, industrial, save_line):
+    """Review C2: a text reader on One picture per trigger left an industrial camera Off, so it never read."""
+    row, driver = industrial("off")
+    ocr = {"model": "small", "fields": [{"name": "Lot", "find": "all", "format": "LOT A99999"}]}
+    res = save_line(_card(row["id"], role="ocr", picture_source="camera", ocr=ocr))
+    assert res.status_code == 201, res.text
+    assert _mode(client, admin_headers, row["id"]) == "hardware" and _told(driver, "hardware")
+    line_id = res.json()["id"]
+    res = save_line(_card(row["id"], role="ocr", picture_source="system", ocr=ocr), line_id=line_id)
+    assert res.status_code == 200, res.text
+    assert _mode(client, admin_headers, row["id"]) == "software" and _told(driver, "software")
+
+
 def test_a_trigger_card_without_a_picture_source_follows_the_cameras_mode(client, admin_headers, industrial, save_line):
     # A card saved before it held the picture source: a Hardware camera stays Hardware, any other is the system's.
     hardware, hardware_driver = industrial("hardware", source="A1")

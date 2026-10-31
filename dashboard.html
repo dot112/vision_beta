@@ -3922,7 +3922,8 @@ function cardInputPickerHtml(card, onchange) {
 // Only when: the value names a card's rules can use (the line's product fields and input values).
 function cardRuleChoices(card) {
     if (!window.CardValues) return [];
-    const choices = CardValues.valueChoices({ fields: cardFieldChoices(), inputs: cardValueInputs() });
+    const choices = CardValues.valueChoices({ fields: cardFieldChoices(), inputs: cardValueInputs(),
+        texts: CardValues.textChoices(window.ProductionLines ? ProductionLines.lineCameras() : []) });
     if (cardTriggerKind(card.trigger) === "input") {
         choices.push({ name: "input.value", label: "New value of the input" }, { name: "input.previous", label: "Old value of the input" });
     }

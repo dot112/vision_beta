@@ -155,6 +155,24 @@ def test_a_download_cut_short_is_not_left_on_disk(tmp_path, monkeypatch, capsys)
     assert tried == ["medium"]
 
 
+def test_the_fetch_takes_the_models_to_fetch_and_the_cpu_image_fetches_tiny_only(tmp_path, monkeypatch, capsys):
+    """Review I4: the CPU image fetched medium (a GPU model, 130 MB) too, and one failed download failed the build."""
+    from pathlib import Path
+
+    from app.engines import ocr_models
+
+    asked = []
+    monkeypatch.setattr(ocr_models, "fetch", lambda names=ocr_models.FETCHED: asked.append(list(names)) or list(names))
+    monkeypatch.setattr(ocr_models, "model_dir", lambda: tmp_path)
+    assert ocr_models.main(["--fetch", "tiny"]) == 0 and asked == [["tiny"]]
+    assert ocr_models.main(["--fetch"]) == 0 and asked[-1] == ["tiny", "medium"]
+    with pytest.raises(SystemExit):
+        ocr_models.main(["--fetch", "small"])           # small comes with the package
+    docker = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+    assert 'models="tiny"' in docker and '[ "$ACCEL" = nvidia ] && models="tiny medium"' in docker
+    assert "for try in 1 2 3; do" in docker and "--fetch $models" in docker
+
+
 def test_reads_printed_text_with_boxes_in_picture_pixels():
     lines = OcrEngine("small", "cpu").read(_picture(["EXP 12/03/2027", "LOT A12345"]))
     assert sorted(line.text for line in lines) == ["EXP 12/03/2027", "LOT A12345"]
@@ -167,6 +185,16 @@ def test_reads_printed_text_with_boxes_in_picture_pixels():
 def test_the_character_limit_keeps_only_allowed_characters():
     lines = OcrEngine("small", "cpu").read(_picture(["LOT 12345"]), allowed=" 0123456789")
     assert lines and all(set(line.text) <= set(" 0123456789") for line in lines)
+
+
+def test_the_character_limit_keeps_lowercase_print_of_allowed_letters():
+    """Review I3: the limit held capitals only, so "Lot A12345" was read "L0T A12345" (text_wrong)."""
+    from app.engines.text_format import allowed_characters, fit
+
+    engine = OcrEngine("small", "cpu")
+    for printed, fmt in (("Lot A12345", "LOT A99999"), ("Best before 12/2027", "BEST BEFORE 99/9999")):
+        lines = engine.read(_picture([printed]), allowed=allowed_characters([fmt]))
+        assert [fit(fmt, line.text).fits for line in lines] == [True], (printed, [line.text for line in lines])
 
 
 def test_every_call_passes_its_switches():

@@ -293,8 +293,8 @@ async def _trigger_modes(cameras: Any) -> Dict[str, str]:
 async def _apply_trigger_modes(line: Dict[str, Any]) -> List[str]:
     """Set each industrial vision camera of a saved line to the trigger mode its card asks for.
 
-    A card with Count mode One picture per trigger sets it: from the camera Hardware, from the system
-    Software. Any other vision card leaves the camera's mode alone (a tracking camera on Hardware, a camera
+    A card with Count mode One picture per trigger (a vision camera or a text reader) sets it: from the
+    camera Hardware, from the system Software. Any other vision card leaves the camera's mode alone (a tracking camera on Hardware, a camera
     that reads codes), except Software with nothing to trigger it that reads no codes, which is Off
     (``trigger_mode_to_set``).
     Only a mode that differs is set, through the path the camera's Settings use. A QR reader keeps its
@@ -310,7 +310,7 @@ async def _apply_trigger_modes(line: Dict[str, Any]) -> List[str]:
     warnings: List[str] = []
     async with AsyncSessionLocal() as db:
         for index, cam in enumerate(cameras if isinstance(cameras, list) else []):
-            if not isinstance(cam, dict) or cam.get("role", "vision") != "vision" or not cam.get("camera_id"):
+            if not isinstance(cam, dict) or cam.get("role", "vision") not in ("vision", "ocr") or not cam.get("camera_id"):
                 continue
             try:
                 row = await db.get(Camera, str(cam["camera_id"]))

@@ -139,15 +139,17 @@ def fetch(names: Iterable[str] = FETCHED) -> List[str]:
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="The text reader's OCR models")
-    parser.add_argument("--fetch", action="store_true", help=f"fetch {', '.join(FETCHED)} into OCR_MODEL_DIR")
+    parser.add_argument("--fetch", nargs="*", choices=FETCHED, metavar="MODEL",
+                        help=f"fetch these models ({' or '.join(FETCHED)}; none named: both) into OCR_MODEL_DIR")
     args = parser.parse_args(argv)
     failed = False
-    if args.fetch:
+    if args.fetch is not None:
+        names = tuple(args.fetch) or FETCHED
         try:
-            missing = set(FETCHED) - set(fetch())
+            missing = set(names) - set(fetch(names))
         except Exception as exc:  # noqa: BLE001 - said, and the exit code says it too
             print(f"Fetching failed: {exc}")
-            missing = {name for name in FETCHED if not model_files(name)}
+            missing = {name for name in names if not model_files(name)}
         failed = bool(missing)
     for name in MODEL_NAMES:
         files = model_files(name)

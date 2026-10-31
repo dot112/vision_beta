@@ -35,6 +35,17 @@ def test_the_value_names_a_card_can_use():
     assert labels == ["Lane (Juices)"]
 
 
+def test_the_text_values_of_the_lines_text_readers():
+    cameras = "[{camera_id: 'v', role: 'vision'}, {camera_id: 't1', role: 'ocr', ocr: {fields: [{name: 'Lot'}, {name: 'Exp'}]}},"               " {camera_id: 't2', role: 'ocr', ocr: {fields: [{name: 'lot'}]}}]"
+    texts = _node(f"C.textChoices({cameras})")
+    assert [t["name"] for t in texts] == ["text_status", "text.Lot", "text.Exp"]
+    names = _node(f"C.valueChoices({{fields: [], inputs: [], texts: C.textChoices({cameras})}}).map(c => c.name)")
+    assert names[-3:] == ["text_status", "text.Lot", "text.Exp"]
+    assert _node("C.textChoices([{role: 'vision'}])") == []
+    page = (ROOT / "dashboard.html").read_text(encoding="utf-8")
+    assert "texts: CardValues.textChoices(window.ProductionLines ? ProductionLines.lineCameras() : [])" in page
+
+
 def test_the_fields_of_the_lines_code_readers():
     fields = _node("""C.fieldChoices(
         [{camera_id: 'v', role: 'vision'}, {camera_id: 'q1', role: 'qr', product_list_id: 'a'},

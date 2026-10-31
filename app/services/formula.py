@@ -37,8 +37,9 @@ MAX_FORMULA_LENGTH = 200
 MAX_NODES = 64
 # The value names that need no root (section 1 of the product data design).
 PLAIN_NAMES = ("result", "result_code", "reject_reason", "class", "confidence", "code", "code_status", "product_id",
-               "good_count", "reject_count", "total_count", "batch", "line", "camera", "sequence")
-ROOTS = ("product", "input")
+               "good_count", "reject_count", "total_count", "batch", "line", "camera", "sequence", "text_status")
+# text.<field>: what a text reader read (``text`` as a function, text(...), is a call, not this root).
+ROOTS = ("product", "input", "text")
 # Function -> (fewest, most) values it takes; None = any number.
 FUNCTIONS: Dict[str, Tuple[int, Optional[int]]] = {
     "if": (3, 3), "round": (1, 2), "min": (1, None), "max": (1, None), "abs": (1, 1), "int": (1, 1), "text": (1, 1),
@@ -230,7 +231,7 @@ class _Checker:
             if isinstance(node.value, ast.Attribute):
                 self.fail("a value has one level after its root: product.<field> or input.<name>", node)
             if not (isinstance(node.value, ast.Name) and node.value.id in ROOTS):
-                self.fail("only product.<field> and input.<name> use a dot", node)
+                self.fail("only product.<field>, input.<name> and text.<field> use a dot", node)
             key = _plain(node.attr)
             if not VALUE_NAME_RE.fullmatch(key):
                 self.fail(f"'{key}' is not a value name", node)

@@ -37,12 +37,17 @@ RUN --mount=type=cache,target=/root/.cache/pip \
         echo "ACCEL must be cpu or nvidia, not '$ACCEL'" >&2; exit 1 ;; \
     esac
 
-# The text reader's tiny and medium OCR models, fetched once into the image (small comes with the
-# rapidocr package). The fetch needs only its own module; without a .env it takes OCR_MODEL_DIR.
+# The text reader's OCR models, fetched once into the image (small comes with the rapidocr package):
+# tiny, and for the nvidia image medium (130 MB, a GPU model) too. ModelScope can be slow: three tries.
+# The fetch needs only its own module; without a .env it takes OCR_MODEL_DIR.
 COPY app/__init__.py /tmp/fetch/app/__init__.py
 COPY app/config.py /tmp/fetch/app/config.py
 COPY app/engines /tmp/fetch/app/engines
-RUN cd /tmp/fetch && OCR_MODEL_DIR=/opt/ocr-models python -m app.engines.ocr_models --fetch \
+RUN cd /tmp/fetch && models="tiny" && { [ "$ACCEL" = nvidia ] && models="tiny medium" || true; } \
+    && for try in 1 2 3; do \
+         OCR_MODEL_DIR=/opt/ocr-models python -m app.engines.ocr_models --fetch $models && break; \
+         [ "$try" = 3 ] && exit 1; sleep 15; \
+       done \
     && rm -rf /tmp/fetch
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────

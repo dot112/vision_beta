@@ -154,9 +154,11 @@ class OcrEngine:
 
     def _limited_decode(self, preds: np.ndarray, return_word_box: bool = False, **kwargs: Any) -> Any:
         """The recognizer's decoder, with every character not in ``_allowed`` taken out (the CTC blank,
-        index 0, always stays): a dot-matrix misread then cannot become a character no format allows."""
+        index 0, always stays): a dot-matrix misread then cannot become a character no format allows. A
+        lowercase letter stays when its capital is allowed: the reading is put in capitals ("Lot" fits LOT)."""
         if self._allowed is not None:
-            keep = np.array([i == 0 or ch in self._allowed for i, ch in enumerate(self._decode.character)])
+            keep = np.array([i == 0 or ch in self._allowed or ch.upper() in self._allowed
+                             for i, ch in enumerate(self._decode.character)])
             preds = np.where(keep[None, None, :], preds, 0.0)
         return self._decode(preds, return_word_box, **kwargs)
 

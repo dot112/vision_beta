@@ -125,6 +125,38 @@ def test_the_locator_model_is_in_use_and_loaded(lines):  # noqa: F811
     assert [cam["camera_id"] for _, cam in cameras_using_model([line], "m1")] == ["c1"]
 
 
+def test_a_running_line_loads_its_text_readers_yolo_model(lines, monkeypatch):  # noqa: F811
+    """The line loads a reader's YOLO model, used by no vision camera, and warms it for a triggered reader
+    (review C1: a YOLO-class field failed with "the YOLO model of the text reader is not loaded")."""
+    import asyncio
+
+    from tests.conftest import FakeInferenceEngine
+
+    loads, warmed = [], []
+
+    async def load(model_id):
+        loads.append(model_id)
+        return {"engine": FakeInferenceEngine(), "name": model_id}, None
+
+    monkeypatch.setattr(lines, "_load_engine", load)
+    monkeypatch.setattr("app.services.line_service._warm_up", lambda engine, name: warmed.append(name))
+    line = SettingsPersistenceService.save_line({"name": "OCR", "enabled": True, "cameras": [{**READER, "ocr": {
+        "locator_model_id": "m1", "fields": [_field("Lot", find="yolo", yolo_class="dateBox")]}}]})
+    lines.apply_state()
+
+    async def refresh():
+        await lines.refresh_models()
+        await asyncio.sleep(0.05)                       # the warm-up runs off the event loop
+
+    asyncio.run(refresh())
+    assert loads == ["m1"] and lines.engine_for_camera("c1")[0].is_loaded
+    assert warmed == ["m1"]
+    SettingsPersistenceService.save_line({"id": line["id"], "cameras": []})
+    lines.apply_state()
+    asyncio.run(lines.refresh_models())
+    assert lines.loaded_models() == []
+
+
 def test_a_client_that_leaves_the_reader_settings_out_keeps_them(lines):  # noqa: F811
     saved = SettingsPersistenceService.save_line({"name": "OCR", "cameras": [{**READER, "station": "join", "join_offset_ms": 250}]})
     again = SettingsPersistenceService.save_line({"id": saved["id"], "name": "OCR", "cameras": [{"camera_id": "c1", "role": "ocr"}]})

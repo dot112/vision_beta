@@ -36,10 +36,12 @@
 
     const reads = (camera) => camera.role === "qr" || !!camera.read_codes;
 
-    // Every value name a card can use: the plain names, the product's own, its fields, the line's input values.
+    // Every value name a card can use: the plain names, the product's own, its fields, the line's input values,
+    // and what the line's text readers read (textChoices).
     function valueChoices(context) {
         const fields = (context && context.fields) || [];
         const inputs = (context && context.inputs) || [];
+        const texts = (context && context.texts) || [];
         return [
             ...VALUE_NAMES,
             { name: "product.name", label: "Product name" },
@@ -47,7 +49,23 @@
             { name: "product.list", label: "Product list" },
             ...fields.map((f) => ({ name: `product.${f.key}`, label: `${f.label || f.key}${f.list ? ` (${f.list})` : ""}` })),
             ...inputs.filter((i) => i.value_name).map((i) => ({ name: `input.${i.value_name}`, label: `Input: ${i.name || i.value_name}` })),
+            ...texts,
         ];
+    }
+
+    // The text readers' values of a line: text_status, and text.<field> for each field name once (ignoring case).
+    function textChoices(cameras) {
+        const readers = (cameras || []).filter((c) => c && c.role === "ocr");
+        if (!readers.length) return [];
+        const seen = new Set();
+        const found = [{ name: "text_status", label: "Text reader's result (good / wrong / none)" }];
+        readers.forEach((c) => ((c.ocr && c.ocr.fields) || []).forEach((f) => {
+            const name = String(f.name || "");
+            if (!name || seen.has(name.toLowerCase())) return;
+            seen.add(name.toLowerCase());
+            found.push({ name: `text.${name}`, label: `Text: ${name}` });
+        }));
+        return found;
     }
 
     // The fields of the product lists the line's code readers check against, each key once: [{key, label, type, list}].
@@ -178,7 +196,7 @@
     const needsRedraw = (element, action) => !!action
         || !!(element && element.classList && (element.classList.contains("ow-kind") || element.classList.contains("ow-op")));
 
-    const api = { VALUE_NAMES, FORMULA_EXAMPLES, MAX_RULES, RULE_OPS, valueChoices, fieldChoices, valueSourceText, writesText,
+    const api = { VALUE_NAMES, FORMULA_EXAMPLES, MAX_RULES, RULE_OPS, valueChoices, fieldChoices, textChoices, valueSourceText, writesText,
         onlyWhenText, onlyWhenHtml, readOnlyWhen, applyEdit, needsRedraw };
     root.CardValues = api;
     if (typeof module !== "undefined" && module.exports) module.exports = api;

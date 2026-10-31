@@ -92,6 +92,34 @@ def _read_area(mat: np.ndarray, area: Area, ocr: Dict[str, Any], engine: Any, al
             for line in lines if line.confidence >= floor]
 
 
+def _bounds(box: List[List[int]]) -> Tuple[float, float, float, float]:
+    xs, ys = [p[0] for p in box], [p[1] for p in box]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _same_print(a: List[List[int]], b: List[List[int]]) -> bool:
+    """Two lines read in different areas are one print when their boxes overlap by more than half of the
+    smaller one (a region inside the whole picture, two overlapping YOLO boxes)."""
+    ax1, ay1, ax2, ay2 = _bounds(a)
+    bx1, by1, bx2, by2 = _bounds(b)
+    overlap = max(0.0, min(ax2, bx2) - max(ax1, bx1)) * max(0.0, min(ay2, by2) - max(ay1, by1))
+    smaller = min((ax2 - ax1) * (ay2 - ay1), (bx2 - bx1) * (by2 - by1))
+    return smaller > 0 and overlap > smaller / 2
+
+
+def _prints(read: Dict[Area, List[OcrLine]]) -> Dict[Tuple[Area, int], int]:
+    """Each line read (area, index) and the print it is: lines of different areas that are the same print
+    share a number, so one print goes to one field only."""
+    keys = [(area, i) for area, lines in read.items() for i in range(len(lines))]
+    group = {key: n for n, key in enumerate(keys)}
+    for n, a in enumerate(keys):
+        for b in keys[n + 1:]:
+            if a[0] != b[0] and group[a] != group[b] and _same_print(read[a[0]][a[1]].box, read[b[0]][b[1]].box):
+                old, new = group[b], group[a]
+                group.update({key: new for key, g in group.items() if g == old})
+    return group
+
+
 def read_picture(mat: np.ndarray, ocr: Dict[str, Any], engine: Any,
                  locate: Optional[Callable[[np.ndarray], List[Any]]] = None) -> TextResult:
     """Read one picture with a text reader's ``ocr`` settings. ``locate`` gives the YOLO detections of
@@ -116,20 +144,22 @@ def read_picture(mat: np.ndarray, ocr: Dict[str, Any], engine: Any,
     except Exception as exc:  # noqa: BLE001 - the reader could not read: the picture says so
         return error_result(ocr, str(exc) or type(exc).__name__, elapsed())
 
-    used = set()
+    prints = _prints(read)
+    used = set()                                      # the prints a field has taken
     chosen: List[Optional[Tuple[Area, int]]] = [None] * len(fields)
     candidates = [[(area, i) for area in field_areas for i in range(len(read[area]))] for field_areas in areas]
     for index, field in enumerate(fields):            # 1: the lines that fit
-        fitting = [c for c in candidates[index] if c not in used and fit(field["format"], read[c[0]][c[1]].text).fits]
+        fitting = [c for c in candidates[index]
+                   if prints[c] not in used and fit(field["format"], read[c[0]][c[1]].text).fits]
         if fitting:
             chosen[index] = max(fitting, key=lambda c: read[c[0]][c[1]].confidence)
-            used.add(chosen[index])
+            used.add(prints[chosen[index]])
     for index, field in enumerate(fields):            # 2: the closest line, for a field still without one
-        free = [c for c in candidates[index] if c not in used]
+        free = [c for c in candidates[index] if prints[c] not in used]
         if chosen[index] is None and free:
             chosen[index] = min(free, key=lambda c: (fit(field["format"], read[c[0]][c[1]].text).differences,
                                                      -read[c[0]][c[1]].confidence))
-            used.add(chosen[index])
+            used.add(prints[chosen[index]])
 
     results: List[TextField] = []
     reason: Optional[str] = None
@@ -146,5 +176,11 @@ def read_picture(mat: np.ndarray, ocr: Dict[str, Any], engine: Any,
                                  list(pick[0])))
         if not checked.fits:
             reason = reason or REASON_TEXT_WRONG
-    lines = [line for area_lines in read.values() for line in area_lines]
+    # Every print once: the line read with the most confidence.
+    best: Dict[int, OcrLine] = {}
+    for key, n in prints.items():
+        line = read[key[0]][key[1]]
+        if n not in best or line.confidence > best[n].confidence:
+            best[n] = line
+    lines = list(best.values())
     return TextResult(results, lines, elapsed(), "good" if reason is None else "reject", reason, None)

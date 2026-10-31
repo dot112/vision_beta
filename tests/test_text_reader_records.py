@@ -47,6 +47,21 @@ def test_a_send_card_sends_the_text():
     assert "/^text\\.[a-z][a-z0-9_]{0,31}$/.test(name)" in page
 
 
+def test_only_when_rules_and_formulas_take_the_text():
+    """Review I2: the spec gives output cards and Only when rules text.<field> and text_status too."""
+    from app.services import formula
+    from app.services.rules import normalize_only_when, rules_pass
+
+    rules = normalize_only_when({"match": "all", "rules": [
+        {"left": "text_status", "op": "=", "right": "wrong", "right_kind": "constant"},
+        {"left": "text.Lot", "op": "!=", "right": "LOT A12345", "right_kind": "constant"}]}, "Card 1")
+    values = values_for({"text": {"Lot": "LOT A1234"}, "text_status": "wrong"})
+    assert rules_pass(rules, values) and not rules_pass(rules, values_for({"text": {"Lot": "LOT A12345"}, "text_status": "good"}))
+    assert formula.parse('if(text_status == "good", 1, 2)').evaluate(values) == 2
+    assert formula.parse("text(text.Lot)").evaluate(values) == "LOT A1234"     # the function and the root
+    assert formula.parse("text.Exp").evaluate(values) is formula.MISSING
+
+
 def test_a_record_keeps_the_text_and_the_export_shows_it():
     row = build_row({"is_defect": False, "class_name": "text ok", "text": {"Expiry": "12/03/2027", "Lot": "A12345"},
                      "text_status": "good", "camera_id": "t1", "line_id": "line-1"}, "product", False)

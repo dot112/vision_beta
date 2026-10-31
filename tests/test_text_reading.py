@@ -68,6 +68,41 @@ def test_a_field_takes_the_line_that_fits_else_the_closest():
     assert (r.fields[0].text, r.fields[0].fits, r.reason, r.status) == ("LOT A1234", False, "text_wrong", "wrong")
 
 
+class _OnePrint:
+    """A picture with one printed date at 100..300 x 100..140: the whole picture and a region read the same print."""
+
+    def read(self, img, *, upside_down=False, allowed=None):
+        h, w = img.shape[:2]
+        if (h, w) == (480, 640):
+            return [OcrLine("12/03/2026", 0.95, [[100, 100], [300, 100], [300, 140], [100, 140]])]
+        return [OcrLine("12/03/2026", 0.95, [[36, 4], [236, 4], [236, 44], [36, 44]])]     # the region's crop
+
+
+def test_one_print_seen_through_two_areas_goes_to_one_field_only():
+    """Review I1: a region field and a whole-picture field both took the one date; a missing date passed."""
+    ocr = _ocr(_field("Mfg", format="99/99/9999"), _field("Exp", find="all", format="99/99/9999"))
+    r = read_picture(_mat(), ocr, _OnePrint())
+    assert [(f.name, f.text, f.fits) for f in r.fields] == [("Mfg", "12/03/2026", True), ("Exp", None, False)]
+    assert (r.result, r.reason) == ("reject", "no_text") and len(r.lines) == 1
+
+
+class _TwoPrints(_OnePrint):
+    """The region holds the first date; the whole picture has a second one beside it."""
+
+    def read(self, img, *, upside_down=False, allowed=None):
+        lines = super().read(img, upside_down=upside_down, allowed=allowed)
+        if img.shape[:2] == (480, 640):
+            lines.append(OcrLine("01/01/2028", 0.9, [[400, 300], [600, 300], [600, 340], [400, 340]]))
+        return lines
+
+
+def test_two_prints_in_overlapping_areas_go_to_both_fields():
+    ocr = _ocr(_field("Mfg", format="99/99/9999"), _field("Exp", find="all", format="99/99/9999"))
+    r = read_picture(_mat(), ocr, _TwoPrints())
+    assert [(f.name, f.text, f.fits) for f in r.fields] == [("Mfg", "12/03/2026", True), ("Exp", "01/01/2028", True)]
+    assert r.result == "good" and sorted(line.text for line in r.lines) == ["01/01/2028", "12/03/2026"]
+
+
 def test_a_line_goes_to_one_field_only():
     lines = [OcrLine("LOT A12345", 0.9, B), OcrLine("LOT B67890", 0.8, B)]
     engine = _FakeEngine([lines])
