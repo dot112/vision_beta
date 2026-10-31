@@ -11,11 +11,13 @@ The Docker build runs it into the image.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import os
+import re
 import sys
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 MODEL_NAMES = ("tiny", "small", "medium")
 FETCHED = ("tiny", "medium")
@@ -35,10 +37,42 @@ def model_dir() -> Path:
 
 def _package_models() -> Optional[Path]:
     """The models folder inside the rapidocr package, found without importing it (None: not installed)."""
-    spec = importlib.util.find_spec("rapidocr")
+    try:
+        spec = importlib.util.find_spec("rapidocr")
+    except (ImportError, ValueError):     # a module without a spec stands in for it
+        return None
     if spec is None or not spec.origin:
         return None
     return Path(spec.origin).parent / "models"
+
+
+def _expected_sha256() -> Dict[str, str]:
+    """The SHA-256 of each PP-OCRv6 model file, from the rapidocr package's model list ({file name: hash};
+    empty when it cannot be read)."""
+    folder = _package_models()
+    try:
+        text = (folder.parent / "default_models.yaml").read_text(encoding="utf-8") if folder else ""
+    except OSError:
+        return {}
+    found = re.findall(r"model_dir:\s*\S*/(PP-OCRv6_(?:det|rec)_\w+\.onnx)\s*\n\s*SHA256:\s*([0-9a-fA-F]{64})", text)
+    return {name: digest.lower() for name, digest in found}
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _drop_broken(name: str, hashes: Dict[str, str]) -> None:
+    """Remove a file of the model whose SHA-256 is not the package's: a download cut short."""
+    for kind in ("det", "rec"):
+        path = model_dir() / f"PP-OCRv6_{kind}_{name}.onnx"
+        expected = hashes.get(path.name)
+        if expected and path.is_file() and _sha256(path) != expected:
+            path.unlink()
 
 
 def model_files(name: str) -> Optional[Tuple[Path, Path]]:
@@ -67,25 +101,39 @@ def fetch(names: Iterable[str] = FETCHED) -> List[str]:
 
     Returns the names asked for that are on disk afterwards.
     """
+    import cv2
     import numpy as np
     from rapidocr import RapidOCR
     from rapidocr.utils.typings import ModelType, OCRVersion
 
     folder = model_dir()
     folder.mkdir(parents=True, exist_ok=True)
-    blank = np.full((64, 320, 3), 255, np.uint8)
-    done = []
+    # A printed line: RapidOCR fetches a recognition model the first time it recognises a line, so a blank
+    # picture would fetch only the detection model.
+    picture = np.full((64, 320, 3), 255, np.uint8)
+    cv2.putText(picture, "LOT A12345", (10, 44), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 0), 3)
+    hashes = _expected_sha256()
+    done: List[str] = []
+    failed: List[str] = []
     for name in names:
-        if not model_files(name):
-            engine = RapidOCR(params={
-                "Global.log_level": "error",
-                "Global.model_root_dir": str(folder.resolve()),
-                "Det.model_type": ModelType(name), "Rec.model_type": ModelType(name),
-                "Det.ocr_version": OCRVersion.PPOCRV6, "Rec.ocr_version": OCRVersion.PPOCRV6,
-            })
-            engine(blank, use_det=True, use_cls=False, use_rec=True)
+        _drop_broken(name, hashes)
+        try:
+            if not model_files(name):
+                engine = RapidOCR(params={
+                    "Global.log_level": "error",
+                    "Global.model_root_dir": str(folder.resolve()),
+                    "Det.model_type": ModelType(name), "Rec.model_type": ModelType(name),
+                    "Det.ocr_version": OCRVersion.PPOCRV6, "Rec.ocr_version": OCRVersion.PPOCRV6,
+                })
+                engine(picture, use_det=True, use_cls=False, use_rec=True)
+        except Exception as exc:  # noqa: BLE001 - the next model is still fetched; the error is raised below
+            failed.append(f"{name}: {type(exc).__name__}: {exc}")
+        finally:
+            _drop_broken(name, hashes)
         if model_files(name):
             done.append(name)
+    if failed:
+        raise RuntimeError("; ".join(failed))
     return done
 
 
@@ -98,7 +146,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         try:
             missing = set(FETCHED) - set(fetch())
         except Exception as exc:  # noqa: BLE001 - said, and the exit code says it too
-            print(f"Fetching failed: {type(exc).__name__}: {exc}")
+            print(f"Fetching failed: {exc}")
             missing = {name for name in FETCHED if not model_files(name)}
         failed = bool(missing)
     for name in MODEL_NAMES:

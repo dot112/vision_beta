@@ -77,6 +77,84 @@ def test_the_fetch_command_runs_without_the_servers_settings(tmp_path):
     assert "small   on disk" in run.stdout and "tiny    not on disk" in run.stdout
 
 
+def test_the_fetch_reads_text_so_recognition_fetches_its_model_too(tmp_path, monkeypatch):
+    """RapidOCR fetches a recognition model the first time it recognises a line: a blank picture fetched
+    only the detection models (found on a real fetch, 2026-10-31)."""
+    import sys
+    import types
+
+    from app.engines import ocr_models
+
+    class FakeRapidOCR:
+        def __init__(self, params):
+            self.name = params["Det.model_type"]
+            (tmp_path / f"PP-OCRv6_det_{self.name}.onnx").write_bytes(b"x")
+
+        def __call__(self, img, **switches):
+            if (img < 128).any():                       # a line found: recognised, its model fetched
+                (tmp_path / f"PP-OCRv6_rec_{self.name}.onnx").write_bytes(b"x")
+
+    package = types.ModuleType("rapidocr")
+    package.RapidOCR = FakeRapidOCR
+    typings = types.ModuleType("rapidocr.utils.typings")
+    typings.ModelType = str
+    typings.OCRVersion = types.SimpleNamespace(PPOCRV6="PP-OCRv6")
+    monkeypatch.setitem(sys.modules, "rapidocr", package)
+    monkeypatch.setitem(sys.modules, "rapidocr.utils", types.ModuleType("rapidocr.utils"))
+    monkeypatch.setitem(sys.modules, "rapidocr.utils.typings", typings)
+    monkeypatch.setattr(ocr_models, "model_dir", lambda: tmp_path)
+    assert ocr_models.fetch(["tiny", "medium"]) == ["tiny", "medium"]
+
+
+def test_a_download_cut_short_is_not_left_on_disk(tmp_path, monkeypatch, capsys):
+    """A real fetch timed out 14 MB into the 77 MB medium model and still said "on disk" (2026-10-31): a file
+    whose SHA-256 is not the package's is removed, every model is tried, and the command fails."""
+    import hashlib
+    import sys
+    import types
+
+    from app.engines import ocr_models
+
+    good = b"model"
+    tried = []
+
+    class FakeRapidOCR:
+        def __init__(self, params):
+            self.name = params["Det.model_type"]
+            tried.append(self.name)
+            (tmp_path / f"PP-OCRv6_det_{self.name}.onnx").write_bytes(good)
+
+        def __call__(self, img, **switches):
+            if self.name == "medium":
+                (tmp_path / "PP-OCRv6_rec_medium.onnx").write_bytes(b"mod")      # cut short
+                raise ConnectionError("Read timed out.")
+            (tmp_path / f"PP-OCRv6_rec_{self.name}.onnx").write_bytes(good)
+
+    package = types.ModuleType("rapidocr")
+    package.RapidOCR = FakeRapidOCR
+    typings = types.ModuleType("rapidocr.utils.typings")
+    typings.ModelType = str
+    typings.OCRVersion = types.SimpleNamespace(PPOCRV6="PP-OCRv6")
+    monkeypatch.setitem(sys.modules, "rapidocr", package)
+    monkeypatch.setitem(sys.modules, "rapidocr.utils", types.ModuleType("rapidocr.utils"))
+    monkeypatch.setitem(sys.modules, "rapidocr.utils.typings", typings)
+    monkeypatch.setattr(ocr_models, "model_dir", lambda: tmp_path)
+    sha = hashlib.sha256(good).hexdigest()
+    monkeypatch.setattr(ocr_models, "_expected_sha256", lambda: {
+        f"PP-OCRv6_{kind}_{name}.onnx": sha for kind in ("det", "rec") for name in ("tiny", "medium")})
+
+    assert ocr_models.main(["--fetch"]) == 1
+    out = capsys.readouterr().out
+    assert "Fetching failed" in out and "medium: ConnectionError: Read timed out." in out
+    assert "medium  not on disk" in out and "tiny    on disk" in out
+    assert not (tmp_path / "PP-OCRv6_rec_medium.onnx").exists() and (tmp_path / "PP-OCRv6_det_medium.onnx").exists()
+    assert tried == ["tiny", "medium"]
+    # Verified models are not fetched again; the medium one is.
+    tried.clear()
+    ocr_models.main(["--fetch"])
+    assert tried == ["medium"]
+
+
 def test_reads_printed_text_with_boxes_in_picture_pixels():
     lines = OcrEngine("small", "cpu").read(_picture(["EXP 12/03/2027", "LOT A12345"]))
     assert sorted(line.text for line in lines) == ["EXP 12/03/2027", "LOT A12345"]
