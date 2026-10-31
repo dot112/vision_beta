@@ -79,6 +79,33 @@ def test_no_held_picture_is_404_and_it_expires(client, supervisor, fake_camera, 
     assert client.get(f"{API}/ocr/picture/camera/c1?held=0", headers=supervisor).status_code == 200      # a new one
 
 
+def test_a_camera_that_is_not_connected_is_connected_for_its_picture(client, supervisor, engine, monkeypatch):  # noqa: F811
+    """As for the count lines' picture: setting up a reader on a stopped line connects its camera."""
+    import numpy as np
+
+    from app.services.camera_service import CameraService
+
+    asked = []
+
+    async def grab(db, camera_id):
+        asked.append(camera_id)
+        if camera_id == "c9":
+            return True, np.zeros((48, 64, 3), np.uint8), 1, None
+        if camera_id == "c7":
+            return False, None, 0, "Camera is offline or not found"
+        return False, None, 0, "Camera connection failed: no answer"
+
+    monkeypatch.setattr(CameraService, "grab_raw_frame", staticmethod(grab))
+    assert client.post(f"{API}/ocr/picture/camera/c9", headers=supervisor).status_code == 200
+    assert client.post(f"{API}/ocr/preview/camera/c9", headers=supervisor, json={"settings": SETTINGS, "held": False}).status_code == 200
+    refused = client.get(f"{API}/ocr/picture/camera/c8", headers=supervisor)
+    assert refused.status_code == 404 and refused.json()["detail"] == "Camera connection failed: no answer"
+    # A camera switched off (not connected, not kept connected) is not connected for it: its card says how.
+    off = client.post(f"{API}/ocr/picture/camera/c7", headers=supervisor)
+    assert off.status_code == 404 and off.json()["detail"] == "The camera is not connected: switch on Connect under Camera"
+    assert asked == ["c9", "c9", "c8", "c7"]
+
+
 def test_models(client, supervisor, engine, monkeypatch):  # noqa: F811
     monkeypatch.setattr(ocr_models, "available", lambda: ["tiny", "small"])
     monkeypatch.setattr(ocr_models, "new_reader_model", lambda: "tiny")

@@ -84,6 +84,14 @@
         };
     }
 
+    // The camera entry a preview reads with: a field without a format yet reads any character ("*"), so that Read
+    // can list its lines (a save still needs the format). The entry itself is left as it is.
+    function previewSettings(entry) {
+        if (!entry || !entry.ocr) return entry;
+        const fields = (entry.ocr.fields || []).map((f) => (f.format ? f : { ...f, format: "*" }));
+        return { ...entry, ocr: { ...entry.ocr, fields } };
+    }
+
     // A new field's name: Text1, Text2, ... the first one the card does not have.
     function newFieldName(names) {
         const taken = new Set(names.map((n) => String(n).toLowerCase()));
@@ -324,8 +332,12 @@
         }
         const formats = {};
         rowsOf(card).forEach((row) => { formats[tf(row, "name").value.trim().toLowerCase()] = tf(row, "format").value.trim(); });
-        const fields = (r.fields || []).map((f) => (f.text === null || f.text === undefined ? `${f.name}: nothing read`
-            : f.fits ? `${f.name}: ${f.text} ✓` : `${f.name}: ${f.text} (expected ${formats[f.name.toLowerCase()] || "its format"})`));
+        const fields = (r.fields || []).map((f) => {
+            const format = formats[f.name.toLowerCase()];
+            if (f.text === null || f.text === undefined) return `${f.name}: nothing read`;
+            if (!format) return `${f.name}: ${f.text} (no format yet)`;
+            return f.fits ? `${f.name}: ${f.text} ✓` : `${f.name}: ${f.text} (expected ${format})`;
+        });
         const verdict = r.error ? `Cannot read: ${r.error}` : r.result === "good" ? "Good" : `Reject: ${REASONS[r.reason] || r.reason}`;
         box.textContent = [verdict].concat(fields, [`${Math.round(r.ms || 0)} ms`]).join(" · ");
         box.classList.add(r.result === "good" ? "good" : "bad");
@@ -352,7 +364,7 @@
         if (s.busy) { s.again = true; return; }
         s.busy = true;
         try {
-            s.last = await s.api.fetchJson(`/api/v1/ocr/preview/camera/${encodeURIComponent(id)}`, { method: "POST", body: { settings: s.api.entry(), held: true } });
+            s.last = await s.api.fetchJson(`/api/v1/ocr/preview/camera/${encodeURIComponent(id)}`, { method: "POST", body: { settings: previewSettings(s.api.entry()), held: true } });
             showResult(card);
         } catch (e) {
             s.last = null;
@@ -592,7 +604,7 @@
         return `<div class="tr-record">${pairs.join(" · ")}${status ? ` <span class="tr-wrong">${status}</span>` : ""}</div>`;
     }
 
-    const api = { MAX_FIELDS, foldHtml, ocrFromValues, readCard, suggestFormat, regionFrom, bind, wake, setModels,
+    const api = { MAX_FIELDS, foldHtml, ocrFromValues, readCard, suggestFormat, regionFrom, previewSettings, bind, wake, setModels,
                   readsPanelHtml, readsRowsHtml, recordText };
     root.TextReader = api;
     if (typeof module !== "undefined" && module.exports) module.exports = api;

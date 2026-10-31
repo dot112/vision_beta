@@ -82,6 +82,14 @@ def test_values_to_settings():
                               {"name": "Exp", "find": "region", "region": [0.25, 0.25, 0.75, 0.5], "format": "99/99"}]
 
 
+def test_the_preview_reads_a_field_without_a_format_yet():
+    """A new field has no format: the preview still reads (any character), so Read can fill it in."""
+    entry = {"camera_id": "c1", "role": "ocr", "ocr": {"fields": [_field("Lot", format=""), _field("Exp", format="99/99")]}}
+    sent = _api(f"api.previewSettings({json.dumps(entry)})")
+    assert [f["format"] for f in sent["ocr"]["fields"]] == ["*", "99/99"] and entry["ocr"]["fields"][0]["format"] == ""
+    assert _api('api.previewSettings({camera_id: "c1", role: "vision"})') == {"camera_id": "c1", "role": "vision"}
+
+
 def test_the_fold_has_four_fields_at_most_and_help_only_where_needed():
     html = _fold({"fields": [_field(f"F{i}") for i in range(5)]})
     assert html.count("data-text-field=") == 4 and html.count("data-help=") == 2
