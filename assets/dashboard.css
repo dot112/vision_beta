@@ -1682,3 +1682,10 @@ body .pl-line-select > .help-tip { display: inline-flex; }
 .tr-line { padding: 4px 8px; font-size: 12.5px; color: var(--text-color); background: transparent; border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; overflow-wrap: anywhere; text-align: left; }
 .tr-line:hover { border-color: var(--primary-color); }
 .tr-line span { color: var(--text-muted); font-size: 11px; }
+
+/* ─── Line dashboard: Latest text reads; Records: the read text (assets/text_reader.js) ─── */
+.tr-read { white-space: nowrap; }
+.tr-fits { color: var(--success-color); font-size: 11.5px; }
+.tr-wrong { color: var(--danger-color); font-size: 11.5px; }
+.tr-none { color: var(--text-muted); font-size: 11.5px; }
+.tr-record { font-size: 12px; margin-top: 2px; }

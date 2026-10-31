@@ -27,7 +27,9 @@
     const LIVE_MS = 1000;           // a new picture this often while Live
     const CORNER_PX = 12;           // a press this near a corner of the region resizes it
     const COLORS = { area: "rgba(200,200,200,.9)", region: "#ffffff", fits: "rgb(0,200,0)", wrong: "rgb(230,0,0)", line: "rgb(0,120,255)" };
-    const REASONS = { text_wrong: "the text is wrong", no_text: "no text found", reader_error: "the reader could not read" };
+    // The reject reasons of a text reader (production_lines.js REJECT_REASON has the same labels).
+    const REASONS = { text_wrong: "text does not fit", no_text: "no text", reader_error: "text reader error" };
+    const TEXT_STATUS = { wrong: "does not fit", none: "no text" };
 
     const esc = (value) => String(value === undefined || value === null ? "" : value)
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -553,7 +555,45 @@
         wake(card);
     }
 
-    const api = { MAX_FIELDS, foldHtml, ocrFromValues, readCard, suggestFormat, regionFrom, bind, wake, setModels };
+    // ── The Line dashboard and the Records page ───────────────────────────────
+
+    // The Latest text reads panel; production_lines.js fills plTextBody with readsRowsHtml().
+    function readsPanelHtml() {
+        return `<div class="card-panel" id="plTextPanel"><div class="card-panel-header"><span class="card-panel-title">Latest text reads</span></div>
+                <div class="table-responsive"><table class="pl-table"><thead><tr><th>Time</th><th>Camera</th><th>Text</th><th>Product result</th></tr></thead>
+                <tbody id="plTextBody"><tr><td colspan="4">No reads yet.</td></tr></tbody></table></div></div>`;
+    }
+
+    // GET /lines/{id}/ocr/recent's reads as table rows. opts: name(cameraId) -> its name, reasons {reason: label}.
+    function readsRowsHtml(reads, opts) {
+        const o = opts || {};
+        const name = (id) => (o.name ? o.name(id) : id) || id;
+        const reasons = o.reasons || REASONS;
+        const rows = (reads || []).map((r) => {
+            const fields = (r.fields || []).map((f) => `<div class="tr-read">${esc(f.name)}: ${f.text === null || f.text === undefined
+                ? `<span class="tr-none">no text</span>`
+                : `<span class="pl-code">${esc(f.text)}</span> <b class="${f.fits ? "tr-fits" : "tr-wrong"}">${f.fits ? "fits" : "does not fit"}</b>`}</div>`).join("");
+            // A reader that reads continuously only shows its text: it went nowhere else.
+            const verdict = r.shown_only ? `<span class="tr-none">shown only</span>`
+                : r.result === "reject" ? `<b style="color:var(--danger-color)">Rejected</b>${r.reason ? ` · ${esc(reasons[r.reason] || r.reason)}` : ""}`
+                    : r.result === "good" ? `<b style="color:var(--success-color)">Good</b>` : `<span class="tr-none">—</span>`;
+            const product = r.track_id !== null && r.track_id !== undefined ? `<div class="tr-none">product #${esc(r.track_id)}</div>` : "";
+            return `<tr><td class="pl-code">${esc(new Date(r.timestamp).toLocaleTimeString())}</td><td>${esc(name(r.camera_id))}</td><td>${fields}</td><td>${verdict}${product}</td></tr>`;
+        });
+        return rows.join("") || `<tr><td colspan="4">No reads yet.</td></tr>`;
+    }
+
+    // A record's read text (details.text), as name: text pairs, and what was wrong with it; "" without one.
+    function recordText(details) {
+        const text = details && typeof details.text === "object" && details.text ? details.text : {};
+        const pairs = Object.keys(text).map((k) => `${esc(k)}: <span class="pl-code">${esc(text[k])}</span>`);
+        if (!pairs.length) return "";
+        const status = TEXT_STATUS[details.text_status];
+        return `<div class="tr-record">${pairs.join(" · ")}${status ? ` <span class="tr-wrong">${status}</span>` : ""}</div>`;
+    }
+
+    const api = { MAX_FIELDS, foldHtml, ocrFromValues, readCard, suggestFormat, regionFrom, bind, wake, setModels,
+                  readsPanelHtml, readsRowsHtml, recordText };
     root.TextReader = api;
     if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);
