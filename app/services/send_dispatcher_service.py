@@ -73,6 +73,8 @@ MESSAGE_FIELDS: Dict[str, Tuple[str, ...]] = {
     "alarm": ("alarm_code", "alarm_message", "alarm_severity", "alarm_source", "alarm_raised"),
     # The product of a known code: its code, name, list and values ({"code", "name", "list", "list_id", "fields"}).
     "product": ("product",),
+    # What a text reader read of the product ({field: text}) and its result (good / wrong / none).
+    "read_text": ("text", "text_status"),
     # The input that changed (the trigger "Input changed").
     "input": ("input_id", "input_name", "value", "previous"),
 }
@@ -155,8 +157,12 @@ def template_values(payload: Dict[str, Any]) -> Dict[str, Any]:
         "input_name": pick("input_name"),
         "product_check": pick("product_check"),
         "sequence": pick("sequence"),
+        "text_status": pick("text_status"),
     }
     found = {name: values.get(name) for name in TEMPLATE_FIELDS}
+    # {text.<field>}: what a text reader read of the product.
+    if isinstance(payload.get("text"), dict):
+        found.update({f"text.{name}": value for name, value in payload["text"].items()})
     # {product.name}, {product.lane}...: the product of a known code and its values.
     found.update(flat_product_values(payload.get("product") if isinstance(payload.get("product"), dict) else None))
     # {input.<value name>}: the last value of the line's inputs; {input.value}, {input.previous}: the input that changed.

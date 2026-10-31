@@ -27,6 +27,26 @@ def test_values_of_a_text_product():
     assert "text_status" not in values_for({"result": "good"})
 
 
+def test_a_send_card_sends_the_text():
+    """A text message's {text.<field>} and {text_status}; a JSON card's "read_text" field (spec: values of messages)."""
+    from pathlib import Path
+
+    from app.routes.v1.send_actions import FIELD_LABELS
+    from app.services.line_config import TEMPLATE_FIELDS, parse_template
+    from app.services.send_dispatcher_service import MESSAGE_FIELDS, build_message, render_template
+
+    assert parse_template("{text.Lot};{TEXT.Exp};{text_status}") == (
+        (True, "text.Lot"), (False, ";"), (True, "text.Exp"), (False, ";"), (True, "text_status"))
+    assert "text_status" in TEMPLATE_FIELDS
+    payload = {"event": "WIRELINE_OBJECT_CROSSED", "text": {"Lot": "LOT A12345"}, "text_status": "good"}
+    assert render_template("{text.Lot}|{text.Exp}|{text_status}", payload) == "LOT A12345||good"
+    assert MESSAGE_FIELDS["read_text"] == ("text", "text_status") and "read_text" in dict(FIELD_LABELS)
+    assert build_message({"fields": ["read_text"]}, payload) == {"text": {"Lot": "LOT A12345"}, "text_status": "good"}
+    # The dashboard's own check of a template takes {text.<field>} too.
+    page = (Path(__file__).resolve().parents[1] / "dashboard.html").read_text(encoding="utf-8")
+    assert "/^text\\.[a-z][a-z0-9_]{0,31}$/.test(name)" in page
+
+
 def test_a_record_keeps_the_text_and_the_export_shows_it():
     row = build_row({"is_defect": False, "class_name": "text ok", "text": {"Expiry": "12/03/2027", "Lot": "A12345"},
                      "text_status": "good", "camera_id": "t1", "line_id": "line-1"}, "product", False)

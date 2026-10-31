@@ -26,7 +26,7 @@ FIELD_LABELS = [
     ("class_name", "Class"),
     ("result", "Result (PASSED / REJECTED)"),
     ("is_defect", "Rejected (true / false)"),
-    ("reject_reason", "Reject reason (vision class, code not in list, code in reject list, no code, joined camera saw nothing, nothing detected, product check, no result in time, no picture)"),
+    ("reject_reason", "Reject reason (vision class, code not in list, code in reject list, no code, joined camera saw nothing, nothing detected, product check, no result in time, no picture, text does not fit, no text, text reader error)"),
     ("stations", "Joined cameras (what each saw of the product)"),
     ("reject_camera_id", "Camera that rejected the product (a line with joined cameras)"),
     ("confidence", "Confidence"),
@@ -40,6 +40,7 @@ FIELD_LABELS = [
     ("product", "Product of the code (code, name, list and its fields)"),
     ("product_check", "Product check that rejected the product"),
     ("sequence", "Product sequence number (from the PLC)"),
+    ("read_text", "Read text (each text field's text, and good / wrong / none)"),
     ("input", "Input that changed (id, name, new and old value)"),
 ]
 # Placeholders for the product of a known code; {product.<field key>} names one of its fields.

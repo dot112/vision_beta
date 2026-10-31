@@ -4510,7 +4510,8 @@ function renderSendTemplate(template, values = {}) {
         else if (token in SEND_TEMPLATE_ESCAPES) text += SEND_TEMPLATE_ESCAPES[token];
         else if (m[1] !== undefined) {
             const name = m[1].trim().toLowerCase();
-            if (!known.has(name)) { problem = problem || (name ? `{${m[1]}} is not a placeholder` : "{} names no placeholder"); continue; }
+            // {text.<field>}: a text reader's field, named on its camera card.
+            if (!known.has(name) && !/^text\.[a-z][a-z0-9_]{0,31}$/.test(name)) { problem = problem || (name ? `{${m[1]}} is not a placeholder` : "{} names no placeholder"); continue; }
             const value = values[name];
             text += value === null || value === undefined ? "" : String(value);
         } else problem = problem || `A single '${token}' must be written '${token}${token}'`;
