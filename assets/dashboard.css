@@ -1657,3 +1657,28 @@ body .pl-line-select > .help-tip { display: inline-flex; }
     .dbk-value { text-align: left; }
     .dbk-notice { flex-direction: column; }
 }
+
+/* ─── Line setup: the Text reader card's Text fields (assets/text_reader.js) ─── */
+.tr-title { margin-top: 14px; }
+.tr-head, .tr-field { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.3fr) 30px; gap: 6px; align-items: center; }
+.tr-head { font-size: 11px; color: var(--text-muted); padding: 0 7px; margin: 4px 0 2px; }
+.tr-field { padding: 6px; border: 1px solid transparent; border-radius: 6px; }
+.tr-field.selected { border-color: var(--primary-color); background: var(--primary-tint); }
+.tr-field .form-input { min-width: 0; }
+.tr-sub { grid-column: 1 / -1; }
+.tr-sub.pl-note { margin: 0; }
+.tr-add { margin: 6px 0 12px; }
+.tr-pic { position: relative; width: 100%; aspect-ratio: 4 / 3; background: var(--video-bg, #111); border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; cursor: crosshair; touch-action: none; user-select: none; }
+.tr-pic img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
+.tr-pic canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.tr-pic-note { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 12px; text-align: center; font-size: 12px; color: rgba(255, 255, 255, .7); pointer-events: none; }
+.tr-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.tr-buttons .active { border-color: var(--primary-color); color: var(--primary-color); }
+.tr-result { font-size: 12.5px; overflow-wrap: anywhere; }
+.tr-result.good { color: var(--success-color); }
+.tr-result.bad { color: var(--danger-color); }
+.tr-lines { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.tr-lines .pl-note { flex-basis: 100%; margin: 0; }
+.tr-line { padding: 4px 8px; font-size: 12.5px; color: var(--text-color); background: transparent; border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; overflow-wrap: anywhere; text-align: left; }
+.tr-line:hover { border-color: var(--primary-color); }
+.tr-line span { color: var(--text-muted); font-size: 11px; }

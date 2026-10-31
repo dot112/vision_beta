@@ -79,8 +79,9 @@ def test_the_picture_fields_follow_the_source():
     assert 'querySelector(".pl-picture-system").hidden = source !== "system"' in sync
     assert 'querySelector(".pl-picture-camera").hidden = source !== "camera"' in sync
     assert re.search(r'querySelector\(".pl-picture-wait"\)\.hidden = !', sync)
-    # The ticks are only for System trigger: the notice select replaces them for a Camera trigger.
-    assert re.search(r'renderTriggers\(card, triggerMode && isVisionJob\(job\) && source === "system"', sync)
+    # The ticks are only for System trigger: the notice select replaces them for a Camera trigger. A text reader
+    # taking one picture per trigger has them too.
+    assert re.search(r'renderTriggers\(card, triggerMode && \(isVisionJob\(job\) \|\| textJob\) && source === "system"', sync)
 
 
 def test_the_trigger_notice_lists_the_take_a_picture_inputs_and_none():
@@ -121,13 +122,18 @@ def test_the_notes_say_what_the_choices_mean():
 
 
 def test_the_card_entry_sends_the_four_keys():
-    entry = _function(_script(), "cardEntry")
-    trigger = entry[entry.index('entry.count_mode === "trigger"'):]
+    script = _script()
+    picture = _function(script, "pictureEntry")
     for key in ("picture_source", "picture_delay_ms", "notice_trigger", "picture_wait_ms"):
-        assert key in trigger, key
-    assert re.search(r"notice_trigger: camera && [^\n]*: null", trigger)    # a number for Camera trigger, else null
-    # Only a trigger card sends them: a tracking card leaves them out and the server keeps its saved values.
-    assert entry.index("picture_source") > entry.index('entry.count_mode === "trigger"')
+        assert key in picture, key
+    assert re.search(r"notice_trigger: camera && [^\n]*: null", picture)    # a number for Camera trigger, else null
+    # Only a trigger card sends them (a vision camera or a text reader): a tracking card leaves them out and the
+    # server keeps its saved values.
+    entry = _function(script, "cardEntry")
+    calls = [m.start() for m in re.finditer(r"pictureEntry\(card\)", entry)]
+    assert len(calls) == 2
+    for at in calls:
+        assert 'if (entry.count_mode === "trigger")' in entry[max(0, at - 160):at]
 
 
 def test_the_reasons_name_no_picture():

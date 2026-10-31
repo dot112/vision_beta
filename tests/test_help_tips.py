@@ -17,12 +17,14 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "assets" / "help_tips.js"
 FILES = ("dashboard.html", "assets/production_lines.js", "assets/plc_signals.js", "assets/camera_settings.js",
-         "assets/card_values.js", "assets/product_fields.js", "assets/data_backups.js")
+         "assets/card_values.js", "assets/product_fields.js", "assets/data_backups.js", "assets/text_reader.js")
 
 # Only controls whose purpose is not plain from their label have a help icon: technical settings, the
 # choices that decide when a card fires, and the buttons whose effect the label does not say. Each is
 # named here by the start of its help sentence; a control not on this list has no help icon.
 KEEP = (
+    # The text reader: its format notation and joining dot-matrix dots.
+    "Each character of the text: 9 a digit", "Joins the dots of inkjet dot-matrix print",
     # Connections: TCP, MQTT, network cameras, PLCs.
     "Whether this server connects to the device", "The characters that end each message",
     "The MQTT version the broker speaks", "The CA certificate that checks", "The certificate this server shows a broker",
@@ -55,8 +57,8 @@ KEEP = (
     # Product sequence and result handshake.
     "The input read for each product's sequence number", "The Take a picture input that starts each handshake",
     "The input the PLC acknowledges each result with", "What happens when a result is not ready in time",
-    # Data and backups: what confirming the clock does.
-    "Lets old data be deleted by age again",
+    # Data and backups: what confirming the clock does, and the free-space floor.
+    "Lets old data be deleted by age again", "Below this much free space the oldest data is deleted",
     # Products and records.
     "Sets the fields of the list shown", "Sets how the codes of this list are built", "How a code is built",
     "Shows the products, the code reads, or both",
@@ -72,12 +74,12 @@ ICON_ONLY = ("sendViewCards", "sendViewList", "plcViewCards", "plcViewList", "pl
 # Controls whose title= is set by code as the state changes (it stays beside the help icon).
 TITLE_SET_BY_CODE = ('id="lineAlarmPill"',)
 
-TAG = re.compile(r"<(button|select)(?=[\s>])")
+TAG = re.compile(r"<(button|select|span)(?=[\s>])")
 HELP = re.compile(r'\sdata-help="([^"]*)"')
 
 
 def _opening_tags(text: str):
-    """The opening tag of every <button> and <select> in markup or a template string (not in comments)."""
+    """The opening tag of every <button>, <select> and <span> in markup or a template string (not in comments)."""
     text = re.sub(r"<!--.*?-->", lambda m: re.sub(r"[^\n]", " ", m.group(0)), text, flags=re.S)
     for match in TAG.finditer(text):
         line_start = text.rfind("\n", 0, match.start()) + 1
