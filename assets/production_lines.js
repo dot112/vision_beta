@@ -256,11 +256,15 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         .pl-card-live img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; opacity:0; }
         .pl-card-live img.on { opacity:1; }
         .pl-card-live-note { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:11px; letter-spacing:1px; text-transform:uppercase; color:rgba(255,255,255,.6); pointer-events:none; }
-        .pl-fold { border-top:1px solid var(--border-color); }
-        .pl-fold-head { display:flex; width:100%; align-items:center; justify-content:space-between; gap:8px; padding:10px 2px; background:transparent; border:0; color:var(--text-color); font-size:13px; font-weight:600; cursor:pointer; text-align:left; }
-        .pl-fold-head svg { transition:transform .15s; color:var(--text-muted); flex:none; }
-        .pl-fold.open .pl-fold-head svg { transform:rotate(180deg); }
-        .pl-fold-body { display:none; padding:2px 2px 14px; }
+        .pl-card-warn { font-size:12px; color:var(--warning-color); margin:-4px 0 10px; }
+        .pl-card-actions { display:flex; gap:8px; }
+        .pl-card-actions .btn-action { flex:1; justify-content:center; }
+        /* The small card shows the camera; its menu, pages and the page's Back and Save show on the camera page. */
+        .pl-card:not(.pl-card-page) .pl-folds, .pl-card:not(.pl-card-page) .pl-page-menu, .pl-card:not(.pl-card-page) .pl-back,
+        .pl-card:not(.pl-card-page) .pl-card-unsaved, .pl-card:not(.pl-card-page) .pl-card-save { display:none; }
+        .pl-page-title { font-size:15px; font-weight:700; color:var(--text-color); margin:0 0 12px; }
+        .pl-page-sub { font-size:13px; font-weight:700; color:var(--text-color); margin:18px 0 10px; padding-top:14px; border-top:1px solid var(--border-color); }
+        .pl-fold-body { display:none; }
         .pl-fold.open .pl-fold-body { display:block; }
         .pl-form-tight { grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px 12px; }
         .pl-join { margin-top:12px; padding-top:12px; border-top:1px dashed var(--border-color); }
@@ -897,21 +901,8 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
     };
     const DEFAULT_LINES = { line1_position: 0.35, line2_position: 0.65, orientation: "horizontal", direction: "forward" };
 
-    const FOLDS = [
-        ["camera", "Camera"],
-        ["job", "Job"],
-        ["model", "AI model and classes"],
-        ["counting", "Counting"],
-        ["codes", "Codes"],
-        ["text", "Text fields"],
-        ["image", "Image"],
-        ["video", "Video"],
-    ];
-    // Which folds a job shows. A text reader's Counting fold is its Reading (continuously or one picture per trigger).
-    const foldShown = (fold, job) => (fold === "model" ? isVisionJob(job)
-        : fold === "counting" ? isVisionJob(job) || job === "text"
-        : fold === "codes" ? JOBS[job].codes
-        : fold === "text" ? job === "text" : true);
+    // What a job is to the camera's pages (assets/camera_pages.js): a vision job, a job that reads codes, the text reader.
+    const jobKind = (job) => ({ vision: isVisionJob(job), codes: Boolean(JOBS[job].codes), text: job === "text" });
     // Count mode's first choice: a text reader reading continuously only shows the text.
     const trackLabel = (job) => (job === "text" ? "Continuously (shows the text only)" : "Moving products cross count lines");
     const TEXT_TRACK_NOTE = "The text is only shown: on the camera's picture and in the line's latest text reads. Nothing is decided, sent or saved.";
@@ -1003,7 +994,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
     const option = (value, label, current) => `<option value="${value}" ${current === value ? "selected" : ""}>${label}</option>`;
     const numOrEmpty = (v) => (v === null || v === undefined || v === "" ? "" : v);
 
-    // What a card's Text fields fold offers: the reader models on this server, a new reader's model, the YOLO models.
+    // What a card's Text fields page offers: the reader models on this server, a new reader's model, the YOLO models.
     const textReaderOptions = () => ({ models: state.ocrModels.models, newModel: state.ocrModels.new, ready: state.ocrModels.ready,
                                        error: state.ocrModels.error, yoloModels: state.models, readOnly: level() < 2 });
 
@@ -1043,28 +1034,17 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         return settings;
     }
 
-    // What the folds remember being open, per camera, in this browser.
-    function openFolds(cameraId, fallback) {
-        try {
-            const saved = JSON.parse(localStorage.getItem(`pl_card_folds::${cameraId}`) || "null");
-            if (Array.isArray(saved)) return new Set(saved);
-        } catch (_) { /* not saved */ }
-        return new Set(fallback);
-    }
-    function rememberFolds(card) {
-        const open = [...card.querySelectorAll(".pl-fold.open")].map((f) => f.dataset.fold);
-        try { localStorage.setItem(`pl_card_folds::${card.dataset.camera}`, JSON.stringify(open)); } catch (_) { /* storage off */ }
-    }
-
-
-    function foldHtml(name, title, body, open) {
-        return `<section class="pl-fold${open ? " open" : ""}" data-fold="${name}">
-            <button type="button" class="pl-fold-head" aria-expanded="${open ? "true" : "false"}"><span>${title}</span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg></button>
+    // One page of a camera's settings page (its class "open" while it is the page shown).
+    function pageHtml(name, title, body) {
+        return `<section class="pl-fold" data-fold="${name}"><h3 class="pl-page-title">${title}</h3>
             <div class="pl-fold-body">${body}</div></section>`;
     }
 
-    // One camera card. ``cam`` is the line's camera entry (or a new one), ``trigger`` the line's action_trigger.
-    function cameraCardHtml(key, cam, trigger, openSet) {
+    const ICON = (path) => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
+
+    // One camera: the small card on Line setup, and its settings page (shown by openCameraPage). ``cam`` is
+    // the line's camera entry (or a new one), ``trigger`` the line's action_trigger.
+    function cameraCardHtml(key, cam, trigger) {
         const job = jobOf(cam);
         const row = cameraRow(cam.camera_id) || { name: cam.camera_id, type: "" };
         const eff = (k) => (cam[k] !== undefined && cam[k] !== null && cam[k] !== "" ? cam[k] : (trigger[k] !== undefined && trigger[k] !== null && trigger[k] !== "" ? trigger[k] : DEFAULT_LINES[k]));
@@ -1086,8 +1066,6 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             : (row.settings || {}).trigger_mode === "hardware" ? "camera" : "system";
         const pictureSource = industrial && savedSource === "camera" ? "camera" : "system";
         const readOnly = level() < 2;
-        // A camera the version 9 upgrade flagged opens on its Codes, where its note is.
-        const fold = (name, title, body) => foldHtml(name, title, body, openSet.has(name) || (name === "codes" && Boolean(cam.qr_trigger_review)));
 
         const cameraBody = `
             <div class="form-group"><label class="form-label">Device</label><select class="form-input" data-f="device">${deviceOptions(cam.camera_id, null)}</select>
@@ -1211,27 +1189,34 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             <div class="card-panel pl-card" data-key="${key}" data-camera="${esc(cam.camera_id)}" data-review="${cam.qr_trigger_review ? 1 : 0}">
                 <div class="pl-card-head">
                     <div class="pl-card-title">
+                        <button type="button" class="pl-icon-btn pl-back" data-act="back" title="Back to the cameras" aria-label="Back to the cameras">${ICON('<polyline points="15 18 9 12 15 6"/>')}</button>
                         <span class="pl-dot pl-card-dot"></span>
                         <span class="pl-card-name">${esc(row.name || cam.camera_id)}</span>
                         <span class="pl-badge" data-f="badge">${esc(JOBS[job].short)}</span>
                     </div>
                     <div class="pl-card-tools">
-                        <button data-lock type="button" class="pl-icon-btn" data-act="up" title="Move up" aria-label="Move up"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg></button>
-                        <button data-lock type="button" class="pl-icon-btn" data-act="down" title="Move down" aria-label="Move down"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>
-                        <button data-lock type="button" class="pl-icon-btn danger restricted-l2" data-act="remove" title="Remove from the line" aria-label="Remove from the line" ${readOnly ? "disabled" : ""}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+                        <button data-lock type="button" class="pl-icon-btn" data-act="up" title="Move earlier" aria-label="Move earlier">${ICON('<polyline points="15 18 9 12 15 6"/>')}</button>
+                        <button data-lock type="button" class="pl-icon-btn" data-act="down" title="Move later" aria-label="Move later">${ICON('<polyline points="9 18 15 12 9 6"/>')}</button>
+                        <span class="pl-unsaved pl-card-unsaved">Unsaved changes</span>
+                        <button data-lock type="button" class="btn-action btn-blue restricted-l2 pl-card-save" data-act="save" ${readOnly ? "disabled" : ""}>Save line setup</button>
                     </div>
                 </div>
                 <div class="pl-card-sub"></div>
+                <div class="pl-card-warn" hidden>Choose when it reads codes (Settings → Codes)</div>
                 <div class="pl-card-live"><img alt="Live picture"><span class="pl-card-live-note">No picture</span></div>
+                <div class="pl-card-actions">
+                    <button type="button" class="btn-action btn-outline" data-act="settings">Settings</button>
+                    <button data-lock type="button" class="btn-action btn-red restricted-l2" data-act="remove" ${readOnly ? "disabled" : ""}>Delete</button>
+                </div>
+                ${CameraPages.menuHtml(jobKind(job), null)}
                 <div class="pl-folds">
-                    ${fold("camera", "Camera", cameraBody)}
-                    ${fold("job", "Job", jobBody)}
-                    ${fold("model", "AI model and classes", modelBody)}
-                    ${fold("counting", job === "text" ? "Reading" : "Counting", countingBody)}
-                    ${fold("codes", "Codes", codesBody)}
-                    ${fold("text", "Text fields", TextReader.foldHtml(cam.role === "ocr" ? cam.ocr : null, textReaderOptions()))}
-                    ${fold("image", "Image", `<div data-f="image-form"></div>`)}
-                    ${fold("video", "Video", `<div data-f="video-form"></div>`)}
+                    ${pageHtml("camera", "Camera", cameraBody)}
+                    ${pageHtml("job", "Job", jobBody)}
+                    ${pageHtml("model", "AI model and classes", modelBody)}
+                    ${pageHtml("counting", CameraPages.pageTitle("counting", jobKind(job)), countingBody)}
+                    ${pageHtml("codes", "Codes", codesBody)}
+                    ${pageHtml("text", "Text fields", TextReader.foldHtml(cam.role === "ocr" ? cam.ocr : null, textReaderOptions()))}
+                    ${pageHtml("image", "Image and video", `<div data-f="image-form"></div><h4 class="pl-page-sub">Video</h4><div data-f="video-form"></div>`)}
                 </div>
             </div>`;
     }
@@ -1359,15 +1344,19 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
     function syncCard(card, index) {
         const job = cardJob(card);
         const row = cameraRow(card.dataset.camera);
-        card.querySelectorAll(".pl-fold").forEach((f) => { f.hidden = !foldShown(f.dataset.fold, job); });
+        const kind = jobKind(job);
+        // The pages and their menu links that fit the job; a text reader's Counting is its Reading.
+        card.querySelectorAll(".pl-fold").forEach((f) => { f.hidden = !CameraPages.fits(f.dataset.fold, kind); });
+        card.querySelectorAll(".pl-page-link").forEach((link) => { link.hidden = !CameraPages.fits(link.dataset.page, kind); });
+        const countingTitle = CameraPages.pageTitle("counting", kind);
+        card.querySelector('.pl-fold[data-fold="counting"] .pl-page-title').textContent = countingTitle;
+        card.querySelector('.pl-page-link[data-page="counting"]').textContent = countingTitle;
         cardField(card, "badge").textContent = JOBS[job].short;
         cardField(card, "badge").className = `pl-badge job-${job.replace("_qr", "")}`;
-        card.querySelector(".pl-card-sub").textContent = `Camera ${index + 1}${row ? ` · ${typeLabel(row.type)}` : ""}`;
         card.querySelector(".pl-job-note").textContent = JOB_NOTES[job] || "";
         const textJob = job === "text";
         // A text reader is a station while it takes one picture per trigger.
         const stationShown = job === "station" || job === "station_qr" || (textJob && cardValue(card, "count_mode") === "trigger");
-        card.querySelector('.pl-fold[data-fold="counting"] .pl-fold-head span').textContent = textJob ? "Reading" : "Counting";
         const countSelect = cardField(card, "count_mode");
         if (countSelect.options[0].textContent !== trackLabel(job)) {
             countSelect.options[0].textContent = trackLabel(job);
@@ -1382,6 +1371,9 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         if (stationShown && joins) syncJoin(card);
         // Codes
         const trigger = cardValue(card, "qr_trigger");
+        card.querySelector(".pl-card-sub").textContent = CameraPages.summary({ index, type: row ? typeLabel(row.type) : "", kind,
+            countMode: cardValue(card, "count_mode"), joined: stationShown && joins, codeTrigger: trigger });
+        card.querySelector(".pl-card-warn").hidden = !(card.dataset.review === "1" && trigger === "continuous");
         const action = cardValue(card, "qr_action");
         const checks = JOBS[job].codes && action !== "report";
         const hasVision = setupHasVision();
@@ -1749,7 +1741,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
     // ── Building the page ─────────────────────────────────────────────────────
 
     // Add one card to the grid (before the Add camera card) and wire it up.
-    function addCard(cam, trigger, openSet) {
+    function addCard(cam, trigger) {
         const grid = byId("plCamGrid");
         const key = `k${setup.nextKey++}`;
         const row = cameraRow(cam.camera_id);
@@ -1764,7 +1756,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             triggers: new Set((cam.triggers || []).map(Number)),
             namedMerged: false,
         });
-        grid.insertBefore(document.createRange().createContextualFragment(cameraCardHtml(key, cam, trigger, openSet)), byId("plAddCard"));
+        grid.insertBefore(document.createRange().createContextualFragment(cameraCardHtml(key, cam, trigger)), byId("plAddCard"));
         const card = grid.querySelector(`.pl-card[data-key="${key}"]`);
         renderImageForms(card);
         renderClassLists(card);
@@ -1773,9 +1765,6 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             fetchJson: api, fetchBlob: fetchPicture, entry: () => cardEntry(card), yoloModels: () => state.models,
             active: () => cardJob(card) === "text" && setupShown(), readOnly: level() < 2,
         });
-        if (cam.isNew) rememberFolds(card);
-        // A Counting fold remembered open shows its picture at once.
-        if (card.querySelector('.pl-fold[data-fold="counting"]').classList.contains("open")) requestAnimationFrame(() => loadLinesPicture(card));
         return card;
     }
 
@@ -1801,18 +1790,6 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
 
     function bindCard(card) {
         card.addEventListener("click", (e) => {
-            const head = e.target.closest(".pl-fold-head");
-            if (head && card.contains(head)) {
-                const fold = head.closest(".pl-fold");
-                const open = !fold.classList.contains("open");
-                fold.classList.toggle("open", open);
-                head.setAttribute("aria-expanded", open ? "true" : "false");
-                rememberFolds(card);
-                if (open && fold.dataset.fold === "image") setup.cards.get(card.dataset.key)?.imageForm?.loadPicture(() => card.isConnected);
-                if (open && fold.dataset.fold === "counting") loadLinesPicture(card);
-                refreshSelects();
-                return;
-            }
             const button = e.target.closest("[data-act]");
             if (!button || !card.contains(button)) return;
             const act = button.dataset.act;
@@ -2059,7 +2036,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                     orientation: DEFAULT_LINES.orientation, direction: DEFAULT_LINES.direction,
                     isNew: true,
                 };
-                const added = addCard(cam, trigger, new Set(["camera", "job", spec.role === "vision" ? "model" : spec.role === "ocr" ? "text" : "codes"]));
+                const added = addCard(cam, trigger);
                 cardField(added, "job").value = job;
                 if (isCountingJob(job)) onJobChange(added, job);
                 markDirty();
@@ -2242,7 +2219,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             <div class="card-panel" id="plChecksPanel" hidden></div>`;
         setup.checks = JSON.parse(JSON.stringify(d.product_checks || []));
         bindAddCard(trigger);
-        (d.cameras || []).forEach((cam) => addCard(cam, trigger, openFolds(cam.camera_id, [])));
+        (d.cameras || []).forEach((cam) => addCard(cam, trigger));
         card.querySelector(".card-panel").addEventListener("input", markDirty);
         card.querySelector(".card-panel").addEventListener("change", (e) => {
             markDirty();
@@ -2277,20 +2254,13 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         else go();
     }
 
-    // The card the Cameras page asked for: open its Camera and Image folds and scroll to it.
+    // The card the Cameras page asked for: scroll to it.
     function focusCard() {
         const id = setup.focusCamera;
         if (!id) return;
         const card = cardsOnPage().find((c) => c.dataset.camera === id);
         if (!card) return;
         setup.focusCamera = null;
-        ["camera", "image"].forEach((name) => {
-            const fold = card.querySelector(`.pl-fold[data-fold="${name}"]`);
-            if (fold.classList.contains("open")) return;
-            fold.classList.add("open");
-            fold.querySelector(".pl-fold-head").setAttribute("aria-expanded", "true");
-        });
-        setup.cards.get(card.dataset.key)?.imageForm?.loadPicture(() => card.isConnected);
         setTimeout(() => {
             card.scrollIntoView({ block: "start", behavior: "smooth" });
             card.classList.add("pl-flash");

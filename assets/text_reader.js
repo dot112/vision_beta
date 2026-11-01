@@ -1,5 +1,5 @@
 /*
- * Line setup: the "Text fields" fold of a camera card whose job is Text reader (role "ocr").
+ * Line setup: the "Text fields" page of a camera whose job is Text reader (role "ocr").
  *
  * The reader's settings (model, Join dots and its print, lowest confidence, text upside down, the
  * YOLO model whose boxes the fields read in), up to four text fields (name, where the text is found,
@@ -9,8 +9,8 @@
  * click on one gives the selected field that line's format. A Region field's region is drawn by
  * dragging on the picture, and moved or resized by its corners.
  *
- * production_lines.js draws the fold with foldHtml(), sends readCard() as the camera's ocr settings,
- * calls bind() once per card and wake() when the card's pictures may start again.
+ * production_lines.js draws the page with foldHtml(), sends readCard() as the camera's ocr settings,
+ * calls bind() once per card and wake() when the card's pictures may start again or its page is shown or left.
  * Runs in node for tests/test_text_reader_card.py (module.exports), like data_backups.js.
  */
 (function (root) {
@@ -204,6 +204,7 @@
     const refreshSelect = (select) => { if (select && select._refreshCustomSelect) select._refreshCustomSelect(); };
     const refreshSelects = () => { if (typeof root.initCustomSelects === "function") setTimeout(root.initCustomSelects, 30); };
 
+    // The Text fields page is the camera page's page shown (class "open").
     function foldOpen(card) {
         const body = card.querySelector(".tr-body");
         const fold = body && body.closest(".pl-fold");
@@ -438,7 +439,7 @@
         s.running = false;
     }
 
-    // The card's pictures start again where they may: Live while the fold is open on a shown Text reader card.
+    // The card's pictures start again where they may: Live while the Text fields page is shown on a Text reader card.
     function wake(card) {
         const s = stateOf(card);
         if (!s) return;
@@ -557,11 +558,6 @@
             previewSoon(card);
         });
         body.addEventListener("input", () => previewSoon(card));
-        // The fold opened or closed (production_lines toggles it first).
-        card.addEventListener("click", (e) => {
-            const head = e.target.closest(".pl-fold-head");
-            if (head && head.closest(".pl-fold") === body.closest(".pl-fold")) setTimeout(() => wake(card), 0);
-        });
         bindRegionDrag(card);
         setMode(card, "live");
         wake(card);

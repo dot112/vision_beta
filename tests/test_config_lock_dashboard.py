@@ -101,7 +101,7 @@ SAVE_BUTTONS = {
     ],
     "assets/production_lines.js": [
         'id="plAddLine"', 'data-act="rename"', 'data-act="clone"', 'data-act="delete" data-id', 'id="plSaveSetup"',
-        'data-act="up"', 'data-act="down"', 'data-act="remove"', 'data-act="add">Add camera',
+        'data-act="up"', 'data-act="down"', 'data-act="remove"', 'data-act="save"', 'data-act="add">Add camera',
         'class="btn-action btn-outline pl-check-add', 'class="btn-action btn-red pl-check-del',
         'class="btn-action btn-outline pl-review-keep"', 'id="plImportLabel"', 'id="plReplaceLabel"', 'id="plListNew"', 'id="plListRename"',
         'id="plListDelete"', 'id="plProdAdd"', 'data-act="delete">Delete</button>', 'class="btn-action btn-blue pf-ok"',
@@ -114,7 +114,7 @@ SAVE_BUTTONS = {
 
 # Buttons that run, test or read: usable while locked.
 RUNNING_BUTTONS = {
-    "assets/production_lines.js": ['id="plStartLine"', 'id="plStopLine"', 'id="plResetCounts"', 'data-act="${running ? "stop" : "start"}"'],
+    "assets/production_lines.js": ['id="plStartLine"', 'id="plStopLine"', 'id="plResetCounts"', 'data-act="settings"', 'data-act="back"', 'data-act="${running ? "stop" : "start"}"'],
     "assets/plc_signals.js": ['onclick="PlcSignals.readNow('],
     "assets/camera_settings.js": ['restricted-l2 cs-trigger-btn"'],
     "dashboard.html": ['onclick="testSendActionCard(', 'onclick="testPlcActionCard(', 'onclick="testEndpointById('],

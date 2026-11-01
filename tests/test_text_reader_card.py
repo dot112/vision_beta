@@ -52,7 +52,7 @@ def test_script_is_valid_and_loaded():
         pytest.skip("node is not installed")
     assert subprocess.run([node, "--check", str(SCRIPT)], capture_output=True).returncode == 0
     page = PAGE.read_text(encoding="utf-8")
-    tag = '<script src="/assets/text_reader.js?v=1.0.0"></script>'
+    tag = '<script src="/assets/text_reader.js?v=1.0.1"></script>'
     assert tag in page and page.index(tag) < page.index('<script src="/assets/production_lines.js')
 
 
@@ -125,4 +125,4 @@ def test_the_line_setup_page_has_the_text_reader_job():
     assert 'cam.role === "ocr" ? "text"' in script
     assert "ocr: TextReader.readCard(card)" in script
     assert re.search(r'const START_JOBS = \[[^\]]*"text"', script)
-    assert '["text", "Text fields"]' in script
+    assert '{ id: "text", title: "Text fields" }' in (ROOT / "assets" / "camera_pages.js").read_text(encoding="utf-8")

@@ -2,6 +2,8 @@
 
 An unclosed box there pulls the handshake section, the warnings and the Save / Start / Reset
 buttons into the grid, where each squeezes into one narrow column.
+
+The camera cards: a small card per camera (Settings, Delete), and the camera's page with its menu.
 """
 from __future__ import annotations
 
@@ -9,6 +11,26 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+LINES = ROOT / "assets" / "production_lines.js"
+
+
+def _function(script: str, name: str) -> str:
+    found = re.search(rf"\n    (?:async )?function {name}\(.*?\n    \}}\n", script, re.S)
+    assert found, f"function {name} is not in production_lines.js"
+    return found.group(0)
+
+
+def test_the_card_has_settings_and_delete_and_no_fold_buttons():
+    script = LINES.read_text(encoding="utf-8")
+    assert 'data-act="settings">Settings</button>' in script
+    assert re.search(r'<button data-lock type="button" class="btn-action btn-red restricted-l2" data-act="remove"[^>]*>Delete</button>', script)
+    assert "pl-fold-head" not in script and "openFolds(" not in script and "pl_card_folds" not in script
+    assert 'pageHtml("image", "Image and video"' in script and 'data-fold="video"' not in script
+    assert "CameraPages.menuHtml(" in script and "CameraPages.summary(" in script
+
+
+def test_the_text_reader_no_longer_listens_for_fold_buttons():
+    assert "pl-fold-head" not in (ROOT / "assets" / "text_reader.js").read_text(encoding="utf-8")
 
 
 def test_the_line_settings_grid_closes_every_box_it_opens():
