@@ -604,6 +604,11 @@ async def create_line(body: Dict[str, Any], user: User = Depends(require_supervi
 
 @router.put("/{line_id}", summary="Change a production line, its cameras, roles and Sync (Level 2+ Supervisor)")
 async def update_line(line_id: str, body: Dict[str, Any], user: User = Depends(require_supervisor)) -> Dict[str, Any]:
+    return await _update_line(line_id, body, user)
+
+
+async def _update_line(line_id: str, body: Dict[str, Any], user: Any) -> Dict[str, Any]:
+    """Change a line as Save line setup does (and a saved setup's load): checks, saving, trigger modes, applying."""
     existing = _svc().get_line(line_id, with_logic=True)
     if existing is None:
         raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
@@ -844,4 +849,30 @@ async def delete_line_setup(line_id: str, setup_id: str, user: User = Depends(re
         raise HTTPException(status_code=404, detail="Saved setup not found") from exc
     _audit(user, "DELETE_LINE_SETUP", f"Deleted setup '{deleted['name']}' of line '{line['name']}'", line_id)
     return deleted
+
+
+@router.post("/{line_id}/setups/{setup_id}/load",
+             summary="Load a saved setup back onto the stopped line (Level 2+ Supervisor)")
+async def load_line_setup(line_id: str, setup_id: str, user: User = Depends(require_supervisor),
+                          db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
+    """Connections the save uses that no longer exist are added back; a camera now on another line, or
+    gone, is left out with a warning. Answers ``{"loaded": true, "name", "warnings", "line"}``."""
+    from app.services import line_setups
+
+    _line_or_404(line_id)
+    try:
+        line_setups.read(line_id, setup_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Saved setup not found") from exc
+    try:
+        result = await line_setups.load(db, line_id, setup_id, user, _update_line)
+    except line_setups.LoadRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    details = f"Loaded setup '{result['name']}' onto line '{result['line'].get('name') or line_id}'"
+    if result["warnings"]:
+        details += f" ({'; '.join(result['warnings'])})"
+    _audit(user, "LOAD_LINE_SETUP", details, line_id)
+    return result
 

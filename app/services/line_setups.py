@@ -12,7 +12,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List, Set, Tuple
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -143,3 +143,119 @@ def delete(line_id: str, setup_id: str) -> Dict[str, Any]:
     save = read(line_id, setup_id)
     os.remove(_path(line_id, setup_id))
     return summary(save)
+
+
+# ── Load ──────────────────────────────────────────────────────────────────────
+
+RUNNING = "Stop the line to load a setup"
+NEWER = "This setup was saved by a newer version of the server"
+
+
+class LoadRefused(Exception):
+    """A load refused with nothing changed (409)."""
+
+
+def _check(line: Dict[str, Any], save: Dict[str, Any]) -> None:
+    from app.services.line_config import SCHEMA_VERSION
+
+    if line.get("enabled"):
+        raise LoadRefused(RUNNING)
+    version, form = save.get("schema_version"), save.get("format")
+    if not isinstance(version, int) or version > SCHEMA_VERSION or not isinstance(form, int) or form > FORMAT:
+        raise LoadRefused(NEWER)
+
+
+async def _add_missing_endpoints(save: Dict[str, Any], user: Any) -> List[str]:
+    """Each connection of the save that no longer exists is added back with its saved id, as the
+    Connections page adds one (an IP camera's record follows). One that exists is left as it is: other
+    lines may use it. Gives the names of those added. Raises ValueError naming the connection."""
+    have = {str(e.get("id")) for e in _svc().get_endpoints()}
+    added = []
+    for saved in save.get("endpoints") or []:
+        if not isinstance(saved, dict) or not saved.get("id") or str(saved["id"]) in have:
+            continue
+        name = saved.get("name") or saved["id"]
+        try:
+            await _svc().add_or_update_endpoint(endpoint_data=copy.deepcopy(saved), username=user.username,
+                                                role=user.role, clearance_level=user.clearance_level)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"Connection '{name}' could not be added back: {exc}") from exc
+        added.append(name)
+    return added
+
+
+def _cameras_to_keep(save: Dict[str, Any], line_id: str, existing: Set[str]) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """The saved camera cards whose camera exists (``existing``) and is on no other line, and a warning
+    for each one left out."""
+    names = {c.get("id"): c.get("name") for c in save.get("cameras") or [] if isinstance(c, dict)}
+    kept, warnings = [], []
+    for card in (save.get("line") or {}).get("cameras") or []:
+        camera_id = str(card.get("camera_id") or "") if isinstance(card, dict) else ""
+        name = names.get(camera_id) or camera_id
+        owner = _svc().line_for_camera(camera_id) if camera_id else None
+        if owner and owner != line_id:
+            other = _svc().get_line(owner, with_logic=False) or {}
+            warnings.append(f"Camera {name} is on {other.get('name') or owner} now: left out")
+        elif camera_id not in existing:
+            warnings.append(f"Camera {name} no longer exists: left out")
+        else:
+            kept.append(card)
+    return kept, warnings
+
+
+async def _put_camera_settings(db: AsyncSession, save: Dict[str, Any], kept_ids: Set[str]) -> List[str]:
+    """Each kept camera gets its saved image and video settings, as its Settings would set them, except a
+    Trigger that the line's card now sets. Gives a warning for a camera whose settings were refused."""
+    from app.routes.v1.camera import line_trigger_mode
+    from app.schemas.camera import CameraUpdate
+    from app.services.camera_service import CameraService
+
+    warnings = []
+    for saved in save.get("cameras") or []:
+        if not isinstance(saved, dict) or saved.get("id") not in kept_ids:
+            continue
+        camera = await CameraService.get_camera_by_id(db, saved["id"])
+        settings = copy.deepcopy(saved.get("settings")) if isinstance(saved.get("settings"), dict) else {}
+        if camera is None or not settings:
+            continue
+        await db.refresh(camera)    # the line's save set its trigger mode through another session
+        if line_trigger_mode(camera) is not None:
+            settings.pop("trigger_mode", None)
+        try:
+            await CameraService.update_camera(db, camera.id, CameraUpdate(settings=settings))
+        except ValueError as exc:
+            await db.rollback()
+            warnings.append(f"Camera {saved.get('name') or camera.id}'s settings could not be put back: {exc}")
+    return warnings
+
+
+async def load(db: AsyncSession, line_id: str, setup_id: str, user: Any,
+               update_line: Callable[[str, Dict[str, Any], Any], Awaitable[Dict[str, Any]]]) -> Dict[str, Any]:
+    """Put a save back onto its line, which must be stopped.
+
+    ``update_line`` is the line update of PUT /lines/{id} (the same checks, saving, trigger modes and
+    applying). Raises KeyError (no such save of this line), LoadRefused (409), ValueError or the update's
+    HTTPException (the setup is refused, with the reason). Connections already added back stay.
+    """
+    from app.services.camera_service import CameraService
+
+    save = read(line_id, setup_id)
+    line = _svc().get_line(line_id, with_logic=False)
+    if line is None:
+        raise KeyError(line_id)
+    _check(line, save)
+    await _add_missing_endpoints(save, user)
+    ids = {str(c.get("camera_id")) for c in (save.get("line") or {}).get("cameras") or [] if isinstance(c, dict)}
+    existing = {i for i in ids if await CameraService.get_camera_by_id(db, i) is not None}
+    cards, warnings = _cameras_to_keep(save, line_id, existing)
+    kept_ids = {str(c.get("camera_id")) for c in cards}
+    body = {k: copy.deepcopy(v) for k, v in (save.get("line") or {}).items() if k not in LIVE_KEYS and k != "id"}
+    body["cameras"] = cards
+    # Cards that named a left-out camera keep working without it, as the line's own save requires.
+    for key in ("plc_actions", "send_actions"):
+        for card in body.get(key) or []:
+            if isinstance(card, dict) and card.get("camera_id") and str(card["camera_id"]) not in kept_ids:
+                card.pop("camera_id", None)
+    view = await update_line(line_id, body, user)
+    warnings += await _put_camera_settings(db, save, kept_ids)
+    return {"loaded": True, "name": save.get("name"), "warnings": warnings, "line": view}
