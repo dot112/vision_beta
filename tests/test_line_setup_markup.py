@@ -33,6 +33,25 @@ def test_the_text_reader_no_longer_listens_for_fold_buttons():
     assert "pl-fold-head" not in (ROOT / "assets" / "text_reader.js").read_text(encoding="utf-8")
 
 
+def test_the_camera_page_opens_closes_and_comes_back():
+    script = LINES.read_text(encoding="utf-8")
+    for name in ("function openCameraPage(card, asked)", "function showCameraPage(card, page)", "function closeCameraPage()"):
+        assert name in script
+    assert "CameraPages.reopen(setup.openCamera, state.lineId" in script        # renderLineSetup draws it again
+    assert "pl_card_page::" in script and "pl-page-mode" in script
+
+
+def test_leaving_a_page_wakes_the_text_reader():
+    script = LINES.read_text(encoding="utf-8")
+    assert "TextReader.wake(" in _function(script, "closeCameraPage")
+    assert "TextReader.wake(" in _function(script, "showCameraPage")
+
+
+def test_reopen_follows_the_device():
+    script = LINES.read_text(encoding="utf-8")
+    assert re.search(r"setup\.openCamera && setup\.openCamera\.id === previous\)\s*setup\.openCamera\.id = ", script)
+
+
 def test_the_line_settings_grid_closes_every_box_it_opens():
     script = (ROOT / "assets" / "production_lines.js").read_text(encoding="utf-8")
     start = script.index('<div class="pl-form-grid">', script.index("Line setup"))

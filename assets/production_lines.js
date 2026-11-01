@@ -266,6 +266,30 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         .pl-page-sub { font-size:13px; font-weight:700; color:var(--text-color); margin:18px 0 10px; padding-top:14px; border-top:1px solid var(--border-color); }
         .pl-fold-body { display:none; }
         .pl-fold.open .pl-fold-body { display:block; }
+        /* A camera's page: it takes Line setup's place; the line panel, the other cards and the sections below stay hidden on the page. */
+        #tabActionTrigger.pl-page-mode > :not(#plLineSetup), #tabActionTrigger.pl-page-mode #plLineSetup > :not(#plCamGrid),
+        #tabActionTrigger.pl-page-mode #plCamGrid > :not(.pl-card-page) { display:none !important; }
+        #tabActionTrigger.pl-page-mode #plCamGrid { display:block; }
+        .pl-card-page { display:grid; grid-template-columns:260px minmax(0, 1fr); grid-template-areas:"head head" "live pages" "menu pages"; grid-template-rows:auto auto 1fr; gap:12px 20px; padding:16px 20px; }
+        .pl-card-page .pl-card-head { grid-area:head; flex-wrap:wrap; gap:8px 12px; padding-bottom:12px; border-bottom:1px solid var(--border-color); }
+        .pl-card-page .pl-card-live { grid-area:live; margin-bottom:0; }
+        .pl-card-page .pl-page-menu { grid-area:menu; }
+        .pl-card-page .pl-folds { grid-area:pages; min-width:0; }
+        .pl-card-page .pl-card-sub, .pl-card-page .pl-card-warn, .pl-card-page .pl-card-actions,
+        .pl-card-page .pl-move, .pl-card-page .pl-fold:not(.open) { display:none; }
+        .pl-card-page .pl-card-tools { align-items:center; gap:10px; }
+        .pl-card-page .pl-card-unsaved { display:none; margin-left:0; }
+        #plLineSetup.pl-dirty .pl-card-page .pl-card-unsaved { display:inline; }
+        .pl-page-menu { display:flex; flex-direction:column; gap:2px; align-self:start; }
+        .pl-page-link { display:block; width:100%; text-align:left; padding:8px 10px; border:0; border-radius:6px; background:transparent; color:var(--text-color); font-size:13px; font-weight:600; cursor:pointer; }
+        .pl-page-link:hover { background:var(--panel-head, rgba(127,127,127,.12)); }
+        .pl-page-link.on { color:var(--primary-color); background:rgba(127,127,127,.12); background:color-mix(in srgb, var(--primary-color) 14%, transparent); }
+        @media (max-width:720px) {
+            .pl-card-page { grid-template-columns:minmax(0, 1fr); grid-template-areas:"head" "live" "menu" "pages"; grid-template-rows:none; padding:12px; }
+            .pl-page-menu { flex-direction:row; overflow-x:auto; padding-bottom:4px; }
+            .pl-page-link { flex:none; width:auto; white-space:nowrap; }
+            .pl-card-page .pl-card-tools { flex-wrap:wrap; }
+        }
         .pl-form-tight { grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px 12px; }
         .pl-join { margin-top:12px; padding-top:12px; border-top:1px dashed var(--border-color); }
         .pl-join-wait { font-size:12px; margin-top:8px; }
@@ -913,6 +937,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         cards: new Map(),     // card key -> { picks, cam (camera row), initialSettings, initialName, feed }
         nextKey: 1,
         focusCamera: null,    // open this camera's card once Line setup is drawn (Cameras page "Settings")
+        openCamera: null,     // the camera page open: { id, page, lineId }, opened again when Line setup is drawn again
     };
 
     const cardsOnPage = () => [...document.querySelectorAll("#plCamGrid .pl-card:not(.pl-add-card)")];
@@ -936,6 +961,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         setup.dirty = true;
         const note = byId("plSetupDirty");
         if (note) note.hidden = false;
+        byId("plLineSetup")?.classList.add("pl-dirty");    // the camera page's Unsaved changes
     }
 
     // Which line other than this one owns each camera.
@@ -1195,8 +1221,8 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                         <span class="pl-badge" data-f="badge">${esc(JOBS[job].short)}</span>
                     </div>
                     <div class="pl-card-tools">
-                        <button data-lock type="button" class="pl-icon-btn" data-act="up" title="Move earlier" aria-label="Move earlier">${ICON('<polyline points="15 18 9 12 15 6"/>')}</button>
-                        <button data-lock type="button" class="pl-icon-btn" data-act="down" title="Move later" aria-label="Move later">${ICON('<polyline points="9 18 15 12 9 6"/>')}</button>
+                        <button data-lock type="button" class="pl-icon-btn pl-move" data-act="up" title="Move earlier" aria-label="Move earlier">${ICON('<polyline points="15 18 9 12 15 6"/>')}</button>
+                        <button data-lock type="button" class="pl-icon-btn pl-move" data-act="down" title="Move later" aria-label="Move later">${ICON('<polyline points="9 18 15 12 9 6"/>')}</button>
                         <span class="pl-unsaved pl-card-unsaved">Unsaved changes</span>
                         <button data-lock type="button" class="btn-action btn-blue restricted-l2 pl-card-save" data-act="save" ${readOnly ? "disabled" : ""}>Save line setup</button>
                     </div>
@@ -1735,7 +1761,68 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
 
     function startCardFeeds() {
         if (!setupShown()) return;
-        cardsOnPage().forEach(startCardFeed);
+        const open = openCard();
+        (open ? [open] : cardsOnPage()).forEach(startCardFeed);
+    }
+
+    // ── The camera page: one camera's settings, a page at a time ──────────────
+
+    // The page each camera showed last, in this browser.
+    function rememberedPage(id) {
+        try { return localStorage.getItem(`pl_card_page::${id}`); } catch (_) { return null; }
+    }
+    function rememberPage(id, page) {
+        try { localStorage.setItem(`pl_card_page::${id}`, page); } catch (_) { /* storage off */ }
+    }
+    const openCard = () => cardsOnPage().find((c) => c.classList.contains("pl-card-page")) || null;
+
+    // A card back to its small look, with no page shown.
+    function leaveCameraPage(card) {
+        card.classList.remove("pl-card-page");
+        card.querySelectorAll(".pl-fold.open").forEach((f) => f.classList.remove("open"));
+    }
+
+    // Settings: the camera's page takes Line setup's place (the rest stays on the page, hidden, for the one Save).
+    function openCameraPage(card, asked) {
+        cardsOnPage().forEach((c) => {
+            if (c === card) return;
+            if (c.classList.contains("pl-card-page")) { leaveCameraPage(c); TextReader.wake(c); }
+            const info = setup.cards.get(c.dataset.key);
+            if (info && info.feed) { info.feed.controller.abort(); info.feed = null; }
+        });
+        card.classList.add("pl-card-page");
+        byId("tabActionTrigger").classList.add("pl-page-mode");
+        showCameraPage(card, CameraPages.pageToShow({ asked, remembered: rememberedPage(card.dataset.camera) }, jobKind(cardJob(card))));
+        startCardFeed(card);
+        card.scrollIntoView({ block: "start" });
+    }
+
+    // One page of the open camera; its pictures load as a fold's did when it opened.
+    function showCameraPage(card, page) {
+        card.querySelectorAll(".pl-fold").forEach((f) => f.classList.toggle("open", f.dataset.fold === page));
+        card.querySelectorAll(".pl-page-link").forEach((link) => {
+            const on = link.dataset.page === page;
+            link.classList.toggle("on", on);
+            link.setAttribute("aria-selected", on ? "true" : "false");
+        });
+        setup.openCamera = { id: card.dataset.camera, page, lineId: state.lineId };
+        rememberPage(card.dataset.camera, page);
+        if (page === "counting") loadLinesPicture(card);
+        if (page === "image") setup.cards.get(card.dataset.key)?.imageForm?.loadPicture(() => card.isConnected);
+        TextReader.wake(card);    // the Text fields page's Live runs while it is shown
+        refreshSelects();
+    }
+
+    // Back: the cards again; every edit stays until Save.
+    function closeCameraPage() {
+        const card = openCard();
+        byId("tabActionTrigger").classList.remove("pl-page-mode");
+        setup.openCamera = null;
+        if (card) {
+            leaveCameraPage(card);
+            TextReader.wake(card);    // its Live stops: the page is no longer shown
+        }
+        startCardFeeds();
     }
 
     // ── Building the page ─────────────────────────────────────────────────────
@@ -1796,6 +1883,10 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             if (act === "up" || act === "down") moveCard(card, act === "up" ? -1 : 1);
             else if (act === "remove") removeCard(card);
             else if (act === "picture") loadLinesPicture(card);
+            else if (act === "settings") openCameraPage(card, null);
+            else if (act === "back") closeCameraPage();
+            else if (act === "page") showCameraPage(card, button.dataset.page);
+            else if (act === "save") saveLineSetup();
         });
         card.addEventListener("change", (e) => {
             const t = e.target;
@@ -1828,6 +1919,9 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             if (name === "count_mode") onCountModeChange(card, t.value);
             if (!t.classList.contains("pl-class-filter")) markDirty();
             syncLineSetup();
+            if (name === "job" && setup.openCamera && card.classList.contains("pl-card-page")) {
+                showCameraPage(card, CameraPages.pageAfterJobChange(setup.openCamera.page, jobKind(cardJob(card))));
+            }
         });
         card.addEventListener("input", (e) => {
             const t = e.target;
@@ -1900,7 +1994,9 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
 
     function onDeviceChange(card, id) {
         const info = setup.cards.get(card.dataset.key);
+        const previous = card.dataset.camera;
         card.dataset.camera = id;
+        if (setup.openCamera && setup.openCamera.id === previous) setup.openCamera.id = id;
         const row = cameraRow(id);
         info.initialName = row ? row.name : "";
         cardField(card, "name").value = row ? row.name : "";
@@ -2173,6 +2269,8 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             page.insertBefore(card, page.firstChild);
         }
         stopCardFeeds();
+        page.classList.remove("pl-page-mode");
+        card.classList.remove("pl-dirty");
         card.innerHTML = `<div class="card-panel"><div class="card-panel-header"><span class="card-panel-title">Line setup</span></div><div class="pl-note">Loading…</div></div>`;
         try {
             const line = state.lines.find((l) => l.id === state.lineId);
@@ -2244,6 +2342,9 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         byId("plResetCounts").addEventListener("click", () => { if (typeof confirmResetAllCounts === "function") confirmResetAllCounts(); });
         if (typeof applyRoleRestrictions === "function") applyRoleRestrictions(card);
         refreshSelects();
+        const open = CameraPages.reopen(setup.openCamera, state.lineId, cardsOnPage().map((c) => c.dataset.camera));
+        if (open) openCameraPage(cardsOnPage().find((c) => c.dataset.camera === open.id), open.page);
+        else setup.openCamera = null;
         startCardFeeds();
         focusCard();
     }
