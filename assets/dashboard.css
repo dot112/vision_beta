@@ -1050,7 +1050,7 @@ th.col-actions, td.col-actions { text-align: right; width: 1%; white-space: nowr
 .cam-settings-row .form-group { margin-bottom: 0; }
 .cam-settings-row.full { grid-template-columns: 1fr; }
 .cam-settings-row.triple { grid-template-columns: repeat(3, 1fr); }
-.roi-preview { position: relative; width: 100%; aspect-ratio: 16 / 9; margin: 4px 0 14px; overflow: hidden; background: var(--video-bg); border: 1px solid var(--border-color); border-radius: 6px; cursor: crosshair; touch-action: none; user-select: none; }
+.roi-preview { position: relative; width: 100%; max-width: 640px; aspect-ratio: 16 / 9; margin: 4px 0 14px; overflow: hidden; background: var(--video-bg); border: 1px solid var(--border-color); border-radius: 6px; cursor: crosshair; touch-action: none; user-select: none; }
 .roi-preview img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
 /* The box stays clear; everything outside it is dimmed. */
 .roi-box { position: absolute; border: 2px solid var(--primary-color); box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5); cursor: move; }
@@ -1676,7 +1676,7 @@ body .pl-line-select > .help-tip { display: inline-flex; }
 .tr-sub { grid-column: 1 / -1; }
 .tr-sub.pl-note { margin: 0; }
 .tr-add { margin: 6px 0 12px; }
-.tr-pic { position: relative; width: 100%; aspect-ratio: 4 / 3; background: var(--video-bg, #111); border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; cursor: crosshair; touch-action: none; user-select: none; }
+.tr-pic { position: relative; width: 100%; max-width: 640px; aspect-ratio: 4 / 3; background: var(--video-bg, #111); border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; cursor: crosshair; touch-action: none; user-select: none; }
 .tr-pic img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
 .tr-pic canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .tr-pic-note { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 12px; text-align: center; font-size: 12px; color: rgba(255, 255, 255, .7); pointer-events: none; }

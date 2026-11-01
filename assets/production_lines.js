@@ -1225,7 +1225,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                         <button data-lock type="button" class="pl-icon-btn pl-move" data-act="up" title="Move earlier" aria-label="Move earlier">${ICON('<polyline points="15 18 9 12 15 6"/>')}</button>
                         <button data-lock type="button" class="pl-icon-btn pl-move" data-act="down" title="Move later" aria-label="Move later">${ICON('<polyline points="9 18 15 12 9 6"/>')}</button>
                         <span class="pl-unsaved pl-card-unsaved">Unsaved changes</span>
-                        <button data-lock type="button" class="btn-action btn-blue restricted-l2 pl-card-save" data-act="save" ${readOnly ? "disabled" : ""}>Save line setup</button>
+                        <button data-lock type="button" class="btn-action btn-blue restricted-l2 pl-card-save" data-act="save" ${readOnly ? "disabled" : ""}>Save</button>
                     </div>
                 </div>
                 <div class="pl-card-sub"></div>

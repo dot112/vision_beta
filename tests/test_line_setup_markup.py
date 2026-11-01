@@ -80,6 +80,19 @@ def test_back_names_the_line():
     assert re.search(r'data-act="back"[^>]*>\$\{ICON\([^`]*?\)\}<span class="pl-back-line">\$\{esc\(', script)
 
 
+def test_the_camera_page_button_is_called_save():
+    """The owner (2026-11-01): the camera page saves with "Save"; the line panel keeps "Save line setup"."""
+    script = LINES.read_text(encoding="utf-8")
+    assert re.search(r'class="btn-action btn-blue restricted-l2 pl-card-save" data-act="save" \$\{readOnly \? "disabled" : ""\}>Save</button>', script)
+    assert 'id="plSaveSetup" ${readOnly ? "disabled" : ""}>Save line setup</button>' in script
+
+
+def test_the_text_and_roi_pictures_are_the_same_smaller_size():
+    css = (ROOT / "assets" / "dashboard.css").read_text(encoding="utf-8")
+    for rule in (r"\.tr-pic \{([^}]*)\}", r"\.roi-preview \{([^}]*)\}"):
+        assert "max-width: 640px" in re.search(rule, css).group(1)
+
+
 def test_a_redraw_without_a_page_to_reopen_shows_the_cards():
     body = _function(LINES.read_text(encoding="utf-8"), "renderLineSetup")
     assert re.search(r'else \{\s*setup\.openCamera = null;\s*page\.classList\.remove\("pl-page-mode"\);', body)
