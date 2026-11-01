@@ -8,9 +8,10 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.user import User
-from app.dependencies import require_operator, require_supervisor
+from app.dependencies import get_db, require_operator, require_supervisor
 from app.services.line_config import (
     code_check,
     line_warnings,
@@ -795,4 +796,52 @@ async def clone_line(line_id: str, body: Optional[Dict[str, Any]] = None, user: 
     _audit(user, "CLONE_LINE", f"Copied line '{source['name']}' into '{line['name']}'", line["id"])
     await apply_line(line["id"])
     return await _view(line["id"], with_logic=True)
+
+
+# ── Saved line setups ─────────────────────────────────────────────────────────
+
+def _line_or_404(line_id: str) -> Dict[str, Any]:
+    line = _svc().get_line(line_id, with_logic=False)
+    if line is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    return line
+
+
+@router.get("/{line_id}/setups", summary="The line's saved setups, newest first, without their contents")
+async def list_line_setups(line_id: str, user: User = Depends(require_operator)) -> List[Dict[str, Any]]:
+    from app.services import line_setups
+
+    _line_or_404(line_id)
+    return line_setups.list_setups(line_id)
+
+
+@router.post("/{line_id}/setups", status_code=201,
+             summary="Save the line's setup, its connections and its cameras' settings under a name (Level 2+ Supervisor)")
+async def save_line_setup(line_id: str, body: Dict[str, Any], user: User = Depends(require_supervisor),
+                          db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
+    """``{"name": "Product A"}``: the line as it is saved now, never a page's unsaved changes."""
+    from app.services import line_setups
+
+    _line_or_404(line_id)
+    try:
+        saved = await line_setups.snapshot(db, line_id, body.get("name"), user.username)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found") from exc
+    _audit(user, "SAVE_LINE_SETUP", f"Saved setup '{saved['name']}' of line '{saved['line_name']}'", line_id)
+    return saved
+
+
+@router.delete("/{line_id}/setups/{setup_id}", summary="Delete a saved setup of the line (Level 2+ Supervisor)")
+async def delete_line_setup(line_id: str, setup_id: str, user: User = Depends(require_supervisor)) -> Dict[str, Any]:
+    from app.services import line_setups
+
+    line = _line_or_404(line_id)
+    try:
+        deleted = line_setups.delete(line_id, setup_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Saved setup not found") from exc
+    _audit(user, "DELETE_LINE_SETUP", f"Deleted setup '{deleted['name']}' of line '{line['name']}'", line_id)
+    return deleted
 

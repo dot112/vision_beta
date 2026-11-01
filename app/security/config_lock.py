@@ -46,6 +46,8 @@ LOCK_FREE_ROUTES: FrozenSet[Route] = frozenset({
     ("POST", "/api/v1/lines/{line_id}/formula/check"),
     ("POST", "/api/v1/products/lists/{list_id}/code/check"),
     ("POST", "/api/v1/lines/{line_id}/plc-inputs/{input_id}/read"),
+    # A saved copy of a line's setup changes nothing that runs.
+    ("POST", "/api/v1/lines/{line_id}/setups"),
     ("POST", "/api/v1/plc/opcua/scan"),
     ("POST", "/api/v1/comms/tcp/check"),
     ("POST", "/api/v1/comms/tcp/test"),
@@ -73,6 +75,8 @@ LOCKED_ROUTES: FrozenSet[Route] = frozenset({
     ("PUT", "/api/v1/lines/{line_id}"),
     ("DELETE", "/api/v1/lines/{line_id}"),
     ("POST", "/api/v1/lines/{line_id}/clone"),
+    ("POST", "/api/v1/lines/{line_id}/setups/{setup_id}/load"),
+    ("DELETE", "/api/v1/lines/{line_id}/setups/{setup_id}"),
     ("POST", "/api/v1/send/actions/batch"),
     ("POST", "/api/v1/plc/actions"),
     ("POST", "/api/v1/plc/actions/batch"),

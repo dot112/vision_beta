@@ -131,6 +131,9 @@ def required_api_key_scopes(method: str, path: str) -> set[str] | None:
     if path == "/api/v1/lines" or path.startswith("/api/v1/lines/"):
         if method in {"GET", "HEAD"}:
             return {"monitor:read"}
+        if "/setups" in path:
+            # A save holds connection passwords, and a load changes connections other lines use.
+            return None
         if "/plc-inputs/" in path:
             # "Read now" reads any address of a PLC channel.
             return {"plc:configure"}
