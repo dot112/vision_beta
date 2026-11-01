@@ -52,6 +52,14 @@ def test_reopen_follows_the_device():
     assert re.search(r"setup\.openCamera && setup\.openCamera\.id === previous\)\s*setup\.openCamera\.id = ", script)
 
 
+def test_the_ways_into_a_camera_page():
+    script = LINES.read_text(encoding="utf-8")
+    assert "openCameraPage(added, CameraPages.startPage(jobKind(job)))" in script
+    for problem in ("no_model", "no_list", "no_yolo", "no_format"):
+        assert f'CameraPages.pageForProblem("{problem}")' in script
+    assert 'openCameraPage(card, "image")' in _function(script, "focusCard")
+
+
 def test_the_line_settings_grid_closes_every_box_it_opens():
     script = (ROOT / "assets" / "production_lines.js").read_text(encoding="utf-8")
     start = script.index('<div class="pl-form-grid">', script.index("Line setup"))

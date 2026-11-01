@@ -241,7 +241,6 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         .pl-cam-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(360px, 1fr)); gap:16px; align-items:start; margin-bottom:20px; }
         .pl-card { margin-bottom:0; min-width:0; padding:14px 16px; }
         .pl-card [hidden] { display:none !important; }
-        .pl-card.pl-flash { box-shadow:0 0 0 3px var(--primary-color); transition:box-shadow .3s; }
         .pl-card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
         .pl-card-title { display:flex; align-items:center; gap:7px; min-width:0; }
         .pl-card-title .pl-dot { margin-right:0; flex:none; }
@@ -2138,9 +2137,8 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                 markDirty();
                 refreshDeviceSelects();
                 syncLineSetup();
-                startCardFeed(added);
-                refreshSelects();
-                added.scrollIntoView({ block: "nearest", behavior: "smooth" });
+                // Its page opens where it needs filling in first.
+                openCameraPage(added, CameraPages.startPage(jobKind(job)));
             }
         });
     }
@@ -2355,18 +2353,14 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         else go();
     }
 
-    // The card the Cameras page asked for: scroll to it.
+    // The camera the Cameras page asked for: its page, at Image and video.
     function focusCard() {
         const id = setup.focusCamera;
         if (!id) return;
         const card = cardsOnPage().find((c) => c.dataset.camera === id);
         if (!card) return;
         setup.focusCamera = null;
-        setTimeout(() => {
-            card.scrollIntoView({ block: "start", behavior: "smooth" });
-            card.classList.add("pl-flash");
-            setTimeout(() => card.classList.remove("pl-flash"), 1600);
-        }, 60);
+        openCameraPage(card, "image");
     }
 
     // ── Product checks: reject a product when its rules pass ──────────────────
@@ -2536,15 +2530,17 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         const cameras = cards.map(cardEntry);
         const label = (i) => `Camera ${i + 1} (${cards[i].querySelector(".pl-card-name").textContent})`;
         const noModel = cameras.findIndex((c) => c.role === "vision" && !c.model_id);
-        if (noModel >= 0) { toast(`${label(noModel)}: choose its vision model. A vision camera cannot be saved without one.`, "warning"); return; }
+        // A camera's problem opens its page where the problem is.
+        const fix = (i, page) => openCameraPage(cards[i], page);
+        if (noModel >= 0) { toast(`${label(noModel)}: choose its vision model. A vision camera cannot be saved without one.`, "warning"); fix(noModel, CameraPages.pageForProblem("no_model")); return; }
         const noList = cameras.findIndex((c) => c.qr_action && c.qr_action !== "report" && !c.product_list_id);
-        if (noList >= 0) { toast(`${label(noList)}: choose the product list its codes are checked against.`, "warning"); return; }
+        if (noList >= 0) { toast(`${label(noList)}: choose the product list its codes are checked against.`, "warning"); fix(noList, CameraPages.pageForProblem("no_list")); return; }
         for (let i = 0; i < cameras.length; i += 1) {
             const ocr = cameras[i].ocr;
             if (!ocr) continue;
-            if (ocr.fields.some((f) => f.find === "yolo") && !ocr.locator_model_id) { toast(`${label(i)}: choose the YOLO model its fields read in.`, "warning"); return; }
+            if (ocr.fields.some((f) => f.find === "yolo") && !ocr.locator_model_id) { toast(`${label(i)}: choose the YOLO model its fields read in.`, "warning"); fix(i, CameraPages.pageForProblem("no_yolo")); return; }
             const noFormat = ocr.fields.find((f) => !f.format);
-            if (noFormat) { toast(`${label(i)} text field '${noFormat.name}': give it a format.`, "warning"); return; }
+            if (noFormat) { toast(`${label(i)} text field '${noFormat.name}': give it a format.`, "warning"); fix(i, CameraPages.pageForProblem("no_format")); return; }
         }
         const unnamed = (setup.checks || []).findIndex((c) => !String(c.name || "").trim());
         if (unnamed >= 0) { toast(`Product check ${unnamed + 1}: give it a name.`, "warning"); return; }
