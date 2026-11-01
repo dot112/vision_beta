@@ -1697,3 +1697,26 @@ body .pl-line-select > .help-tip { display: inline-flex; }
 .tr-wrong { color: var(--danger-color); font-size: 11.5px; }
 .tr-none { color: var(--text-muted); font-size: 11.5px; }
 .tr-record { font-size: 12px; margin-top: 2px; }
+
+/* Line setup: Save and Load in the header (assets/line_setups.js): text in the theme's colour, and their windows */
+.ls-link { background: none; border: 0; padding: 0 2px; font: inherit; font-size: 13px; font-weight: 600; color: var(--text-color); cursor: pointer; }
+.ls-link:hover, .ls-link:focus-visible { text-decoration: underline; }
+.modal-backdrop.ls-backdrop { z-index: 9990; }     /* a confirmation opens over the window */
+.ls-window { width: min(360px, calc(100vw - 32px)); padding: 18px 20px; }
+.ls-window .form-input { width: 100%; }
+.ls-window .modal-actions { margin-top: 14px; }
+.ls-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.ls-head .modal-title { margin: 0; }
+.ls-close { background: none; border: 0; padding: 2px 6px; font-size: 14px; color: var(--text-muted); cursor: pointer; }
+.ls-close:hover, .ls-close:focus-visible { color: var(--text-color); }
+.ls-problem { margin-top: 8px; font-size: 13px; color: var(--warning-color, #d29922); }
+.ls-list { max-height: calc(8 * 38px); overflow-y: auto; margin: 0 -6px; }
+.ls-row { display: flex; align-items: center; gap: 4px; }
+.ls-pick { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding: 8px 6px; background: none; border: 0; border-radius: 8px; color: var(--text-color); font: inherit; font-size: 14px; text-align: left; cursor: pointer; }
+.ls-pick b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ls-pick:hover:not(:disabled), .ls-pick:focus-visible { background: var(--panel-head); }
+.ls-pick:disabled { opacity: 0.5; cursor: not-allowed; }
+.ls-line, .ls-date { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.ls-date { margin-left: auto; }
+.ls-del { background: none; border: 0; padding: 6px 8px; border-radius: 8px; color: var(--text-muted); font-size: 13px; cursor: pointer; }
+.ls-del:hover, .ls-del:focus-visible { color: var(--danger-color); background: var(--panel-head); }

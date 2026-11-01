@@ -2292,7 +2292,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         card.innerHTML = `
             <div class="card-panel">
                 <div class="card-panel-header">
-                    <span class="card-panel-title">Line setup · ${esc(d.name)}</span>
+                    <span class="card-panel-title">Line setup · ${esc(d.name)}${LineSetups.buttonsHtml(readOnly)}</span>
                     <span class="pl-inline">${statePill(d.status && d.status.state)}<span class="pl-unsaved" id="plSetupDirty" hidden>Unsaved changes</span></span>
                 </div>
                 <div class="pl-form-grid">
@@ -2330,6 +2330,17 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         syncLineSetup();
         syncHandshakeSetup();
         byId("plSaveSetup").addEventListener("click", saveLineSetup);
+        // Save and Load in the header: the line's setup kept under a name on the server, and put back.
+        LineSetups.bind(card.querySelector(".card-panel-header"), {
+            lineId: () => d.id,
+            lineName: () => d.name,
+            dirty: () => setup.dirty,
+            running: () => Boolean(d.enabled),
+            fetchJson: api,
+            toast,
+            confirm: confirmAction,
+            afterLoad: async () => { setup.dirty = false; await loadLines(); await renderLineSetup(); },
+        });
         // "Keep show only" on a camera the upgrade flagged: clear its flag and save the line.
         byId("plCamGrid").addEventListener("click", (e) => {
             const keep = e.target.closest(".pl-review-keep");

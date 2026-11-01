@@ -110,6 +110,7 @@ SAVE_BUTTONS = {
     "assets/product_fields.js": ['class="btn-action btn-outline pf-up"', 'class="btn-action btn-outline pf-down"',
                                  'class="btn-action btn-red pf-del"', 'class="btn-action btn-outline pf-add"'],
     "assets/camera_settings.js": ['class="btn-action btn-sm btn-outline cs-roi-reset"'],
+    "assets/line_setups.js": ['data-ls="load"', 'data-ls="delete"'],
 }
 
 # Buttons that run, test or read: usable while locked.
@@ -117,6 +118,8 @@ RUNNING_BUTTONS = {
     "assets/production_lines.js": ['id="plStartLine"', 'id="plStopLine"', 'id="plResetCounts"', 'data-act="settings"', 'data-act="back"', 'data-act="${running ? "stop" : "start"}"'],
     "assets/plc_signals.js": ['onclick="PlcSignals.readNow('],
     "assets/camera_settings.js": ['restricted-l2 cs-trigger-btn"'],
+    # A saved copy of the line's setup changes nothing that runs.
+    "assets/line_setups.js": ['data-ls="save"', 'data-ls="open-load"', 'data-ls="do-save"'],
     "dashboard.html": ['onclick="testSendActionCard(', 'onclick="testPlcActionCard(', 'onclick="testEndpointById('],
 }
 
