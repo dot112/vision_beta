@@ -1,9 +1,9 @@
 /*
  * A camera's image and video settings as a form that renders into any container:
  * resolution and FPS, rotation and flips, the ROI (drawn by dragging on the whole
- * picture, then moved, resized by its corners and removed by its x), the USB image controls or the IP transport and buffer, an
- * industrial camera's trigger, exposure, gain and strobe output, and the
- * stream's maximum width and JPEG quality.
+ * picture, then moved, resized by its corners and removed by its x), the USB image
+ * controls or the IP transport and buffer, an industrial camera's trigger, exposure,
+ * gain and strobe output, and the stream's maximum width and JPEG quality.
  *
  * Used by the camera cards on Line setup (assets/production_lines.js) and by
  * the Settings dialog on the Cameras page for a camera that belongs to no line.
