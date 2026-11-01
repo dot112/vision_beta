@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -261,3 +262,16 @@ def test_the_api_refuses_a_before_that_is_not_a_time_with_a_zone(client, admin_h
 def test_the_audit_page_has_load_older():
     js = (ROOT / "assets" / "production_lines.js").read_text(encoding="utf-8")
     assert 'id="plAuditMore"' in js and "Load older" in js and "&before=" in js
+
+
+def test_the_line_filter_sits_with_refresh():
+    """The owner (2026-11-01): Refresh and the line select moved about as the window changed size. The filter was a
+    third item of the header (title, Refresh, Line), which spreads its items, and its label wrapped above the select.
+    It goes into the header's button group, before Refresh, on one row with its label."""
+    js = (ROOT / "assets" / "production_lines.js").read_text(encoding="utf-8")
+    start = js.index("function decorateAuditTable()")
+    body = js[start:js.index("\n    }\n", start)]
+    assert 'panelHeader.querySelector(".card-actions")' in body
+    assert re.search(r'insertAdjacentHTML\("afterbegin", `<label class="pl-audit-line"', body)
+    assert re.search(r"\.pl-audit-line \{[^}]*flex-wrap:nowrap", js)
+    assert re.search(r"\.pl-audit-line \.custom-select-wrap \{[^}]*width:", js)

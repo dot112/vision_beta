@@ -307,6 +307,8 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         .pl-add-card { border-style:dashed; }
         .pl-setup-actions { display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center; }
         .pl-unsaved { font-size:11px; font-weight:700; color:var(--warning-color); margin-left:8px; }
+        .pl-audit-line { display:flex; align-items:center; gap:8px; flex-wrap:nowrap; margin:0; font-size:12px; color:var(--text-muted); }
+        .pl-audit-line .custom-select-wrap { width:170px; }
         .dashboard-grid.pl-grid-single { grid-template-columns:1fr; }
         .pl-inline-capture { position:relative; margin-bottom:12px; max-width:640px; }
         .pl-inline-capture[hidden] { display:none; }
@@ -3814,8 +3816,10 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         if (headRow && !headRow.querySelector(".pl-th")) headRow.insertAdjacentHTML("beforeend", `<th class="pl-th">Line</th>`);
         const panelHeader = table.closest(".card-panel")?.querySelector(".card-panel-header");
         if (panelHeader && !byId("plAuditLine")) {
-            panelHeader.insertAdjacentHTML("beforeend", `<div class="pl-inline" style="font-size:12px;color:var(--text-muted)">Line
-                <select id="plAuditLine" class="form-input" style="min-width:150px" aria-label="Show the audit log of one line"></select></div>`);
+            // In the header's button group, before Refresh: the header keeps two items (title, buttons), so
+            // nothing moves about as the window changes size.
+            (panelHeader.querySelector(".card-actions") || panelHeader).insertAdjacentHTML("afterbegin", `<label class="pl-audit-line">Line
+                <select id="plAuditLine" class="form-input" aria-label="Show the audit log of one line"></select></label>`);
             byId("plAuditLine").addEventListener("change", (e) => {
                 state.auditLine = e.target.value;
                 auditRows = [];   // another line: start again from its newest entries
