@@ -1,7 +1,7 @@
 /*
  * A camera's image and video settings as a form that renders into any container:
- * resolution and FPS, rotation and flips, the ROI (with drag-to-draw on the
- * whole picture), the USB image controls or the IP transport and buffer, an
+ * resolution and FPS, rotation and flips, the ROI (drawn by dragging on the whole
+ * picture, then moved, resized by its corners and removed by its x), the USB image controls or the IP transport and buffer, an
  * industrial camera's trigger, exposure, gain and strobe output, and the
  * stream's maximum width and JPEG quality.
  *
@@ -234,7 +234,7 @@
             </div>
             <div class="roi-preview cs-roi-preview">
                 <img class="cs-roi-img" alt="" hidden>
-                <div class="roi-box cs-roi-box" style="left:0;top:0;width:100%;height:100%"></div>
+                <div class="roi-box cs-roi-box" style="left:0;top:0;width:100%;height:100%"><span class="roi-handle roi-nw" data-roi="nw"></span><span class="roi-handle roi-ne" data-roi="ne"></span><span class="roi-handle roi-sw" data-roi="sw"></span><span class="roi-handle roi-se" data-roi="se"></span><button data-lock type="button" class="roi-del restricted-l2" title="Remove the ROI" aria-label="Remove the ROI">&times;</button></div>
                 <span class="roi-preview-note cs-roi-note">Crop preview</span>
             </div>
         </div>
@@ -301,35 +301,87 @@
         updateROI(root);
     }
 
-    // Drag on the picture to draw the ROI (mouse, pen or touch).
+    const MIN_ROI = 3;    // percent of the picture: the smallest box a corner leaves
+
+    // The ROI after a drag from ``from`` to ``to`` (percent of the whole picture): "draw" a new box between the
+    // two points, "move" the box (it keeps its size and stays in the picture), or resize it by a corner ("nw",
+    // "ne", "sw", "se"), the opposite corner staying where it is.
+    function roiDrag(mode, box, from, to) {
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        if (mode === "draw") {
+            return { x: Math.min(from.x, to.x), y: Math.min(from.y, to.y), w: Math.max(Math.abs(dx), 1), h: Math.max(Math.abs(dy), 1) };
+        }
+        if (mode === "move") {
+            return { x: clamp(box.x + dx, 0, 100 - box.w), y: clamp(box.y + dy, 0, 100 - box.h), w: box.w, h: box.h };
+        }
+        let left = box.x;
+        let top = box.y;
+        let right = box.x + box.w;
+        let bottom = box.y + box.h;
+        if (mode.includes("w")) left = clamp(left + dx, 0, right - MIN_ROI);
+        if (mode.includes("e")) right = clamp(right + dx, left + MIN_ROI, 100);
+        if (mode.includes("n")) top = clamp(top + dy, 0, bottom - MIN_ROI);
+        if (mode.includes("s")) bottom = clamp(bottom + dy, top + MIN_ROI, 100);
+        return { x: left, y: top, w: right - left, h: bottom - top };
+    }
+
+    // The box can be changed when its fields can: not while the configuration is locked (the fields are
+    // disabled) or for a user below Level 2 (the x, restricted-l2, is disabled).
+    function roiEditable(root) {
+        const x = get(root, "roi_x");
+        const del = root.querySelector(".roi-del");
+        return Boolean(x && !x.disabled && !(del && del.disabled));
+    }
+
+    // The x: no ROI, the whole picture is used.
+    function removeROI(root) {
+        if (!roiEditable(root)) return;
+        get(root, "roi_enabled").checked = false;
+        setROI(root, 0, 0, 100, 100);
+        root.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    // On the picture (mouse, pen or touch): drag to draw the ROI, inside it to move it, a corner to resize it.
     function bindROI(root) {
         const area = root.querySelector(".cs-roi-preview");
         if (!area) return;
-        let start = null;
+        let drag = null;
         const at = (e) => {
             const r = area.getBoundingClientRect();
             return { x: clamp((e.clientX - r.left) / r.width * 100, 0, 100), y: clamp((e.clientY - r.top) / r.height * 100, 0, 100) };
         };
         area.addEventListener("pointerdown", (e) => {
-            start = at(e);
+            if (e.target.closest(".roi-del") || !roiEditable(root)) return;
+            const box = roiValues(root);
+            const shown = get(root, "roi_enabled").checked && (box.w < 99 || box.h < 99);
+            const handle = e.target.closest(".roi-handle");
+            // A box over the whole picture is drawn again rather than moved.
+            const mode = handle ? handle.dataset.roi : shown && e.target.closest(".cs-roi-box") ? "move" : "draw";
+            drag = { mode, box, from: at(e) };
             area.setPointerCapture(e.pointerId);
             get(root, "roi_enabled").checked = true;
             e.preventDefault();
         });
         area.addEventListener("pointermove", (e) => {
-            if (!start) return;
-            const p = at(e);
-            setROI(root, Math.min(start.x, p.x), Math.min(start.y, p.y), Math.max(Math.abs(p.x - start.x), 1), Math.max(Math.abs(p.y - start.y), 1));
+            if (!drag) return;
+            const r = roiDrag(drag.mode, drag.box, drag.from, at(e));
+            setROI(root, r.x, r.y, r.w, r.h);
         });
         const end = () => {
-            if (!start) return;
-            start = null;
+            if (!drag) return;
+            const drawn = drag.mode === "draw";
+            drag = null;
             const { w, h } = roiValues(root);
-            if (w < 3 || h < 3) setROI(root, 0, 0, 100, 100);  // a click, not a drag
+            if (drawn && (w < 3 || h < 3)) setROI(root, 0, 0, 100, 100);  // a click, not a drag
             root.dispatchEvent(new Event("change", { bubbles: true }));
         };
         area.addEventListener("pointerup", end);
         area.addEventListener("pointercancel", end);
+        root.querySelector(".roi-del")?.addEventListener("click", (e) => {
+            e.stopPropagation();
+            removeROI(root);
+        });
         root.querySelector(".cs-roi-reset")?.addEventListener("click", () => {
             setROI(root, 0, 0, 100, 100);
             root.dispatchEvent(new Event("change", { bubbles: true }));
@@ -433,5 +485,5 @@
         return settings;
     }
 
-    window.CameraSettingsForm = { render, read, lockTrigger };
+    window.CameraSettingsForm = { render, read, lockTrigger, roiDrag, removeROI };
 })();
