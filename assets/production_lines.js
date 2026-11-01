@@ -261,6 +261,8 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         /* The small card shows the camera; its menu, pages and the page's Back and Save show on the camera page. */
         .pl-card:not(.pl-card-page) .pl-folds, .pl-card:not(.pl-card-page) .pl-page-menu, .pl-card:not(.pl-card-page) .pl-back,
         .pl-card:not(.pl-card-page) .pl-card-unsaved, .pl-card:not(.pl-card-page) .pl-card-save { display:none; }
+        .pl-back { display:inline-flex; align-items:center; gap:4px; height:28px; padding:0 10px 0 6px; margin-right:6px; border-radius:6px; border:1px solid var(--border-color); background:transparent; color:var(--text-color); font-size:13px; font-weight:600; cursor:pointer; flex:none; }
+        .pl-back:hover { border-color:var(--primary-color); }
         .pl-page-title { font-size:15px; font-weight:700; color:var(--text-color); margin:0 0 12px; }
         .pl-page-sub { font-size:13px; font-weight:700; color:var(--text-color); margin:18px 0 10px; padding-top:14px; border-top:1px solid var(--border-color); }
         .pl-fold-body { display:none; }
@@ -1155,7 +1157,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                 <div class="pl-picture-camera">
                     <div class="form-group"><label class="form-label">Trigger notice</label>
                         <select class="form-input" data-f="notice_trigger" data-help="The Take a picture input that tells the server a picture is coming, so each picture is paired with its trigger.">${noticeOptions(cam.notice_trigger)}</select>
-                        <div class="pl-note">The input that tells the server a picture is coming (add it under Inputs below). None: every picture the camera takes is one product.</div></div>
+                        <div class="pl-note">The input that tells the server a picture is coming (add it under Inputs on Line setup). None: every picture the camera takes is one product.</div></div>
                     <div class="form-group pl-picture-wait"><label class="form-label">Wait for the picture (ms)</label>
                         <input type="number" class="form-input" data-f="picture_wait" min="50" max="10000" step="10" value="${esc(numOrEmpty(cam.picture_wait_ms) === "" ? DEFAULT_PICTURE_WAIT_MS : cam.picture_wait_ms)}">
                         <div class="pl-note">How far apart a notice and its picture may come, in either order (50 to 10000). Shorter than the time between two products.</div></div>
@@ -1214,7 +1216,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             <div class="card-panel pl-card" data-key="${key}" data-camera="${esc(cam.camera_id)}" data-review="${cam.qr_trigger_review ? 1 : 0}">
                 <div class="pl-card-head">
                     <div class="pl-card-title">
-                        <button type="button" class="pl-icon-btn pl-back" data-act="back" title="Back to the cameras" aria-label="Back to the cameras">${ICON('<polyline points="15 18 9 12 15 6"/>')}</button>
+                        <button type="button" class="pl-back" data-act="back" title="Back to the cameras">${ICON('<polyline points="15 18 9 12 15 6"/>')}<span class="pl-back-line">${esc((state.detail && state.detail.name) || "Line setup")}</span></button>
                         <span class="pl-dot pl-card-dot"></span>
                         <span class="pl-card-name">${esc(row.name || cam.camera_id)}</span>
                         <span class="pl-badge" data-f="badge">${esc(JOBS[job].short)}</span>
@@ -1405,7 +1407,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         card.querySelector(".pl-trigger-delay").hidden = trigger === "continuous";
         card.querySelector(".pl-trigger-delay-label").textContent = `Picture delay after the ${trigger === "signal" ? "signal" : "crossing"} (ms)`;
         card.querySelector(".pl-trigger-note").textContent = trigger === "signal"
-            ? "A picture is taken each time an input with the action \"Take a picture\" names this camera (add it under Inputs below). It shows on the Line dashboard with every code outlined."
+            ? "A picture is taken each time an input with the action \"Take a picture\" names this camera (add it under Inputs on Line setup). It shows on the Line dashboard with every code outlined."
             : trigger === "continuous"
                 ? "Codes are only shown: on the camera's picture and in the line's recent reads. Nothing goes to the PLC, messages or records. To use the codes, choose a wire line or \"When an input asks\"."
                 : "A picture is taken each time the counting camera sees a product cross the chosen wire line. It shows on the Line dashboard with every code outlined.";
@@ -2177,7 +2179,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         rows.sort((a, b) => a.no - b.no);
         const html = `<label class="form-label">Triggers that take its picture</label>` + (rows.length
             ? `<div class="pl-trigger-list">${rows.map((r) => `<label><input type="checkbox" data-trigger="${r.no}" ${info.triggers.has(r.no) ? "checked" : ""}> ${esc(r.label)}</label>`).join("")}</div>`
-            : `<div class="pl-note">No trigger yet. Add an input with the action "Take a picture" under Inputs below.</div>`);
+            : `<div class="pl-note">No trigger yet. Add an input with the action "Take a picture" under Inputs on Line setup.</div>`);
         card.querySelectorAll(".pl-triggers").forEach((box) => {
             // A camera on Hardware trigger takes its own pictures: no input is needed.
             box.hidden = !(box.dataset.for === "count" ? forCount : forCodes) || camTrigger === "hardware";
@@ -2342,7 +2344,10 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         refreshSelects();
         const open = CameraPages.reopen(setup.openCamera, state.lineId, cardsOnPage().map((c) => c.dataset.camera));
         if (open) openCameraPage(cardsOnPage().find((c) => c.dataset.camera === open.id), open.page);
-        else setup.openCamera = null;
+        else {
+            setup.openCamera = null;
+            page.classList.remove("pl-page-mode");
+        }
         startCardFeeds();
         focusCard();
     }
@@ -2526,6 +2531,8 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
     }
 
     async function saveLineSetup() {
+        // One save at a time: the camera page's Save line setup stays clickable while one runs.
+        if (setup.saving) return;
         const cards = cardsOnPage();
         const cameras = cards.map(cardEntry);
         const label = (i) => `Camera ${i + 1} (${cards[i].querySelector(".pl-card-name").textContent})`;
@@ -2556,38 +2563,43 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             })),
             ...handshakeBody(),
         };
-        const button = byId("plSaveSetup");
-        button.disabled = true;
-        let saved;
+        setup.saving = true;
         try {
-            saved = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}`, { method: "PUT", body });
-        } catch (e) {
-            button.disabled = false;
-            toast(`Could not save the line setup: ${e.message}`, "warning");
-            return;
-        }
-        // Then each camera whose name, image or video settings changed.
-        const failed = [];
-        for (const card of cards) {
-            const info = setup.cards.get(card.dataset.key);
-            const row = cameraRow(card.dataset.camera);
-            if (!info || !row) continue;
-            const patch = {};
-            const settings = cardCameraSettings(card, row);
-            if (info.initialSettings !== null && JSON.stringify(settings) !== info.initialSettings) patch.settings = settings;
-            const name = cardValue(card, "name").trim();
-            if (name && name !== row.name) patch.name = name;
-            if (!Object.keys(patch).length) continue;
+            const button = byId("plSaveSetup");
+            button.disabled = true;
+            let saved;
             try {
-                await api(`/api/v1/cameras/${encodeURIComponent(row.id)}`, { method: "PATCH", body: patch });
-            } catch (e) { failed.push(`${name || row.name}: ${e.message}`); }
+                saved = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}`, { method: "PUT", body });
+            } catch (e) {
+                button.disabled = false;
+                toast(`Could not save the line setup: ${e.message}`, "warning");
+                return;
+            }
+            // Then each camera whose name, image or video settings changed.
+            const failed = [];
+            for (const card of cards) {
+                const info = setup.cards.get(card.dataset.key);
+                const row = cameraRow(card.dataset.camera);
+                if (!info || !row) continue;
+                const patch = {};
+                const settings = cardCameraSettings(card, row);
+                if (info.initialSettings !== null && JSON.stringify(settings) !== info.initialSettings) patch.settings = settings;
+                const name = cardValue(card, "name").trim();
+                if (name && name !== row.name) patch.name = name;
+                if (!Object.keys(patch).length) continue;
+                try {
+                    await api(`/api/v1/cameras/${encodeURIComponent(row.id)}`, { method: "PATCH", body: patch });
+                } catch (e) { failed.push(`${name || row.name}: ${e.message}`); }
+            }
+            setup.dirty = false;
+            if (failed.length) toast(`Line saved, but camera settings were not: ${failed.join("; ")}`, "warning");
+            else toast(saved.warning || "Line setup saved", saved.warning ? "warning" : "success");
+            await loadLines();
+            renderLineSetup();
+            if (typeof checkActiveStream === "function") checkActiveStream();
+        } finally {
+            setup.saving = false;
         }
-        setup.dirty = false;
-        if (failed.length) toast(`Line saved, but camera settings were not: ${failed.join("; ")}`, "warning");
-        else toast(saved.warning || "Line setup saved", saved.warning ? "warning" : "success");
-        await loadLines();
-        renderLineSetup();
-        if (typeof checkActiveStream === "function") checkActiveStream();
     }
 
     window.addEventListener("beforeunload", (e) => {

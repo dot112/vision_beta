@@ -60,6 +60,31 @@ def test_the_ways_into_a_camera_page():
     assert 'openCameraPage(card, "image")' in _function(script, "focusCard")
 
 
+def test_a_second_save_waits_for_the_first():
+    """Review I1: the camera page's Save stays clickable while a save runs (only #plSaveSetup was greyed out)."""
+    body = _function(LINES.read_text(encoding="utf-8"), "saveLineSetup")
+    assert body.index("if (setup.saving) return;") < body.index("await api(")
+    assert re.search(r"finally \{\s*setup\.saving = false;", body)
+
+
+def test_camera_page_notes_do_not_point_below():
+    """Review: on a camera page nothing is below it; only the line panel's note may say Inputs below."""
+    script = LINES.read_text(encoding="utf-8")
+    assert script.count("Inputs below") == 1 and "(Inputs below; apply a new input first)" in script
+    assert script.count("under Inputs on Line setup") == 3
+
+
+def test_back_names_the_line():
+    """The spec's top bar: "← <line name>"."""
+    script = LINES.read_text(encoding="utf-8")
+    assert re.search(r'data-act="back"[^>]*>\$\{ICON\([^`]*?\)\}<span class="pl-back-line">\$\{esc\(', script)
+
+
+def test_a_redraw_without_a_page_to_reopen_shows_the_cards():
+    body = _function(LINES.read_text(encoding="utf-8"), "renderLineSetup")
+    assert re.search(r'else \{\s*setup\.openCamera = null;\s*page\.classList\.remove\("pl-page-mode"\);', body)
+
+
 def test_the_line_settings_grid_closes_every_box_it_opens():
     script = (ROOT / "assets" / "production_lines.js").read_text(encoding="utf-8")
     start = script.index('<div class="pl-form-grid">', script.index("Line setup"))
