@@ -191,8 +191,9 @@ What the page is working on, per camera: `data/match-references/drafts/<camera_i
    **Search area:** cut it out of the picture (after the camera's ROI); none set: the whole picture.
 2. **Find the main reference by its edges.**
    - Edges: Sobel gradients (3 × 3, on grey 0–255). A reference point is an edge point where the gradient
-     is at least 20; a picture point counts where it is at least 10 (both tuned in the first build task
-     on the probe's pictures). The reference's edge points under the mask are left out.
+     is at least 20 and it lies on the edge's centre line (Canny's thin edges, so a product half a pixel
+     off still scores the same); a picture point counts where it is at least 10. The reference's edge
+     points under the mask and on the box's 2 px rim are left out, at every angle.
    - Score at a place and angle: the mean, over the reference's edge points, of how well the picture's
      edge direction agrees there (the cosine of the angle between the two directions; 0 where the picture
      has no edge). Polarity counts: light-on-dark is not dark-on-light. It is worked out for every place
@@ -253,8 +254,8 @@ faster. The checker runs on the CPU only: it never waits for the DirectML lock o
    20 at the top level); the disk is below the data safety free-space floor (the storage message).
 2. **Line up the samples:** a first edge model from the training picture's reference box finds the
    reference in each sample; each check's box is cut out lined up (as in section 4). A sample where the
-   reference is not found (raw edge score under 0.5; the probe's wrong label scored 0.45) is named in the
-   refusal.
+   reference is not found (its edge score under 0.8 of the training picture's own score; a label with
+   another big word scores about 0.77 of it, good ones 0.95 or more) is named in the refusal.
 3. **Average and spread** per check over the lined-up samples (Lab colour), and the **final edge model**
    from the average picture (less noise than one picture).
 4. **Typical score** per check:
@@ -357,8 +358,8 @@ Checks:  Name    Min match   Max defect   Colour   Sensitivity
   at the training picture's size.
 - **Good samples:** thumbnails of the draft's samples, each with its raw score as a % and its × (not
   sample 1), so an odd one can be taken out; **Add as good** sends the held picture and shows where the
-  reference was found in it, or "Reference not found in this picture" (raw edge score under 0.5, as in
-  Train).
+  reference was found in it, or "Reference not found in this picture" (under 0.8 of the training
+  picture's own edge score, as in Train). The thumbnail's % is that share.
 - **Train** builds the set, puts its id into the card and fills each check's Min match and Max defect
   with the suggested values ("suggested from 8 samples"; with fewer than 3, the note to add samples). The
   card shows Unsaved changes; **Save** keeps it. Colour and Sensitivity change the defects found: the

@@ -5,22 +5,16 @@ with the first problem: not found, a mismatch, a defect, or an error.
 """
 from __future__ import annotations
 
-import statistics
-
 import cv2
 import numpy as np
 import pytest
 
 import app.engines.pattern_check as pattern_check
-from app.engines.pattern_check import (CheckModel, ReferenceSet, check_picture, level_light, line_up,
-                                       match_percent, match_values)
-from app.engines.pattern_find import Found, find, refine, to_grey
-from tests.pattern_pictures import label, scene
+from app.engines.pattern_check import ReferenceSet, check_picture, match_percent, match_values
+from app.engines.pattern_find import to_grey
+from app.engines.pattern_training import DraftData, train
+from tests.pattern_pictures import good_pictures, label, label_box, scene
 
-# Good samples: angle, centre, gain, offset, noise seed. Whole-number centres put the label exactly there.
-SAMPLES = [(0.0, 640.0, 480.0, 1.0, 0, 1), (6.0, 600.0, 430.0, 0.9, 10, 2), (-8.0, 700.0, 520.0, 1.1, -10, 3),
-           (12.0, 560.0, 500.0, 0.8, 20, 4), (-12.0, 720.0, 440.0, 1.15, -20, 5), (3.0, 650.0, 470.0, 1.05, 5, 6),
-           (-4.0, 610.0, 510.0, 0.95, -5, 7), (9.0, 680.0, 450.0, 1.0, 0, 8)]
 LABEL_BOX = (-180, -120, 180, 120)
 CAP_BOX = (84, 34, 156, 106)            # the circle (the "cap"), from the label's centre
 EDGE_BOX = (150, -20, 230, 20)          # over the label's right edge, out onto the background
@@ -34,39 +28,12 @@ def _check(name, **extra):
 MATCH = {"reference_id": "ref-0000test", "search_area": None, "angle": 15, "checks": [_check("Label"), _check("Cap")]}
 
 
-def _centre(box, angle, cx, cy):
-    """Where a box's centre (from the label's centre) lands for a label at (cx, cy) turned ``angle``."""
-    dx, dy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
-    a = np.radians(angle)
-    return cx + np.cos(a) * dx + np.sin(a) * dy, cy - np.sin(a) * dx + np.cos(a) * dy
-
-
-def _set(make=label, boxes=(LABEL_BOX, CAP_BOX), ignores=None, colour=None):
-    """A reference set made by hand from the good samples (Task 3's train makes it from a draft)."""
-    pictures = [scene(make(), a, cx, cy, g, o, seed=s, colour=colour) for a, cx, cy, g, o, s in SAMPLES]
-    checks = []
-    for index, box in enumerate(boxes):
-        half = ((box[0] - box[2]) / 2, (box[1] - box[3]) / 2, (box[2] - box[0]) / 2, (box[3] - box[1]) / 2)
-        cuts = []
-        for (a, cx, cy, *_), picture in zip(SAMPLES, pictures):
-            x, y = _centre(box, a, cx, cy)
-            cuts.append(line_up(picture, Found(x, y, a, 1.0), half)[0])
-        ignore = np.zeros(cuts[0].shape[:2], bool) if ignores is None or ignores[index] is None else ignores[index]
-        use = ~ignore
-        first = cv2.cvtColor(cuts[0], cv2.COLOR_BGR2LAB).astype(np.float32)
-        labs = np.stack([level_light(cv2.cvtColor(c, cv2.COLOR_BGR2LAB).astype(np.float32), first, use) for c in cuts])
-        mean = cv2.cvtColor(labs.mean(0).clip(0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
-        checks.append(CheckModel(box, mean, labs.std(0), ignore, 1.0))
-    ref = ReferenceSet("ref-0000test", (1280, 960), checks, len(SAMPLES))
-    for index, check in enumerate(checks):
-        model = ref.edge_model(index, 15)
-        if index == 0:
-            scores = [find(model, to_grey(p)).score for p in pictures]
-        else:
-            scores = [refine(model, to_grey(p), Found(*_centre(check.box, a, cx, cy), a, 0.0)).score
-                      for (a, cx, cy, *_), p in zip(SAMPLES, pictures)]
-        check.typical = statistics.median(scores)
-    return ref
+def _set(make=label, boxes=(LABEL_BOX, CAP_BOX), ignore=None, colour=None):
+    """A reference set trained from the eight good samples (the label straight in the middle of the first)."""
+    pictures = good_pictures(make, colour)
+    mask = np.zeros(pictures[0].shape[:2], bool) if ignore is None else ignore
+    draft = DraftData(pictures[0], label_box(boxes[0]), [label_box(b) for b in boxes[1:]], mask, pictures)
+    return train(draft, 15, [{"colour": False, "sensitivity": "normal"}] * len(boxes), "ref-0000test")[0]
 
 
 @pytest.fixture(scope="module")
@@ -140,12 +107,12 @@ def test_a_check_box_partly_outside_the_picture():
 
 
 def test_masked_pixels_are_not_defects():
-    ignore = np.zeros((240, 360), bool)
-    ignore[193:225, 25:200] = True           # the lot number
-    masked = _set(make=label, boxes=(LABEL_BOX,), ignores=[ignore])
-    plain = _set(make=label, boxes=(LABEL_BOX,))
+    ignore = np.zeros((960, 1280), bool)
+    ignore[360 + 193:360 + 225, 460 + 25:460 + 200] = True     # the lot number on the training picture
+    masked = _set(boxes=(LABEL_BOX,), ignore=ignore)
+    plain = _set(boxes=(LABEL_BOX,))
     match = {**MATCH, "checks": [_check("Label")]}
-    picture = scene(label(lot="LOT 98760"), 2, 640, 480, seed=19)
+    picture = scene(label(lot=""), 2, 640, 480, seed=19)          # the lot number is missing
     assert check_picture(masked, match, picture).result == "good"
     assert check_picture(plain, match, picture).reason == "pattern_defect"
 

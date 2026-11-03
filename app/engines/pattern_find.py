@@ -1,7 +1,8 @@
 """The pattern check's edge search: where a reference is in a picture, and how far it is turned.
 
-A reference is known by its edges: at each point where its brightness changes sharply, the direction of
-that change. A place and angle in the picture scores the mean, over the reference's edge points, of how
+A reference is known by its edges: along the centre line of each place where its brightness changes
+sharply (Canny's thin edges), the direction of that change. Thin model edges keep the score the same
+when a product lands half a pixel off, as a picture's wider edges still cover them. A place and angle in the picture scores the mean, over the reference's edge points, of how
 well the picture's edge direction agrees there (the cosine of the angle between the two; 0 where the
 picture has no edge), so light and contrast changes hardly move it, and light-on-dark is not
 dark-on-light. All places are scored at once with two correlations of the unit gradient pictures.
@@ -22,8 +23,8 @@ from typing import List, NamedTuple, Optional, Tuple
 import cv2
 import numpy as np
 
-# A reference point is an edge point where its gradient (Sobel 3 x 3 on grey 0-255) is at least this;
-# a picture point counts where its gradient is at least EDGE_PIC_MIN.
+# A reference point is an edge point where its gradient (Sobel 3 x 3 on grey 0-255) is at least this and
+# it lies on an edge's centre line; a picture point counts where its gradient is at least EDGE_PIC_MIN.
 EDGE_REF_MIN = 20
 EDGE_PIC_MIN = 10
 # The pyramid goes down until the reference's shorter side is about TOP_SIDE px, at most MAX_LEVELS halvings.
@@ -91,10 +92,12 @@ def turned(img: np.ndarray, angle: float, interpolation: int = cv2.INTER_LINEAR)
 
 def _make_template(ref: np.ndarray, ignore: Optional[np.ndarray], angle: float) -> _Template:
     image = turned(ref, angle)
-    # The turned box's corners are outside the reference: their rim is not an edge of it.
-    inside = cv2.erode(turned(np.full(ref.shape[:2], 255, np.uint8), angle, cv2.INTER_NEAREST), _RIM) > 0
+    # The box's own rim (where it cuts across the picture) and, turned, its corners outside the reference
+    # are no edges of it: left out at every angle alike.
+    inside = cv2.erode(turned(np.full(ref.shape[:2], 255, np.uint8), angle, cv2.INTER_NEAREST), _RIM,
+                       borderType=cv2.BORDER_CONSTANT, borderValue=0) > 0
     gx, gy, keep = unit_gradients(image, EDGE_REF_MIN)
-    keep &= inside
+    keep &= inside & (cv2.Canny(image, EDGE_REF_MIN, 2 * EDGE_REF_MIN, L2gradient=True) > 0)
     if ignore is not None and ignore.any():
         masked = turned(ignore.astype(np.uint8) * 255, angle, cv2.INTER_NEAREST)
         keep &= cv2.dilate(masked, np.ones((3, 3), np.uint8)) == 0
