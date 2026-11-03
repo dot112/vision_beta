@@ -56,9 +56,10 @@
             </div>`);
     }
 
+    // Each save with the line's name as it was saved (a load names the line so again).
     function loadWindowHtml({ lineName, saves, running }) {
         const rows = (saves || []).map((s) => `<div class="ls-row">
-                <button data-lock type="button" class="ls-pick" data-ls="load" data-id="${esc(s.id)}" ${running ? "disabled" : ""}><b>${esc(s.name)}</b> <span class="ls-line">${esc(lineName)}</span> <span class="ls-date">${esc(when(s.saved_at))}</span></button>
+                <button data-lock type="button" class="ls-pick" data-ls="load" data-id="${esc(s.id)}" ${running ? "disabled" : ""}><b>${esc(s.name)}</b> <span class="ls-line">${esc(s.line_name || lineName)}</span> <span class="ls-date">${esc(when(s.saved_at))}</span></button>
                 <button data-lock type="button" class="ls-del" data-ls="delete" data-id="${esc(s.id)}" aria-label="Delete ${esc(s.name)}">✕</button>
             </div>`).join("");
         const note = running ? `<div class="ls-problem">Stop the line to load a setup.</div>` : "";

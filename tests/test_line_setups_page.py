@@ -56,9 +56,13 @@ def test_save_window_waits_for_unsaved_changes():
 
 
 def test_load_window_rows():
-    html = _run("loadWindowHtml", {"lineName": "Line 1", "running": False, "saves": [SAVE]})
+    # The grey name is the line's name in the save (what a load names the line), else the line's name now.
+    older = {**SAVE, "id": "setup-00000000"}
+    del older["line_name"]
+    html = _run("loadWindowHtml", {"lineName": "Line 1 renamed", "running": False, "saves": [SAVE, older]})
     assert "Load line setup" in html
-    assert "<b>&lt;b&gt;A&lt;/b&gt;</b>" in html and '<span class="ls-line">Line 1</span>' in html
+    assert "<b>&lt;b&gt;A&lt;/b&gt;</b>" in html
+    assert re.findall(r'<span class="ls-line">([^<]*)</span>', html) == ["Line 1", "Line 1 renamed"]
     assert 'data-ls="load" data-id="setup-1a2b3c4d"' in html and 'data-ls="delete" data-id="setup-1a2b3c4d"' in html
     assert 'aria-label="Delete &lt;b&gt;A&lt;/b&gt;"' in html and "2026" in html
     pick = re.search(r'<button[^>]*data-ls="load"[^>]*>', html).group(0)
@@ -86,7 +90,7 @@ def test_the_page_uses_it():
     lines_js = (ROOT / "assets" / "production_lines.js").read_text(encoding="utf-8")
     assert "Line setup · ${esc(d.name)}${LineSetups.buttonsHtml(readOnly)}" in lines_js and "LineSetups.bind(" in lines_js
     html = (ROOT / "dashboard.html").read_text(encoding="utf-8")
-    assert '<script src="/assets/line_setups.js?v=1.0.0"></script>' in html
+    assert '<script src="/assets/line_setups.js?v=1.0.1"></script>' in html
     assert html.index("/assets/line_setups.js") < html.index("/assets/production_lines.js")
     css = (ROOT / "assets" / "dashboard.css").read_text(encoding="utf-8")
     rule = re.search(r"\.ls-link\s*\{([^}]*)\}", css).group(1)
