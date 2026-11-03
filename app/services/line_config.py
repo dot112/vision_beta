@@ -16,7 +16,7 @@ import math
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from app.engines.text_format import check_format
 from app.services.product_fields import VALUE_NAME_RE
@@ -34,7 +34,7 @@ PRIMARY_LINE_ID = "line-1"
 #      tracking, whether defect names reject); the line's count lines are copied into it
 SCHEMA_VERSION = 9
 MAX_CAMERAS_PER_LINE = 8
-CAMERA_ROLES = ("vision", "qr", "ocr")
+CAMERA_ROLES = ("vision", "qr", "ocr", "match")
 # A text reader (role "ocr") reads printed text (dates, lot codes) in up to MAX_TEXT_FIELDS fields and
 # checks each against a format (app.engines.text_format). Read Continuously it only shows the text;
 # with count_mode "trigger" it reads one picture per trigger and is a station, own or joined.
@@ -46,6 +46,18 @@ JOIN_DOTS_LIMITS = (3, 15)
 TEXT_CONFIDENCE_LIMITS = (0.30, 0.99)
 DEFAULT_TEXT_CONFIDENCE = 0.5
 MIN_REGION = 0.02
+# A pattern check (role "match") finds a trained reference by its edges and compares up to MAX_MATCH_CHECKS
+# boxes with good samples (app.engines.pattern_check). Its reference set is files under
+# data/match-references (app.services.match_references); read Continuously it only shows the result;
+# with count_mode "trigger" it checks one picture per trigger and is a station, own or joined.
+MATCH_ANGLE_LIMITS = (0, 45)
+DEFAULT_MATCH_ANGLE = 15
+MAX_MATCH_CHECKS = 4
+MATCH_SENSITIVITY = ("low", "normal", "high")
+DEFAULT_MIN_SCORE = 80
+DEFAULT_MAX_DEFECT_PX = 30
+MAX_DEFECT_PX = 1_000_000
+REFERENCE_ID_RE = re.compile(r"ref-[0-9a-f]{8}")
 # What a vision camera that is not the counting camera does with its result:
 #   own   counts and rejects on its own and fires only the cards that name it
 #   join  looks at the counting camera's products, before or after it on the belt:
@@ -108,7 +120,8 @@ REASON_PATTERN_DEFECT = "pattern_defect"
 REASON_PATTERN_ERROR = "pattern_error"
 REJECT_REASONS = (REASON_VISION, REASON_NOT_LISTED, REASON_LISTED, REASON_NO_CODE, REASON_STATION_NO_RESULT,
                   REASON_NOTHING_DETECTED, REASON_PRODUCT_CHECK, REASON_INSPECTION_TIMEOUT, REASON_NO_PICTURE,
-                  REASON_TEXT_WRONG, REASON_NO_TEXT, REASON_READER_ERROR)
+                  REASON_TEXT_WRONG, REASON_NO_TEXT, REASON_READER_ERROR, REASON_PATTERN_NOT_FOUND,
+                  REASON_PATTERN_MISMATCH, REASON_PATTERN_DEFECT, REASON_PATTERN_ERROR)
 # A sorting verification camera saw a product in the other outfeed (a record's reason; no product gets it).
 REASON_SORTING_MISMATCH = "sorting_mismatch"
 # The reasons that come from a product's code.
@@ -128,7 +141,9 @@ IF_MISSING = ("skip", "default")
 REJECT_REASON_CODES = {REASON_VISION: 1, REASON_NOT_LISTED: 2, REASON_LISTED: 3, REASON_NO_CODE: 4,
                        REASON_STATION_NO_RESULT: 5, REASON_NOTHING_DETECTED: 6, REASON_PRODUCT_CHECK: 7,
                        REASON_INSPECTION_TIMEOUT: 8, REASON_NO_PICTURE: 10,
-                       REASON_TEXT_WRONG: 11, REASON_NO_TEXT: 12, REASON_READER_ERROR: 13}
+                       REASON_TEXT_WRONG: 11, REASON_NO_TEXT: 12, REASON_READER_ERROR: 13,
+                       REASON_PATTERN_NOT_FOUND: 14, REASON_PATTERN_MISMATCH: 15, REASON_PATTERN_DEFECT: 16,
+                       REASON_PATTERN_ERROR: 17}
 # Product checks: up to MAX_PRODUCT_CHECKS per line, each "reject when these rules pass".
 MAX_PRODUCT_CHECKS = 10
 # A product check decides the result, so its rules cannot use it.
@@ -263,6 +278,8 @@ READER_KEPT_KEYS = ("qr_trigger_review", "code_sets_batch", "sorting_lane")
 # Settings of a text reader that a client written before them does not send: kept when left out.
 TEXT_READER_KEPT_KEYS = ("ocr", "count_mode", "station", "picture_source", "picture_delay_ms", "notice_trigger",
                          "picture_wait_ms") + JOIN_KEYS
+# And of a pattern check.
+PATTERN_CHECK_KEPT_KEYS = ("match",) + TEXT_READER_KEPT_KEYS[1:]
 # A camera that reads codes may watch one outfeed instead (sorting verification): its reads check
 # that each product went the way its result sent it. One camera per outfeed on a line.
 SORTING_LANES = ("accepted", "rejected")
@@ -461,7 +478,7 @@ def normalize_camera(raw: Any, index: int) -> Dict[str, Any]:
         raise ValueError(f"{label} needs a camera_id")
     role = str(raw.get("role") or "vision").strip().lower()
     if role not in CAMERA_ROLES:
-        raise ValueError(f"{label} role must be 'vision', 'qr' or 'ocr'")
+        raise ValueError(f"{label} role must be 'vision', 'qr', 'ocr' or 'match'")
     camera: Dict[str, Any] = {
         "camera_id": camera_id,
         "role": role,
@@ -575,6 +592,9 @@ def normalize_camera(raw: Any, index: int) -> Dict[str, Any]:
                 camera.update(_picture_settings(raw, label))
     if role == "ocr":
         camera.update(_text_reader_reading(raw, label))
+    if role == "match":
+        camera.update(_reading_and_station(raw, label))
+        camera["match"] = normalize_match(raw.get("match"), label)
     # The triggers ("Take a picture" inputs, by their number) that take this camera's picture.
     sent = raw.get("triggers")
     if sent not in (None, "", []) and (camera.get("count_mode") == "trigger"
@@ -591,8 +611,16 @@ def normalize_camera(raw: Any, index: int) -> Dict[str, Any]:
 
 
 def _text_reader_reading(raw: Dict[str, Any], label: str) -> Dict[str, Any]:
-    """A text reader's reading mode (count_mode "trigger", else Continuously), its station and picture
-    settings when it reads one picture per trigger, and its ``ocr`` settings."""
+    """A text reader's reading mode, station and picture settings (_reading_and_station) and its ``ocr``
+    settings."""
+    settings = _reading_and_station(raw, label)
+    settings["ocr"] = normalize_text_reader(raw.get("ocr"), label)
+    return settings
+
+
+def _reading_and_station(raw: Dict[str, Any], label: str) -> Dict[str, Any]:
+    """A text reader's or a pattern check's mode (count_mode "trigger", else Continuously), and its station
+    and picture settings when it takes one picture per trigger."""
     settings: Dict[str, Any] = {}
     count_mode = raw.get("count_mode")
     if count_mode not in (None, ""):
@@ -608,8 +636,100 @@ def _text_reader_reading(raw: Dict[str, Any], label: str) -> Dict[str, Any]:
         settings["station"] = station
         if station == "join":
             settings.update(_join_settings(raw, label))
-    settings["ocr"] = normalize_text_reader(raw.get("ocr"), label)
     return settings
+
+
+def _whole(value: Any, what: str, default: int, low: int, high: int) -> int:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != int(value) or not low <= value <= high:
+        raise ValueError(f"{what} must be a whole number from {low} to {high}")
+    return int(value)
+
+
+def _match_check(raw: Any, index: int, label: str) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError(f"{label} check {index + 1} must be an object")
+    name = raw.get("name")
+    if not isinstance(name, str) or not VALUE_NAME_RE.fullmatch(name.strip()):
+        raise ValueError(f"{label} check {index + 1}: the name must start with a letter and have only letters, "
+                         f"digits and _ (at most 32)")
+    name = name.strip()
+    if name.lower() == "score":
+        raise ValueError(f"{label}: a check cannot be named 'score' (match.score is the reference's score)")
+    where = f"{label} check '{name}'"
+    sensitivity = str(raw.get("sensitivity") or "normal").strip().lower()
+    if sensitivity not in MATCH_SENSITIVITY:
+        raise ValueError(f"{where}: the sensitivity must be 'low', 'normal' or 'high'")
+    return {
+        "name": name,
+        "min_score": _whole(raw.get("min_score"), f"{where}: the lowest match (%)", DEFAULT_MIN_SCORE, 0, 100),
+        "max_defect_px": _whole(raw.get("max_defect_px"), f"{where}: the biggest defect (px)", DEFAULT_MAX_DEFECT_PX,
+                                0, MAX_DEFECT_PX),
+        "colour": _bool(raw.get("colour"), f"{where} colour", False),
+        "sensitivity": sensitivity,
+    }
+
+
+def normalize_match(raw: Any, label: str) -> Dict[str, Any]:
+    """A pattern check's ``match`` settings: its trained reference set, where it searches, how far it
+    searches turned, and 1 to MAX_MATCH_CHECKS checks (name, lowest Match %, biggest defect, colour,
+    sensitivity), in the order of the set's checks."""
+    if not isinstance(raw, dict):
+        raw = {}
+    reference = raw.get("reference_id")
+    if not isinstance(reference, str) or not REFERENCE_ID_RE.fullmatch(reference.strip()):
+        raise ValueError(f"{label}: train its reference on Pattern and checks")
+    area = raw.get("search_area")
+    if area in (None, "", []):
+        area = None
+    else:
+        bad = ValueError(f"{label}: the search area must be [x1, y1, x2, y2] inside the picture (0 to 1), "
+                         f"at least {MIN_REGION:g} wide and high")
+        if not isinstance(area, (list, tuple)) or len(area) != 4 \
+                or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in area):
+            raise bad
+        x1, y1, x2, y2 = (float(v) for v in area)
+        if not (0 <= x1 < x2 <= 1 and 0 <= y1 < y2 <= 1) or x2 - x1 < MIN_REGION or y2 - y1 < MIN_REGION:
+            raise bad
+        area = [round(x1, 4), round(y1, 4), round(x2, 4), round(y2, 4)]
+    low, high = MATCH_ANGLE_LIMITS
+    angle = _whole(raw.get("angle"), f"{label}: the angle searched (degrees)", DEFAULT_MATCH_ANGLE, low, high)
+    checks = raw.get("checks")
+    if not isinstance(checks, list) or not 1 <= len(checks) <= MAX_MATCH_CHECKS:
+        raise ValueError(f"{label} needs 1 to {MAX_MATCH_CHECKS} checks")
+    normalized = [_match_check(check, i, label) for i, check in enumerate(checks)]
+    seen = set()
+    for check in normalized:
+        if check["name"].lower() in seen:
+            raise ValueError(f"{label}: two checks are named '{check['name']}'")
+        seen.add(check["name"].lower())
+    return {"reference_id": reference.strip(), "search_area": area, "angle": angle, "checks": normalized}
+
+
+def is_pattern_check(camera: Dict[str, Any]) -> bool:
+    return camera.get("role") == "match"
+
+
+def require_match_references(line: Dict[str, Any], info: Callable[[str], Optional[Dict[str, Any]]]) -> None:
+    """A line is not saved with a pattern check whose reference set is missing, has another number of checks,
+    or is bigger than its search area. ``info``: match_references.set_info."""
+    for index, cam in enumerate(line.get("cameras") or []):
+        if not is_pattern_check(cam):
+            continue
+        match = cam["match"]
+        meta = info(match["reference_id"])
+        if meta is None:
+            raise ValueError(f"Camera {index + 1}: train its reference on Pattern and checks")
+        if meta["checks"] != len(match["checks"]):
+            raise ValueError(f"Camera {index + 1}: its reference set has {meta['checks']} checks, not "
+                             f"{len(match['checks'])}: train it again")
+        area = match.get("search_area")
+        if area:
+            width, height = meta["picture_size"]
+            ref_w, ref_h = meta["reference_size"]
+            if (area[2] - area[0]) * width < ref_w or (area[3] - area[1]) * height < ref_h:
+                raise ValueError(f"Camera {index + 1}: its search area is smaller than its reference")
 
 
 def _text_field(raw: Any, index: int, label: str) -> Dict[str, Any]:
@@ -695,8 +815,8 @@ def is_text_reader(camera: Dict[str, Any]) -> bool:
 
 
 def picture_per_trigger(camera: Dict[str, Any]) -> bool:
-    """A vision camera or a text reader that takes one picture per trigger (count_mode "trigger")."""
-    return camera.get("role", "vision") in ("vision", "ocr") and camera.get("count_mode") == "trigger"
+    """A vision camera, a text reader or a pattern check that takes one picture per trigger (count_mode "trigger")."""
+    return camera.get("role", "vision") in ("vision", "ocr", "match") and camera.get("count_mode") == "trigger"
 
 
 def _picture_settings(raw: Dict[str, Any], label: str) -> Dict[str, Any]:
@@ -802,9 +922,9 @@ def joined_cameras(cameras: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def camera_station(camera: Dict[str, Any]) -> Optional[str]:
-    """'own' or 'join' for a vision camera that is not the counting camera, or a text reader that reads
-    one picture per trigger; else None."""
-    if is_text_reader(camera):
+    """'own' or 'join' for a vision camera that is not the counting camera, or a text reader or a pattern
+    check that takes one picture per trigger; else None."""
+    if is_text_reader(camera) or is_pattern_check(camera):
         return (camera.get("station") or "own") if camera.get("count_mode") == "trigger" else None
     if camera.get("role", "vision") != "vision" or camera.get("counting"):
         return None
@@ -1333,6 +1453,13 @@ def takes_a_picture_on_a_trigger(camera: Dict[str, Any]) -> bool:
     return camera.get("count_mode") == "trigger" or (reads_codes(camera) and camera.get("qr_trigger") == "signal")
 
 
+def _trigger_page(camera: Dict[str, Any]) -> str:
+    """The camera page whose triggers a camera's card shows."""
+    if is_text_reader(camera):
+        return "Reading"
+    return "When to check" if is_pattern_check(camera) else "Counting"
+
+
 def _check_signal_cameras(inputs: List[Dict[str, Any]], cameras: List[Dict[str, Any]]) -> None:
     """A "capture" card that names a camera itself: the camera gets a tick for the card's trigger
     number instead, and the card names none. The camera must be one of the line that takes one
@@ -1348,8 +1475,9 @@ def _check_signal_cameras(inputs: List[Dict[str, Any]], cameras: List[Dict[str, 
             cam = cameras[index]
             if not takes_a_picture_on_a_trigger(cam):
                 raise ValueError(
-                    f"{label} takes a picture with Camera {index + 1}, so that camera must be a vision camera or "
-                    f"a text reader with 'One picture per trigger', or read codes with Read codes set to "
+                    f"{label} takes a picture with Camera {index + 1}, so that camera must be a vision camera, "
+                    f"a text reader or a pattern check with 'One picture per trigger', or read codes with Read "
+                    f"codes set to "
                     f"'When an input asks'"
                 )
             cam["triggers"] = sorted({*(cam.get("triggers") or []), card["trigger_no"]})
@@ -1369,14 +1497,15 @@ def _keep_camera_triggers(cameras: List[Any], saved: List[Dict[str, Any]]) -> Li
     return filled
 
 
-def _keep_text_reader_settings(cameras: List[Any], saved: List[Dict[str, Any]]) -> List[Any]:
-    """Text readers sent by a client, with the TEXT_READER_KEPT_KEYS it left out as they are saved."""
-    by_id = {c.get("camera_id"): c for c in saved if isinstance(c, dict) and c.get("role") == "ocr"}
+def _keep_job_settings(cameras: List[Any], saved: List[Dict[str, Any]], role: str, keys: Tuple[str, ...]) -> List[Any]:
+    """Cameras of this role (text readers, pattern checks) sent by a client, with the ``keys`` it left out as
+    they are saved."""
+    by_id = {c.get("camera_id"): c for c in saved if isinstance(c, dict) and c.get("role") == role}
     filled = []
     for cam in cameras:
-        if isinstance(cam, dict) and str(cam.get("role") or "").strip().lower() == "ocr":
+        if isinstance(cam, dict) and str(cam.get("role") or "").strip().lower() == role:
             kept = by_id.get(str(cam.get("camera_id") or "").strip()) or {}
-            cam = {**{key: kept[key] for key in TEXT_READER_KEPT_KEYS if key in kept}, **cam}
+            cam = {**{key: kept[key] for key in keys if key in kept}, **cam}
         filled.append(cam)
     return filled
 
@@ -1515,7 +1644,8 @@ def normalize_line(raw: Any, existing: Optional[Dict[str, Any]] = None) -> Dict[
         raise ValueError(f"A line can have at most {MAX_CAMERAS_PER_LINE} cameras")
     if "cameras" in raw:
         raw_cameras = _fill_camera_models(raw_cameras, base.get("cameras") or [], raw.get("model_id"))
-        raw_cameras = _keep_text_reader_settings(raw_cameras, base.get("cameras") or [])
+        raw_cameras = _keep_job_settings(raw_cameras, base.get("cameras") or [], "ocr", TEXT_READER_KEPT_KEYS)
+        raw_cameras = _keep_job_settings(raw_cameras, base.get("cameras") or [], "match", PATTERN_CHECK_KEPT_KEYS)
         raw_cameras = _keep_camera_triggers(raw_cameras, base.get("cameras") or [])
     elif raw.get("model_id") not in (None, ""):
         # Such a client changes "the line's model": every vision camera of the line runs it.
@@ -2155,7 +2285,7 @@ def line_warnings(line: Dict[str, Any], models: Optional[Dict[str, Dict[str, Any
                 and cam.get("camera_id") not in capturing):
             warnings.append(
                 f"Camera {index + 1} takes one picture per trigger, but no trigger is ticked on its card: only the "
-                f"API can take its picture. Tick a trigger under {'Reading' if is_text_reader(cam) else 'Counting'}, "
+                f"API can take its picture. Tick a trigger under {_trigger_page(cam)}, "
                 f"or add an input with the action 'Take a picture'."
             )
         for number in cam.get("triggers") or []:

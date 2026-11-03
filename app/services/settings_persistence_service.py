@@ -28,6 +28,7 @@ from app.services.line_config import (
     keep_card_fields,
     normalize_line,
     normalize_send_cards,
+    require_match_references,
     require_camera_models,
     upgrade_state,
     utc_now_iso,
@@ -909,6 +910,8 @@ class SettingsPersistenceService:
             # Only when the cameras are sent: a line saved before models were
             # picked per camera can still be started, stopped and renamed.
             require_camera_models(line)
+            from app.services import match_references
+            require_match_references(line, match_references.set_info)
         if existing is None and any(ln.get("id") == line["id"] for ln in lines):
             raise ValueError(f"Line id '{line['id']}' is already in use")
         if any(ln.get("name", "").lower() == line["name"].lower() and ln.get("id") != line["id"] for ln in lines):
@@ -972,7 +975,26 @@ class SettingsPersistenceService:
             cls.replace_line_plc_actions(line["id"], cards, keep=not replace)
         if send_cards is not None:
             cls.replace_line_send_actions(line["id"], send_cards, keep=not replace)
+        if "cameras" in raw:
+            cls._clean_up_later(cls.clean_up_references)
         return cls.get_line(line["id"])
+
+    @classmethod
+    def clean_up_references(cls) -> None:
+        """Remove the pattern check reference sets that nothing names any more (match_references.clean_up)."""
+        from app.services import match_references
+
+        try:
+            match_references.clean_up(cls._raw_lines())
+        except Exception as exc:        # a clean-up that fails must never stop a save or a start
+            logger.warning("Reference set clean-up failed: %s", exc)
+
+    @staticmethod
+    def _clean_up_later(run: Any) -> None:
+        """Run the clean-up beside the request, not in it (it reads and removes files)."""
+        import threading
+
+        threading.Thread(target=run, name="match-references-clean-up", daemon=True).start()
 
     @classmethod
     def mark_counts_reset(cls, line_id: str, classes: Optional[List[str]] = None) -> None:

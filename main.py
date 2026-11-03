@@ -204,6 +204,15 @@ async def _backup_before_upgrade() -> None:
                     {"error": str(exc), "kind": "upgrade"})
 
 
+async def _clean_up_references() -> None:
+    """Pattern check reference sets nothing names any more, and drafts unused for 30 days, go at start-up."""
+    import asyncio
+
+    from app.services.settings_persistence_service import SettingsPersistenceService
+
+    await asyncio.to_thread(SettingsPersistenceService.clean_up_references)
+
+
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -289,6 +298,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         try:
             from app.services.settings_persistence_service import SettingsPersistenceService
             await SettingsPersistenceService.restore_on_startup()
+            await _clean_up_references()
         except Exception as st_err:
             logger.warning("Settings persistence restore error: %s", st_err)
 
