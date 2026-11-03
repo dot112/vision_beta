@@ -48,7 +48,7 @@ def test_script_is_valid_and_loaded():
         pytest.skip("node is not installed")
     assert subprocess.run([node, "--check", str(SCRIPT)], capture_output=True).returncode == 0
     page = PAGE.read_text(encoding="utf-8")
-    tag = '<script src="/assets/pattern_check.js?v=1.0.1"></script>'
+    tag = '<script src="/assets/pattern_check.js?v=1.0.2"></script>'
     assert tag in page and page.index(tag) < page.index("/assets/production_lines.js")
 
 
@@ -131,3 +131,10 @@ def test_line_setup_has_the_pattern_check_job():
     assert "match: PatternCheck.readCard(card)" in js
     assert "train its reference on Pattern and checks." in js and 'pageForProblem("no_reference")' in js
     assert "PatternCheck.bind(card," in js and js.count("PatternCheck.wake(") >= 5
+
+
+def test_a_redrawn_row_keeps_its_colour_choice():
+    """The rows are drawn again from the form's own values ("grey" / "colour"): Grey must stay Grey (live check)."""
+    html = _api('api.foldHtml({checks: [{name: "A", colour: "grey"}, {name: "B", colour: "colour"}, {name: "C", colour: true},'
+                ' {name: "D", colour: false}]}, {readOnly: false})')
+    assert html.count('value="grey" selected') == 2 and html.count('value="colour" selected') == 2

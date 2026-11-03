@@ -9,6 +9,7 @@ It is intended to give operators a single place to monitor cameras and detection
 ## Main capabilities
 
 - **Vision:** Run object detection with YOLO-compatible ONNX models; run a model of its own on each vision camera; configure confidence and NMS thresholds.
+- **Pattern check:** Inspect products without an AI model: a reference trained on the camera's page from a picture, its boxes, a mask and good samples is found by its edges on each product, and each check gives a Match % and a biggest defect against thresholds the training suggests; good or reject per product, like an inspection station.
 - **Camera input:** Support USB cameras, RTSP/IP cameras, and GigE Vision / USB3 Vision industrial cameras (through GenICam, an optional install) with a hardware or a software trigger, through camera drivers and services. The industrial camera driver has not run on a real camera yet.
 - **Tracking and counting:** Track detections, report line crossings and class counts, and expose telemetry through the API/dashboard. Up to 8 cameras per production line; an extra vision camera inspects on its own or joins the counting camera's product result (matched by travel time), so a product inspected by several cameras gets one result.
 - **Production records:** Store every product and code read in the database, show them on a Records page with filters and totals, export any time range as CSV or Excel (.xlsx), and keep the line counters through a restart.
@@ -35,6 +36,7 @@ The runtime state is partly process-local. `app/config.py` requires `WORKERS=1`,
 - `assets/card_values.js` — The card dialogs' value names, and what an output action writes, in words.
 - `assets/product_fields.js` — The Products page's fields editor and the inputs for a product's values.
 - `assets/production_lines.js` — The dashboard's production line pages: line selector, Plant overview, Lines, Products, Production records, Line setup (the line and one card per camera, up to 8, holding every camera setting) and the Line dashboard's camera strip.
+- `assets/pattern_check.js` — Line setup's Pattern and checks page (training a pattern check) and the Line dashboard's Latest pattern checks.
 - `assets/camera_settings.js` — A camera's image and video settings (resolution, rotation, ROI, USB/IP controls, stream size) as a form, used by the Line setup camera cards and the Cameras page Settings window.
 - `main.py` — FastAPI application, lifecycle setup, router registration and static/dashboard serving.
 - `app/routes/v1/` — REST and WebSocket route handlers.

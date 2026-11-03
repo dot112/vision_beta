@@ -113,7 +113,8 @@
 
     function checkRowHtml(c, index, readOnly) {
         const dis = readOnly ? "disabled" : "";
-        const colour = c.colour ? "colour" : "grey";
+        // From the saved settings (true / false) or from the form when the rows are drawn again ("colour" / "grey").
+        const colour = c.colour === true || c.colour === "colour" ? "colour" : "grey";
         const value = (key) => (c[key] === undefined || c[key] === null ? DEFAULTS[key] : c[key]);
         return `<tr data-pc-check="${index}">
             <td><input class="form-input" data-pc="name" maxlength="32" value="${esc(c.name || "")}" ${dis}></td>

@@ -70,6 +70,9 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │   ├── action_engine.py
 │   │   ├── flow_engine.py
 │   │   ├── inference_engine.py
+│   │   ├── pattern_check.py      # pattern check: one picture's Match % and defects per check
+│   │   ├── pattern_find.py       # pattern check: the edge-shape search (coarse to fine, turned)
+│   │   ├── pattern_training.py   # pattern check: a reference set and suggested thresholds from good samples
 │   │   ├── qr_engine.py
 │   │   ├── rule_engine.py
 │   │   └── tracker.py
@@ -130,6 +133,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │       ├── flows.py
 │   │       ├── health.py
 │   │       ├── lines.py
+│   │       ├── match.py             # Line setup's pattern check: picture, draft, Train, preview
 │   │       ├── models.py
 │   │       ├── mqtt.py
 │   │       ├── plc.py
@@ -171,8 +175,11 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │   ├── discovery_service.py
 │   │   ├── handshake.py   # result handshake state machine: capture request -> result -> PLC acknowledge
 │   │   ├── health_service.py
+│   │   ├── held_pictures.py      # the still picture Line setup's text reader and pattern check set up on
 │   │   ├── line_config.py
 │   │   ├── line_service.py
+│   │   ├── match_references.py   # pattern check reference sets and drafts (data/match-references)
+│   │   ├── match_service.py      # one pattern check thread per camera, its video overlay
 │   │   ├── modbus_service.py
 │   │   ├── model_service.py
 │   │   ├── mqtt_service.py
@@ -224,6 +231,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   ├── help_tips.js           # help icons: the data-help text of a button, drop-down or menu item on hover, focus or tap
 │   ├── plc_signals.js         # the PLC signals (inputs) step of Line setup: cards, dialog, live values
 │   ├── product_fields.js      # Products page: the fields editor and a product's values
+│   ├── pattern_check.js       # Line setup's Pattern and checks page, Latest pattern checks
 │   ├── production_lines.js    # lines, Line setup camera cards, Line dashboard camera strip
 │   ├── universalz_logo.png       # the wordmark, light theme
 │   ├── universalz_logo_dark.png  # the wordmark with near-white letters, dark theme
