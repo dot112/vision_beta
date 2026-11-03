@@ -46,6 +46,7 @@ from app.routes.v1 import send_actions as send_actions_router
 from app.routes.v1 import records as records_router
 from app.routes.v1 import config_lock as config_lock_router
 from app.routes.v1 import data_backups as data_backups_router
+from app.routes.v1 import match as match_router
 from app.routes.v1 import ocr as ocr_router
 
 # The API behind a sign-in (Level 1 or higher) and the configuration lock.
@@ -72,6 +73,7 @@ PROTECTED_ROUTERS = (
     config_lock_router,
     data_backups_router,
     ocr_router,
+    match_router,
 )
 
 setup_logging()

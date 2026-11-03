@@ -36,6 +36,9 @@ LOCK_FREE_ROUTES: FrozenSet[Route] = frozenset({
     # Line setup's text reader: a held picture and the reading of unsaved settings (nothing saved).
     ("POST", "/api/v1/ocr/picture/camera/{camera_id}"),
     ("POST", "/api/v1/ocr/preview/camera/{camera_id}"),
+    # Line setup's pattern check: a held picture and the check of unsaved settings (nothing saved).
+    ("POST", "/api/v1/match/picture/camera/{camera_id}"),
+    ("POST", "/api/v1/match/preview/camera/{camera_id}"),
     # Tests and checks: they send a test or read something, and save nothing.
     ("POST", "/api/v1/system/endpoints/{endpoint_id}/test"),
     ("POST", "/api/v1/send/actions/{card_id}/test"),
@@ -77,6 +80,14 @@ LOCKED_ROUTES: FrozenSet[Route] = frozenset({
     ("POST", "/api/v1/lines/{line_id}/clone"),
     ("POST", "/api/v1/lines/{line_id}/setups/{setup_id}/load"),
     ("DELETE", "/api/v1/lines/{line_id}/setups/{setup_id}"),
+    # Line setup's pattern check: its training draft and Train write files a saved card may name.
+    ("PUT", "/api/v1/match/draft/camera/{camera_id}"),
+    ("PUT", "/api/v1/match/draft/camera/{camera_id}/mask"),
+    ("POST", "/api/v1/match/draft/camera/{camera_id}/samples"),
+    ("DELETE", "/api/v1/match/draft/camera/{camera_id}/samples/{n}"),
+    ("POST", "/api/v1/match/draft/camera/{camera_id}/train"),
+    ("POST", "/api/v1/match/draft/camera/{camera_id}/edit"),
+    ("DELETE", "/api/v1/match/draft/camera/{camera_id}"),
     ("POST", "/api/v1/send/actions/batch"),
     ("POST", "/api/v1/plc/actions"),
     ("POST", "/api/v1/plc/actions/batch"),

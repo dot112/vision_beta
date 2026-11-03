@@ -46,6 +46,8 @@ def required_api_key_scopes(method: str, path: str) -> set[str] | None:
         return {"inspection:trigger"}
     if path.startswith("/api/v1/ocr/"):
         return None  # Line setup's text reader picture and preview: JWT-only
+    if path.startswith("/api/v1/match/"):
+        return None  # Line setup's pattern check: picture, preview, draft and training: JWT-only
     if path.startswith("/api/v1/qr/annotated"):
         return {"monitor:read"}
     if path.startswith("/api/v1/qr/") or path.startswith("/api/v1/control/trigger"):

@@ -6,7 +6,7 @@ import pytest
 
 from app.engines import ocr_engine, ocr_models
 from app.engines.ocr_engine import OcrLine
-from app.routes.v1 import ocr as ocr_route
+from app.services import held_pictures
 from app.security.api_key_scopes import required_api_key_scopes
 from tests.test_config_lock_api import operator, supervisor, unlocked  # noqa: F401  (fixtures)
 
@@ -31,9 +31,9 @@ class _Engine:
 def engine(monkeypatch):
     made = _Engine()
     monkeypatch.setattr(ocr_engine, "engine_for", lambda model: made)
-    ocr_route._held.clear()
+    held_pictures._held.clear()
     yield made
-    ocr_route._held.clear()
+    held_pictures._held.clear()
 
 
 def test_take_a_picture_then_preview_it(client, supervisor, fake_camera, engine):  # noqa: F811
@@ -70,11 +70,11 @@ def test_no_held_picture_is_404_and_it_expires(client, supervisor, fake_camera, 
     assert client.post(f"{API}/ocr/preview/camera/c1", headers=supervisor,
                        json={"settings": SETTINGS, "held": True}).status_code == 404
     clock = [1000.0]
-    monkeypatch.setattr(ocr_route, "_now", lambda: clock[0])
+    monkeypatch.setattr(held_pictures, "_now", lambda: clock[0])
     client.post(f"{API}/ocr/picture/camera/c1", headers=supervisor)
-    clock[0] += ocr_route.HELD_TTL_S - 1
+    clock[0] += held_pictures.HELD_TTL_S - 1
     assert client.get(f"{API}/ocr/picture/camera/c1?held=1", headers=supervisor).status_code == 200     # used: kept
-    clock[0] += ocr_route.HELD_TTL_S + 1
+    clock[0] += held_pictures.HELD_TTL_S + 1
     assert client.get(f"{API}/ocr/picture/camera/c1?held=1", headers=supervisor).status_code == 404
     assert client.get(f"{API}/ocr/picture/camera/c1?held=0", headers=supervisor).status_code == 200      # a new one
 
