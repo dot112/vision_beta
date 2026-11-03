@@ -24,6 +24,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from app.services.event_values import match_values_of
 from app.services.card_triggers import TIMER_TRIGGER, alarm_event, card_fires, card_line, normalize_trigger
 from app.services.line_config import (
     PRIMARY_LINE_ID,
@@ -75,6 +76,8 @@ MESSAGE_FIELDS: Dict[str, Tuple[str, ...]] = {
     "product": ("product",),
     # What a text reader read of the product ({field: text}) and its result (good / wrong / none).
     "read_text": ("text", "text_status"),
+    # What a pattern check found ({score, status, checks: {name: {score, defect_px}}}) and its result.
+    "pattern": ("match", "match_status"),
     # The input that changed (the trigger "Input changed").
     "input": ("input_id", "input_name", "value", "previous"),
 }
@@ -158,11 +161,14 @@ def template_values(payload: Dict[str, Any]) -> Dict[str, Any]:
         "product_check": pick("product_check"),
         "sequence": pick("sequence"),
         "text_status": pick("text_status"),
+        "match_status": pick("match_status"),
     }
     found = {name: values.get(name) for name in TEMPLATE_FIELDS}
     # {text.<field>}: what a text reader read of the product.
     if isinstance(payload.get("text"), dict):
         found.update({f"text.{name}": value for name, value in payload["text"].items()})
+    # {match.score}, {match.<check>.score}, {match.<check>.defect}: what a pattern check found.
+    found.update({name: value for name, value in match_values_of(payload).items() if name != "match_status"})
     # {product.name}, {product.lane}...: the product of a known code and its values.
     found.update(flat_product_values(payload.get("product") if isinstance(payload.get("product"), dict) else None))
     # {input.<value name>}: the last value of the line's inputs; {input.value}, {input.previous}: the input that changed.

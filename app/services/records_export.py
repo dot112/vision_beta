@@ -53,6 +53,7 @@ _FIELDS: Tuple[Tuple[str, Callable[[ProductRecord], Any]], ...] = (
     ("product_check", lambda r: (r.details or {}).get("product_check") if isinstance(r.details, dict) else None),
     ("sequence", lambda r: (r.details or {}).get("sequence") if isinstance(r.details, dict) else None),
     ("text", lambda r: _text(r.details)),
+    ("pattern", lambda r: _pattern(r.details)),
     ("id", lambda r: r.id),
 )
 
@@ -70,6 +71,18 @@ def _text(details: Any) -> Optional[str]:
     if not isinstance(text, dict) or not text:
         return None
     return "; ".join(f"{name}={value}" for name, value in text.items())
+
+
+def _pattern(details: Any) -> Optional[str]:
+    """What a pattern check found of the product: 'Label 97% 0px; Cap 92% 48px' (or its status alone, 'error')."""
+    match = details.get("match") if isinstance(details, dict) else None
+    if not isinstance(match, dict):
+        return None
+    checks = match.get("checks")
+    if isinstance(checks, dict) and checks:
+        return "; ".join(f"{name} {check.get('score')}% {check.get('defect_px')}px"
+                         for name, check in checks.items() if isinstance(check, dict))
+    return match.get("status") or None
 
 
 def _product_data(details: Any) -> Optional[str]:

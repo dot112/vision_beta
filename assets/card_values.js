@@ -42,6 +42,7 @@
         const fields = (context && context.fields) || [];
         const inputs = (context && context.inputs) || [];
         const texts = (context && context.texts) || [];
+        const matches = (context && context.matches) || [];
         return [
             ...VALUE_NAMES,
             { name: "product.name", label: "Product name" },
@@ -50,7 +51,26 @@
             ...fields.map((f) => ({ name: `product.${f.key}`, label: `${f.label || f.key}${f.list ? ` (${f.list})` : ""}` })),
             ...inputs.filter((i) => i.value_name).map((i) => ({ name: `input.${i.value_name}`, label: `Input: ${i.name || i.value_name}` })),
             ...texts,
+            ...matches,
         ];
+    }
+
+    // The pattern checks' values of a line: match_status, match.score, and match.<check>.score / .defect for each
+    // check name once (ignoring case).
+    function matchChoices(cameras) {
+        const checks = (cameras || []).filter((c) => c && c.role === "match");
+        if (!checks.length) return [];
+        const seen = new Set();
+        const found = [{ name: "match_status", label: "Pattern check's result (good / not_found / mismatch / defect / error)" },
+            { name: "match.score", label: "Pattern check: Match % of the reference" }];
+        checks.forEach((c) => ((c.match && c.match.checks) || []).forEach((check) => {
+            const name = String(check.name || "");
+            if (!name || seen.has(name.toLowerCase())) return;
+            seen.add(name.toLowerCase());
+            found.push({ name: `match.${name}.score`, label: `Pattern check ${name}: Match %` },
+                { name: `match.${name}.defect`, label: `Pattern check ${name}: biggest defect (px)` });
+        }));
+        return found;
     }
 
     // The text readers' values of a line: text_status, and text.<field> for each field name once (ignoring case).
@@ -196,7 +216,7 @@
     const needsRedraw = (element, action) => !!action
         || !!(element && element.classList && (element.classList.contains("ow-kind") || element.classList.contains("ow-op")));
 
-    const api = { VALUE_NAMES, FORMULA_EXAMPLES, MAX_RULES, RULE_OPS, valueChoices, fieldChoices, textChoices, valueSourceText, writesText,
+    const api = { VALUE_NAMES, FORMULA_EXAMPLES, MAX_RULES, RULE_OPS, valueChoices, fieldChoices, textChoices, matchChoices, valueSourceText, writesText,
         onlyWhenText, onlyWhenHtml, readOnlyWhen, applyEdit, needsRedraw };
     root.CardValues = api;
     if (typeof module !== "undefined" && module.exports) module.exports = api;

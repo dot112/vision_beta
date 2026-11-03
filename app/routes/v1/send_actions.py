@@ -41,6 +41,7 @@ FIELD_LABELS = [
     ("product_check", "Product check that rejected the product"),
     ("sequence", "Product sequence number (from the PLC)"),
     ("read_text", "Read text (each text field's text, and good / wrong / none)"),
+    ("pattern", "Pattern check (each check's Match % and biggest defect, and good / not found / mismatch / defect / error)"),
     ("input", "Input that changed (id, name, new and old value)"),
 ]
 # Placeholders for the product of a known code; {product.<field key>} names one of its fields.

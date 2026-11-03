@@ -37,6 +37,7 @@ from app.services.line_config import (
     camera_model_id,
     camera_station,
     code_checks,
+    is_pattern_check,
     is_text_reader,
     code_verdict,
     join_settings,
@@ -1494,6 +1495,10 @@ class LineRuntime:
             if text is not None:
                 fields["text"] = plc_fields["text"] = text
                 fields["text_status"] = plc_fields["text_status"] = text_status
+            match, match_status = self._joined_match(product)
+            if match is not None:
+                fields["match"] = plc_fields["match"] = match
+                fields["match_status"] = plc_fields["match_status"] = match_status
             fields["reject_camera_id"] = reject_camera
             plc_fields["reject_camera_id"] = reject_camera
             # A card that names a joined camera fires for the products it takes part in.
@@ -1786,6 +1791,29 @@ class LineRuntime:
             if status == "good":
                 status = seen.get("text_status") or "none"
         return text, status
+
+    def _joined_match(self, product: _Product) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """What the joined pattern checks found of a product: their checks merged in card order (a name seen
+        already is kept from the first), the first camera's score, and the first status that is not "good"
+        ("error" for a pattern check that saw nothing of it); (None, None) without one."""
+        checkers = [st for st in product.stations if is_pattern_check(self.camera_entry(st.camera_id) or {})]
+        if not checkers:
+            return None, None
+        checks: Dict[str, Any] = {}
+        score = None
+        status = "good"
+        for station in checkers:
+            seen = (product.seen.get(station.camera_id) or {}).get("match") or {}
+            for name, check in (seen.get("checks") or {}).items():
+                checks.setdefault(name, check)
+            if score is None:
+                score = seen.get("score")
+            if status == "good":
+                status = (product.seen.get(station.camera_id) or {}).get("match_status") or "error"
+        match: Dict[str, Any] = {"status": status, "checks": checks}
+        if score is not None:
+            match["score"] = score
+        return match, status
 
     @staticmethod
     def _station_rows(product: _Product) -> List[Dict[str, Any]]:

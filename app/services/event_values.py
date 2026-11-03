@@ -9,6 +9,8 @@ message template and an only-when rule:
     product_id                           the product ID the code holds (by its list's code format)
     sequence                             the product sequence number the PLC held for the item
     text.<field>, text_status            what a text reader read (good / wrong / none)
+    match.score, match.<check>.score, match.<check>.defect, match_status
+                                         what a pattern check found (good / not_found / mismatch / defect / error)
     good_count, reject_count, total_count, batch, line, camera
     product.name, product.code, product.list, product.<field>   the product of a known code
     input.<value name>                   the last value an input of the line read
@@ -26,6 +28,26 @@ from app.services.product_fields import flat_product_values
 def _runtime(line_id: str) -> Any:
     import app.services.line_service as line_service
     return line_service.line_manager.get(line_id)
+
+
+def match_values_of(event: Dict[str, Any]) -> Dict[str, Any]:
+    """match_status, match.score, match.<check>.score and match.<check>.defect of an event (a check not done is
+    left out)."""
+    values: Dict[str, Any] = {}
+    if event.get("match_status"):
+        values["match_status"] = event["match_status"]
+    match = event.get("match")
+    if not isinstance(match, dict):
+        return values
+    if match.get("score") is not None:
+        values["match.score"] = match["score"]
+    for name, check in (match.get("checks") or {}).items():
+        if isinstance(check, dict):
+            if check.get("score") is not None:
+                values[f"match.{name}.score"] = check["score"]
+            if check.get("defect_px") is not None:
+                values[f"match.{name}.defect"] = check["defect_px"]
+    return values
 
 
 def values_for(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -60,6 +82,7 @@ def values_for(event: Dict[str, Any]) -> Dict[str, Any]:
         for name, value in text.items():
             if value not in (None, ""):
                 values[f"text.{name}"] = value
+    values.update(match_values_of(event))
 
     line_id = str(event.get("line_id") or PRIMARY_LINE_ID)
     runtime = _runtime(line_id)

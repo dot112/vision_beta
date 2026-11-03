@@ -1004,6 +1004,7 @@ TEMPLATE_FIELDS: Dict[str, str] = {
     "product_check": "Product check that rejected the product",
     "sequence": "Product sequence number (from the PLC)",
     "text_status": "Text reader's result (good / wrong / none)",
+    "match_status": "Pattern check's result (good / not_found / mismatch / defect / error)",
 }
 
 _TEMPLATE_TOKEN = re.compile(r"\{\{|\}\}|\{([^{}]*)\}|\\[rnt\\]|[{}]")
@@ -1030,7 +1031,14 @@ def parse_template(template: str) -> Tuple[Tuple[bool, str], ...]:
         elif match.group(1) is not None:
             name = match.group(1).strip()
             root = name.split(".", 1)[0].lower()
-            if "." in name and root in ("product", "input", "text"):
+            if root == "match" and "." in name:
+                # A pattern check's value: match.score, match.<check>.score, match.<check>.defect.
+                from app.services.formula import is_match_name
+
+                name = f"match.{name.split('.', 1)[1]}"
+                if not is_match_name(name):
+                    raise ValueError(f"{{{match.group(1)}}} is not a placeholder")
+            elif "." in name and root in ("product", "input", "text"):
                 # A product's values, an input's value, a text reader's field: the root in any case, the name as it is written.
                 key = name.split(".", 1)[1]
                 if not VALUE_NAME_RE.fullmatch(key):

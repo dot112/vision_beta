@@ -73,7 +73,7 @@ def test_how_a_card_says_what_it_writes():
 
 def test_the_page_loads_the_value_helpers(client):
     page = client.get("/dashboard").text
-    assert "/assets/card_values.js?v=3.5.0" in page
+    assert "/assets/card_values.js?v=3.6.0" in page
     assert client.get("/assets/card_values.js").status_code == 200
 
 

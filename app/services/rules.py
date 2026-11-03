@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Optional, Tuple
 
-from app.services.formula import MISSING, PLAIN_NAMES, ROOTS, as_text, compare
+from app.services.formula import MISSING, PLAIN_NAMES, ROOTS, as_text, compare, is_match_name
 from app.services.product_fields import VALUE_NAME_RE
 
 RULE_OPS = ("=", "!=", "<", "<=", ">", ">=", "contains", "empty", "not_empty")
@@ -32,6 +32,8 @@ def is_value_name(text: Any) -> bool:
     if text in PLAIN_NAMES:
         return True
     root, dot, key = text.partition(".")
+    if root == "match":
+        return is_match_name(text)
     return bool(dot) and root in ROOTS and bool(VALUE_NAME_RE.fullmatch(key))
 
 

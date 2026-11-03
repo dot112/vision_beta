@@ -3923,7 +3923,8 @@ function cardInputPickerHtml(card, onchange) {
 function cardRuleChoices(card) {
     if (!window.CardValues) return [];
     const choices = CardValues.valueChoices({ fields: cardFieldChoices(), inputs: cardValueInputs(),
-        texts: CardValues.textChoices(window.ProductionLines ? ProductionLines.lineCameras() : []) });
+        texts: CardValues.textChoices(window.ProductionLines ? ProductionLines.lineCameras() : []),
+        matches: CardValues.matchChoices(window.ProductionLines ? ProductionLines.lineCameras() : []) });
     if (cardTriggerKind(card.trigger) === "input") {
         choices.push({ name: "input.value", label: "New value of the input" }, { name: "input.previous", label: "Old value of the input" });
     }
@@ -4511,8 +4512,8 @@ function renderSendTemplate(template, values = {}) {
         else if (token in SEND_TEMPLATE_ESCAPES) text += SEND_TEMPLATE_ESCAPES[token];
         else if (m[1] !== undefined) {
             const name = m[1].trim().toLowerCase();
-            // {text.<field>}: a text reader's field, named on its camera card.
-            if (!known.has(name) && !/^text\.[a-z][a-z0-9_]{0,31}$/.test(name)) { problem = problem || (name ? `{${m[1]}} is not a placeholder` : "{} names no placeholder"); continue; }
+            // {text.<field>}: a text reader's field; {match.score}, {match.<check>.score / .defect}: a pattern check's.
+            if (!known.has(name) && !/^text\.[a-z][a-z0-9_]{0,31}$/.test(name) && !/^match\.(score|[a-z][a-z0-9_]{0,31}\.(score|defect))$/.test(name)) { problem = problem || (name ? `{${m[1]}} is not a placeholder` : "{} names no placeholder"); continue; }
             const value = values[name];
             text += value === null || value === undefined ? "" : String(value);
         } else problem = problem || `A single '${token}' must be written '${token}${token}'`;
@@ -7460,7 +7461,7 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
 })();
 </script>
 <script src="/assets/help_tips.js?v=3.4.0"></script>
-<script src="/assets/card_values.js?v=3.5.0"></script>
+<script src="/assets/card_values.js?v=3.6.0"></script>
 <script src="/assets/camera_settings.js?v=3.8.0"></script>
 <script src="/assets/plc_signals.js?v=3.6.0"></script>
 <script src="/assets/product_fields.js?v=3.5.0"></script>
