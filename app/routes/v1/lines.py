@@ -345,7 +345,7 @@ async def _name_cameras(text: Optional[str], cameras: Any) -> Optional[str]:
     return _CAMERA_LABEL.sub(named, text)
 
 
-async def _save(raw: Dict[str, Any]) -> Dict[str, Any]:
+async def _save(raw: Dict[str, Any], replace: bool = False) -> Dict[str, Any]:
     try:
         _check_camera_count(raw)
         _check_code_types(raw)
@@ -353,7 +353,7 @@ async def _save(raw: Dict[str, Any]) -> Dict[str, Any]:
         await _check_models(raw)
         await _check_picture_sources(raw)
         try:
-            return _svc().save_line(raw)
+            return _svc().save_line(raw, replace=replace)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     except HTTPException as exc:
@@ -607,8 +607,11 @@ async def update_line(line_id: str, body: Dict[str, Any], user: User = Depends(r
     return await _update_line(line_id, body, user)
 
 
-async def _update_line(line_id: str, body: Dict[str, Any], user: Any) -> Dict[str, Any]:
-    """Change a line as Save line setup does (and a saved setup's load): checks, saving, trigger modes, applying."""
+async def _update_line(line_id: str, body: Dict[str, Any], user: Any, replace: bool = False) -> Dict[str, Any]:
+    """Change a line as Save line setup does (and a saved setup's load): checks, saving, trigger modes, applying.
+
+    ``replace``: ``body`` is the whole setup (a saved setup's load); nothing it leaves out is kept.
+    """
     existing = _svc().get_line(line_id, with_logic=True)
     if existing is None:
         raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
@@ -626,7 +629,7 @@ async def _update_line(line_id: str, body: Dict[str, Any], user: Any) -> Dict[st
     from app.routes.v1.send_actions import check_send_cards
     send_cards = body.get("send_actions") if isinstance(body.get("send_actions"), list) else existing.get("send_actions", [])
     check_send_cards({"cameras": [c for c in cameras if isinstance(c, dict)]}, send_cards)
-    line = await _save({**body, "id": line_id})
+    line = await _save({**body, "id": line_id}, replace=replace)
     _audit(user, "UPDATE_LINE", f"Updated production line '{line['name']}'", line_id)
     not_set = await _apply_trigger_modes(line)
     await apply_line(line_id)
@@ -865,7 +868,8 @@ async def load_line_setup(line_id: str, setup_id: str, user: User = Depends(requ
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Saved setup not found") from exc
     try:
-        result = await line_setups.load(db, line_id, setup_id, user, _update_line)
+        result = await line_setups.load(db, line_id, setup_id, user,
+                                        lambda lid, body, who: _update_line(lid, body, who, replace=True))
     except line_setups.LoadRefused as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:

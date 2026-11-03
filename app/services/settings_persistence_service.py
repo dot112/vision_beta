@@ -14,6 +14,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from app.events.alarm_events import AlarmCode, AlarmSeverity, raise_alarm
 from app.services import audit_log, storage_state
 from app.services.line_config import (
+    COUNTS_RESET_KEYS,
     OLD_CLASS_KEYS,
     OLD_SEND_KEYS,
     PLC_CARD_KEPT_KEYS,
@@ -667,7 +668,7 @@ class SettingsPersistenceService:
         return copy.deepcopy(raw_cards)
 
     @classmethod
-    def replace_plc_actions(cls, cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def replace_plc_actions(cls, cards: List[Dict[str, Any]], keep: bool = True) -> List[Dict[str, Any]]:
         """Replace PLC cards in the authoritative state object.
 
         The return value is detached so callers cannot mutate the saved
@@ -681,7 +682,7 @@ class SettingsPersistenceService:
 
         from app.services.plc_failsafe_service import validate_confirmation, validate_safe_state, validate_write_value
         from app.services.rules import validate_card_rules
-        cards = keep_card_fields(cards, cls._state.get("plc_actions"), PLC_CARD_KEPT_KEYS)
+        cards = keep_card_fields(cards, cls._state.get("plc_actions") if keep else [], PLC_CARD_KEPT_KEYS)
         endpoints = cls.get_endpoints(protocol="plc")
         for card in cards:
             validate_safe_state(card)
@@ -754,11 +755,15 @@ class SettingsPersistenceService:
         return cls._state if line_id == PRIMARY_LINE_ID else line
 
     @classmethod
-    def replace_line_send_actions(cls, line_id: str, cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Replace one line's send cards; returns a detached copy of what was saved. Raises ValueError."""
+    def replace_line_send_actions(cls, line_id: str, cards: List[Dict[str, Any]], keep: bool = True) -> List[Dict[str, Any]]:
+        """Replace one line's send cards; returns a detached copy of what was saved. Raises ValueError.
+
+        ``keep``: a card's settings that the client left out are kept as saved (an older dashboard).
+        """
         holder = cls._send_holder(line_id)
         cards = [{k: v for k, v in c.items() if k != "line_id"} if isinstance(c, dict) else c for c in cards]
-        checked = normalize_send_cards(keep_card_fields(cards, holder.get("send_actions"), SEND_CARD_KEPT_KEYS))
+        kept = holder.get("send_actions") if keep else []
+        checked = normalize_send_cards(keep_card_fields(cards, kept, SEND_CARD_KEPT_KEYS))
         cls._check_input_links(checked, (cls._find_line(line_id) or {}).get("plc_inputs"))
         holder["send_actions"] = checked
         return copy.deepcopy(holder["send_actions"])
@@ -796,10 +801,10 @@ class SettingsPersistenceService:
         return copy.deepcopy(cards) if isinstance(cards, list) else []
 
     @classmethod
-    def replace_line_plc_actions(cls, line_id: str, cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Replace one line's PLC cards; returns a detached copy of what was saved."""
+    def replace_line_plc_actions(cls, line_id: str, cards: List[Dict[str, Any]], keep: bool = True) -> List[Dict[str, Any]]:
+        """Replace one line's PLC cards; returns a detached copy of what was saved. ``keep`` as for send cards."""
         if line_id == PRIMARY_LINE_ID:
-            return cls.replace_plc_actions(cards)
+            return cls.replace_plc_actions(cards, keep=keep)
         line = cls._find_line(line_id)
         if line is None:
             raise KeyError(line_id)
@@ -808,7 +813,7 @@ class SettingsPersistenceService:
         check_output_action_ids(cards)
         from app.services.plc_failsafe_service import validate_confirmation, validate_safe_state, validate_write_value
         from app.services.rules import validate_card_rules
-        cards = keep_card_fields(cards, line.get("plc_actions"), PLC_CARD_KEPT_KEYS)
+        cards = keep_card_fields(cards, line.get("plc_actions") if keep else [], PLC_CARD_KEPT_KEYS)
         endpoints = cls.get_endpoints(protocol="plc")
         for card in cards:
             validate_safe_state(card)
@@ -885,14 +890,21 @@ class SettingsPersistenceService:
         return cards
 
     @classmethod
-    def save_line(cls, raw: Dict[str, Any]) -> Dict[str, Any]:
-        """Create or replace a line. Raises ValueError on invalid input."""
+    def save_line(cls, raw: Dict[str, Any], replace: bool = False) -> Dict[str, Any]:
+        """Create or replace a line. Raises ValueError on invalid input.
+
+        A client that leaves a setting out keeps it as saved. With ``replace`` (a saved setup put back)
+        ``raw`` is the whole setup: only the line's running state, batch and count resets are kept.
+        """
         lines = cls._raw_lines()
         line_id = str(raw.get("id") or "").strip().lower()
         existing = next((ln for ln in lines if ln.get("id") == line_id), None) if line_id else None
         if existing is not None and line_id == PRIMARY_LINE_ID:
             existing = {**existing, "action_trigger": cls.get_line_action_trigger(line_id)}
-        line = normalize_line(raw, existing)
+        if replace and existing is not None:
+            line = normalize_line(raw, {k: v for k, v in existing.items() if k in ("id", "enabled", "batch") + COUNTS_RESET_KEYS})
+        else:
+            line = normalize_line(raw, existing)
         if "cameras" in raw:
             # Only when the cameras are sent: a line saved before models were
             # picked per camera can still be started, stopped and renamed.
@@ -928,12 +940,13 @@ class SettingsPersistenceService:
         # The cards as they will be saved (what an older client left out is kept),
         # against the signal cards as they will be saved: checked before anything changes.
         saved_cards = cls.get_line_plc_actions(line["id"]) if existing is not None else []
-        will_save = keep_card_fields(cards, saved_cards, PLC_CARD_KEPT_KEYS) if cards is not None else saved_cards
+        will_save = keep_card_fields(cards, [] if replace else saved_cards, PLC_CARD_KEPT_KEYS) if cards is not None else saved_cards
         cls._check_confirmation_links(will_save, line.get("plc_inputs"))
         cls._check_input_links(will_save, line.get("plc_inputs"))
         # The send cards as they will be saved, against the inputs as they will be saved.
         saved_send = cls.get_line_send_actions(line["id"]) if existing is not None else []
-        send_will_save = keep_card_fields(send_cards, saved_send, SEND_CARD_KEPT_KEYS) if send_cards is not None else saved_send
+        send_will_save = keep_card_fields(send_cards, [] if replace else saved_send, SEND_CARD_KEPT_KEYS) \
+            if send_cards is not None else saved_send
         cls._check_input_links(send_will_save, line.get("plc_inputs"))
 
         if line["id"] == PRIMARY_LINE_ID:
@@ -956,9 +969,9 @@ class SettingsPersistenceService:
         else:
             lines[lines.index(next(ln for ln in lines if ln.get("id") == line["id"]))] = line
         if cards is not None:
-            cls.replace_line_plc_actions(line["id"], cards)
+            cls.replace_line_plc_actions(line["id"], cards, keep=not replace)
         if send_cards is not None:
-            cls.replace_line_send_actions(line["id"], send_cards)
+            cls.replace_line_send_actions(line["id"], send_cards, keep=not replace)
         return cls.get_line(line["id"])
 
     @classmethod

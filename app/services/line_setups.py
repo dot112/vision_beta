@@ -22,7 +22,7 @@ SETUP_ID = re.compile(r"setup-[0-9a-f]{8}")
 MAX_NAME = 64
 FORMAT = 1
 # The line's live state: what it is doing now, not how it is set up.
-LIVE_KEYS = ("enabled", "batch", "counts_reset_at", "status", "warnings")
+LIVE_KEYS = ("enabled", "batch", "counts_reset_at", "counts_reset_classes", "status", "warnings")
 _LINE_ID = re.compile(r"[A-Za-z0-9_-]+")
 
 
@@ -234,8 +234,9 @@ async def load(db: AsyncSession, line_id: str, setup_id: str, user: Any,
     """Put a save back onto its line, which must be stopped.
 
     ``update_line`` is the line update of PUT /lines/{id} (the same checks, saving, trigger modes and
-    applying). Raises KeyError (no such save of this line), LoadRefused (409), ValueError or the update's
-    HTTPException (the setup is refused, with the reason). Connections already added back stay.
+    applying), replacing the setup: a setting the save does not have is not kept from the line as it is now.
+    Raises KeyError (no such save of this line), LoadRefused (409), ValueError or the update's HTTPException
+    (the setup is refused, with the reason). Connections already added back stay.
     """
     from app.services.camera_service import CameraService
 

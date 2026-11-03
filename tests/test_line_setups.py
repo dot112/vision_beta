@@ -190,6 +190,42 @@ def test_load_puts_the_setup_back(client, admin_headers, data_dir, endpoints, ne
     assert res.json()["line"]["name"] == "Packing"
 
 
+def _setup_of(line):
+    """A line as GET gives it, without what a save leaves out."""
+    return {k: v for k, v in line.items() if k not in ("enabled", "batch", "counts_reset_at", "counts_reset_classes",
+                                                       "status", "warnings")}
+
+
+def test_a_load_replaces_what_the_save_did_not_have(client, admin_headers, data_dir, endpoints, new_line):
+    hook, cam, line = _packing(client, admin_headers, endpoints, new_line, "Replaced", "http://10.0.1.5/video")
+    base = f"{API}/lines/{line['id']}"
+    saved = _save(client, admin_headers, line["id"])
+    [path] = _files(data_dir, line["id"])
+    held = json.loads(path.read_text(encoding="utf-8"))["line"]
+    # Since the save: inputs, a sequence input, the handshake, the camera's trigger and a send card's Only when.
+    inputs = [{"id": "in_capture", "name": "CaptureRequest", "plc_endpoint_id": "plc-none", "address": "DB1.Cap",
+               "action": "capture", "trigger_no": 1, "data_type": "bool"},
+              {"id": "in_seq", "name": "ProductSequence", "plc_endpoint_id": "plc-none", "address": "DB1.Seq",
+               "action": "none", "data_type": "uint16", "value_name": "seq"},
+              {"id": "in_ack", "name": "ResultAck", "plc_endpoint_id": "plc-none", "address": "DB1.Ack",
+               "action": "none", "data_type": "bool"}]
+    changed = client.put(base, json={
+        "plc_inputs": inputs, "sequence_input_id": "in_seq",
+        "handshake": {"enabled": True, "capture_input_id": "in_capture", "ack_input_id": "in_ack"},
+        "cameras": [{"camera_id": cam, "role": "qr", "qr_trigger": "signal", "qr_hold_ms": 2000, "triggers": [1]}],
+        "send_actions": [{"id": "send_mes", "name": "To MES", "endpoint_id": hook,
+                          "only_when": {"rules": [{"left": "code", "op": "contains", "right": "x"}]}}],
+    }, headers=admin_headers)
+    assert changed.status_code == 200, changed.text
+    now = client.get(base, headers=admin_headers).json()
+    assert now["plc_inputs"] and now["handshake"] and now["cameras"][0].get("triggers") and now["send_actions"][0].get("only_when")
+
+    res = _load(client, admin_headers, line["id"], saved["id"])
+    assert res.status_code == 200, res.text
+    after = client.get(base, headers=admin_headers).json()
+    assert _setup_of(after) == _setup_of(held)
+
+
 def test_load_is_refused_on_a_running_line(client, admin_headers, data_dir, new_line):
     line = new_line("Runner")
     saved = _save(client, admin_headers, line["id"])
