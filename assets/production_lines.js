@@ -2795,6 +2795,10 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             const triggered = cam.count_mode === "trigger";
             return `Text reader · ${triggered ? "one picture per trigger" : "reads continuously"}${triggered ? ` · ${job}` : ""}`;
         }
+        if (cam.role === "match") {
+            const triggered = cam.count_mode === "trigger";
+            return `Pattern check · ${triggered ? "one picture per trigger" : "shows the pattern"}${triggered ? ` · ${job}` : ""}`;
+        }
         return `${job}${cam.read_codes ? " · reads codes" : ""}${cam.model_name ? ` · ${cam.model_name}` : ""}`;
     }
 
@@ -2908,6 +2912,10 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         text_wrong: "text does not fit",
         no_text: "no text",
         reader_error: "text reader error",
+        pattern_not_found: "pattern not found",
+        pattern_mismatch: "pattern mismatch",
+        pattern_defect: "pattern defect",
+        pattern_error: "pattern check error",
     };
     const LANE = { accepted: "accepted outfeed", rejected: "rejected outfeed" };
     const HANDSHAKE_STATE = {
@@ -2971,8 +2979,9 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         const hasHandshake = Boolean(status.handshake);
         const hasSorting = Boolean(status.sorting);
         const hasText = cams.some((c) => c.role === "ocr");
+        const hasPattern = cams.some((c) => c.role === "match");
         // Rebuild only when the cameras change, so the reads list does not blink.
-        const signature = JSON.stringify([state.lineId, hasQr, reader && reader.camera_id, hasHandshake, hasSorting, hasText]);
+        const signature = JSON.stringify([state.lineId, hasQr, reader && reader.camera_id, hasHandshake, hasSorting, hasText, hasPattern]);
         if (box.dataset.signature === signature) return;
         box.dataset.signature = signature;
         if (state.captureShown) delete state.captureShown.inline;
@@ -2988,7 +2997,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                     <div class="pl-feed-caption" id="plInlineCaption"></div></div>` : ""}
                 <div class="table-responsive"><table class="pl-table"><thead><tr><th>Time</th><th>Code</th><th>Code check</th><th>Product</th><th>Batch</th><th>Class</th><th>Product result</th></tr></thead>
                 <tbody id="plQrBody"><tr><td colspan="7">No reads yet.</td></tr></tbody></table></div></div>`
-            : "") + (hasText ? TextReader.readsPanelHtml() : "");
+            : "") + (hasText ? TextReader.readsPanelHtml() : "") + (hasPattern ? PatternCheck.checksPanelHtml() : "");
         renderCartonView(status.handshake, status.sorting);
     }
 
@@ -3175,6 +3184,14 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             try {
                 const data = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}/ocr/recent?limit=25`);
                 textBody.innerHTML = TextReader.readsRowsHtml(data.reads || [], { name: cameraName, reasons: REJECT_REASON });
+            } catch (_) { /* next refresh retries */ }
+        }
+        // The latest pattern checks, as often.
+        const patternBody = byId("plPatternBody");
+        if (patternBody) {
+            try {
+                const data = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}/match/recent?limit=25`);
+                patternBody.innerHTML = PatternCheck.checksRowsHtml(data.checks || [], { name: cameraName, reasons: REJECT_REASON });
             } catch (_) { /* next refresh retries */ }
         }
         const body = byId("plQrBody");
@@ -4100,8 +4117,8 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
     }
 
     function recordCode(r) {
-        // What a text reader read of the product follows the code.
-        const text = TextReader.recordText(r.details);
+        // What a text reader read and what a pattern check found of the product follow the code.
+        const text = TextReader.recordText(r.details) + PatternCheck.recordText(r.details);
         if (r.code_status === "no_read") return `<span style="color:var(--warning-color)">No read</span>${text}`;
         if (!r.code) return text;
         const [label, color] = QR_RESULT[r.code_status] || ["", "var(--text-muted)"];

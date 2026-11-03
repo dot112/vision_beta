@@ -1744,3 +1744,7 @@ body .pl-line-select > .help-tip { display: inline-flex; }
     .pc-tools { margin-left: 0; }
     .pc-checks th:nth-child(5), .pc-checks td:nth-child(5) { min-width: 96px; }
 }
+.pc-fits { color: var(--success-color); }
+.pc-wrong { color: var(--danger-color); }
+.pc-none { color: var(--text-muted); }
+.pc-record { font-size: 11.5px; color: var(--text-muted); }

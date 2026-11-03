@@ -48,7 +48,7 @@ def test_script_is_valid_and_loaded():
         pytest.skip("node is not installed")
     assert subprocess.run([node, "--check", str(SCRIPT)], capture_output=True).returncode == 0
     page = PAGE.read_text(encoding="utf-8")
-    tag = '<script src="/assets/pattern_check.js?v=1.0.0"></script>'
+    tag = '<script src="/assets/pattern_check.js?v=1.0.1"></script>'
     assert tag in page and page.index(tag) < page.index("/assets/production_lines.js")
 
 

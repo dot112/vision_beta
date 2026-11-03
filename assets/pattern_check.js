@@ -687,8 +687,41 @@
 
     // ── The Line dashboard and the Records page ───────────────────────────────
 
+    // The Latest pattern checks panel; production_lines.js fills plPatternBody with checksRowsHtml().
+    function checksPanelHtml() {
+        return `<div class="card-panel" id="plPatternPanel"><div class="card-panel-header"><span class="card-panel-title">Latest pattern checks</span></div>
+                <div class="table-responsive"><table class="pl-table"><thead><tr><th>Time</th><th>Camera</th><th>Checks</th><th>Product result</th></tr></thead>
+                <tbody id="plPatternBody"><tr><td colspan="4">No checks yet.</td></tr></tbody></table></div></div>`;
+    }
+
+    // GET /lines/{id}/match/recent's checks as table rows. opts: name(cameraId) -> its name, reasons {reason: label}.
+    function checksRowsHtml(checks, opts) {
+        const o = opts || {};
+        const name = (id) => (o.name ? o.name(id) : id) || id;
+        const reasons = o.reasons || REASONS;
+        const rows = (checks || []).map((r) => {
+            const parts = (r.checks || []).map((c) => `<div class="${c.fits ? "pc-fits" : "pc-wrong"}">${esc(c.name)} ${esc(c.score)}% · ${esc(c.defect_px)} px</div>`).join("")
+                || (r.error ? `<div class="pc-wrong">${esc(r.error)}</div>` : "");
+            const verdict = r.result === "reject" ? `<b style="color:var(--danger-color)">Rejected</b>${r.reason ? ` · ${esc(reasons[r.reason] || r.reason)}` : ""}`
+                : r.result === "good" ? `<b style="color:var(--success-color)">Good</b>` : `<span class="pc-none">—</span>`;
+            const product = r.track_id !== null && r.track_id !== undefined ? `<div class="pc-none">product #${esc(r.track_id)}</div>` : "";
+            return `<tr><td class="pl-code">${esc(new Date(r.timestamp * (r.timestamp < 1e11 ? 1000 : 1)).toLocaleTimeString())}</td><td>${esc(name(r.camera_id))}</td><td>${parts}</td><td>${verdict}${product}</td></tr>`;
+        });
+        return rows.join("") || `<tr><td colspan="4">No checks yet.</td></tr>`;
+    }
+
+    // A record's pattern check (details.match): each check's Match % and biggest defect; "" without one.
+    function recordText(details) {
+        const match = details && typeof details.match === "object" && details.match ? details.match : null;
+        if (!match) return "";
+        const checks = match.checks && typeof match.checks === "object" ? match.checks : {};
+        const parts = Object.keys(checks).map((k) => `${esc(k)} ${esc(checks[k].score)}% ${esc(checks[k].defect_px)} px`);
+        if (!parts.length) return match.status === "error" ? `<div class="pc-record pc-wrong">pattern check error</div>` : "";
+        return `<div class="pc-record">${parts.join(" · ")}</div>`;
+    }
+
     const api = { MAX_CHECKS, MAX_SAMPLES, MIN_BOX_PX, foldHtml, matchFromValues, readCard, boxFrom, paint, applySuggestions,
-                  trainAgain, newCheckName, bind, wake };
+                  trainAgain, newCheckName, bind, wake, checksPanelHtml, checksRowsHtml, recordText };
     root.PatternCheck = api;
     if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);
