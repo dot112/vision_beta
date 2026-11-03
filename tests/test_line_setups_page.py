@@ -91,3 +91,15 @@ def test_the_page_uses_it():
     css = (ROOT / "assets" / "dashboard.css").read_text(encoding="utf-8")
     rule = re.search(r"\.ls-link\s*\{([^}]*)\}", css).group(1)
     assert "color: var(--text-color)" in rule and "background: none" in rule and "border: 0" in rule
+
+
+def test_a_load_redraws_the_cards_and_every_unsaved_edit_counts():
+    js = (ROOT / "assets" / "production_lines.js").read_text(encoding="utf-8")
+    bind = js[js.index("LineSetups.bind("):]
+    bind = bind[:bind.index("\n        });")]
+    # The output action, send and input panels show what the load put on the server, not the cards before it.
+    assert "reloadForLine();" in bind
+    # Their unapplied edits are unsaved changes too: not in a save, lost by a load (as when switching lines).
+    assert "dirty: pendingEdits," in bind
+    switch = js[js.index("function switchLine("):]
+    assert "pendingEdits()" in switch[:switch.index("\n    }\n")]

@@ -551,6 +551,13 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         if (persist) localStorage.setItem(STORAGE_KEY, state.lineId);
     }
 
+    // Unsaved edits on Line setup: the line and its cameras, or output action, send or input cards not applied yet.
+    function pendingEdits() {
+        let pending = setup.dirty;
+        try { pending = pending || Boolean(_plcActionPendingChanges) || Boolean(_sendActionPendingChanges); } catch (_) { /* not loaded */ }
+        return pending || Boolean(window.PlcSignals && window.PlcSignals.hasPending());
+    }
+
     function switchLine(id) {
         if (id === state.lineId) return;
         const go = async () => {
@@ -562,10 +569,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             if (isTab("tabDashboard")) renderLineExtras();
             toast(`Showing ${lineName(state.lineId)}`, "info");
         };
-        let pending = false;
-        try { pending = Boolean(_plcActionPendingChanges) || Boolean(_sendActionPendingChanges); } catch (_) { pending = false; }
-        if (window.PlcSignals && window.PlcSignals.hasPending()) pending = true;
-        if (pending || setup.dirty) {
+        if (pendingEdits()) {
             const what = setup.dirty ? "The line setup (cameras and their settings)" : "The output action, input or send cards";
             confirmAction("Unsaved changes", `${what} of this line ${setup.dirty ? "has" : "have"} changes that are not saved. Switch lines and discard them?`, () => { setup.dirty = false; go(); });
             const select = byId("plLineSelect");
@@ -2334,12 +2338,13 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         LineSetups.bind(card.querySelector(".card-panel-header"), {
             lineId: () => d.id,
             lineName: () => d.name,
-            dirty: () => setup.dirty,
+            dirty: pendingEdits,
             running: () => Boolean(d.enabled),
             fetchJson: api,
             toast,
             confirm: confirmAction,
-            afterLoad: async () => { setup.dirty = false; await loadLines(); await renderLineSetup(); },
+            // The output action, send and input panels show the loaded cards too.
+            afterLoad: async () => { setup.dirty = false; await loadLines(); reloadForLine(); await renderLineSetup(); },
         });
         // "Keep show only" on a camera the upgrade flagged: clear its flag and save the line.
         byId("plCamGrid").addEventListener("click", (e) => {
