@@ -1,4 +1,4 @@
-"""Pattern checks (role "match"): one checker thread per camera and its latest result.
+"""Pattern checks (role "match"): one checker thread per camera, its latest result, the video overlay.
 
 A pattern check set to Continuously is fed the newest frame whenever it is free (the frame runner); its
 results are only drawn on the video. One on One picture per trigger gets its pictures from the trigger
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -22,6 +22,11 @@ logger = get_logger(__name__)
 _error_log = LogThrottle(60.0)
 
 NOT_A_CHECK = "the camera is not a pattern check on a line"
+BANNER = "PATTERN CHECK"
+NO_REFERENCE = "NO REFERENCE"
+CANNOT_CHECK = "CANNOT CHECK"
+FITS_COLOR, WRONG_COLOR, SPOT_COLOR = (0, 200, 0), (0, 0, 230), (0, 0, 255)
+ERROR_CHARS = 60
 
 
 def _entry(camera_id: str) -> Tuple[Any, Dict[str, Any]]:
@@ -153,6 +158,104 @@ class PatternCheckWorker:
             self._thread.join(timeout=1.0)
 
 
+def _ready(match: Dict[str, Any]) -> bool:
+    try:
+        load_set(match["reference_id"])
+        return True
+    except ReferenceMissing:
+        return False
+
+
+def _verdict(result: PatternResult) -> List[str]:
+    """What the bar says of a result (plain ASCII: the video's text cannot draw other characters)."""
+    if result.error:
+        return [CANNOT_CHECK, result.error[:ERROR_CHARS]]
+    ms = f"{result.ms:.0f}ms"
+    if result.reason is None:
+        return ["GOOD", f"MATCH {result.checks[0].score}%", ms]
+    failing = [c for c in result.checks if not c.fits]
+    if result.reason == "pattern_not_found" or not failing:
+        what = f"{result.checks[0].name}: not found" if result.checks else "not found"
+    elif result.reason == "pattern_mismatch":
+        check = min((c for c in failing[1:] or failing), key=lambda c: c.score)
+        what = f"{check.name}: match {check.score}%"
+    else:
+        check = max(failing, key=lambda c: c.defect_px)
+        what = f"{check.name}: defect {check.defect_px} px"
+    return ["REJECT", what, ms]
+
+
+def _state(camera_id: str) -> Tuple[List[str], bool]:
+    """(what the bar says, whether the latest result is drawn on the video)."""
+    from app.engines.inference_engine import STATUS_NO_LINE, STATUS_STOPPED, STATUS_WAITING_TRIGGER
+
+    runtime, entry = _entry(camera_id)
+    match = entry.get("match") if entry.get("role") == "match" else None
+    if runtime is None or not match:
+        return [BANNER, STATUS_NO_LINE], False
+    if not runtime.enabled:
+        return [BANNER, STATUS_STOPPED], False
+    if not _ready(match):
+        return [BANNER, NO_REFERENCE], False
+    if entry.get("count_mode") == "trigger":
+        # The result is drawn on the picture the trigger took, not on the moving video.
+        return [BANNER, STATUS_WAITING_TRIGGER], False
+    worker = PatternCheckPipeline.peek(camera_id)
+    result = worker.latest() if worker else None
+    if result is None:
+        return [BANNER], True
+    return [BANNER, *_verdict(result)], True
+
+
+def bar_parts(camera_id: str) -> List[str]:
+    """What the PATTERN CHECK bar of a camera's video says."""
+    return _state(camera_id)[0]
+
+
+def draw_result(img: np.ndarray, result: PatternResult, scale_x: float = 1.0, scale_y: float = 1.0) -> None:
+    """Each check's box (green: it passes, red: not) with its name, Match % and biggest defect, and the
+    defect spots outlined red. Coordinates are the camera picture's, drawn scaled to ``img``."""
+    import cv2
+
+    from app.engines.inference_engine import overlay_scale
+
+    h, w = img.shape[:2]
+    s = overlay_scale(w, h)
+    thick = max(2, int(round(2 * s)))
+    font, text_thick = 0.5 * s, max(1, int(round(s)))
+    for check in result.checks:
+        color = FITS_COLOR if check.fits else WRONG_COLOR
+        pts = np.array([[int(round(x * scale_x)), int(round(y * scale_y))] for x, y in check.box], np.int32)
+        cv2.polylines(img, [pts.reshape((-1, 1, 2))], isClosed=True, color=color, thickness=thick)
+        for x1, y1, x2, y2 in check.spots:
+            cv2.rectangle(img, (int(round(x1 * scale_x)), int(round(y1 * scale_y))),
+                          (int(round(x2 * scale_x)), int(round(y2 * scale_y))), SPOT_COLOR, max(1, int(round(s))))
+        label = f"{check.name} {check.score}% {check.defect_px} px"
+        x, y = int(pts[:, 0].min()), max(int(round(20 * s)), int(pts[:, 1].min()))
+        (lw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font, text_thick)
+        cv2.rectangle(img, (x, y - int(round(20 * s))), (x + lw + int(round(8 * s)), y - thick), color, -1)
+        cv2.putText(img, label, (x + int(round(4 * s)), y - int(round(6 * s))), cv2.FONT_HERSHEY_SIMPLEX, font,
+                    (255, 255, 255), text_thick)
+
+
+def render_capture(frame: Any, result: PatternResult) -> Optional[bytes]:
+    """The picture a trigger took for a pattern check, with its result drawn (JPEG; None on any failure)."""
+    try:
+        import cv2
+
+        if frame is None:
+            return None
+        img = frame.copy()
+        if img.ndim == 2:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        draw_result(img, result)
+        ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        return buf.tobytes() if ok else None
+    except Exception as exc:  # noqa: BLE001 - a picture that cannot be drawn is not shown
+        logger.warning("The pattern check's picture could not be drawn: %s: %s", type(exc).__name__, exc)
+        return None
+
+
 class PatternCheckPipeline:
     """The pattern checks, one per camera with the pattern check role."""
 
@@ -186,3 +289,21 @@ class PatternCheckPipeline:
             cls._workers.clear()
         for worker in workers:
             worker.stop()
+
+
+    @classmethod
+    def draw_checks(cls, camera_id: str, img: np.ndarray, scale_x: float = 1.0, scale_y: float = 1.0,
+                    fps: float = 0.0) -> np.ndarray:
+        """A pattern check's video: its latest result while it checks Continuously on a running line, and the
+        PATTERN CHECK bar. Draws on img and returns it."""
+        from app.engines.inference_engine import draw_status_bar
+
+        parts, shown = _state(camera_id)
+        worker = cls.peek(camera_id)
+        result = worker.latest() if (shown and worker) else None
+        if result is not None:
+            draw_result(img, result, scale_x, scale_y)
+        if fps > 0:
+            parts = parts + [f"FPS: {fps:.1f}"]
+        draw_status_bar(img, parts)
+        return img
