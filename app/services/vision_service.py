@@ -542,10 +542,12 @@ class CameraStreamPipeline:
             worker.stop()
         if publisher:
             publisher.stop()
+        from app.services.match_service import PatternCheckPipeline
         from app.services.ocr_service import OcrReaderPipeline
         from app.services.qr_service import QRReaderPipeline
         QRReaderPipeline.remove_camera(camera_id)
         OcrReaderPipeline.remove_camera(camera_id)
+        PatternCheckPipeline.remove_camera(camera_id)
 
     @classmethod
     def stop_all(cls) -> None:
@@ -559,10 +561,12 @@ class CameraStreamPipeline:
             worker.stop()
         for publisher in publishers:
             publisher.stop()
+        from app.services.match_service import PatternCheckPipeline
         from app.services.ocr_service import OcrReaderPipeline
         from app.services.qr_service import QRReaderPipeline
         QRReaderPipeline.stop_all()
         OcrReaderPipeline.stop_all()
+        PatternCheckPipeline.stop_all()
 
     @classmethod
     async def stream_annotated_mjpeg(cls, camera_id: str) -> AsyncGenerator[bytes, None]:
@@ -674,9 +678,13 @@ class CameraStreamPipeline:
 OVERRUN_CLEAR_S = 60.0
 
 
-def picture_worker(camera_id: str, text_reader: bool) -> Any:
-    """Where a triggered picture of a camera goes: its text reader, or its model's inference worker."""
-    if text_reader:
+def picture_worker(camera_id: str, role: str) -> Any:
+    """Where a triggered picture of a camera goes, by its job (role): its pattern check, its text reader, or
+    its model's inference worker."""
+    if role == "match":
+        from app.services.match_service import PatternCheckPipeline
+        return PatternCheckPipeline.get_worker(camera_id)
+    if role == "ocr":
         from app.services.ocr_service import OcrReaderPipeline
         return OcrReaderPipeline.get_worker(camera_id)
     return CameraStreamPipeline.get_worker(camera_id)
@@ -827,13 +835,12 @@ class ContinuousVisionRunner:
         if cur_fid == 0:
             return
 
-        # A text reader: read Continuously, it gets the newest frame whenever it is free; on One picture
-        # per trigger its pictures come from the triggers.
-        if role == "ocr":
+        # A text reader or a pattern check: Continuously, it gets the newest frame whenever it is free; on
+        # One picture per trigger its pictures come from the triggers.
+        if role in ("ocr", "match"):
             entry = runtime.camera_entry(camera_id) or {}
             if entry.get("count_mode") != "trigger" and (driver, cur_fid) != last_code_fids.get(camera_id):
-                from app.services.ocr_service import OcrReaderPipeline
-                reader = OcrReaderPipeline.get_worker(camera_id)
+                reader = picture_worker(camera_id, role)
                 if not reader.is_busy:
                     if hasattr(driver, "get_latest_raw_mat"):
                         success, mat, fid = driver.get_latest_raw_mat(copy=False)
@@ -899,8 +906,8 @@ class ContinuousVisionRunner:
         notice = to_model and runtime.has_notice(camera_id)
         if notice:
             runtime.drain_pairs(camera_id)
-        text_reader = (runtime.camera_entry(camera_id) or {}).get("role") == "ocr"
-        worker = picture_worker(camera_id, text_reader) if to_model and not notice else None
+        role = (runtime.camera_entry(camera_id) or {}).get("role", "vision")
+        worker = picture_worker(camera_id, role) if to_model and not notice else None
         reader = QRReaderPipeline.get_worker(camera_id) if to_reader else None
         if (worker is not None and worker.is_busy) or (reader is not None and reader.capture_busy):
             return

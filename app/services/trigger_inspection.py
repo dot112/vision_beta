@@ -404,7 +404,7 @@ async def _take_picture(runtime: Any, camera_id: str, timeout: float) -> Tuple[L
     mode = getattr(driver, "trigger_mode", "off")
     if mode == "hardware":
         raise _hardware_refusal(camera_id)        # set to Hardware while this trigger waited
-    worker = picture_worker(camera_id, is_text_reader(runtime.camera_entry(camera_id) or {}))
+    worker = picture_worker(camera_id, (runtime.camera_entry(camera_id) or {}).get("role", "vision"))
     if mode == "software":
         # The server takes the picture itself: that picture, and no other, is the product's.
         return await _software_shot(driver, worker, runtime, camera_id, timeout)

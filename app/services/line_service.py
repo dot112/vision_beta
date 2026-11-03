@@ -1215,7 +1215,7 @@ class LineRuntime:
             if not queue:
                 return
             picture, context, arrived = queue[0]
-            worker = picture_worker(camera_id, (self.camera_entry(camera_id) or {}).get("role") == "ocr")
+            worker = picture_worker(camera_id, (self.camera_entry(camera_id) or {}).get("role", "vision"))
             if worker.submit_frame_if_idle(picture.frame, picture.frame_id, conf_thresh=self.confidence_for(camera_id),
                                            copy=False, arrived_at=arrived,
                                            on_result=functools.partial(_hardware_result, camera_id, context=context),
