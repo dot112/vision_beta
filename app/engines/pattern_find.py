@@ -172,17 +172,30 @@ def _scores(px: np.ndarray, py: np.ndarray, template: _Template) -> np.ndarray:
             + cv2.matchTemplate(py, template.gy, cv2.TM_CCORR)) / max(template.n, 1)
 
 
+def _region(img: np.ndarray, x0: int, y0: int, x1: int, y1: int) -> Optional[np.ndarray]:
+    """img[y0:y1, x0:x1], its part outside the picture filled by repeating the picture's edge (no
+    edges there, so a template partly outside scores only on its part inside). None when all outside."""
+    height, width = img.shape[:2]
+    cx0, cy0, cx1, cy1 = max(x0, 0), max(y0, 0), min(x1, width), min(y1, height)
+    if cx1 <= cx0 or cy1 <= cy0:
+        return None
+    part = img[cy0:cy1, cx0:cx1]
+    if (cx0, cy0, cx1, cy1) == (x0, y0, x1, y1):
+        return part
+    return cv2.copyMakeBorder(part, cy0 - y0, y1 - cy1, cx0 - x0, x1 - cx1, cv2.BORDER_REPLICATE)
+
+
 def _best_near(model: EdgeModel, level: int, img: np.ndarray, cx: float, cy: float,
                angles: List[float], window: int) -> Optional[Tuple[float, float, float, float]]:
     """(score, angle, x, y) of the best of these angles with the centre within +-window of (cx, cy)."""
     templates = [model._template(level, a) for a in angles]
     half_w = max(t.gx.shape[1] for t in templates) / 2 + window + 2
     half_h = max(t.gx.shape[0] for t in templates) / 2 + window + 2
-    rx0, ry0 = max(int(math.floor(cx - half_w)), 0), max(int(math.floor(cy - half_h)), 0)
-    rx1, ry1 = min(int(math.ceil(cx + half_w)), img.shape[1]), min(int(math.ceil(cy + half_h)), img.shape[0])
-    if rx1 - rx0 < 3 or ry1 - ry0 < 3:
+    rx0, ry0 = int(math.floor(cx - half_w)), int(math.floor(cy - half_h))
+    region = _region(img, rx0, ry0, int(math.ceil(cx + half_w)), int(math.ceil(cy + half_h)))
+    if region is None:
         return None
-    px, py, _ = unit_gradients(img[ry0:ry1, rx0:rx1], EDGE_PIC_MIN)
+    px, py, _ = unit_gradients(region, EDGE_PIC_MIN)
     best = None
     for template in templates:
         th, tw = template.gx.shape

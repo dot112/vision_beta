@@ -100,6 +100,12 @@ REASON_NO_PICTURE = "no_picture"
 REASON_TEXT_WRONG = "text_wrong"
 REASON_NO_TEXT = "no_text"
 REASON_READER_ERROR = "reader_error"
+# A pattern check's picture: its main reference is not found, another check does not match, a spot
+# differs from the good samples too much, or it could not check.
+REASON_PATTERN_NOT_FOUND = "pattern_not_found"
+REASON_PATTERN_MISMATCH = "pattern_mismatch"
+REASON_PATTERN_DEFECT = "pattern_defect"
+REASON_PATTERN_ERROR = "pattern_error"
 REJECT_REASONS = (REASON_VISION, REASON_NOT_LISTED, REASON_LISTED, REASON_NO_CODE, REASON_STATION_NO_RESULT,
                   REASON_NOTHING_DETECTED, REASON_PRODUCT_CHECK, REASON_INSPECTION_TIMEOUT, REASON_NO_PICTURE,
                   REASON_TEXT_WRONG, REASON_NO_TEXT, REASON_READER_ERROR)

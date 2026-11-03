@@ -15,7 +15,7 @@ CIRCLE = (300, 190, 28)
 WORD_BOX = (30, 115, 250, 170)
 
 
-def label(w: int = 360, h: int = 240, text: str = "ORANGE", circle: bool = True) -> np.ndarray:
+def label(w: int = 360, h: int = 240, text: str = "ORANGE", circle: bool = True, lot: str = "LOT 12345") -> np.ndarray:
     """A grey label: light paper, a dark frame, a big word, "JUICE 1L", a circle and a lot number."""
     lab = np.full((h, w), 225, np.uint8)
     cv2.rectangle(lab, (4, 4), (w - 5, h - 5), 40, 3)
@@ -23,7 +23,7 @@ def label(w: int = 360, h: int = 240, text: str = "ORANGE", circle: bool = True)
     cv2.putText(lab, "JUICE 1L", (40, 160), cv2.FONT_HERSHEY_SIMPLEX, 1.4, 60, 3)
     if circle:
         cv2.circle(lab, CIRCLE[:2], CIRCLE[2], 90, -1)
-    cv2.putText(lab, "LOT 12345", (30, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.7, 50, 2)
+    cv2.putText(lab, lot, (30, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.7, 50, 2)
     return lab
 
 
