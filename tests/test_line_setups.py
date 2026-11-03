@@ -289,6 +289,32 @@ def test_an_existing_connection_is_kept(client, admin_headers, data_dir, endpoin
     assert _endpoint(hook)["url"] == "https://mes.example/other"
 
 
+def test_a_kept_camera_connection_keeps_its_stream_settings(client, admin_headers, data_dir, endpoints, new_line):
+    source = "http://10.0.1.6/video"
+    hook, cam, line = _packing(client, admin_headers, endpoints, new_line, "Streams", source)
+    connection = {"name": "Belt cam", "protocol": "ipcam", "camera_kind": "ip", "source": source}
+
+    def stream(transport):
+        res = client.put(f"{API}/system/endpoints/{cam}", json={**connection, "transport": transport, "buffer_size": 4},
+                         headers=admin_headers)
+        assert res.status_code == 200, res.text
+
+    def camera():
+        return client.get(f"{API}/cameras/{cam}", headers=admin_headers).json()["settings"]
+
+    stream("tcp")
+    saved = _save(client, admin_headers, line["id"])
+    # The camera's connection is changed under Connections after the save: the camera streams over UDP now.
+    stream("udp")
+    assert client.patch(f"{API}/cameras/{cam}", json={"settings": {"roi_w": 0.3}}, headers=admin_headers).status_code == 200
+    assert camera()["transport"] == "udp"
+
+    assert _load(client, admin_headers, line["id"], saved["id"]).status_code == 200
+    after = camera()
+    # The connection was kept, so what it gives the camera stays; the camera's own settings come back.
+    assert after["transport"] == "udp" and after["buffer_size"] == 4 and after["roi_w"] == 0.5
+
+
 def test_a_camera_on_another_line_is_left_out(client, admin_headers, data_dir, endpoints, new_line):
     hook, cam, line = _packing(client, admin_headers, endpoints, new_line, "Lender", "http://10.0.1.4/video",
                                camera_on_send=True)

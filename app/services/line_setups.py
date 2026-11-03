@@ -24,6 +24,8 @@ FORMAT = 1
 # The line's live state: what it is doing now, not how it is set up.
 LIVE_KEYS = ("enabled", "batch", "counts_reset_at", "counts_reset_classes", "status", "warnings")
 _LINE_ID = re.compile(r"[A-Za-z0-9_-]+")
+# An IP camera's settings that its Connections entry gives it: they stay with a connection the load keeps.
+CONNECTION_KEYS = ("transport", "buffer_size")
 
 
 def _svc():
@@ -168,7 +170,7 @@ def _check(line: Dict[str, Any], save: Dict[str, Any]) -> None:
 async def _add_missing_endpoints(save: Dict[str, Any], user: Any) -> List[str]:
     """Each connection of the save that no longer exists is added back with its saved id, as the
     Connections page adds one (an IP camera's record follows). One that exists is left as it is: other
-    lines may use it. Gives the names of those added. Raises ValueError naming the connection."""
+    lines may use it. Gives the ids of those added. Raises ValueError naming the connection."""
     have = {str(e.get("id")) for e in _svc().get_endpoints()}
     added = []
     for saved in save.get("endpoints") or []:
@@ -180,7 +182,7 @@ async def _add_missing_endpoints(save: Dict[str, Any], user: Any) -> List[str]:
                                                 role=user.role, clearance_level=user.clearance_level)
         except (ValueError, TypeError) as exc:
             raise ValueError(f"Connection '{name}' could not be added back: {exc}") from exc
-        added.append(name)
+        added.append(str(saved["id"]))
     return added
 
 
@@ -203,9 +205,12 @@ def _cameras_to_keep(save: Dict[str, Any], line_id: str, existing: Set[str]) -> 
     return kept, warnings
 
 
-async def _put_camera_settings(db: AsyncSession, save: Dict[str, Any], kept_ids: Set[str]) -> List[str]:
+async def _put_camera_settings(db: AsyncSession, save: Dict[str, Any], kept_ids: Set[str],
+                               added_back: Set[str]) -> List[str]:
     """Each kept camera gets its saved image and video settings, as its Settings would set them, except a
-    Trigger that the line's card now sets. Gives a warning for a camera whose settings were refused."""
+    Trigger that the line's card now sets, and an IP camera's transport and buffer size when its connection
+    was kept (not ``added_back``): those are the connection's. Gives a warning for a camera whose settings
+    were refused."""
     from app.routes.v1.camera import line_trigger_mode
     from app.schemas.camera import CameraUpdate
     from app.services.camera_service import CameraService
@@ -221,6 +226,9 @@ async def _put_camera_settings(db: AsyncSession, save: Dict[str, Any], kept_ids:
         await db.refresh(camera)    # the line's save set its trigger mode through another session
         if line_trigger_mode(camera) is not None:
             settings.pop("trigger_mode", None)
+        if camera.type == "ip" and camera.id not in added_back:
+            for key in CONNECTION_KEYS:
+                settings.pop(key, None)
         try:
             await CameraService.update_camera(db, camera.id, CameraUpdate(settings=settings))
         except ValueError as exc:
@@ -245,7 +253,7 @@ async def load(db: AsyncSession, line_id: str, setup_id: str, user: Any,
     if line is None:
         raise KeyError(line_id)
     _check(line, save)
-    await _add_missing_endpoints(save, user)
+    added_back = set(await _add_missing_endpoints(save, user))
     ids = {str(c.get("camera_id")) for c in (save.get("line") or {}).get("cameras") or [] if isinstance(c, dict)}
     existing = {i for i in ids if await CameraService.get_camera_by_id(db, i) is not None}
     cards, warnings = _cameras_to_keep(save, line_id, existing)
@@ -258,5 +266,5 @@ async def load(db: AsyncSession, line_id: str, setup_id: str, user: Any,
             if isinstance(card, dict) and card.get("camera_id") and str(card["camera_id"]) not in kept_ids:
                 card.pop("camera_id", None)
     view = await update_line(line_id, body, user)
-    warnings += await _put_camera_settings(db, save, kept_ids)
+    warnings += await _put_camera_settings(db, save, kept_ids, added_back)
     return {"loaded": True, "name": save.get("name"), "warnings": warnings, "line": view}
