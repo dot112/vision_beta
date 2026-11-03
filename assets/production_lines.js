@@ -900,11 +900,13 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         station: { label: "Inspection station", short: "Station", role: "vision", counting: false, codes: false },
         qr: { label: "Code reader", short: "Code reader", role: "qr", counting: false, codes: true },
         text: { label: "Text reader", short: "Text reader", role: "ocr", counting: false, codes: false },
+        pattern: { label: "Pattern check", short: "Pattern check", role: "match", counting: false, codes: false },
         counting_qr: { label: "Counting + code reader", short: "Counting + codes", role: "vision", counting: true, codes: true },
         station_qr: { label: "Inspection station + code reader", short: "Station + codes", role: "vision", counting: false, codes: true },
     };
-    const START_JOBS = ["counting", "station", "qr", "text", "counting_qr"];
-    const jobOf = (cam) => (cam.role === "ocr" ? "text" : cam.role === "qr" ? "qr" : (cam.counting ? "counting" : "station") + (cam.read_codes ? "_qr" : ""));
+    const START_JOBS = ["counting", "station", "qr", "text", "pattern", "counting_qr"];
+    const jobOf = (cam) => (cam.role === "ocr" ? "text" : cam.role === "match" ? "pattern" : cam.role === "qr" ? "qr"
+        : (cam.counting ? "counting" : "station") + (cam.read_codes ? "_qr" : ""));
     const isVisionJob = (job) => JOBS[job] && JOBS[job].role === "vision";
     const isCountingJob = (job) => Boolean(JOBS[job] && JOBS[job].counting);
 
@@ -932,11 +934,14 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
     };
     const DEFAULT_LINES = { line1_position: 0.35, line2_position: 0.65, orientation: "horizontal", direction: "forward" };
 
-    // What a job is to the camera's pages (assets/camera_pages.js): a vision job, a job that reads codes, the text reader.
-    const jobKind = (job) => ({ vision: isVisionJob(job), codes: Boolean(JOBS[job].codes), text: job === "text" });
-    // Count mode's first choice: a text reader reading continuously only shows the text.
-    const trackLabel = (job) => (job === "text" ? "Continuously (shows the text only)" : "Moving products cross count lines");
+    // What a job is to the camera's pages (assets/camera_pages.js): a vision job, a job that reads codes, the text
+    // reader, the pattern check.
+    const jobKind = (job) => ({ vision: isVisionJob(job), codes: Boolean(JOBS[job].codes), text: job === "text", pattern: job === "pattern" });
+    // Count mode's first choice: a text reader or a pattern check reading continuously only shows what it finds.
+    const trackLabel = (job) => (job === "text" ? "Continuously (shows the text only)"
+        : job === "pattern" ? "Continuously (shows the result only)" : "Moving products cross count lines");
     const TEXT_TRACK_NOTE = "The text is only shown: on the camera's picture and in the line's latest text reads. Nothing is decided, sent or saved.";
+    const PATTERN_TRACK_NOTE = "The result is only shown on the camera's picture. Nothing is decided, sent or saved.";
 
     const setup = {
         lineId: null,
@@ -1249,6 +1254,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
                     ${pageHtml("counting", CameraPages.pageTitle("counting", jobKind(job)), countingBody)}
                     ${pageHtml("codes", "Codes", codesBody)}
                     ${pageHtml("text", "Text fields", TextReader.foldHtml(cam.role === "ocr" ? cam.ocr : null, textReaderOptions()))}
+                    ${pageHtml("pattern", "Pattern and checks", PatternCheck.foldHtml(cam.role === "match" ? cam.match : null, { readOnly }))}
                     ${pageHtml("image", "Image and video", `<div data-f="image-form"></div><h4 class="pl-page-sub">Video</h4><div data-f="video-form"></div>`)}
                 </div>
             </div>`;
@@ -1345,6 +1351,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         station_qr: "An inspection station that also reads codes on the same picture.",
         qr: "Reads codes. With a vision camera on the line, Sync pairs each product with its code.",
         text: "Reads printed text (dates, lot codes) and checks it against a format. One picture per trigger decides good or reject, on its own or joined to the counting camera's product.",
+        pattern: "Finds the trained reference on each product by its edges and compares it with the good samples. One picture per trigger decides good or reject, on its own or joined to the counting camera's product.",
     };
 
     const setupHasVision = () => cardsOnPage().some((c) => isVisionJob(cardJob(c)));
@@ -1388,8 +1395,11 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         cardField(card, "badge").className = `pl-badge job-${job.replace("_qr", "")}`;
         card.querySelector(".pl-job-note").textContent = JOB_NOTES[job] || "";
         const textJob = job === "text";
-        // A text reader is a station while it takes one picture per trigger.
-        const stationShown = job === "station" || job === "station_qr" || (textJob && cardValue(card, "count_mode") === "trigger");
+        const patternJob = job === "pattern";
+        // Jobs that check one picture per trigger without a model: the text reader and the pattern check.
+        const pictureJob = textJob || patternJob;
+        // A text reader or a pattern check is a station while it takes one picture per trigger.
+        const stationShown = job === "station" || job === "station_qr" || (pictureJob && cardValue(card, "count_mode") === "trigger");
         const countSelect = cardField(card, "count_mode");
         if (countSelect.options[0].textContent !== trackLabel(job)) {
             countSelect.options[0].textContent = trackLabel(job);
@@ -1455,8 +1465,8 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         }
         // Counting: products tracked across the count lines, or one picture per trigger
         const triggerMode = cardValue(card, "count_mode") === "trigger";
-        card.querySelector(".pl-no-product").hidden = !triggerMode || textJob;
-        card.querySelector(".pl-track-fields").hidden = triggerMode || textJob;
+        card.querySelector(".pl-no-product").hidden = !triggerMode || pictureJob;
+        card.querySelector(".pl-track-fields").hidden = triggerMode || pictureJob;
         // Picture taken by: System trigger for any vision camera, Camera trigger for an industrial camera only.
         const industrial = Boolean(row && row.type === "gige");
         const sourceSelect = cardField(card, "picture_source");
@@ -1476,7 +1486,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         card.querySelector(".pl-picture-wait").hidden = !notice;
         // The camera's Trigger follows this card's own form (not only what the server saved): with One picture per
         // trigger it is shown as the card sets it, read-only, and is not sent back; the line save sets it.
-        CameraSettingsForm.lockTrigger(card, triggerSetByCard({ industrial, vision: isVisionJob(job) || textJob, countMode: triggerMode ? "trigger" : "track", source }), TRIGGER_SET_BY_CARD_NOTE);
+        CameraSettingsForm.lockTrigger(card, triggerSetByCard({ industrial, vision: isVisionJob(job) || pictureJob, countMode: triggerMode ? "trigger" : "track", source }), TRIGGER_SET_BY_CARD_NOTE);
         const camTrigger = cameraTrigger(card);
         const COUNT_NOTES = {
             track: { off: "Counts products as they cross the count lines.",
@@ -1490,9 +1500,9 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         };
         card.querySelector(".pl-count-mode-note").textContent = triggerMode
             ? COUNT_NOTES.trigger[source === "camera" ? (notice ? "notice" : "camera") : "system"]
-            : textJob ? TEXT_TRACK_NOTE : COUNT_NOTES.track[camTrigger];
+            : textJob ? TEXT_TRACK_NOTE : patternJob ? PATTERN_TRACK_NOTE : COUNT_NOTES.track[camTrigger];
         // The ticks are for System trigger: for Camera trigger the notice replaces them.
-        renderTriggers(card, triggerMode && (isVisionJob(job) || textJob) && source === "system", Boolean(JOBS[job].codes) && trigger === "signal", camTrigger);
+        renderTriggers(card, triggerMode && (isVisionJob(job) || pictureJob) && source === "system", Boolean(JOBS[job].codes) && trigger === "signal", camTrigger);
         if (camTrigger !== "off") {
             const readNote = card.querySelector(".pl-trigger-note");
             if (trigger === "signal") {
@@ -1716,6 +1726,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
 
     function startCardFeed(card) {
         TextReader.wake(card);
+        PatternCheck.wake(card);
         const info = setup.cards.get(card.dataset.key);
         if (!info || info.feed) return;
         const feed = { controller: new AbortController(), url: null };
@@ -1793,7 +1804,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
     function openCameraPage(card, asked) {
         cardsOnPage().forEach((c) => {
             if (c === card) return;
-            if (c.classList.contains("pl-card-page")) { leaveCameraPage(c); TextReader.wake(c); }
+            if (c.classList.contains("pl-card-page")) { leaveCameraPage(c); TextReader.wake(c); PatternCheck.wake(c); }
             const info = setup.cards.get(c.dataset.key);
             if (info && info.feed) { info.feed.controller.abort(); info.feed = null; }
         });
@@ -1817,6 +1828,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         if (page === "counting") loadLinesPicture(card);
         if (page === "image") setup.cards.get(card.dataset.key)?.imageForm?.loadPicture(() => card.isConnected);
         TextReader.wake(card);    // the Text fields page's Live runs while it is shown
+        PatternCheck.wake(card);  // so does the Pattern and checks page's
         refreshSelects();
     }
 
@@ -1828,6 +1840,7 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         if (card) {
             leaveCameraPage(card);
             TextReader.wake(card);    // its Live stops: the page is no longer shown
+            PatternCheck.wake(card);
         }
         startCardFeeds();
     }
@@ -1858,6 +1871,10 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
         TextReader.bind(card, {
             fetchJson: api, fetchBlob: fetchPicture, entry: () => cardEntry(card), yoloModels: () => state.models,
             active: () => cardJob(card) === "text" && setupShown(), readOnly: level() < 2,
+        });
+        PatternCheck.bind(card, {
+            fetchJson: api, fetchBlob: fetchPicture, sendBlob: sendPicture, entry: () => cardEntry(card),
+            active: () => cardJob(card) === "pattern" && setupShown(), readOnly: level() < 2,
         });
         return card;
     }
@@ -1986,9 +2003,19 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             models.then((info) => TextReader.setModels(card, info));
             setTimeout(() => TextReader.wake(card), 0);
         }
+        if (job === "pattern") setTimeout(() => PatternCheck.wake(card), 0);
     }
 
     // A picture as a blob; a refused one throws the server's reason.
+    // A picture sent as it is (the pattern check's mask, a PNG); a refused one throws the server's reason.
+    async function sendPicture(path, blob) {
+        const res = await fetch(path, { method: "PUT", body: blob, headers: { "Content-Type": "image/png" } });
+        let data = null;
+        try { data = await res.json(); } catch (_) { /* not JSON */ }
+        if (!res.ok) throw new Error(data && typeof data.detail === "string" ? data.detail : `HTTP ${res.status}`);
+        return data;
+    }
+
     async function fetchPicture(path, options = {}) {
         const res = await fetch(path, { cache: "no-store", ...options });
         if (!res.ok) {
@@ -2523,6 +2550,11 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             Object.assign(entry, { count_mode: cardValue(card, "count_mode") === "trigger" ? "trigger" : "track", ocr: TextReader.readCard(card) });
             if (entry.count_mode === "trigger") Object.assign(entry, pictureEntry(card), stationEntry(card));
         }
+        if (spec.role === "match") {
+            // Continuously (shown only), or one picture per trigger: a station of its own or joined to the product.
+            Object.assign(entry, { count_mode: cardValue(card, "count_mode") === "trigger" ? "trigger" : "track", match: PatternCheck.readCard(card) });
+            if (entry.count_mode === "trigger") Object.assign(entry, pictureEntry(card), stationEntry(card));
+        }
         if (spec.codes) {
             Object.assign(entry, {
                 qr_trigger: cardValue(card, "qr_trigger") || "continuous",
@@ -2567,6 +2599,8 @@ if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_
             const noFormat = ocr.fields.find((f) => !f.format);
             if (noFormat) { toast(`${label(i)} text field '${noFormat.name}': give it a format.`, "warning"); fix(i, CameraPages.pageForProblem("no_format")); return; }
         }
+        const noReference = cameras.findIndex((c) => c.role === "match" && !(c.match && c.match.reference_id));
+        if (noReference >= 0) { toast(`${label(noReference)}: train its reference on Pattern and checks.`, "warning"); fix(noReference, CameraPages.pageForProblem("no_reference")); return; }
         const unnamed = (setup.checks || []).findIndex((c) => !String(c.name || "").trim());
         if (unnamed >= 0) { toast(`Product check ${unnamed + 1}: give it a name.`, "warning"); return; }
         const body = {

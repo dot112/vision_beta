@@ -73,7 +73,7 @@ def test_the_summary_line():
 
 def test_the_menu():
     html = _run("menuHtml", T, "counting")
-    assert html.count('data-act="page"') == 7 and 'data-page="model" role="tab" aria-selected="false" hidden' in html
+    assert html.count('data-act="page"') == 8 and 'data-page="model" role="tab" aria-selected="false" hidden' in html
     assert re.search(r'class="pl-page-link on" data-act="page" data-page="counting"[^>]*>Reading<', html)
     assert "data-lock" not in html
 
@@ -87,4 +87,4 @@ def test_reopen_needs_the_same_line_and_camera():
 
 def test_the_page_loads_the_module_before_the_line_setup():
     page = (ROOT / "dashboard.html").read_text(encoding="utf-8")
-    assert page.index("/assets/camera_pages.js?v=1.0.0") < page.index("/assets/production_lines.js?v=")
+    assert page.index("/assets/camera_pages.js?v=1.0.1") < page.index("/assets/production_lines.js?v=")

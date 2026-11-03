@@ -81,7 +81,7 @@ def test_the_picture_fields_follow_the_source():
     assert re.search(r'querySelector\(".pl-picture-wait"\)\.hidden = !', sync)
     # The ticks are only for System trigger: the notice select replaces them for a Camera trigger. A text reader
     # taking one picture per trigger has them too.
-    assert re.search(r'renderTriggers\(card, triggerMode && \(isVisionJob\(job\) \|\| textJob\) && source === "system"', sync)
+    assert re.search(r'renderTriggers\(card, triggerMode && \(isVisionJob\(job\) \|\| pictureJob\) && source === "system"', sync)
 
 
 def test_the_trigger_notice_lists_the_take_a_picture_inputs_and_none():
@@ -127,11 +127,11 @@ def test_the_card_entry_sends_the_four_keys():
     for key in ("picture_source", "picture_delay_ms", "notice_trigger", "picture_wait_ms"):
         assert key in picture, key
     assert re.search(r"notice_trigger: camera && [^\n]*: null", picture)    # a number for Camera trigger, else null
-    # Only a trigger card sends them (a vision camera or a text reader): a tracking card leaves them out and the
-    # server keeps its saved values.
+    # Only a trigger card sends them (a vision camera, a text reader or a pattern check): a tracking card leaves them
+    # out and the server keeps its saved values.
     entry = _function(script, "cardEntry")
     calls = [m.start() for m in re.finditer(r"pictureEntry\(card\)", entry)]
-    assert len(calls) == 2
+    assert len(calls) == 3
     for at in calls:
         assert 'if (entry.count_mode === "trigger")' in entry[max(0, at - 160):at]
 

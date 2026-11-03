@@ -1720,3 +1720,27 @@ body .pl-line-select > .help-tip { display: inline-flex; }
 .ls-date { margin-left: auto; }
 .ls-del { background: none; border: 0; padding: 6px 8px; border-radius: 8px; color: var(--text-muted); font-size: 13px; cursor: pointer; }
 .ls-del:hover, .ls-del:focus-visible { color: var(--danger-color); background: var(--panel-head); }
+
+/* Line setup: the Pattern and checks page (assets/pattern_check.js) */
+.pc-body { display: flex; flex-direction: column; gap: 10px; }
+.pc-toolbar, .pc-brush, .pc-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pc-tools { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-left: 6px; }
+.pc-label { font-size: 12px; color: var(--text-muted); }
+.pc-tool.active, .pc-paint.active, .pc-size.active, [data-act="pc-live"].active { border-color: var(--primary-color); color: var(--primary-color); }
+.pc-pic { position: relative; width: 100%; max-width: 640px; aspect-ratio: 4 / 3; background: var(--video-bg, #111); border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; cursor: crosshair; touch-action: none; user-select: none; }
+.pc-pic img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
+.pc-pic canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.pc-pic-note { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 12px; text-align: center; font-size: 12px; color: rgba(255, 255, 255, .7); pointer-events: none; }
+.pc-result { font-size: 13px; min-height: 18px; }
+.pc-result.pc-error { color: var(--danger-color); }
+.pc-samples { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.pc-sample { position: relative; display: inline-flex; flex-direction: column; align-items: center; font-size: 11px; }
+.pc-sample img { width: 64px; height: 48px; object-fit: cover; border: 1px solid var(--border-color); border-radius: 4px; }
+.pc-sample .pc-x { position: absolute; top: -6px; right: -6px; }
+.pc-x { min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-color); cursor: pointer; line-height: 1; }
+.pc-angle .form-input { max-width: 120px; }
+.pc-checks .form-input { min-width: 72px; }
+@media (max-width: 600px) {
+    .pc-tools { margin-left: 0; }
+    .pc-checks th:nth-child(5), .pc-checks td:nth-child(5) { min-width: 96px; }
+}

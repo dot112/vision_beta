@@ -1,12 +1,14 @@
 /*
  * Line setup: a camera's settings page. The small card on Line setup shows the camera; its Settings
  * button opens the camera's page, with a menu of pages (Camera, Job, AI model and classes, Counting,
- * Codes, Text fields, Image and video) of which only those that fit the camera's job are listed.
+ * Codes, Text fields, Pattern and checks, Image and video) of which only those that fit the camera's job
+ * are listed.
  *
  * This file decides what can be decided without the page: which pages a job shows and their titles,
  * which page opens, the card's summary line, the menu's markup, and whether a page drawn again opens
  * the same camera. production_lines.js draws the card and switches between the cards and a page.
- * A job's kind is { vision, codes, text }: a vision job, a job that reads codes, the text reader.
+ * A job's kind is { vision, codes, text, pattern }: a vision job, a job that reads codes, the text reader,
+ * the pattern check.
  * Runs in node for tests/test_camera_pages.py (module.exports), like text_reader.js.
  */
 (function (root) {
@@ -19,6 +21,7 @@
         { id: "counting", title: "Counting" },
         { id: "codes", title: "Codes" },
         { id: "text", title: "Text fields" },
+        { id: "pattern", title: "Pattern and checks" },
         { id: "image", title: "Image and video" },
     ];
     // What a code reader does with its codes (Read codes), for the summary line.
@@ -29,21 +32,24 @@
         signal: "Reads when an input asks",
     };
     // The page each problem that stops Save opens.
-    const PROBLEM_PAGES = { no_model: "model", no_list: "codes", no_yolo: "text", no_format: "text" };
+    const PROBLEM_PAGES = { no_model: "model", no_list: "codes", no_yolo: "text", no_format: "text", no_reference: "pattern" };
 
     function fits(id, kind) {
         if (id === "model") return Boolean(kind.vision);
-        if (id === "counting") return Boolean(kind.vision || kind.text);
+        if (id === "counting") return Boolean(kind.vision || kind.text || kind.pattern);
         if (id === "codes") return Boolean(kind.codes);
         if (id === "text") return Boolean(kind.text);
+        if (id === "pattern") return Boolean(kind.pattern);
         return PAGES.some((p) => p.id === id);
     }
 
     const pagesFor = (kind) => PAGES.filter((p) => fits(p.id, kind)).map((p) => p.id);
 
-    // A text reader's Counting page is its Reading (continuously or one picture per trigger).
+    // A text reader's Counting page is its Reading, a pattern check's its When to check (continuously or one
+    // picture per trigger).
     function pageTitle(id, kind) {
         if (id === "counting" && kind.text) return "Reading";
+        if (id === "counting" && kind.pattern) return "When to check";
         const page = PAGES.find((p) => p.id === id);
         return page ? page.title : "";
     }
@@ -61,6 +67,7 @@
     function startPage(kind) {
         if (kind.vision) return "model";
         if (kind.text) return "text";
+        if (kind.pattern) return "pattern";
         if (kind.codes) return "codes";
         return "camera";
     }
@@ -71,6 +78,7 @@
     function summary({ index, type, kind, countMode, joined, codeTrigger }) {
         const triggered = countMode === "trigger";
         const what = kind.text ? (triggered ? "One picture per trigger" : "Shows text")
+            : kind.pattern ? (triggered ? "One picture per trigger" : "Shows pattern")
             : kind.vision ? (triggered ? "One picture per trigger" : "Count lines")
             : CODE_TRIGGERS[codeTrigger] || CODE_TRIGGERS.continuous;
         return [`Camera ${index + 1}`, type, what, joined ? "joined" : ""].filter(Boolean).join(" · ");

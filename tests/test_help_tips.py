@@ -17,7 +17,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "assets" / "help_tips.js"
 FILES = ("dashboard.html", "assets/production_lines.js", "assets/plc_signals.js", "assets/camera_settings.js",
-         "assets/card_values.js", "assets/product_fields.js", "assets/data_backups.js", "assets/text_reader.js")
+         "assets/card_values.js", "assets/product_fields.js", "assets/data_backups.js", "assets/text_reader.js",
+         "assets/pattern_check.js")
 
 # Only controls whose purpose is not plain from their label have a help icon: technical settings, the
 # choices that decide when a card fires, and the buttons whose effect the label does not say. Each is
@@ -25,6 +26,8 @@ FILES = ("dashboard.html", "assets/production_lines.js", "assets/plc_signals.js"
 KEEP = (
     # The text reader: its format notation and joining dot-matrix dots.
     "Each character of the text: 9 a digit", "Joins the dots of inkjet dot-matrix print",
+    # The pattern check: the mask brush and how sensitive the defect search is.
+    "Paint over the parts the check must ignore", "How different from the good samples a pixel must be",
     # Connections: TCP, MQTT, network cameras, PLCs.
     "Whether this server connects to the device", "The characters that end each message",
     "The MQTT version the broker speaks", "The CA certificate that checks", "The certificate this server shows a broker",
