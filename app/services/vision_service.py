@@ -715,6 +715,9 @@ def _hardware_result(camera_id: str, frame_id: int, detections: List[Any], infer
     if routed[1] == "ocr":
         from app.services.ocr_service import OcrReaderPipeline
         frame = getattr(OcrReaderPipeline.peek(camera_id), "last_inferred_frame", None)
+    elif routed[1] == "match":
+        from app.services.match_service import PatternCheckPipeline
+        frame = getattr(PatternCheckPipeline.peek(camera_id), "last_inferred_frame", None)
     else:
         frame = getattr(CameraStreamPipeline._workers.get(camera_id), "last_inferred_frame", None)
     context = context or {}
@@ -827,7 +830,7 @@ class ContinuousVisionRunner:
         every_model = every_reader = False
         if trigger != "off":
             entry = runtime.camera_entry(camera_id) or {}
-            every_model = role in ("vision", "ocr") and entry.get("count_mode") == "trigger"
+            every_model = role in ("vision", "ocr", "match") and entry.get("count_mode") == "trigger"
             every_reader = reads and camera_id in runtime.signal_readers
         if trigger == "hardware":
             if every_model or every_reader:

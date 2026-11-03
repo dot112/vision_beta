@@ -42,9 +42,14 @@ from app.services.line_config import (
     REASON_NO_PICTURE,
     REASON_NO_TEXT,
     REASON_NOTHING_DETECTED,
+    REASON_PATTERN_DEFECT,
+    REASON_PATTERN_ERROR,
+    REASON_PATTERN_MISMATCH,
+    REASON_PATTERN_NOT_FOUND,
     REASON_READER_ERROR,
     REASON_TEXT_WRONG,
     REASON_VISION,
+    is_pattern_check,
     is_text_reader,
     picture_per_trigger,
     picture_source,
@@ -66,6 +71,11 @@ TEXT_CLASSES = {None: "text ok", REASON_TEXT_WRONG: "text wrong", REASON_NO_TEXT
                 REASON_READER_ERROR: "reader error"}
 # Why a text reader's trigger got no result: the reader did not get through the picture in time.
 READER_TOO_SLOW = "the text reader did not finish in time"
+# A pattern check's product: its class by what its picture gave.
+PATTERN_CLASSES = {None: "pattern ok", REASON_PATTERN_NOT_FOUND: "pattern not found",
+                   REASON_PATTERN_MISMATCH: "pattern mismatch", REASON_PATTERN_DEFECT: "pattern defect",
+                   REASON_PATTERN_ERROR: "pattern error"}
+CHECK_TOO_SLOW = "the pattern check did not finish in time"
 
 _POLL_S = 0.01
 # The clock and the sleep of a trigger's waits, and the wall clock of its times (a test runs them on a clock of its own).
@@ -125,6 +135,8 @@ def product_from_result(runtime: Any, camera_id: str, detections: List[Any],
     """
     if is_text_reader(runtime.camera_entry(camera_id) or {}):
         return text_product(runtime, camera_id, detections, arrived_at, trigger_no, sequence, request_id)
+    if is_pattern_check(runtime.camera_entry(camera_id) or {}):
+        return pattern_product(runtime, camera_id, detections, arrived_at, trigger_no, sequence, request_id)
     answer: Dict[str, Any] = {"status": "nothing", "result": None, "class_name": None, "reject_reason": None,
                               "track_id": None, "detections": len(detections)}
     if trigger_no is not None:
@@ -189,6 +201,46 @@ def text_product(runtime: Any, camera_id: str, result: Any, arrived_at: Optional
     if trigger_no is not None:
         answer["trigger_no"] = trigger_no
     runtime.remember_text_read(camera_id, result, answer)
+    return answer
+
+
+def pattern_product(runtime: Any, camera_id: str, result: Any, arrived_at: Optional[float] = None,
+                    trigger_no: Optional[int] = None, sequence: Any = None, request_id: Optional[int] = None) -> Dict[str, Any]:
+    """Make the product one picture of a pattern check shows: good when every check passes, else a reject
+    with the picture's reason (pattern_not_found, pattern_mismatch, pattern_defect, pattern_error). The
+    product carries ``match`` (the scores and defects) and ``match_status``; the check goes into the line's
+    latest pattern checks. Returns the answer as product_from_result does, plus ``match`` and
+    ``match_status``. Safe from any thread."""
+    from app.engines.pattern_check import match_values
+
+    counter = runtime.counter_for(camera_id)
+    track_id = _next_track_id(runtime)
+    reject = result.result != "good"
+    first = result.checks[0] if result.checks else None
+    bbox = None
+    if first is not None and first.box:
+        xs, ys = [p[0] for p in first.box], [p[1] for p in first.box]
+        bbox = {"x1": min(xs), "y1": min(ys), "x2": max(xs), "y2": max(ys),
+                "width": max(xs) - min(xs), "height": max(ys) - min(ys)}
+    class_name = PATTERN_CLASSES.get(result.reason, PATTERN_CLASSES[REASON_PATTERN_ERROR])
+    crossing = counter.make_crossing(
+        class_name, reject, track_id=track_id, confidence=first.score / 100.0 if first is not None else 0.0,
+        bbox=bbox, camera_id=camera_id, arrived_at=arrived_at,
+    )
+    if reject:
+        crossing["reject_reason"] = result.reason
+    crossing["match"] = match_values(result)
+    crossing["match_status"] = result.status
+    _add_context(crossing, trigger_no, sequence, request_id)
+    counter.emit_crossing(crossing)
+    answer: Dict[str, Any] = {
+        "status": "inspected", "result": "reject" if reject else "good", "class_name": class_name,
+        "reject_reason": result.reason if reject else None, "track_id": track_id, "detections": len(result.checks),
+        "match": crossing["match"], "match_status": result.status,
+    }
+    if trigger_no is not None:
+        answer["trigger_no"] = trigger_no
+    runtime.remember_pattern_check(camera_id, result, answer)
     return answer
 
 
@@ -268,6 +320,9 @@ def render_trigger_capture(camera_id: str, frame: Any, detections: List[Any]) ->
         if routed and routed[1] == "ocr":
             from app.services.ocr_service import render_capture
             return render_capture(frame, detections)
+        if routed and routed[1] == "match":
+            from app.services.match_service import render_capture as render_pattern
+            return render_pattern(frame, detections)
         engine = line_service.line_manager.engine_for_camera(camera_id)[0]
         annotated = engine.draw_annotations_mat(frame.copy(), detections, 0.0, draw_wirelines=False, camera_id=camera_id)
         ok, buf = cv2.imencode(".jpg", annotated, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
@@ -476,11 +531,12 @@ async def trigger_camera(runtime: Any, camera_id: str, timeout: Optional[float] 
     from app.state.application_state import app_state
 
     if camera_id not in trigger_cameras(runtime):
-        raise ValueError(f"Camera '{camera_id}' is not a vision camera or a text reader of this line with "
-                         f"'One picture per trigger'")
+        raise ValueError(f"Camera '{camera_id}' is not a vision camera, a text reader or a pattern check of this "
+                         f"line with 'One picture per trigger'")
     _still_running(runtime)
     entry = runtime.camera_entry(camera_id) or {}
     text_reader = is_text_reader(entry)
+    pattern = is_pattern_check(entry)
     mode = getattr(app_state.cameras.get(camera_id), "trigger_mode", "off")
     if mode == "hardware":
         raise _hardware_refusal(camera_id)
@@ -489,7 +545,7 @@ async def trigger_camera(runtime: Any, camera_id: str, timeout: Optional[float] 
                          "so the server does not take one")
     engine, _, _ = line_service.line_manager.engine_for_camera(camera_id)
     # A text reader that cannot read answers each trigger with a "reader_error" product instead.
-    if not text_reader and not getattr(engine, "is_loaded", True):
+    if not (text_reader or pattern) and not getattr(engine, "is_loaded", True):
         raise ValueError(f"Camera '{camera_id}' has no vision model loaded, so its picture cannot be inspected")
     timeout = TRIGGER_TIMEOUT_S if timeout is None else timeout
     delay = int(entry.get("picture_delay_ms") or 0) / 1000.0
@@ -514,7 +570,13 @@ async def trigger_camera(runtime: Any, camera_id: str, timeout: Optional[float] 
             _still_running(runtime)
             if missing.taken:
                 runtime.count_trigger(camera_id, "pictures")    # a frame was taken; the model did not finish it
-            if missing.taken and text_reader:
+            if missing.taken and pattern:
+                from app.engines.pattern_check import error_result as pattern_error
+                answer.update(pattern_product(runtime, camera_id, pattern_error(CHECK_TOO_SLOW), picture_at, trigger_no,
+                                              sequence, request_id))
+                runtime.count_trigger(camera_id, "results")
+                runtime.remember_trigger_capture(camera_id, answer, None)
+            elif missing.taken and text_reader:
                 from app.engines.text_reading import error_result
                 answer.update(text_product(runtime, camera_id, error_result(entry.get("ocr") or {}, READER_TOO_SLOW),
                                            picture_at, trigger_no, sequence, request_id))
@@ -534,7 +596,7 @@ async def trigger_camera(runtime: Any, camera_id: str, timeout: Optional[float] 
         })
         if with_detections:
             # A text reader's picture has fields, not detections.
-            answer["detection_items"] = [] if text_reader else [
+            answer["detection_items"] = [] if text_reader or pattern else [
                 d.model_dump() if hasattr(d, "model_dump") else d for d in detections]
         answer.update(product_from_result(runtime, camera_id, detections, arrived_at, trigger_no, sequence, request_id))
         runtime.count_trigger(camera_id, "pictures")

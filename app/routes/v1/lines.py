@@ -210,8 +210,9 @@ async def _check_picture_sources(raw: Dict[str, Any]) -> None:
         (index, str(cam.get("camera_id") or "").strip())
         for index, cam in enumerate(cameras if isinstance(cameras, list) else [])
         if isinstance(cam, dict) and str(cam.get("picture_source") or "").strip().lower() == "camera"
-        # The key counts only on a vision camera or a text reader with One picture per trigger (else the save drops it).
-        and str(cam.get("role") or "vision").strip().lower() in ("vision", "ocr")
+        # The key counts only on a vision camera, a text reader or a pattern check with One picture per trigger
+        # (else the save drops it).
+        and str(cam.get("role") or "vision").strip().lower() in ("vision", "ocr", "match")
         and str(cam.get("count_mode") or "trigger").strip().lower() == "trigger"
     ]
     if not asked:
@@ -311,7 +312,8 @@ async def _apply_trigger_modes(line: Dict[str, Any]) -> List[str]:
     warnings: List[str] = []
     async with AsyncSessionLocal() as db:
         for index, cam in enumerate(cameras if isinstance(cameras, list) else []):
-            if not isinstance(cam, dict) or cam.get("role", "vision") not in ("vision", "ocr") or not cam.get("camera_id"):
+            if not isinstance(cam, dict) or cam.get("role", "vision") not in ("vision", "ocr", "match") \
+                    or not cam.get("camera_id"):
                 continue
             try:
                 row = await db.get(Camera, str(cam["camera_id"]))
@@ -437,6 +439,18 @@ async def recent_text_reads(
     if runtime is None:
         raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
     return {"line_id": line_id, "reads": runtime.recent_text_reads(limit)}
+
+
+@router.get("/{line_id}/match/recent", summary="The line's latest pattern checks: each triggered check's scores and its product's result")
+async def recent_pattern_checks(
+    line_id: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    user: User = Depends(require_operator),
+) -> Dict[str, Any]:
+    runtime = _manager().get(line_id)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    return {"line_id": line_id, "checks": runtime.recent_pattern_checks(limit)}
 
 
 def _capture_view(capture: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

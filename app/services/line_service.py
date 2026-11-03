@@ -62,6 +62,8 @@ logger = get_logger(__name__)
 _FPS_WINDOW_SECONDS = 5.0
 # The latest text reads a line keeps, and how long a field's text is remembered for the hold time.
 TEXT_READS_KEPT = 50
+# The latest triggered pattern checks a line keeps.
+PATTERN_CHECKS_KEPT = 50
 TEXT_SEEN_FORGET_S = 60.0
 # What a camera without a loaded model reports as its model.
 NO_MODEL_NAME = "No model"
@@ -520,6 +522,8 @@ class LineRuntime:
         # text was last seen ({(camera_id, field, text): monotonic time}) for the hold time.
         self.text_recent: Deque[Dict[str, Any]] = collections.deque(maxlen=TEXT_READS_KEPT)
         self._text_seen: Dict[Tuple[str, str, str], float] = {}
+        # Pattern checks: the latest triggered checks, with their products' results.
+        self.pattern_recent: Deque[Dict[str, Any]] = collections.deque(maxlen=PATTERN_CHECKS_KEPT)
         # Sorting verification: {camera_id: "accepted" / "rejected"}, the last products that had a
         # code ({"code", "sequence", "result", "at", "verified"}), and what the cameras found.
         self.sorting_lanes: Dict[str, str] = {}
@@ -2059,6 +2063,26 @@ class LineRuntime:
         with self._lock:
             return [dict(entry) for entry in list(self.text_recent)[:limit]]
 
+    def remember_pattern_check(self, camera_id: str, result: Any, answer: Dict[str, Any]) -> None:
+        """A triggered pattern check's result, with its product's result, reason and number."""
+        entry = {
+            "timestamp": time.time(),
+            "camera_id": camera_id,
+            "score": result.checks[0].score if result.checks else None,
+            "checks": [{"name": c.name, "score": c.score, "defect_px": c.defect_px, "fits": c.fits} for c in result.checks],
+            "status": result.status,
+            "error": result.error,
+            "result": answer.get("result"),
+            "reason": answer.get("reject_reason"),
+            "track_id": answer.get("track_id"),
+        }
+        with self._lock:
+            self.pattern_recent.appendleft(entry)
+
+    def recent_pattern_checks(self, limit: int = PATTERN_CHECKS_KEPT) -> List[Dict[str, Any]]:
+        with self._lock:
+            return [dict(entry) for entry in list(self.pattern_recent)[:limit]]
+
     def reset(self) -> None:
         self.counter.reset_counts()
         for aux in self.aux_counters.values():
@@ -2070,6 +2094,7 @@ class LineRuntime:
                 self.qr_stats[key] = 0
             self.qr_recent.clear()
             self.text_recent.clear()
+            self.pattern_recent.clear()
             # The products waiting for their sorting verification are forgotten too.
             self._sorting_memory.clear()
             for key in self._sorting_stats:
@@ -2664,9 +2689,9 @@ class LineManager:
                 row["model_error"] = model_state["error"]
                 row["expected_classes"] = list(cam.get("expected_classes") or [])
                 row["defect_classes"] = list(cam.get("defect_classes") or [])
-            if row["role"] == "ocr" and cam.get("count_mode") == "trigger":
+            if row["role"] in ("ocr", "match") and cam.get("count_mode") == "trigger":
                 row["count_mode"] = "trigger"
-            if row["role"] in ("vision", "ocr"):
+            if row["role"] in ("vision", "ocr", "match"):
                 station = camera_station(cam)
                 aux = runtime.aux_counters.get(cam["camera_id"])
                 if station:

@@ -542,8 +542,8 @@ class CountingService:
             "crossed_at": crossing["crossed_at"],
             "delay_from_crossing": bool(delay_from_crossing),
         }
-        # What a text reader read, on its own product (a joined reader's comes in ``fields``).
-        for key in ("text", "text_status"):
+        # What a text reader read or a pattern check found, on its own product (a joined one's comes in ``fields``).
+        for key in ("text", "text_status", "match", "match_status"):
             if crossing.get(key) is not None:
                 payload[key] = plc_event[key] = crossing[key]
         if self.batch:
