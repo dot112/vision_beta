@@ -91,7 +91,8 @@ def test_a_grey_picture_is_checked_as_grey(ref):
 def test_a_picture_of_another_size_is_an_error(ref):
     r = check_picture(ref, MATCH, cv2.resize(scene(label(), 0, 640, 480), (640, 480)))
     assert r.reason == "pattern_error" and r.status == "error" and r.checks == []
-    assert "640 × 480" in r.error and "trained on 1280 × 960" in r.error and "train it again" in r.error
+    # Plain ASCII and short: the video's bar draws it whole (review: "×" was drawn as "?" and the end was cut).
+    assert r.error == "Picture is 640 x 480, trained on 1280 x 960: train it again"
 
 
 def test_a_check_box_partly_outside_the_picture():
@@ -138,3 +139,15 @@ def test_match_values_and_percent(ref):
     error = check_picture(ref, MATCH, np.zeros((10, 10, 3), np.uint8))
     assert match_values(error) == {"status": "error"}
     assert set(good.to_dict()) == {"width", "height", "ms", "found", "checks", "result", "reason", "error"}
+
+
+def test_a_check_box_with_edges_partly_outside_scores_its_inside_part():
+    """Review I3: the part of a check box outside the picture counts as masked, also in its Match %: a check 96 %
+    inside scored 70 % (all its edge points were counted, those outside too)."""
+    ref = _set(boxes=((-180, -120, 60, 120), (60, -120, 180, 120)))           # the label's left part finds it
+    match = {**MATCH, "checks": [_check("Left"), _check("Right")]}
+    inside = check_picture(ref, match, scene(label(), 0, 900, 480, seed=31)).checks[1].score
+    wide = scene(label(), 0, 1105, 480, size=(1400, 960), seed=32)               # drawn wider, then cut:
+    edge = check_picture(ref, match, np.ascontiguousarray(wide[:, :1280]))       # the label's right edge 5 px out
+    assert inside >= 95 and edge.checks[1].score >= 90, (inside, edge.to_dict()["checks"])
+    assert edge.result == "good"

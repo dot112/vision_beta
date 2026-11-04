@@ -145,7 +145,7 @@ def delete(line_id: str, setup_id: str) -> Dict[str, Any]:
     save = read(line_id, setup_id)
     os.remove(_path(line_id, setup_id))
     # The reference sets only this save named may go now.
-    _svc()._clean_up_later(_svc().clean_up_references)
+    _svc().clean_up_soon()
     return summary(save)
 
 

@@ -241,8 +241,9 @@ def check_picture(ref: ReferenceSet, match: Dict[str, Any], picture: np.ndarray)
     height, width = picture.shape[:2]
     trained_w, trained_h = ref.picture_size
     if (width, height) != (trained_w, trained_h):
-        return error_result(f"The camera's picture is {width} × {height}; the reference was trained on "
-                            f"{trained_w} × {trained_h}: train it again", width, height)
+        # Plain ASCII and short: the video's bar draws it whole.
+        return error_result(f"Picture is {width} x {height}, trained on {trained_w} x {trained_h}: train it again",
+                            width, height)
     colour_picture = picture.ndim == 3 and picture.shape[2] >= 3
     grey = to_grey(picture)
     angle = int(match.get("angle", 15))

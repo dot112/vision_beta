@@ -100,3 +100,18 @@ def test_render_capture_never_raises():
     assert render_capture(None, GOOD) is None
     assert render_capture(np.zeros((48, 64), np.uint8), GOOD)[:2] == b"\xff\xd8"     # a grey picture
     assert render_capture("not a picture", GOOD) is None
+
+
+def test_the_video_says_train_it_again(check):
+    """Review: on One picture per trigger the bar only said WAITING FOR A TRIGGER, whatever the last check said."""
+    from app.engines.pattern_check import error_result
+
+    size = error_result("Picture is 640 x 480, trained on 1280 x 960: train it again", 640, 480)
+    check(result=size, count_mode="trigger")
+    assert bar_parts("m1") == ["PATTERN CHECK", "CANNOT CHECK", "Picture is 640 x 480, trained on 1280 x 960: train it again"]
+    check(result=GOOD, count_mode="trigger")
+    assert bar_parts("m1") == ["PATTERN CHECK", STATUS_WAITING_TRIGGER]
+    plain = np.full((480, 640, 3), 128, np.uint8)
+    import cv2
+    drawn = cv2.imdecode(np.frombuffer(render_capture(plain, size), np.uint8), cv2.IMREAD_COLOR)
+    assert np.abs(drawn[:20].astype(int) - 128).mean() > 20          # the trigger picture carries the error bar

@@ -48,7 +48,7 @@ def test_script_is_valid_and_loaded():
         pytest.skip("node is not installed")
     assert subprocess.run([node, "--check", str(SCRIPT)], capture_output=True).returncode == 0
     page = PAGE.read_text(encoding="utf-8")
-    tag = '<script src="/assets/pattern_check.js?v=1.0.2"></script>'
+    tag = '<script src="/assets/pattern_check.js?v=1.0.3"></script>'
     assert tag in page and page.index(tag) < page.index("/assets/production_lines.js")
 
 
@@ -138,3 +138,16 @@ def test_a_redrawn_row_keeps_its_colour_choice():
     html = _api('api.foldHtml({checks: [{name: "A", colour: "grey"}, {name: "B", colour: "colour"}, {name: "C", colour: true},'
                 ' {name: "D", colour: false}]}, {readOnly: false})')
     assert html.count('value="grey" selected') == 2 and html.count('value="colour" selected') == 2
+
+
+def test_the_first_reference_box_is_drawn_and_opens_the_training_picture():
+    """Review I1: the first drag on a held picture drew nothing and never showed the training picture."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    run = subprocess.run([node, str(ROOT / "tests" / "pattern_first_box.js"), str(SCRIPT)], capture_output=True, text=True,
+                         encoding="utf-8", timeout=30, cwd=ROOT)
+    assert run.returncode == 0, run.stderr[:800]
+    seen = json.loads(run.stdout.strip().splitlines()[-1])
+    assert seen["serverDraftStarted"] and seen["boxesDrawnDuringDrag"] > 0 and seen["boxesDrawnAfter"] > 0, seen
+    assert seen["trainingButtonHidden"] is True and seen["note"].startswith("Drag on the picture"), seen

@@ -41,7 +41,10 @@ SET_KEEP_S = 24 * 3600
 DRAFT_KEEP_S = 30 * 24 * 3600
 PARTIAL_KEEP_S = 3600
 JPEG_QUALITY = 95
-_CAMERA_ID = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+# A camera id as a folder name: no dots (Windows drops trailing ones, so "..." would be the drafts folder
+# itself and "cam1." would be "cam1") and none of Windows' device names.
+_CAMERA_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_DEVICE_NAMES = re.compile(r"^(con|prn|aux|nul|com[0-9]|lpt[0-9])$", re.IGNORECASE)
 _cache: Dict[str, ReferenceSet] = {}
 _lock = threading.Lock()
 _draft_lock = threading.RLock()
@@ -179,7 +182,7 @@ def room_ok() -> bool:
 # ── Drafts ────────────────────────────────────────────────────────────────────
 
 def _draft_dir(camera_id: str) -> Path:
-    if not isinstance(camera_id, str) or not _CAMERA_ID.fullmatch(camera_id) or camera_id in (".", ".."):
+    if not isinstance(camera_id, str) or not _CAMERA_ID.fullmatch(camera_id) or _DEVICE_NAMES.fullmatch(camera_id):
         raise KeyError(camera_id)
     return root() / DRAFTS / camera_id
 
@@ -358,8 +361,9 @@ def draft_from_set(camera_id: str, set_id: str) -> None:
 
 
 def delete_draft(camera_id: str) -> None:
+    folder = _draft_dir(camera_id)
     with _draft_lock:
-        shutil.rmtree(_draft_dir(camera_id), ignore_errors=True)
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 def draft_file(camera_id: str, name: Union[str, int]) -> Optional[Path]:
@@ -424,7 +428,7 @@ def clean_up(lines: List[Dict[str, Any]], now: Optional[float] = None) -> int:
                 shutil.rmtree(folder, ignore_errors=True)
                 removed += 1
                 continue
-            data = _read_draft(folder.name) if _CAMERA_ID.fullmatch(folder.name) else None
+            data = _read_draft(folder.name) if _CAMERA_ID.fullmatch(folder.name) and not _DEVICE_NAMES.fullmatch(folder.name) else None
             if data and data.get("trained"):
                 named.add(data["trained"])
     for folder in top.iterdir():

@@ -437,6 +437,7 @@
     async function applyDraft(card, draft) {
         const s = stateOf(card);
         s.draft = draft;
+        s.serverDraft = Boolean(draft);     // the server has the draft (a box being drawn first is only local)
         if (!draft) { s.mask = null; s.picSize = null; setMode(card, s.mode === "training" ? "live" : s.mode); renderSamples(card); return; }
         s.picSize = draft.picture_size;
         if (draft.search_area && !field(card, "pc_search_area").value) field(card, "pc_search_area").value = JSON.stringify(draft.search_area);
@@ -470,12 +471,15 @@
         const s = stateOf(card);
         const body = { reference: s.draft ? s.draft.reference : null, checks: s.draft ? s.draft.checks : [],
                        search_area: readCard(card).search_area };
+        const fresh = !s.serverDraft;
         try {
             const draft = await s.api.fetchJson(cameraPath(card, "/draft"), { method: "PUT", body });
-            const fresh = !s.draft;
             await applyDraft(card, draft);
             if (fresh) await showTraining(card);
-        } catch (e) { note(card, e.message, true); }
+        } catch (e) {
+            if (fresh) { s.draft = null; setMode(card, "held"); }    // the first box did not start the draft
+            note(card, e.message, true);
+        }
         draw(card);
     }
 
@@ -545,9 +549,10 @@
             if (!canEdit(card) || !pic.querySelector("img").naturalWidth) return;
             const p = at(e);
             if (s.mode !== "training") {
-                // The first box starts the draft on the picture held now (a Live picture is held as it shows).
-                if (s.draft || s.tool !== "reference" || !s.held) return;
-                setMode(card, "held");
+                // The first box starts the draft on the picture held now (a Live picture is held as it shows):
+                // it is drawn as on the training picture, which this picture becomes.
+                if (s.serverDraft || s.tool !== "reference" || !s.held) return;
+                setMode(card, "training");
             }
             const img = pic.querySelector("img");
             const picW = s.picSize ? s.picSize[0] : img.naturalWidth, picH = s.picSize ? s.picSize[1] : img.naturalHeight;
@@ -623,7 +628,7 @@
     async function wake(card) {
         const s = stateOf(card);
         if (!s) return;
-        if (s.held && s.held !== card.dataset.camera) { s.held = null; s.last = null; s.loaded = false; s.draft = null; setMode(card, "live"); }
+        if (s.held && s.held !== card.dataset.camera) { s.held = null; s.last = null; s.loaded = false; s.draft = null; s.serverDraft = false; setMode(card, "live"); }
         if (!active(card)) return;
         if (!s.loaded) {
             await loadDraft(card);

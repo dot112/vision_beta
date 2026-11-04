@@ -26,7 +26,7 @@ BANNER = "PATTERN CHECK"
 NO_REFERENCE = "NO REFERENCE"
 CANNOT_CHECK = "CANNOT CHECK"
 FITS_COLOR, WRONG_COLOR, SPOT_COLOR = (0, 200, 0), (0, 0, 230), (0, 0, 255)
-ERROR_CHARS = 60
+ERROR_CHARS = 80
 
 
 def _entry(camera_id: str) -> Tuple[Any, Dict[str, Any]]:
@@ -116,7 +116,13 @@ class PatternCheckWorker:
     def _check(self, mat: Any, frame_id: int, arrived_at: Optional[float], on_result: Any) -> None:
         from app.state.application_state import app_state
 
-        result = check_for_camera(self.camera_id, mat)
+        try:
+            result = check_for_camera(self.camera_id, mat)
+        except Exception as exc:  # noqa: BLE001 - the picture's result is an error, as for a missing reference
+            _error_log.log(logger, logging.WARNING, self.camera_id, "Pattern check failed on camera %s: %s: %s",
+                           self.camera_id, type(exc).__name__, exc)
+            height, width = mat.shape[:2] if hasattr(mat, "shape") else (0, 0)
+            result = error_result(f"{type(exc).__name__}: {exc}", int(width), int(height))
         self.last_inferred_frame = mat
         self.checks += 1
         with self._state_lock:
@@ -143,7 +149,7 @@ class PatternCheckWorker:
             try:
                 self._check(mat, frame_id, arrived_at, on_result)
             except Exception as exc:  # noqa: BLE001 - one bad picture never stops the checker
-                _error_log.log(logger, logging.WARNING, self.camera_id, "Pattern check failed on camera %s: %s: %s",
+                _error_log.log(logger, logging.WARNING, self.camera_id, "Pattern check result failed on camera %s: %s: %s",
                                self.camera_id, type(exc).__name__, exc)
                 if on_failure is not None:
                     on_failure(frame_id, f"{type(exc).__name__}: {exc}")
@@ -197,11 +203,14 @@ def _state(camera_id: str) -> Tuple[List[str], bool]:
         return [BANNER, STATUS_STOPPED], False
     if not _ready(match):
         return [BANNER, NO_REFERENCE], False
-    if entry.get("count_mode") == "trigger":
-        # The result is drawn on the picture the trigger took, not on the moving video.
-        return [BANNER, STATUS_WAITING_TRIGGER], False
     worker = PatternCheckPipeline.peek(camera_id)
     result = worker.latest() if worker else None
+    if entry.get("count_mode") == "trigger":
+        # The result is drawn on the picture the trigger took, not on the moving video; one that could not be
+        # checked (the picture's size changed since training...) is said here too.
+        if result is not None and result.error:
+            return [BANNER, *_verdict(result)], False
+        return [BANNER, STATUS_WAITING_TRIGGER], False
     if result is None:
         return [BANNER], True
     return [BANNER, *_verdict(result)], True
@@ -249,6 +258,9 @@ def render_capture(frame: Any, result: PatternResult) -> Optional[bytes]:
         if img.ndim == 2:
             img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         draw_result(img, result)
+        if result.error:
+            from app.engines.inference_engine import draw_status_bar
+            draw_status_bar(img, [BANNER, *_verdict(result)])
         ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
         return buf.tobytes() if ok else None
     except Exception as exc:  # noqa: BLE001 - a picture that cannot be drawn is not shown

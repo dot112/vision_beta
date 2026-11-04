@@ -976,16 +976,22 @@ class SettingsPersistenceService:
         if send_cards is not None:
             cls.replace_line_send_actions(line["id"], send_cards, keep=not replace)
         if "cameras" in raw:
-            cls._clean_up_later(cls.clean_up_references)
+            cls.clean_up_soon()
         return cls.get_line(line["id"])
 
     @classmethod
-    def clean_up_references(cls) -> None:
+    def clean_up_soon(cls) -> None:
+        """The clean-up beside the request, with the lines as they are now (a copy: they may change meanwhile)."""
+        lines = copy.deepcopy(cls._raw_lines())
+        cls._clean_up_later(lambda: cls.clean_up_references(lines))
+
+    @classmethod
+    def clean_up_references(cls, lines: Optional[List[Dict[str, Any]]] = None) -> None:
         """Remove the pattern check reference sets that nothing names any more (match_references.clean_up)."""
         from app.services import match_references
 
         try:
-            match_references.clean_up(cls._raw_lines())
+            match_references.clean_up(lines if lines is not None else copy.deepcopy(cls._raw_lines()))
         except Exception as exc:        # a clean-up that fails must never stop a save or a start
             logger.warning("Reference set clean-up failed: %s", exc)
 

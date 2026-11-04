@@ -261,3 +261,31 @@ def test_the_recent_route(client, admin_headers):
     body = answer.json()
     assert body["line_id"] == "line-1" and body["checks"][0]["camera_id"] == "m9" and body["checks"][0]["score"] == 98
     assert client.get("/api/v1/lines/no-such-line/match/recent", headers=admin_headers).status_code == 404
+
+
+def test_a_check_that_raises_is_a_pattern_error_at_once(lines, fake_camera, monkeypatch):  # noqa: F811
+    """Review I2: with the real checker thread, a check that raises answers the trigger with pattern_error, not a 10 s
+    wait for a model (nor a lost product on the hardware paths, which take the same on_result)."""
+    from app.services import match_service
+
+    write_set_file()
+
+    def boom(camera_id, mat):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(match_service, "check_for_camera", boom)
+    runtime = _line(lines, [{"camera_id": "vis"}, _checker("m1")])
+    fake_camera("m1")
+    seen = {}
+
+    async def steps():
+        seen["answer"] = await trigger_camera(runtime, "m1", timeout=1.0)
+
+    try:
+        _run(steps)
+    finally:
+        PatternCheckPipeline.remove_camera("m1")
+    answer = seen["answer"]
+    assert (answer["status"], answer["reject_reason"], answer["class_name"]) == ("inspected", "pattern_error", "pattern error")
+    assert answer["waited_ms"] < 3000 and _totals(runtime.aux_counters["m1"]) == (1, 0, 1)
+    assert runtime.recent_pattern_checks()[0]["error"] == "RuntimeError: boom"

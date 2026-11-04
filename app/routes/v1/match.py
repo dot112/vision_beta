@@ -120,9 +120,8 @@ async def draft_picture(camera_id: str, user: User = Depends(require_supervisor)
     path = match_references.draft_file(camera_id, "picture")
     if path is None:
         raise HTTPException(status_code=404, detail=NO_DRAFT)
-    import cv2
-
-    return held_pictures.jpeg(cv2.imread(str(path), cv2.IMREAD_UNCHANGED))
+    # Read as bytes and decoded (cv2.imread cannot open a path with other than ASCII letters on Windows).
+    return held_pictures.jpeg(await asyncio.to_thread(match_references._read_image, path))
 
 
 @router.get("/draft/camera/{camera_id}/mask", summary="The draft's mask (PNG, white = ignore)")
@@ -224,7 +223,7 @@ async def train_draft(camera_id: str, body: Dict[str, Any] = Body(default={}),
         raise HTTPException(status_code=400, detail=str(exc)) from None
     await asyncio.to_thread(match_references.write_set, ref, data, getattr(user, "username", None) or "", camera_id)
     match_references.set_trained(camera_id, set_id)
-    SettingsPersistenceService._clean_up_later(SettingsPersistenceService.clean_up_references)
+    SettingsPersistenceService.clean_up_soon()
     return {"reference_id": set_id, **info}
 
 

@@ -186,8 +186,8 @@ What the page is working on, per camera: `data/match-references/drafts/<camera_i
 `pattern_check` with `pattern_find`:
 
 1. **Size:** a picture whose size is not the training picture's (the camera's resolution or ROI changed)
-   is `pattern_error`: "The camera's picture is W × H; the reference was trained on w × h: train it
-   again".
+   is `pattern_error`: "Picture is W x H, trained on w x h: train it again" (plain ASCII: the video's
+   bar draws it whole, also on One picture per trigger and on the trigger's picture).
    **Search area:** cut it out of the picture (after the camera's ROI); none set: the whole picture.
 2. **Find the main reference by its edges.**
    - Edges: Sobel gradients (3 × 3, on grey 0–255). A reference point is an edge point where the gradient

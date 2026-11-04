@@ -138,15 +138,18 @@ def test_a_check_that_raises_is_logged_once_a_minute(lines, worker, fake_camera,
     write_set_file()
     _line(lines, [checker("m1")])
     fake_camera("m1")
-    failures = []
+    results, failures = [], []
     w = worker(results=[RuntimeError("boom")] * 3)
     with caplog.at_level(logging.WARNING):
         for frame in range(3):
             assert _wait(lambda: not w.is_busy)
             w.submit_frame_if_idle(np.zeros((48, 64, 3), np.uint8), frame,
+                                   on_result=lambda fid, result, ms, arrived: results.append(result),
                                    on_failure=lambda fid, why: failures.append((fid, why)))
-            assert _wait(lambda: len(failures) == frame + 1)
-    assert [why for _, why in failures] == ["RuntimeError: boom"] * 3
+            assert _wait(lambda: len(results) == frame + 1)
+    # Review I2: a check that raises is a pattern_error result (a product, a reject), never a lost picture.
+    assert [(r.reason, r.error) for r in results] == [("pattern_error", "RuntimeError: boom")] * 3 and failures == []
+    assert (results[0].width, results[0].height) == (64, 48) and w.latest().reason == "pattern_error"
     assert len([r for r in caplog.records if "Pattern check failed" in r.getMessage()]) == 1
 
 

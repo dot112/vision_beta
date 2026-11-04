@@ -170,3 +170,16 @@ def test_operators_api_keys_and_the_lock(client, admin_headers, operator, superv
         assert client.delete(f"{API}/draft/camera/c1", headers=supervisor).status_code == 423
     finally:
         client.post("/api/v1/system/unlock", headers=admin_headers)
+
+
+def test_the_training_picture_shows_from_a_data_folder_with_other_letters(client, supervisor, fake_camera, data_dir, monkeypatch):  # noqa: F811
+    """Review: cv2.imread cannot open a path with non-ASCII letters on Windows, so the training picture never showed."""
+    from app.services import settings_persistence_service
+
+    folder = data_dir / "بيانات données"
+    folder.mkdir()
+    monkeypatch.setattr(settings_persistence_service, "DATA_DIR", str(folder))
+    cam = fake_camera("c1")
+    _draft_with_samples(client, supervisor, cam, count=1)
+    picture = client.get(f"{API}/draft/camera/c1/picture", headers=supervisor)
+    assert picture.status_code == 200 and picture.headers["content-type"] == "image/jpeg", picture.text[:200]

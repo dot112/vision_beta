@@ -134,3 +134,16 @@ def test_the_server_start_cleans_up(monkeypatch):
     monkeypatch.setattr(SettingsPersistenceService, "clean_up_references", classmethod(lambda cls: ran.append(True)))
     asyncio.run(main._clean_up_references())
     assert ran == [True]
+
+
+def test_the_clean_up_gets_the_lines_as_they_were_saved(lines, data_dir, monkeypatch):  # noqa: F811
+    """Review: the clean-up thread read the live lines; one changing meanwhile could hide a named set from it."""
+    seen, later = [], []
+    monkeypatch.setattr(match_references, "clean_up", lambda all_lines, now=None: seen.append(
+        [c.get("camera_id") for line in all_lines for c in line.get("cameras") or []]) or 0)
+    monkeypatch.setattr(SettingsPersistenceService, "_clean_up_later", staticmethod(later.append))
+    _set_file(data_dir)
+    SettingsPersistenceService.save_line({"name": "Snapshot", "cameras": [GOOD]})
+    SettingsPersistenceService._state["lines"].clear()           # the lines change before the thread runs
+    later[-1]()
+    assert seen and "m1" in seen[-1]

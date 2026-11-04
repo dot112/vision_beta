@@ -175,17 +175,32 @@ def _scores(px: np.ndarray, py: np.ndarray, template: _Template) -> np.ndarray:
             + cv2.matchTemplate(py, template.gy, cv2.TM_CCORR)) / max(template.n, 1)
 
 
-def _region(img: np.ndarray, x0: int, y0: int, x1: int, y1: int) -> Optional[np.ndarray]:
-    """img[y0:y1, x0:x1], its part outside the picture filled by repeating the picture's edge (no
-    edges there, so a template partly outside scores only on its part inside). None when all outside."""
+def _region(img: np.ndarray, x0: int, y0: int, x1: int, y1: int) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    """img[y0:y1, x0:x1], its part outside the picture filled by repeating the picture's edge, and where it is
+    inside the picture (1, float32; None when all of it is). (None, None) when all of it is outside."""
     height, width = img.shape[:2]
     cx0, cy0, cx1, cy1 = max(x0, 0), max(y0, 0), min(x1, width), min(y1, height)
     if cx1 <= cx0 or cy1 <= cy0:
-        return None
+        return None, None
     part = img[cy0:cy1, cx0:cx1]
     if (cx0, cy0, cx1, cy1) == (x0, y0, x1, y1):
-        return part
-    return cv2.copyMakeBorder(part, cy0 - y0, y1 - cy1, cx0 - x0, x1 - cx1, cv2.BORDER_REPLICATE)
+        return part, None
+    pads = (cy0 - y0, y1 - cy1, cx0 - x0, x1 - cx1)
+    inside = cv2.copyMakeBorder(np.ones(part.shape[:2], np.float32), *pads, cv2.BORDER_CONSTANT, value=0)
+    # The picture's own border rows are no edges of it either (their gradients see the repeated rows).
+    inside = cv2.erode(inside, np.ones((3, 3), np.uint8), borderType=cv2.BORDER_CONSTANT, borderValue=1)
+    return cv2.copyMakeBorder(part, *pads, cv2.BORDER_REPLICATE), inside
+
+
+def _scores_inside(px: np.ndarray, py: np.ndarray, inside: np.ndarray, template: _Template) -> np.ndarray:
+    """As _scores, but each place's mean is over the template's edge points inside the picture only (the part
+    outside counts as masked); a place with less than half of them inside scores 0."""
+    points = ((template.gx != 0) | (template.gy != 0)).astype(np.float32)
+    count = cv2.matchTemplate(inside, points, cv2.TM_CCORR)
+    total = cv2.matchTemplate(px, template.gx, cv2.TM_CCORR) + cv2.matchTemplate(py, template.gy, cv2.TM_CCORR)
+    scores = total / np.maximum(count, 1.0)
+    scores[count < 0.5 * max(template.n, 1)] = 0.0
+    return scores
 
 
 def _best_near(model: EdgeModel, level: int, img: np.ndarray, cx: float, cy: float,
@@ -195,7 +210,7 @@ def _best_near(model: EdgeModel, level: int, img: np.ndarray, cx: float, cy: flo
     half_w = max(t.gx.shape[1] for t in templates) / 2 + window + 2
     half_h = max(t.gx.shape[0] for t in templates) / 2 + window + 2
     rx0, ry0 = int(math.floor(cx - half_w)), int(math.floor(cy - half_h))
-    region = _region(img, rx0, ry0, int(math.ceil(cx + half_w)), int(math.ceil(cy + half_h)))
+    region, inside = _region(img, rx0, ry0, int(math.ceil(cx + half_w)), int(math.ceil(cy + half_h)))
     if region is None:
         return None
     px, py, _ = unit_gradients(region, EDGE_PIC_MIN)
@@ -208,7 +223,10 @@ def _best_near(model: EdgeModel, level: int, img: np.ndarray, cx: float, cy: flo
         wy1 = min(wy0 + th + 2 * window, px.shape[0])
         if wx1 - wx0 < tw or wy1 - wy0 < th:
             continue
-        _, value, _, loc = cv2.minMaxLoc(_scores(px[wy0:wy1, wx0:wx1], py[wy0:wy1, wx0:wx1], template))
+        window_px, window_py = px[wy0:wy1, wx0:wx1], py[wy0:wy1, wx0:wx1]
+        scores = (_scores(window_px, window_py, template) if inside is None
+                  else _scores_inside(window_px, window_py, inside[wy0:wy1, wx0:wx1], template))
+        _, value, _, loc = cv2.minMaxLoc(scores)
         if best is None or value > best[0]:
             best = (float(value), template.angle, rx0 + wx0 + loc[0] + tw / 2, ry0 + wy0 + loc[1] + th / 2)
     return best

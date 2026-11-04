@@ -125,9 +125,14 @@ def test_a_draft_from_a_set(data_dir, trained):
         draft_from_set("c2", "ref-99999999")
 
 
-def test_a_camera_id_cannot_leave_the_folder(data_dir):
+@pytest.mark.parametrize("camera_id", ["../x", "...", "..", "a.", "cam1.", "nul", "CON", "com1", "lpt9", "a/b", ""])
+def test_a_camera_id_cannot_leave_or_alias_the_folder(data_dir, camera_id):
+    """Review I4: Windows drops trailing dots ("..." is the drafts folder itself, "cam1." is "cam1") and
+    NUL, CON, COM1... are devices: such ids must never name a draft folder (DELETE would remove every draft)."""
     with pytest.raises(KeyError):
-        start_draft("../x", PICTURES[0])
+        start_draft(camera_id, PICTURES[0])
+    with pytest.raises(KeyError):
+        delete_draft(camera_id)
 
 
 def _age(path, hours):
