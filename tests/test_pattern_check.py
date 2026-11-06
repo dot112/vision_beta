@@ -151,3 +151,22 @@ def test_a_check_box_with_edges_partly_outside_scores_its_inside_part():
     edge = check_picture(ref, match, np.ascontiguousarray(wide[:, :1280]))       # the label's right edge 5 px out
     assert inside >= 95 and edge.checks[1].score >= 90, (inside, edge.to_dict()["checks"])
     assert edge.result == "good"
+
+
+BLANK_BOX = (125, -20, 165, 30)         # blank paper between the big word and the circle: no edges in it
+
+
+def test_an_area_check_on_blank_paper_compares_marks_only():
+    """Owner 2026-11-05 ("I can't do an area check"): a check on a blank area has no edges, so its Match % was 0 and
+    every product, good too, was a pattern_mismatch; its marks were never compared. It is an area check now: placed
+    by the reference, Match not used, its marks and colour compared with the good samples."""
+    ref = _set(boxes=(LABEL_BOX, BLANK_BOX))
+    assert ref.checks[1].area is True and ref.checks[0].area is False
+    match = {**MATCH, "checks": [_check("Label"), _check("Area")]}
+    good = check_picture(ref, match, scene(label(), 5, 620, 470, seed=50))
+    assert good.result == "good" and good.checks[1].score == 100 and good.checks[1].defect_px == 0, good.to_dict()["checks"]
+    marked = label()
+    cv2.circle(marked, (325, 125), 8, 40, -1)                     # a dark mark on that paper
+    only_area = {**MATCH, "checks": [_check("Label", max_defect_px=100000), _check("Area")]}
+    bad = check_picture(ref, only_area, scene(marked, -6, 660, 490, seed=52))
+    assert bad.reason == "pattern_defect" and bad.checks[1].defect_px > 40 and not bad.checks[1].fits, bad.to_dict()["checks"]

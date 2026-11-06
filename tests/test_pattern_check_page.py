@@ -48,7 +48,7 @@ def test_script_is_valid_and_loaded():
         pytest.skip("node is not installed")
     assert subprocess.run([node, "--check", str(SCRIPT)], capture_output=True).returncode == 0
     page = PAGE.read_text(encoding="utf-8")
-    tag = '<script src="/assets/pattern_check.js?v=1.0.3"></script>'
+    tag = '<script src="/assets/pattern_check.js?v=1.0.4"></script>'
     assert tag in page and page.index(tag) < page.index("/assets/production_lines.js")
 
 
@@ -70,6 +70,48 @@ def test_paint_and_erase():
         api.paint(mask, 20, 20, -2, 0, 3, true);       // half outside: no error
         process.stdout.write(JSON.stringify([painted, mask[0] === 1, mask[19 * 20 + 19] === 0]));
     """) == [29, True, True]
+
+
+def test_a_fast_brush_stroke_paints_a_continuous_line():
+    """Owner 2026-11-05 ("I can't do the mask"): the brush painted a dab only where the pointer was seen, so a fast
+    stroke left a dotted line with gaps; it paints the whole line between two pointer positions now."""
+    assert _node("""
+        const api = require("./assets/pattern_check.js");
+        const mask = new Uint8Array(40 * 20);
+        api.paintLine(mask, 40, 20, 2, 10, 38, 10, 2, true);
+        const row = [...mask.slice(10 * 40, 11 * 40)];
+        const gaps = row.slice(2, 39).filter((v) => !v).length;
+        api.paintLine(mask, 40, 20, 2, 10, 38, 10, 2, false);
+        process.stdout.write(JSON.stringify([gaps, mask.reduce((a, b) => a + b, 0)]));
+    """) == [0, 0]
+
+
+def test_a_box_masks_a_whole_area():
+    """A Box size: a drag masks (or clears) the whole rectangle, for a date or a shiny area."""
+    assert _node("""
+        const api = require("./assets/pattern_check.js");
+        const mask = new Uint8Array(20 * 20);
+        api.paintBox(mask, 20, 20, 15, 12, 3, 4, true);
+        const box = mask.reduce((a, b) => a + b, 0);
+        api.paintBox(mask, 20, 20, 3, 4, 8, 12, false);
+        const left = mask.reduce((a, b) => a + b, 0);
+        const edge = new Uint8Array(20 * 20);
+        api.paintBox(edge, 20, 20, -5, -5, 2, 30, true);      // past the picture's edge: no error
+        process.stdout.write(JSON.stringify([box, left, edge.reduce((a, b) => a + b, 0)]));
+    """) == [13 * 9, 7 * 9, 3 * 20]
+    html = _api('api.foldHtml(null, {readOnly: false})')
+    assert 'data-act="pc-size" data-size="Box"' in html
+
+
+def test_an_area_check_is_named_on_the_page():
+    """An area check has no shape to find: the result line shows its defect only, and Train says which are."""
+    line = _api('api.resultLine({result: "reject", reason: "pattern_defect", ms: 41.6, checks: ['
+                '{name: "Main", score: 99, defect_px: 0, area: false}, {name: "Check2", score: 100, defect_px: 57, area: true}]})')
+    assert line == "REJECT (pattern defect) · Main 99% 0 px · Check2 area 57 px · 42 ms"
+    note = _api('api.trainNote({samples: [1, 2, 3], note: null, area: [false, true, false]}, ["Main", "Blank", "Cap"])')
+    assert note == ("Thresholds suggested from 3 samples. Save to keep them. Blank: an area check"
+                    " (no shape to find), only its marks and colour count.")
+    assert _api('api.trainNote({samples: [1], note: "Add more.", area: [false]}, ["Main"])') == "Add more."
 
 
 def test_values_to_settings():

@@ -169,3 +169,18 @@ def test_room(data_dir, monkeypatch):
     assert room_ok() is False
     monkeypatch.setattr(match_references.shutil, "disk_usage", lambda path: usage(10 ** 12, 0, 10 ** 12))
     assert room_ok() is True
+
+
+
+def test_an_area_check_is_kept_and_an_older_set_works_it_out(data_dir):
+    made = DraftData(PICTURES[0], label_box(LABEL_BOX), [label_box((125, -20, 165, 30))], np.zeros((960, 1280), bool), PICTURES)
+    ref, _ = train(made, 15, [{"colour": False, "sensitivity": "normal"}] * 2, "ref-0a0a0a0a")
+    write_set(ref, made, "admin", "c1")
+    meta_path = data_dir / "match-references" / ref.id / "set.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert [c["area"] for c in meta["checks"]] == [False, True]
+    for entry in meta["checks"]:                                  # a set trained before area checks
+        del entry["area"]
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    match_references._cache.clear()
+    assert [c.area for c in load_set(ref.id).checks] == [False, True]

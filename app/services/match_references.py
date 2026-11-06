@@ -29,7 +29,7 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 import cv2
 import numpy as np
 
-from app.engines.pattern_check import CheckModel, ReferenceSet
+from app.engines.pattern_check import CheckModel, ReferenceSet, is_area
 from app.engines.pattern_training import MAX_SAMPLES, DraftData
 
 logger = logging.getLogger(__name__)
@@ -109,7 +109,8 @@ def write_set(ref: ReferenceSet, draft: DraftData, made_by: str, camera_id: str)
         "format": FORMAT, "id": ref.id, "made_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "made_by": made_by, "camera_id": camera_id, "picture_size": list(ref.picture_size),
         "reference": [int(v) for v in draft.reference], "samples": ref.samples,
-        "checks": [{"box": [float(v) for v in check.box], "typical": float(check.typical)} for check in ref.checks],
+        "checks": [{"box": [float(v) for v in check.box], "typical": float(check.typical), "area": bool(check.area)}
+                   for check in ref.checks],
     }
     _write_image(partial / "mask.png", _mask_png(draft.ignore))
     for number, check in enumerate(ref.checks, start=1):
@@ -150,8 +151,12 @@ def load_set(set_id: str) -> ReferenceSet:
             x1, y1, x2, y2 = _absolute(meta["reference"], entry["box"])
             mean = _read_image(folder / f"check-{number}-mean.png", cv2.IMREAD_COLOR)
             spread = np.load(folder / f"check-{number}-spread.npy").astype(np.float32)
-            checks.append(CheckModel(tuple(float(v) for v in entry["box"]), mean, spread,
-                                     ignore[y1:y2, x1:x2].copy(), float(entry["typical"])))
+            check = CheckModel(tuple(float(v) for v in entry["box"]), mean, spread, ignore[y1:y2, x1:x2].copy(),
+                               float(entry["typical"]))
+            # A set trained before area checks: a check (not the reference) without edges is one.
+            area = entry.get("area")
+            check.area = bool(area) if area is not None else (number > 1 and is_area(check.mean, check.ignore))
+            checks.append(check)
         ref = ReferenceSet(set_id, tuple(int(v) for v in meta["picture_size"]), checks, int(meta["samples"]))
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise ReferenceMissing(f"the reference set {set_id} cannot be read: {exc}") from exc

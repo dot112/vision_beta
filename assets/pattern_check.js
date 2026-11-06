@@ -27,6 +27,7 @@
     const MASK_SEND_MS = 500;       // after the last brush stroke
     const CORNER_PX = 12;           // a press this near a corner of a box resizes it
     const BRUSH = { S: 6, M: 14, L: 28 };   // the brush's radius in pixels of the training picture
+    const BOX = "Box";                      // the brush size that masks a whole dragged rectangle
     const TOOLS = { reference: "Reference", check: "Check", search: "Search area", mask: "Mask" };
     const SENSITIVITIES = { low: "Low", normal: "Normal", high: "High" };
     const COLORS = { reference: "#ffffff", check: "#ffd400", search: "#00c8ff", fits: "rgb(0,200,0)", wrong: "rgb(230,0,0)", spot: "rgb(255,0,0)" };
@@ -73,6 +74,20 @@
                 mask[yy * w + xx] = on ? 1 : 0;
             }
         }
+    }
+
+    // The brush moved from (x0, y0) to (x1, y1): dabs close enough together to leave no gap, however fast.
+    function paintLine(mask, w, h, x0, y0, x1, y1, radius, on) {
+        const steps = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / Math.max(1, radius / 2)));
+        for (let i = 0; i <= steps; i += 1) paint(mask, w, h, x0 + (x1 - x0) * i / steps, y0 + (y1 - y0) * i / steps, radius, on);
+    }
+
+    // The rectangle between corners (x0, y0) and (x1, y1), both included, painted (1) or cleared (0); the part
+    // outside the mask is left out.
+    function paintBox(mask, w, h, x0, y0, x1, y1, on) {
+        const left = Math.max(0, Math.round(Math.min(x0, x1))), right = Math.min(w - 1, Math.round(Math.max(x0, x1)));
+        const top = Math.max(0, Math.round(Math.min(y0, y1))), bottom = Math.min(h - 1, Math.round(Math.max(y0, y1)));
+        for (let y = top; y <= bottom; y += 1) mask.fill(on ? 1 : 0, y * w + left, y * w + right + 1);
     }
 
     // The form's values -> the match settings the server takes (blanks get the defaults).
@@ -147,7 +162,7 @@
             <div class="pc-brush" hidden><span class="pc-label" data-help="Paint over the parts the check must ignore, such as a date that changes or a shiny spot: the search and the comparison leave them out.">Mask brush:</span>
                 <button data-lock type="button" class="btn-action btn-outline pc-paint active" data-act="pc-paint" data-paint="1" ${dis}>Paint</button>
                 <button data-lock type="button" class="btn-action btn-outline pc-paint" data-act="pc-paint" data-paint="0" ${dis}>Erase</button>
-                <span class="pc-label">Size</span>${Object.keys(BRUSH).map((k) => `<button data-lock type="button" class="btn-action btn-outline pc-size${k === "M" ? " active" : ""}" data-act="pc-size" data-size="${k}" ${dis}>${k}</button>`).join("")}
+                <span class="pc-label">Size</span>${[...Object.keys(BRUSH), BOX].map((k) => `<button data-lock type="button" class="btn-action btn-outline pc-size${k === "M" ? " active" : ""}" data-act="pc-size" data-size="${k}" ${dis}>${k}</button>`).join("")}
             </div>
             <div class="pc-pic" data-f="pc-pic"><img alt="" hidden><canvas></canvas><span class="pc-pic-note">No picture yet</span></div>
             <div class="pc-result" data-f="pc-result"></div>
@@ -317,6 +332,7 @@
             if (area) strokeBox(ctx, area, w, h, COLORS.search, "Search area", true);
             if (s.draft.reference) strokeBox(ctx, s.draft.reference, w, h, COLORS.reference, names[0] || "Reference");
             (s.draft.checks || []).forEach((box, i) => strokeBox(ctx, box, w, h, COLORS.check, names[i + 1] || `Check ${i + 2}`));
+            if (s.maskBox) strokeBox(ctx, s.maskBox, w, h, COLORS.spot, "", true);
             return;
         }
         const r = s.last;
@@ -334,13 +350,27 @@
         });
     }
 
+    // One checked picture as the page's result line; an area check has no Match %, only its defect.
+    function resultLine(r) {
+        const checks = (r.checks || []).map((c) => (c.area ? `${c.name} area ${c.defect_px} px` : `${c.name} ${c.score}% ${c.defect_px} px`)).join(" · ");
+        const verdict = r.result === "good" ? "GOOD" : `REJECT (${REASONS[r.reason] || r.reason})`;
+        return `${verdict}${checks ? ` · ${checks}` : ""} · ${Math.round(r.ms)} ms`;
+    }
+
+    // What Train says: how many samples the thresholds came from, and which checks are area checks.
+    function trainNote(info, names) {
+        if (info.note) return info.note;
+        const areas = (info.area || []).map((a, i) => (a ? names[i] || `Check ${i + 1}` : null)).filter(Boolean);
+        const many = areas.length > 1;
+        const area = areas.length ? ` ${areas.join(", ")}: ${many ? "area checks" : "an area check"} (no shape to find), only ${many ? "their" : "its"} marks and colour count.` : "";
+        return `Thresholds suggested from ${info.samples.length} samples. Save to keep them.${area}`;
+    }
+
     function showResult(card) {
         const r = stateOf(card).last;
         if (!r) return;
         if (r.error) { note(card, r.error, true); return; }
-        const checks = (r.checks || []).map((c) => `${c.name} ${c.score}% ${c.defect_px} px`).join(" · ");
-        const verdict = r.result === "good" ? "GOOD" : `REJECT (${REASONS[r.reason] || r.reason})`;
-        note(card, `${verdict}${checks ? ` · ${checks}` : ""} · ${Math.round(r.ms)} ms`, r.result !== "good");
+        note(card, resultLine(r), r.result !== "good");
     }
 
     // ── The server ────────────────────────────────────────────────────────────
@@ -523,7 +553,7 @@
             redrawRows(card, applySuggestions(rowsOf(card).map(rowValues), info.suggested));
             s.atTrain = now.checks.map((c) => ({ colour: c.colour, sensitivity: c.sensitivity }));
             field(card, "pc-again").hidden = true;
-            field(card, "pc-train-note").textContent = info.note || `Thresholds suggested from ${info.samples.length} samples. Save to keep them.`;
+            field(card, "pc-train-note").textContent = trainNote(info, rowsOf(card).map((row) => pc(row, "name").value));
             changed(card);
             await loadDraft(card);
             note(card, "Trained. Take a picture or watch Live to see each product's result.");
@@ -558,9 +588,10 @@
             const picW = s.picSize ? s.picSize[0] : img.naturalWidth, picH = s.picSize ? s.picSize[1] : img.naturalHeight;
             if (s.tool === "mask") {
                 if (!s.mask) return;
-                drag = { mask: true, paint: s.paint, picW, picH };
-                paint(s.mask, picW, picH, p.x / p.w * picW, p.y / p.h * picH, BRUSH[s.brush], s.paint);
-                s.maskChanged = true;
+                const x = p.x / p.w * picW, y = p.y / p.h * picH;
+                drag = { mask: true, paint: s.paint, picW, picH, box: s.brush === BOX, x, y, start: { x, y } };
+                if (drag.box) s.maskBox = [p.x / p.w, p.y / p.h, p.x / p.w, p.y / p.h];
+                else { paint(s.mask, picW, picH, x, y, BRUSH[s.brush], s.paint); s.maskChanged = true; }
                 draw(card);
             } else {
                 let index = 0;
@@ -594,8 +625,11 @@
             const s = stateOf(card);
             const p = at(e);
             if (drag.mask) {
-                paint(s.mask, drag.picW, drag.picH, p.x / p.w * drag.picW, p.y / p.h * drag.picH, BRUSH[s.brush], drag.paint);
-                s.maskChanged = true;
+                const x = p.x / p.w * drag.picW, y = p.y / p.h * drag.picH;
+                if (drag.box) s.maskBox = [drag.start.x / drag.picW, drag.start.y / drag.picH, x / drag.picW, y / drag.picH];
+                else { paintLine(s.mask, drag.picW, drag.picH, drag.x, drag.y, x, y, BRUSH[s.brush], drag.paint); s.maskChanged = true; }
+                drag.x = x;
+                drag.y = y;
             } else if (drag.mode === "move") {
                 const [x1, y1, x2, y2] = drag.box;
                 const dx = Math.min(Math.max((p.x - drag.start.x) / p.w, -x1), 1 - x2);
@@ -611,7 +645,16 @@
             const done = drag;
             drag = null;
             const s = stateOf(card);
-            if (done.mask) { sendMaskSoon(card); return; }
+            if (done.mask) {
+                if (done.box) {
+                    paintBox(s.mask, done.picW, done.picH, done.start.x, done.start.y, done.x, done.y, done.paint);
+                    s.maskBox = null;
+                    s.maskChanged = true;
+                    draw(card);
+                }
+                sendMaskSoon(card);
+                return;
+            }
             if (done.tool === "check" && done.isNew) {
                 const checks = rowsOf(card).map(rowValues);
                 checks.push({ name: newCheckName(checks.map((c) => c.name)) });
@@ -726,8 +769,8 @@
         return `<div class="pc-record">${parts.join(" · ")}</div>`;
     }
 
-    const api = { MAX_CHECKS, MAX_SAMPLES, MIN_BOX_PX, foldHtml, matchFromValues, readCard, boxFrom, paint, applySuggestions,
-                  trainAgain, newCheckName, bind, wake, checksPanelHtml, checksRowsHtml, recordText };
+    const api = { MAX_CHECKS, MAX_SAMPLES, MIN_BOX_PX, foldHtml, matchFromValues, readCard, boxFrom, paint, paintLine, paintBox,
+                  applySuggestions, resultLine, trainNote, trainAgain, newCheckName, bind, wake, checksPanelHtml, checksRowsHtml, recordText };
     root.PatternCheck = api;
     if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);

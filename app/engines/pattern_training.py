@@ -22,7 +22,7 @@ import cv2
 import numpy as np
 
 from app.engines.pattern_check import (CHECK_SHIFT_PX, CHECK_TURN_DEG, CheckModel, ReferenceSet, _half,
-                                       _to_picture, defects, level_light, line_up, match_percent)
+                                       _to_picture, defects, is_area, level_light, line_up, match_percent)
 from app.engines.pattern_find import Found, build_edge_model, find, refine, to_grey
 
 MIN_BOX_PX = 16
@@ -159,7 +159,10 @@ def train(draft: DraftData, angle: int, checks: List[Dict[str, Any]], set_id: st
         raw = [cv2.cvtColor(cut, cv2.COLOR_BGR2LAB).astype(np.float32) for cut in cuts]
         use = ~ignores[index]
         labs = np.stack([level_light(lab, raw[0], use) for lab in raw])
-        models.append(_model(labs, box, ignores[index]))
+        model = _model(labs, box, ignores[index])
+        # A check (not the reference) with no edges to find is an area check: its marks and colour only.
+        model.area = index > 0 and is_area(model.mean, model.ignore)
+        models.append(model)
         cuts_by_check.append(cuts)
         labs_by_check.append(labs)
     ref = ReferenceSet(set_id, (draft.picture.shape[1], draft.picture.shape[0]), models, count)
@@ -169,7 +172,18 @@ def train(draft: DraftData, angle: int, checks: List[Dict[str, Any]], set_id: st
         greys = [to_grey(s) for s in draft.samples]
         use_colour = bool(wanted[index]["colour"]) and colour
         sensitivity = wanted[index]["sensitivity"]
-        if count >= 3:
+        if model.area:
+            model.typical = 1.0
+            scores = [100] * count
+            if count >= 3:
+                biggest = [defects(cuts_by_check[index][left_out],
+                                   _model(np.delete(labs_by_check[index], left_out, axis=0), relative[index], ignores[index]),
+                                   use_colour, sensitivity)[0] for left_out in range(count)]
+                suggested.append(_suggestion(scores, biggest))
+            else:
+                biggest = [defects(cut, model, use_colour, sensitivity)[0] for cut in cuts_by_check[index]]
+                suggested.append(dict(DEFAULT_SUGGESTION))
+        elif count >= 3:
             raws, biggest = [], []
             for left_out in range(count):
                 others = np.delete(labs_by_check[index], left_out, axis=0)
@@ -192,4 +206,5 @@ def train(draft: DraftData, angle: int, checks: List[Dict[str, Any]], set_id: st
         for number in range(count):
             samples[number]["scores"].append(scores[number])
             samples[number]["defects"].append(biggest[number])
-    return ref, {"suggested": suggested, "samples": samples, "note": FEW_SAMPLES_NOTE if count < 3 else None}
+    return ref, {"suggested": suggested, "samples": samples, "note": FEW_SAMPLES_NOTE if count < 3 else None,
+                 "area": [m.area for m in models]}

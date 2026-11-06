@@ -5,6 +5,9 @@
 - its biggest defect: the largest spot of pixels further from the average good picture than the good
   samples varied there (x k of its Sensitivity, at least a floor), after the light is levelled.
 
+A check whose box has (almost) no edges, such as a blank surface, is an area check: it is placed by the main
+reference, its Match % is not used (100 while it is in the picture), and only its marks and colour count.
+
 The picture is good when every check reaches its lowest Match % and its biggest defect is within its
 limit. Otherwise it is a reject with the first problem: the main reference not found, then a check that
 does not match, then a defect (in check order). A picture of another size than the training picture, or
@@ -31,9 +34,14 @@ from app.services.line_config import (REASON_PATTERN_DEFECT, REASON_PATTERN_ERRO
 SENSITIVITY = {"low": (5, 35), "normal": (4, 25), "high": (3, 15)}
 BORDER_PX = 2
 MAX_SPOTS = 5
+# A box whose good lightness spreads less than this (Lab L) is flat, such as blank paper: only its brightness is
+# matched, as matching its spread too would squash a mark on it away.
+FLAT_SPREAD = 8.0
 # Checks 2-4 are searched this close to where the main reference puts them.
 CHECK_SHIFT_PX = 6
 CHECK_TURN_DEG = 1.0
+# A check with fewer edge points than this has no shape to find: it is an area check.
+MIN_SHAPE_POINTS = 40
 STATUSES = {None: "good", REASON_PATTERN_NOT_FOUND: "not_found", REASON_PATTERN_MISMATCH: "mismatch",
             REASON_PATTERN_DEFECT: "defect", REASON_PATTERN_ERROR: "error"}
 Box = Tuple[float, float, float, float]
@@ -44,12 +52,13 @@ class CheckModel:
     """One check of a reference set. ``box``: x1, y1, x2, y2 in pixels from the reference box's centre
     (check 1's is the reference box). ``mean``: the average good picture of the box, lined up (BGR);
     ``spread``: how much each pixel varied across the good samples (Lab); ``ignore``: masked pixels;
-    ``typical``: the good samples' typical edge score."""
+    ``typical``: the good samples' typical edge score; ``area``: an area check (no shape, marks and colour only)."""
     box: Box
     mean: np.ndarray
     spread: np.ndarray
     ignore: np.ndarray
     typical: float
+    area: bool = False
     mean_lab: np.ndarray = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -86,6 +95,7 @@ class CheckResult(NamedTuple):
     spots: List[List[int]]
     box: List[List[float]]
     fits: bool
+    area: bool = False
 
 
 @dataclass
@@ -110,13 +120,19 @@ class PatternResult:
         return {
             "width": self.width, "height": self.height, "ms": round(self.ms, 1), "found": found,
             "checks": [{"name": c.name, "score": c.score, "defect_px": c.defect_px, "spots": c.spots,
-                        "box": [[round(x, 1), round(y, 1)] for x, y in c.box], "fits": c.fits} for c in self.checks],
+                        "box": [[round(x, 1), round(y, 1)] for x, y in c.box], "fits": c.fits, "area": c.area}
+                       for c in self.checks],
             "result": self.result, "reason": self.reason, "error": self.error,
         }
 
 
 def error_result(error: str, width: int = 0, height: int = 0) -> PatternResult:
     return PatternResult(width, height, 0.0, None, [], "reject", REASON_PATTERN_ERROR, error)
+
+
+def is_area(mean: np.ndarray, ignore: np.ndarray) -> bool:
+    """Whether a check's average good picture has too few edges to find: an area check."""
+    return build_edge_model(to_grey(mean), ignore, 0).points < MIN_SHAPE_POINTS
 
 
 def match_percent(raw: float, typical: float) -> int:
@@ -167,11 +183,15 @@ def line_up(picture: np.ndarray, found: Found, box: Box) -> Tuple[np.ndarray, np
 
 
 def level_light(lab: np.ndarray, like: np.ndarray, use: np.ndarray) -> np.ndarray:
-    """``lab`` (float Lab) with its lightness's mean and spread over ``use`` matched to ``like``'s."""
+    """``lab`` (float Lab) with its lightness's mean and spread over ``use`` matched to ``like``'s; a flat ``like``
+    (blank paper) only its middle brightness."""
     out = lab.astype(np.float32, copy=True)
     if not use.any():
         return out
     light, target = out[..., 0][use], like[..., 0][use]
+    if float(target.std()) < FLAT_SPREAD:
+        out[..., 0] += float(np.median(target)) - float(np.median(light))
+        return out
     spread = float(light.std())
     gain = float(target.std()) / spread if spread >= 1.0 else 1.0
     out[..., 0] = (out[..., 0] - float(light.mean())) * gain + float(target.mean())
@@ -263,6 +283,8 @@ def check_picture(ref: ReferenceSet, match: Dict[str, Any], picture: np.ndarray)
             place = Found(x, y, found.angle, 0.0)
             if line_up(grey, place, half)[1].mean() < 0.5:
                 score = 0
+            elif check.area:
+                score = 100           # an area check: where the reference puts it; its marks decide
             else:
                 place = refine(ref.edge_model(index, angle), grey, place, CHECK_SHIFT_PX, CHECK_TURN_DEG)
                 score = match_percent(place.score, check.typical)
@@ -273,7 +295,7 @@ def check_picture(ref: ReferenceSet, match: Dict[str, Any], picture: np.ndarray)
                                            wanted.get("sensitivity", "normal"), ~inside)
             spots = [_spot_box(place, half, spot) for spot in cut_spots]
         fits = score >= wanted["min_score"] and defect_px <= wanted["max_defect_px"]
-        results.append(CheckResult(wanted["name"], score, defect_px, spots, _corners(place, half), fits))
+        results.append(CheckResult(wanted["name"], score, defect_px, spots, _corners(place, half), fits, check.area))
     reason = _reason(results, settings)
     ms = (time.perf_counter() - started) * 1000
     return PatternResult(width, height, ms, found, results, "good" if reason is None else "reject", reason)

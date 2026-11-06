@@ -212,8 +212,15 @@ What the page is working on, per camera: `data/match-references/drafts/<camera_i
    found place (`cv2.warpAffine`, linear), so it sits as in the training picture. Checks 2–4 then search
    ±6 px and ±1° around where the main reference puts them: their own place and Match %. A check box
    partly outside the picture: the part outside counts as masked; less than half inside: Match 0 %.
+   **Area checks** (added 2026-11-05): a check (never the reference) whose box has fewer than 40 edge
+   points in the training picture (blank paper, a plain surface) has no shape to find. It is placed
+   where the main reference puts it (no ±6 px search), its Match % is 100 while at least half of it is
+   in the picture (else 0), and only its defects and colour decide. `set.json` keeps `"area"` per
+   check; older sets work it out when loaded. The training page names it (`Check2 area 57 px`).
 6. **Level the light** over the box's unmasked pixels:
-   - Grey: brightness and contrast (mean and spread) matched to the average good picture.
+   - Grey: brightness and contrast (mean and spread) matched to the average good picture. When the
+     average good picture's spread over those pixels is below 8 grey levels (a flat area), only the
+     brightness is shifted (by the median difference): a contrast gain would squash a mark away.
    - Colour (Lab): lightness levelled the same way; the two colour channels compared as they are.
    - A grey (one-channel) picture, as industrial mono cameras give, is checked as Grey whatever the
      Colour switch says.
@@ -340,7 +347,7 @@ Pattern and checks
 │  └─────────────────────────────────────────────────┘       │
 │ GOOD · Label 97% 0 px · Cap 92% 4 px · 38 ms               │
 └────────────────────────────────────────────────────────────┘
-Mask brush: (Paint) (Erase)   Size [S M L]
+Mask brush: (Paint) (Erase)   Size [S M L Box]
 Good samples (8): [1 100%][2 98%][3 99%] … [8 97%] ×      [Add as good]
 [Train]  5–20 good samples give better thresholds.   [Edit training] [Start over]
 Search: angle ±[15]°
@@ -354,7 +361,9 @@ Checks:  Name    Min match   Max defect   Colour   Sensitivity
 - **Draw:** the selected tool's box is drawn by dragging, moved by dragging inside it and resized by its
   corners (the ROI box's and text regions' handling). **Reference** is check 1; **Check** adds a box (at
   most 3) and a row in the checks table (named `Check2`… until renamed); **Search area** is dashed;
-  **Mask** paints (or erases) with a round brush (S / M / L), shown tinted red; the mask is sent as a PNG
+  **Mask** paints (or erases) with a round brush (S / M / L), dabs every half radius along the stroke
+  so a fast stroke leaves no gaps, or with **Box**: drag a rectangle (dashed red) and it is filled
+  (Paint) or cleared (Erase); shown tinted red; the mask is sent as a PNG
   at the training picture's size.
 - **Good samples:** thumbnails of the draft's samples, each with its raw score as a % and its × (not
   sample 1), so an odd one can be taken out; **Add as good** sends the held picture and shows where the

@@ -115,3 +115,10 @@ def test_training_from_grey_pictures():
     result = check_picture(ref, _settings(info), to_grey(scene(label(), 5, 620, 470, seed=30)))
     assert result.result == "good", result.to_dict()
     assert ref.checks[0].mean.shape == (240, 360, 3)
+
+
+
+def test_a_check_without_edges_is_trained_as_an_area_check():
+    ref, info = train(_draft(boxes=(LABEL_BOX, (125, -20, 165, 30))), 15, CHECKS, "ref-00000010")
+    assert [c.area for c in ref.checks] == [False, True] and info["area"] == [False, True]
+    assert all(sample["scores"][1] == 100 for sample in info["samples"]) and info["suggested"][1]["min_score"] == 95
