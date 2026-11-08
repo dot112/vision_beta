@@ -153,8 +153,13 @@ jobs:
           curl -fsS "$BASE/health" > /dev/null
           cam=$(curl -fsS -X POST "$BASE/api/v1/cameras" -H "$auth" -H 'Content-Type: application/json' \
             -d '{"name":"CI offline camera","type":"ip","source":"rtsp://ci:cam-secret-pw@192.0.2.1:554/stream1"}' | jq -r .id)
-          code=$(timeout 90 curl -s -o /dev/stderr -w '%{http_code}' -X POST "$BASE/api/v1/cameras/$cam/connect" -H "$auth")
-          test "$code" = 400
+          # The Connect switch is remembered: an unreachable camera answers 200 "retrying" and is retried
+          # in the background; switch it off again so it does not retry through the later steps.
+          code=$(timeout 90 curl -s -o "$RUNNER_TEMP/cam.json" -w '%{http_code}' -X POST "$BASE/api/v1/cameras/$cam/connect" -H "$auth")
+          cat "$RUNNER_TEMP/cam.json"
+          test "$code" = 200
+          jq -e '.status == "retrying"' "$RUNNER_TEMP/cam.json"
+          curl -fsS -X POST "$BASE/api/v1/cameras/$cam/disconnect" -H "$auth"
           curl -fsS "$BASE/health"
           # The camera password never reaches the logs
           if logs_have cam-secret-pw; then echo "camera password in the logs"; exit 1; fi
