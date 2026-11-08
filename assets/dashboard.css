@@ -216,7 +216,9 @@ button:active:not(:disabled) { filter: brightness(0.95); }
     box-shadow: var(--shadow-pop);
 }
 .login-brand { display: flex; flex-direction: column; align-items: center; gap: 4px; margin-bottom: 24px; }
-.login-brand img { max-height: 64px; max-width: 200px; margin-bottom: 8px; object-fit: contain; }
+/* The Universalz wordmark (930 x 116): about 240 px wide on the sign-in card. */
+.login-brand .brand-logo { width: 240px; max-width: 100%; height: auto; margin-bottom: 6px; }
+.login-tagline { font-size: 11px; font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 10px; }
 .login-title { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
 .login-subtitle { font-size: 14px; color: var(--text-muted); }
 .login-input {
@@ -279,10 +281,12 @@ input[type="password"]::-ms-reveal, input[type="password"]::-ms-clear { display:
     flex-shrink: 0;
 }
 .pro-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
-/* The company logo (transparent), small next to the product name. */
-.pro-brand-logo { height: 32px; width: auto; flex-shrink: 0; object-fit: contain; }
+/* The Universalz wordmark (transparent, 930 x 116) above the product line. */
+.pro-brand-logo { display: block; height: 19px; width: auto; max-width: 160px; object-fit: contain; object-position: left center; margin-bottom: 4px; }
 .pro-brand-name { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; }
 .pro-brand-sub { font-size: 12px; color: var(--text-faint); white-space: nowrap; }
+/* Each theme shows the wordmark made for it: near-white letters on dark, navy letters on light. */
+[data-theme="light"] .brand-on-dark, :root:not([data-theme="light"]) .brand-on-light { display: none; }
 .btn-sidebar-collapse {
     display: flex;
     align-items: center;
@@ -383,6 +387,64 @@ input[type="password"]::-ms-reveal, input[type="password"]::-ms-clear { display:
 .pro-lamp.ok { background: var(--success-color); box-shadow: 0 0 0 3px var(--success-tint); }
 .pro-lamp.warn { background: var(--warning-color); box-shadow: 0 0 0 3px var(--warning-tint); }
 .pro-lamp.bad { background: var(--danger-color); box-shadow: 0 0 0 3px var(--danger-tint); }
+
+/* Configuration lock (assets/config_lock.js): the chip, the banner of the locked pages, locked buttons */
+.config-lock-chip { font: inherit; cursor: pointer; }
+.config-lock-chip[hidden] { display: none; }
+.config-lock-chip .lock-closed, .config-lock-chip.locked .lock-open { display: none; }
+.config-lock-chip.locked .lock-closed { display: inline; }
+.config-lock-chip.locked { color: var(--warning-color); border-color: var(--warning-color); background: var(--warning-tint); }
+.config-lock-banner { display: none; align-items: center; gap: 10px; margin-bottom: 14px; padding: 10px 14px; border: 1px solid var(--warning-color); border-radius: 10px; background: var(--warning-tint); color: var(--text-color); font-size: 13.5px; }
+.config-lock-banner svg { color: var(--warning-color); flex-shrink: 0; }
+.config-lock-banner span { flex: 1; min-width: 0; }
+.config-lock-banner button[hidden] { display: none; }
+body.config-locked:is([data-tab="tabLines"], [data-tab="tabActionTrigger"], [data-tab="tabCameras"], [data-tab="tabModels"], [data-tab="tabComms"], [data-tab="tabProducts"]) .config-lock-banner { display: flex; }
+body.config-locked [data-lock] { opacity: 0.45; cursor: not-allowed; }
+select:disabled + .custom-select-wrap .custom-select-trigger { opacity: 0.55; cursor: not-allowed; }
+.config-lock-error { min-height: 18px; margin: 4px 0 8px; font-size: 12.5px; color: var(--danger-color); }
+@media (max-width: 640px) { .config-lock-chip #configLockText { display: none; } }
+
+/* System usage (assets/system_usage.js): the CPU and GPU rings in the top bar and their details panel */
+.usage-menu { position: relative; display: flex; align-items: center; gap: 6px; }
+.usage-ring { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px 2px 2px; font: inherit; font-size: 12px; color: var(--text-muted); background: none; border: 1px solid transparent; border-radius: 999px; cursor: pointer; }
+.usage-ring:hover, .usage-menu.open .usage-ring { background: var(--panel-head); border-color: var(--border-color); }
+.usage-ring-dial { position: relative; width: 30px; height: 30px; flex-shrink: 0; }
+.usage-ring-dial svg { width: 30px; height: 30px; transform: rotate(-90deg); }
+.usage-ring-bg, .usage-ring-fg { fill: none; stroke-width: 3; }
+.usage-ring-bg { stroke: var(--border-color); }
+.usage-ring-fg { stroke-linecap: round; transition: stroke-dasharray .4s ease; }
+.usage-ring-val { position: absolute; inset: 0; display: grid; place-items: center; font-size: 9.5px; font-weight: 700; color: var(--text-color); }
+.usage-ring-val.wide { font-size: 8px; letter-spacing: -0.2px; }
+.usage-ok .usage-ring-fg { stroke: var(--success-color); }
+.usage-warn .usage-ring-fg { stroke: var(--warning-color); }
+.usage-high .usage-ring-fg { stroke: var(--danger-color); }
+.usage-none .usage-ring-val, .usage-menu.stale .usage-ring-val { color: var(--text-faint); }
+.usage-menu.stale .usage-ring-fg { stroke: var(--neutral-state); }
+.usage-menu .usage-panel { width: 320px; max-width: calc(100vw - 24px); max-height: 75vh; overflow-y: auto; padding: 10px 12px; }
+.usage-sec { padding: 8px 0; border-bottom: 1px solid var(--border-color); }
+.usage-sec:last-child { border-bottom: 0; }
+.usage-sec-head, .usage-item-head { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 5px; font-size: 13px; }
+.usage-item-head { font-size: 12.5px; color: var(--text-muted); }
+.usage-item-head span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-item { margin-top: 6px; }
+.usage-bar { display: block; height: 6px; border-radius: 3px; background: var(--panel-head); overflow: hidden; }
+.usage-bar > span { display: block; height: 100%; border-radius: 3px; background: var(--neutral-state); }
+.usage-bar.usage-ok > span { background: var(--success-color); }
+.usage-bar.usage-warn > span { background: var(--warning-color); }
+.usage-bar.usage-high > span { background: var(--danger-color); }
+.usage-cores { display: flex; gap: 2px; height: 22px; margin-top: 6px; }
+.usage-core { flex: 1; display: flex; }
+.usage-bar.usage-bar-v { width: 100%; height: 100%; display: flex; align-items: flex-end; border-radius: 2px; }
+.usage-bar.usage-bar-v > span { width: 100%; border-radius: 2px; }
+.usage-facts { display: flex; flex-wrap: wrap; gap: 2px 12px; margin-top: 5px; font-size: 12px; color: var(--text-faint); }
+.usage-tag { margin-left: 4px; padding: 0 6px; border-radius: 999px; font-style: normal; font-size: 11px; color: var(--primary-color); background: var(--primary-tint); }
+.usage-empty { font-size: 12.5px; color: var(--text-faint); }
+@media (max-width: 640px) {
+    .usage-ring-label { display: none; }
+    .usage-ring { padding: 2px; }
+    /* The rings sit mid-bar on a phone: the panel spans the screen under the top bar. */
+    .usage-menu .usage-panel { position: fixed; left: 12px; right: 12px; top: calc(var(--topbar-h) + 4px); width: auto; max-width: none; max-height: calc(100vh - var(--topbar-h) - 16px); }
+}
 
 /* User menu */
 .user-menu { position: relative; }
@@ -524,10 +586,14 @@ input[type="password"]::-ms-reveal, input[type="password"]::-ms-clear { display:
 .danger-zone span { font-size: 13px; color: var(--text-muted); }
 
 /* ── Line status banner ─────────────────────────────────────────────────── */
+/* A grid, so that no part is squeezed by the others: one row where there is room (below), two rows on
+   medium screens (the model, speed and cameras get the whole second row), one column on a phone. */
 .line-status {
-    display: flex;
+    display: grid;
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+    grid-template-areas: "state batch meta actions";
     align-items: center;
-    gap: 20px;
+    gap: 10px 20px;
     padding: 14px 20px;
     margin-bottom: 16px;
     background: var(--card-bg);
@@ -539,17 +605,31 @@ input[type="password"]::-ms-reveal, input[type="password"]::-ms-clear { display:
 .line-status[data-state="running"] { border-left-color: var(--success-color); }
 .line-status[data-state="idle"] { border-left-color: var(--warning-color); }
 .line-status[data-state="fault"] { border-left-color: var(--danger-color); }
-.line-status-state { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.line-status-state { grid-area: state; display: flex; align-items: center; gap: 12px; }
 .line-status-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--neutral-state); }
 [data-state="running"] .line-status-dot { background: var(--success-color); box-shadow: 0 0 0 5px var(--success-tint); }
 [data-state="idle"] .line-status-dot { background: var(--warning-color); box-shadow: 0 0 0 5px var(--warning-tint); }
 [data-state="fault"] .line-status-dot { background: var(--danger-color); box-shadow: 0 0 0 5px var(--danger-tint); }
 .line-status-word { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; white-space: nowrap; }
-.line-status-meta { display: flex; flex-wrap: wrap; gap: 4px 18px; min-width: 0; color: var(--text-muted); font-size: 13.5px; }
+.line-status-meta { grid-area: meta; display: flex; flex-wrap: wrap; gap: 4px 18px; min-width: 0; color: var(--text-muted); font-size: 13.5px; }
 .line-status-meta b { color: var(--text-color); font-weight: 600; }
 .line-status-meta .bad { color: var(--danger-color); }
 .line-status-meta .warn { color: var(--warning-color); }
-.line-status-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; flex-shrink: 0; }
+.line-status-actions { grid-area: actions; display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+@media (max-width: 1599px) {
+    .line-status {
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        grid-template-areas: "state batch actions" "meta meta meta";
+    }
+}
+@media (max-width: 640px) {
+    .line-status {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas: "state" "batch" "meta" "actions";
+    }
+    .line-status-actions { justify-content: flex-start; }
+    .line-status-actions .status-pill { margin-right: auto; }
+}
 .status-pill {
     display: inline-flex;
     align-items: center;
@@ -646,6 +726,23 @@ input[type="password"]::-ms-reveal, input[type="password"]::-ms-clear { display:
 .no-video-overlay.active { display: flex; }
 .no-video-title { font-size: 16px; font-weight: 600; color: #fff; }
 .no-video-note { font-size: 13px; color: rgba(255, 255, 255, 0.6); }
+/* A camera in trigger mode: "Waiting for trigger", then each picture taken (assets/production_lines.js). */
+.trig-view {
+    position: absolute;
+    inset: 0;
+    z-index: 12;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    background: var(--video-bg);
+    text-align: center;
+}
+.trig-view[hidden], .trig-view .pl-feed-caption[hidden], .trig-view-text[hidden], .trig-counters[hidden] { display: none; }
+.trig-view .video-img { position: absolute; inset: 0; }
+.trig-view-text { font-size: 20px; font-weight: 600; color: rgba(255, 255, 255, 0.85); }
+.trig-counters { margin-top: 12px; }
+@media (max-width: 520px) { .trig-view-text { font-size: 16px; } }
 .feed-meta { font-size: 13px; font-weight: 400; color: var(--text-muted); }
 .live-dot { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--text-faint); }
 .live-dot::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
@@ -781,6 +878,8 @@ select option { background-color: var(--card-bg); color: var(--text-color); }
    the header's line selector and the phone layout keep the full width. */
 .custom-select-wrap { position: relative; width: 100%; max-width: var(--select-max-width, 320px); user-select: none; }
 .modal-backdrop .custom-select-wrap, td .custom-select-wrap, th .custom-select-wrap, .pl-line-select .custom-select-wrap { max-width: none; }
+/* The Trigger of an industrial camera whose line card sets it: shown, not changeable (assets/camera_settings.js). */
+select.cs-locked + .custom-select-wrap { opacity: 0.65; pointer-events: none; }
 .custom-select-trigger {
     display: flex;
     align-items: center;
@@ -951,10 +1050,18 @@ th.col-actions, td.col-actions { text-align: right; width: 1%; white-space: nowr
 .cam-settings-row .form-group { margin-bottom: 0; }
 .cam-settings-row.full { grid-template-columns: 1fr; }
 .cam-settings-row.triple { grid-template-columns: repeat(3, 1fr); }
-.roi-preview { position: relative; width: 100%; aspect-ratio: 16 / 9; margin: 4px 0 14px; overflow: hidden; background: var(--video-bg); border: 1px solid var(--border-color); border-radius: 6px; cursor: crosshair; touch-action: none; user-select: none; }
+.roi-preview { position: relative; width: 100%; max-width: 640px; aspect-ratio: 16 / 9; margin: 4px 0 14px; overflow: hidden; background: var(--video-bg); border: 1px solid var(--border-color); border-radius: 6px; cursor: crosshair; touch-action: none; user-select: none; }
 .roi-preview img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
 /* The box stays clear; everything outside it is dimmed. */
-.roi-box { position: absolute; border: 2px solid var(--primary-color); box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5); pointer-events: none; }
+.roi-box { position: absolute; border: 2px solid var(--primary-color); box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.5); cursor: move; }
+.roi-handle { position: absolute; width: 12px; height: 12px; background: var(--primary-color); border: 2px solid #fff; border-radius: 3px; cursor: nwse-resize; }
+.roi-nw { left: -6px; top: -6px; }
+.roi-se { right: -6px; bottom: -6px; }
+.roi-ne { right: -6px; top: -6px; cursor: nesw-resize; }
+.roi-sw { left: -6px; bottom: -6px; cursor: nesw-resize; }
+.roi-del { position: absolute; top: 8px; right: 8px; width: 20px; height: 20px; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.7); background: rgba(0, 0, 0, 0.65); color: #fff; font-size: 15px; line-height: 1; cursor: pointer; }
+.roi-del:hover { background: var(--danger-color); border-color: var(--danger-color); }
+.roi-del:disabled { display: none; }
 .roi-box[hidden] { display: none; }
 .roi-preview-note { position: absolute; top: 6px; left: 8px; font-size: 12px; color: var(--text-faint); pointer-events: none; }
 .cs-roi-fields.roi-off .cam-settings-row { opacity: 0.5; }
@@ -1209,9 +1316,6 @@ body .pl-cam-box h4 { margin-bottom: 12px; font-size: 15px; font-weight: 600; }
 body .pl-note { font-size: 12.5px; color: var(--text-faint); line-height: 1.4; margin-top: 5px; }
 body .pl-warn { margin-top: 12px; padding: 10px 14px; font-size: 13px; background: var(--warning-tint); border-left: 3px solid var(--warning-color); border-radius: 6px; }
 body .pl-code { font-family: var(--font-mono); font-size: 12.5px; }
-body .pl-seg { border-radius: 9px; padding: 3px; gap: 2px; background: var(--panel-head); border-color: var(--border-color); }
-body .pl-seg button { min-height: 28px; padding: 0 12px; border-radius: 6px; font-size: 13px; color: var(--text-muted); }
-body .pl-seg button.active { background: var(--card-bg); color: var(--text-color); box-shadow: 0 0 0 1px var(--border-strong); }
 body .pl-feed-row { gap: 16px; margin-bottom: 16px; }
 body .pl-feed-caption { font-size: 13px; }
 body .pl-used-by { margin-top: 0; margin-bottom: 10px; }
@@ -1228,8 +1332,6 @@ body .pl-used-by { margin-top: 0; margin-bottom: 10px; }
 }
 @media (max-width: 1100px) {
     .pro-status .optional { display: none; }
-    .line-status { flex-wrap: wrap; }
-    .line-status-actions { margin-left: 0; width: 100%; }
 }
 @media (max-width: 992px) {
     .btn-hamburger { display: flex; }
@@ -1254,7 +1356,6 @@ body .pl-used-by { margin-top: 0; margin-bottom: 10px; }
     .kpi-val { font-size: 30px; }
     .line-status { padding: 14px; gap: 10px 14px; }
     .line-status-word { font-size: 20px; }
-    .line-status-actions .status-pill { margin-right: auto; }
     .cam-settings-row, .cam-settings-row.triple { grid-template-columns: 1fr; }
     .comm-proto-selector { grid-template-columns: repeat(2, 1fr); }
     .comm-modal-footer { padding: 10px 14px; flex-wrap: wrap; }
@@ -1268,7 +1369,9 @@ body .pl-used-by { margin-top: 0; margin-bottom: 10px; }
     .table-mobile-cards td.col-actions { width: auto; padding-top: 8px; }
     .table-mobile-cards tbody tr:hover td { background: none; }
     .table-mobile-cards td[data-label]::before { content: attr(data-label); display: block; font-family: var(--font-ui); font-size: 12px; color: var(--text-faint); }
-    body .pl-line-select .custom-select-wrap, body .pl-line-select select { min-width: 140px; max-width: 46vw; }
+    /* The line picker gives way to the usage rings: it shrinks and cuts its name with "…". */
+    body .pl-line-select { min-width: 0; flex: 0 1 auto; }
+    body .pl-line-select .custom-select-wrap, body .pl-line-select select { min-width: 0; max-width: 46vw; }
     /* On a phone a dropdown fills its row, like every other field. */
     .custom-select-wrap { max-width: none; }
     .custom-select-menu { right: 0; width: auto; max-width: none; }
@@ -1401,3 +1504,247 @@ button.status-pill:hover { filter: brightness(1.08); }
     color: var(--text-color); font: 600 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; cursor: pointer;
 }
 .send-chip:hover, .send-chip:focus-visible { border-color: var(--primary-color); color: var(--primary-color); }
+
+/* Two fields side by side in a card's dialog (trigger and condition, ...); one above the other
+   on a phone, where two dropdowns side by side cut their text. */
+.card-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+@media (max-width: 640px) {
+    .card-pair { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* A send card's value box, with its unit beside it (ms for a timer). */
+.send-value-row { display: flex; align-items: center; gap: 8px; }
+.send-value-row .form-input { flex: 1; min-width: 0; }
+.send-value-unit { font-size: 12.5px; font-weight: 600; color: var(--text-muted); }
+
+/* ── PLC signals (Line setup) ───────────────────────────────────────────── */
+/* A signal card's value, last change and error, from the server once a second. */
+.sig-chips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 22px; }
+.sig-chips .tag { white-space: normal; overflow-wrap: anywhere; text-align: left; font-weight: 500; }
+.sig-chips .tag b { margin-left: 5px; font-weight: 700; }
+.sig-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+.sig-grid .form-group { margin: 0; min-width: 0; }
+.sig-note { margin-top: 4px; font-size: 12px; line-height: 1.4; color: var(--text-muted); }
+.sig-note.warn { color: var(--warning-color); font-weight: 600; }
+.sig-read { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; background: var(--panel-head); border-radius: 8px; }
+.sig-read-result { flex: 1; min-width: 160px; font-size: 12.5px; color: var(--text-muted); overflow-wrap: anywhere; }
+.sig-read-result.ok { font-size: 14px; font-weight: 600; color: var(--success-color); }
+.sig-read-result.bad { font-size: 13px; color: var(--danger-color); }
+
+/* ── Line dashboard: the batch number beside the line state ─────────────── */
+.line-batch { grid-area: batch; display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13.5px; color: var(--text-muted); }
+.line-batch[hidden], .line-batch [hidden] { display: none !important; }
+.line-batch b { max-width: 260px; color: var(--text-color); font-weight: 600; overflow-wrap: anywhere; }
+.line-batch .form-input { flex: 0 1 160px; width: 160px; min-width: 90px; padding: 6px 10px; font-size: 13.5px; }
+@media (max-width: 760px) {
+    .line-batch { width: 100%; }
+    .line-batch .form-input { flex: 1; width: auto; min-width: 0; }
+}
+
+/* Line setup, camera card: the triggers ("Take a picture" inputs) that take the camera's picture */
+.pl-triggers { margin-top: 10px; }
+.pl-trigger-list { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 2px; }
+.pl-trigger-list label { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+
+/* Line dashboard with several cameras: the main camera keeps its own size, and the other cameras
+   are made smaller so that together they are as tall as it. The strip has the class "fit" while its
+   cameras fill at most two rows; with more, they keep their own size and the strip runs longer.
+   Only from 1200 px wide: on a narrower screen the fitted pictures would be too small to read. */
+@media (min-width: 1200px) {
+    body .pl-feed-row { align-items: stretch; }
+    body .pl-feed-row > #liveVideoCardPanel { align-self: start; }
+    /* contain: size: the strip's own content does not set the row's height, the main camera does. */
+    body .pl-strip.fit { contain: size; align-content: stretch; grid-auto-rows: minmax(0, 1fr); }
+    body .pl-strip.fit .pl-strip-tile { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+    body .pl-strip.fit .pl-strip-pic { flex: 1 1 0; min-height: 0; aspect-ratio: auto; }
+}
+
+/* Output action dialog: the formula check and the text warning */
+.plc-formula-check { font-size: 11.5px; margin-top: 6px; color: var(--text-muted); }
+.plc-formula-check:empty { display: none; }
+.plc-formula-check.ok { color: var(--success-color); }
+.plc-formula-check.warn { color: var(--warning-color); }
+.plc-formula-check.bad { color: var(--danger-color); }
+.plc-text-warn { font-size: 11.5px; color: var(--warning-color); margin-top: 8px; }
+
+/* Only when: the rule editor of output actions, send cards and product checks */
+.ow-block { display: flex; flex-direction: column; gap: 8px; }
+.ow-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ow-head .ow-match { width: auto; flex: 0 1 260px; }
+.ow-rows { display: flex; flex-direction: column; gap: 6px; }
+.ow-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.8fr) minmax(0, 0.9fr) minmax(0, 1.2fr) auto; gap: 6px; align-items: center; }
+.ow-none { font-size: 11.5px; color: var(--text-muted); }
+.ow-add { align-self: flex-start; }
+.pl-checks { display: flex; flex-direction: column; gap: 10px; margin: 10px 0; }
+.pl-check-item { border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.pl-check-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pl-check-top .pl-check-name { flex: 1 1 220px; }
+@media (max-width: 640px) {
+    .ow-row { grid-template-columns: 1fr 1fr; padding-bottom: 6px; border-bottom: 1px solid var(--border-color); }
+    .ow-row .ow-del { grid-column: 1 / -1; justify-self: end; }
+}
+
+/* Help icons (assets/help_tips.js): a small circled "i" after a control, or
+   inside a menu item or segmented button; its data-help text shows in one
+   bubble on hover, keyboard focus or a tap. */
+.help-tip {
+    position: relative;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 14px;
+    height: 14px;
+    margin: 0 5px 0 3px;               /* nearer its own control than the next one */
+    border: 1.3px solid currentColor;
+    border-radius: 50%;
+    color: var(--text-faint);
+    font: italic 700 9.5px/1 Georgia, "Times New Roman", serif;
+    letter-spacing: 0;
+    text-transform: none;
+    vertical-align: middle;
+    cursor: help;
+    user-select: none;
+    -webkit-user-select: none;
+}
+.help-tip::before { content: "i"; }
+.help-tip::after { content: ""; position: absolute; inset: -6px; }   /* a finger-sized target */
+.help-tip:hover, .help-tip:focus-visible { color: var(--primary-color); outline: none; }
+.help-tip:focus-visible { box-shadow: 0 0 0 3px var(--primary-tint); }
+/* A hidden control hides its icon. */
+[hidden] + .help-tip, [style*="display: none"] + .help-tip, [style*="display:none"] + .help-tip { display: none; }
+body .pl-line-select > .help-tip { display: inline-flex; }
+/* A drop-down's box leaves room for its icon on the same row. */
+.form-group > .custom-select-wrap.has-help { display: inline-block; vertical-align: middle; width: calc(100% - 22px); }
+/* Inside: at the end of a menu item, after a segmented button's label, in a corner of a tile. */
+.menu-item > .help-tip, .menu-panel-item > .help-tip { margin-left: auto; }
+.seg button > .help-tip, .filter-pill > .help-tip, .btn-action > .help-tip { margin: 0 0 0 6px; color: inherit; opacity: 0.75; }
+.proto-btn { position: relative; }
+.proto-btn > .help-tip { position: absolute; top: 5px; right: 5px; margin: 0; }
+.pl-fold-head > .help-tip { order: 1; margin: 0 0 0 6px; }
+.pl-fold-head > svg { order: 2; margin-left: auto; }
+.help-tip-bubble {
+    position: fixed;
+    z-index: 2147483000;
+    max-width: min(260px, calc(100vw - 16px));
+    padding: 7px 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--card-bg);
+    color: var(--text-color);
+    box-shadow: var(--shadow-pop);
+    font: 400 12.5px/1.45 var(--font-ui);
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: break-word;
+    pointer-events: none;
+}
+.help-tip-bubble[hidden] { display: none; }
+
+/* ── Data and backups (assets/data_backups.js) ─────────────────────────────── */
+.dbk-page { display: flex; flex-direction: column; gap: 16px; }
+.dbk-page > .card-panel { margin-bottom: 0; }
+.dbk-notice { display: flex; align-items: flex-start; gap: 12px; border-left: 3px solid var(--danger-color); }
+.dbk-notice-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.dbk-bar { position: relative; height: 10px; margin: 4px 0 14px; border-radius: 5px; background: var(--panel-head); }
+.dbk-bar > span { display: block; height: 100%; border-radius: 5px; background: var(--success-color); }
+.dbk-bar.warn > span { background: var(--warning-color); }
+.dbk-bar.high > span { background: var(--danger-color); }
+.dbk-bar > i { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text-color); opacity: 0.6; }
+.dbk-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 24px; }
+.dbk-row { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-bottom: 1px solid var(--border-color); }
+.dbk-label { color: var(--text-muted); white-space: nowrap; }
+.dbk-value { text-align: right; min-width: 0; overflow-wrap: anywhere; }
+#dbkMessage:empty { display: none; }
+/* The Records page's archived-day control, hidden while there are no archive files. */
+#recArchive[hidden] { display: none; }
+@media (max-width: 640px) {
+    .dbk-grid { grid-template-columns: minmax(0, 1fr); }
+    .dbk-row { flex-direction: column; gap: 2px; }
+    .dbk-value { text-align: left; }
+    .dbk-notice { flex-direction: column; }
+}
+
+/* ─── Line setup: the Text reader card's Text fields (assets/text_reader.js) ─── */
+.tr-title { margin-top: 14px; }
+.tr-head, .tr-field { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.3fr) 30px; gap: 6px; align-items: center; }
+.tr-head { font-size: 11px; color: var(--text-muted); padding: 0 7px; margin: 4px 0 2px; }
+.tr-field { padding: 6px; border: 1px solid transparent; border-radius: 6px; }
+.tr-field.selected { border-color: var(--primary-color); background: var(--primary-tint); }
+.tr-field .form-input { min-width: 0; }
+.tr-sub { grid-column: 1 / -1; }
+.tr-sub.pl-note { margin: 0; }
+.tr-add { margin: 6px 0 12px; }
+.tr-pic { position: relative; width: 100%; max-width: 640px; aspect-ratio: 4 / 3; background: var(--video-bg, #111); border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; cursor: crosshair; touch-action: none; user-select: none; }
+.tr-pic img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
+.tr-pic canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.tr-pic-note { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 12px; text-align: center; font-size: 12px; color: rgba(255, 255, 255, .7); pointer-events: none; }
+.tr-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.tr-buttons .active { border-color: var(--primary-color); color: var(--primary-color); }
+.tr-result { font-size: 12.5px; overflow-wrap: anywhere; }
+.tr-result.good { color: var(--success-color); }
+.tr-result.bad { color: var(--danger-color); }
+.tr-lines { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.tr-lines .pl-note { flex-basis: 100%; margin: 0; }
+.tr-line { padding: 4px 8px; font-size: 12.5px; color: var(--text-color); background: transparent; border: 1px solid var(--border-color); border-radius: 6px; cursor: pointer; overflow-wrap: anywhere; text-align: left; }
+.tr-line:hover { border-color: var(--primary-color); }
+.tr-line span { color: var(--text-muted); font-size: 11px; }
+
+/* ─── Line dashboard: Latest text reads; Records: the read text (assets/text_reader.js) ─── */
+.tr-read { white-space: nowrap; }
+.tr-fits { color: var(--success-color); font-size: 11.5px; }
+.tr-wrong { color: var(--danger-color); font-size: 11.5px; }
+.tr-none { color: var(--text-muted); font-size: 11.5px; }
+.tr-record { font-size: 12px; margin-top: 2px; }
+
+/* Line setup: Save and Load in the header (assets/line_setups.js): text in the theme's colour, and their windows */
+.ls-link { background: none; border: 0; padding: 0 2px; font: inherit; font-size: 13px; font-weight: 600; color: var(--text-color); cursor: pointer; }
+.ls-link:hover, .ls-link:focus-visible { text-decoration: underline; }
+.modal-backdrop.ls-backdrop { z-index: 9990; }     /* a confirmation opens over the window */
+.ls-window { width: min(360px, calc(100vw - 32px)); padding: 18px 20px; }
+.ls-window .form-input { width: 100%; }
+.ls-window .modal-actions { margin-top: 14px; }
+.ls-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.ls-head .modal-title { margin: 0; }
+.ls-close { background: none; border: 0; padding: 2px 6px; font-size: 14px; color: var(--text-muted); cursor: pointer; }
+.ls-close:hover, .ls-close:focus-visible { color: var(--text-color); }
+.ls-problem { margin-top: 8px; font-size: 13px; color: var(--warning-color, #d29922); }
+.ls-list { max-height: calc(8 * 38px); overflow-y: auto; margin: 0 -6px; }
+.ls-row { display: flex; align-items: center; gap: 4px; }
+.ls-pick { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding: 8px 6px; background: none; border: 0; border-radius: 8px; color: var(--text-color); font: inherit; font-size: 14px; text-align: left; cursor: pointer; }
+.ls-pick b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ls-pick:hover:not(:disabled), .ls-pick:focus-visible { background: var(--panel-head); }
+.ls-pick:disabled { opacity: 0.5; cursor: not-allowed; }
+.ls-line, .ls-date { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.ls-date { margin-left: auto; }
+.ls-del { background: none; border: 0; padding: 6px 8px; border-radius: 8px; color: var(--text-muted); font-size: 13px; cursor: pointer; }
+.ls-del:hover, .ls-del:focus-visible { color: var(--danger-color); background: var(--panel-head); }
+
+/* Line setup: the Pattern and checks page (assets/pattern_check.js) */
+.pc-body { display: flex; flex-direction: column; gap: 10px; }
+.pc-toolbar, .pc-brush, .pc-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pc-tools { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-left: 6px; }
+.pc-label { font-size: 12px; color: var(--text-muted); }
+.pc-tool.active, .pc-paint.active, .pc-size.active, [data-act="pc-live"].active { border-color: var(--primary-color); color: var(--primary-color); }
+.pc-pic { position: relative; width: 100%; max-width: 640px; aspect-ratio: 4 / 3; background: var(--video-bg, #111); border: 1px solid var(--border-color); border-radius: 6px; overflow: hidden; cursor: crosshair; touch-action: none; user-select: none; }
+.pc-pic img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; pointer-events: none; }
+.pc-pic canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.pc-pic-note { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 12px; text-align: center; font-size: 12px; color: rgba(255, 255, 255, .7); pointer-events: none; }
+.pc-result { font-size: 13px; min-height: 18px; }
+.pc-result.pc-error { color: var(--danger-color); }
+.pc-samples { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.pc-sample { position: relative; display: inline-flex; flex-direction: column; align-items: center; font-size: 11px; }
+.pc-sample img { width: 64px; height: 48px; object-fit: cover; border: 1px solid var(--border-color); border-radius: 4px; }
+.pc-sample .pc-x { position: absolute; top: -6px; right: -6px; }
+.pc-x { min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-color); cursor: pointer; line-height: 1; }
+.pc-angle .form-input { max-width: 120px; }
+.pc-checks .form-input { min-width: 72px; }
+@media (max-width: 600px) {
+    .pc-tools { margin-left: 0; }
+    .pc-checks th:nth-child(5), .pc-checks td:nth-child(5) { min-width: 96px; }
+}
+.pc-fits { color: var(--success-color); }
+.pc-wrong { color: var(--danger-color); }
+.pc-none { color: var(--text-muted); }
+.pc-record { font-size: 11.5px; color: var(--text-muted); }

@@ -3,8 +3,10 @@
 ``ProductionRecorder.record()`` is what the counters and the lines call. It
 only queues the row (inference threads call it, so it never waits on the
 database); a task on the main loop writes the queue in one insert per second,
-or as soon as FLUSH_ROWS rows wait. The same task deletes rows older than
-RECORDS_RETENTION_DAYS once an hour.
+or as soon as FLUSH_ROWS rows wait. The data keeper (data_keeper.py) deletes
+rows older than RECORDS_RETENTION_DAYS through ``prune``. The products a counter
+still holds are counted into kept_totals as they are deleted, so the line
+totals stay exact.
 
 The rest of the module reads the table: the filters of the Records API, the
 summary, and the line totals a counter gets back after a restart.
@@ -14,16 +16,18 @@ from __future__ import annotations
 import asyncio
 import collections
 import threading
-import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, tzinfo
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from sqlalchemy import delete, func, insert, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.config import settings
+from app.db.models.kept_total import KeptTotal
 from app.db.models.production_record import ProductRecord
 from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager, raise_alarm
+from app.services import storage_state
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -109,9 +113,13 @@ def build_row(payload: Dict[str, Any], kind: str, counted: bool, **extra: Any) -
     vision_result = payload.get("vision_result")
     if vision_result is not None:
         details["vision_result"] = "reject" if str(vision_result).upper() == "REJECTED" else "good"
-    for key in ("stations", "bbox", "reject_camera_id"):
+    for key in ("stations", "bbox", "reject_camera_id", "product", "product_check", "code_problem", "sequence",
+                "expected_lane", "seen_lane", "text", "text_status", "match"):
         if payload.get(key) is not None:
             details[key] = payload[key]
+    # The product ID a code holds, where it is not the whole code (a list with a code format).
+    if payload.get("product_id") is not None and payload.get("product_id") != values.get("code"):
+        details["product_id"] = payload["product_id"]
     row = {
         "recorded_at": datetime.now(timezone.utc),
         "line_id": values.get("line_id"),
@@ -164,9 +172,6 @@ class ProductionRecorder:
 
     FLUSH_SECONDS = 1.0
     FLUSH_ROWS = 500
-    RETENTION_SECONDS = 3600.0
-    # The first clean-up runs this long after the start, not during it.
-    FIRST_RETENTION_SECONDS = 60.0
     DELETE_CHUNK = 5000
     FAILURES_BEFORE_ALARM = 3
 
@@ -188,7 +193,6 @@ class ProductionRecorder:
         self._wake: Optional[asyncio.Event] = None
         self._wake_pending = False
         self._task: Optional[asyncio.Task] = None
-        self._next_retention = 0.0
 
     @property
     def limit(self) -> int:
@@ -322,20 +326,23 @@ class ProductionRecorder:
         except Exception:
             logger.debug("Could not clear the %s alarm", code, exc_info=True)
 
-    async def prune(self, days: Optional[int] = None, now: Optional[datetime] = None) -> int:
-        """Delete rows older than ``days`` (RECORDS_RETENTION_DAYS), DELETE_CHUNK at a time. Returns how many."""
+    async def prune(self, days: Optional[int] = None, now: Optional[datetime] = None,
+                    before: Optional[datetime] = None) -> int:
+        """Delete rows older than ``days`` (RECORDS_RETENTION_DAYS), DELETE_CHUNK at a time. Returns how many.
+
+        With ``before``, only the rows older than that too (rows not archived yet stay).
+        """
         days = settings.RECORDS_RETENTION_DAYS if days is None else days
         if not days or days <= 0:
             return 0
         cutoff = utc(now or datetime.now(timezone.utc)) - timedelta(days=days)
+        if before is not None:
+            cutoff = min(cutoff, utc(before))
+        lines = saved_lines()
         removed = 0
         while True:
             # One short transaction per chunk, so the writer never waits long.
-            async with self._sessions()() as db:
-                chunk = select(ProductRecord.id).where(ProductRecord.recorded_at < cutoff).limit(self.DELETE_CHUNK)
-                result = await db.execute(delete(ProductRecord).where(ProductRecord.id.in_(chunk.scalar_subquery())))
-                await db.commit()
-            count = int(result.rowcount or 0)
+            count, _ = await self.delete_chunk(ProductRecord.recorded_at < cutoff, lines)
             removed += count
             if count < self.DELETE_CHUNK:
                 break
@@ -343,6 +350,42 @@ class ProductionRecorder:
         if removed:
             logger.info("Deleted %d product record(s) older than %d day(s)", removed, days)
         return removed
+
+    async def delete_chunk(self, where: Any, lines: Optional[Dict[str, Dict[str, Any]]] = None
+                           ) -> Tuple[int, Optional[datetime]]:
+        """Delete up to DELETE_CHUNK rows matching ``where``, oldest first, in one transaction.
+
+        The products among them that a counter still holds are added to
+        kept_totals in the same transaction. ``lines`` are the saved lines by id
+        (saved_lines()): the rows of a line not among them are only deleted.
+        Returns the rows deleted and the newest recorded_at among them, which
+        storage_state.json keeps as "deleted_through" (when it is the newest yet).
+        """
+        if lines is None:
+            lines = saved_lines()
+        rec = ProductRecord
+        async with self._sessions()() as db:
+            rows = (await db.execute(
+                select(rec.id, rec.recorded_at, rec.line_id, rec.camera_id, rec.kind, rec.counted, rec.result, rec.class_name)
+                .where(where).order_by(rec.recorded_at, rec.id).limit(self.DELETE_CHUNK)
+            )).all()
+            if not rows:
+                return 0, None
+            kept = _kept_counts(rows, lines)
+            if kept:
+                upsert = sqlite_insert(KeptTotal)
+                upsert = upsert.on_conflict_do_update(
+                    index_elements=list(_KEPT_KEY), set_={"count": KeptTotal.count + upsert.excluded["count"]})
+                await db.execute(upsert, [{**dict(zip(_KEPT_KEY, key)), "count": n} for key, n in kept.items()])
+            ids = [row.id for row in rows]
+            deleted = 0
+            for start in range(0, len(ids), _IDS_PER_STATEMENT):
+                result = await db.execute(delete(rec).where(rec.id.in_(ids[start:start + _IDS_PER_STATEMENT])))
+                deleted += int(result.rowcount or 0)
+            await db.commit()
+        newest = utc(rows[-1].recorded_at)
+        await _note_deleted_through(newest)
+        return deleted, newest
 
     # ── Life cycle ────────────────────────────────────────────────────────────
 
@@ -353,7 +396,6 @@ class ProductionRecorder:
         self._loop = asyncio.get_running_loop()
         self._wake = asyncio.Event()
         self._wake_pending = False
-        self._next_retention = time.monotonic() + self.FIRST_RETENTION_SECONDS
         self.running = True
         self._task = self._loop.create_task(self._run(), name="production_records")
         logger.info("Product records writer started (keeping %s)",
@@ -373,12 +415,6 @@ class ProductionRecorder:
                 await self.flush()
             except Exception:
                 logger.exception("Product records writer error")
-            if time.monotonic() >= self._next_retention:
-                self._next_retention = time.monotonic() + self.RETENTION_SECONDS
-                try:
-                    await self.prune()
-                except Exception:
-                    logger.exception("Could not delete old product records")
 
     async def stop(self) -> None:
         """Stop the task and write what is left (at shutdown, before the database closes)."""
@@ -568,6 +604,34 @@ async def summary(db: Any, flt: RecordFilter, bucket: str = "hour", tz: tzinfo =
 
 # ── Line totals after a restart ───────────────────────────────────────────────
 
+def class_key(class_name: Optional[str]) -> str:
+    """A class's key in a counter: lower case, "product" when there is none."""
+    return str(class_name or "").strip().lower() or "product"
+
+
+def reset_tag(line: Dict[str, Any], key: str, own_station: bool = False) -> str:
+    """The tag of the reset a counter's class counts from, as kept_totals keeps it.
+
+    The ISO time of the later of the line's counts_reset_at and the class's own
+    time in counts_reset_classes (only the line's for an own-station camera);
+    "" when there is neither. The times may be ISO text or datetimes.
+    """
+    when = parse_time(line.get("counts_reset_at"))
+    if not own_station:
+        for name, value in (line.get("counts_reset_classes") or {}).items():
+            at = parse_time(value)
+            if class_key(name) == key and at is not None and (when is None or at > when):
+                when = at
+    return when.isoformat() if when is not None else ""
+
+
+def saved_lines() -> Dict[str, Dict[str, Any]]:
+    """The saved lines by id, for their reset times."""
+    from app.services.settings_persistence_service import SettingsPersistenceService
+
+    return {line["id"]: line for line in SettingsPersistenceService.get_lines(with_logic=False)}
+
+
 async def counted_totals(
     db: Any,
     line_id: str,
@@ -579,7 +643,8 @@ async def counted_totals(
 
     Without ``camera_id`` these are the line totals (counted rows); with it,
     the own-station camera's products. ``class_resets`` leaves out a class's
-    products from before the time that class alone was reset.
+    products from before the time that class alone was reset. The kept totals
+    of deleted records are added while their tag is the class's current one.
     """
     rec = ProductRecord
 
@@ -598,7 +663,7 @@ async def counted_totals(
 
     def add(rows: Any, sign: int, only: Optional[str] = None) -> None:
         for class_name, result, count in rows:
-            key = str(class_name or "").strip().lower() or "product"
+            key = class_key(class_name)
             if only is not None and key != only:
                 continue
             counts[key] = counts.get(key, 0) + sign * int(count)
@@ -608,7 +673,16 @@ async def counted_totals(
     add((await db.execute(products(select(rec.class_name, rec.result, func.count(rec.id))))).all(), 1)
     for name, reset_at in (class_resets or {}).items():
         stmt = products(select(rec.class_name, rec.result, func.count(rec.id)).where(rec.recorded_at < utc(reset_at)))
-        add((await db.execute(stmt)).all(), -1, only=str(name).strip().lower())
+        add((await db.execute(stmt)).all(), -1, only=class_key(name))
+
+    # Deleted records still counted: the tags are made as delete_chunk made them.
+    resets = {"counts_reset_at": since, "counts_reset_classes": class_resets or {}}
+    kept = (await db.execute(
+        select(KeptTotal.class_name, KeptTotal.result, KeptTotal.reset_tag, KeptTotal.count)
+        .where(KeptTotal.line_id == line_id, KeptTotal.camera_id == (camera_id or ""))
+    )).all()
+    add(((name, result, count) for name, result, tag, count in kept
+         if tag == reset_tag(resets, class_key(name), own_station=camera_id is not None)), 1)
     counts = {k: v for k, v in counts.items() if v > 0}
     rejects = {k: min(v, counts.get(k, 0)) for k, v in rejects.items() if v > 0 and k in counts}
     total = sum(counts.values())
@@ -638,12 +712,11 @@ async def restore_line_counts(session_factory: Optional[Callable[[], Any]] = Non
     Returns {line_id: total_inspected}.
     """
     from app.services.line_service import line_manager
-    from app.services.settings_persistence_service import SettingsPersistenceService
 
     if session_factory is None:
         from app.db.session import AsyncSessionLocal
         session_factory = AsyncSessionLocal
-    saved = {line["id"]: line for line in SettingsPersistenceService.get_lines(with_logic=False)}
+    saved = saved_lines()
     restored: Dict[str, int] = {}
     async with session_factory() as db:
         for runtime in line_manager.all():
@@ -654,3 +727,71 @@ async def restore_line_counts(session_factory: Optional[Callable[[], Any]] = Non
             for camera_id, aux in list(runtime.aux_counters.items()):
                 aux.restore(await counted_totals(db, runtime.id, since, camera_id=camera_id))
     return restored
+
+
+# ── Kept totals of deleted records ────────────────────────────────────────────
+
+_KEPT_KEY = ("line_id", "camera_id", "class_name", "result", "reset_tag")
+# Ids per DELETE: SQLite before 3.32 takes at most 999 values in one statement.
+_IDS_PER_STATEMENT = 500
+
+
+def _kept_counts(rows: Any, lines: Dict[str, Dict[str, Any]]) -> Dict[Tuple[str, ...], int]:
+    """The rows (about to be deleted) that a counter still holds, counted by their kept_totals key.
+
+    A counted product is in its line's totals from its class's reset on, an
+    own-station product (not counted, with a camera) in its camera's from the
+    line's reset on. A line that is not saved any more has no counter.
+    """
+    tags: Dict[Tuple[str, str, bool], Tuple[str, Optional[datetime]]] = {}
+    kept: Dict[Tuple[str, ...], int] = {}
+    for row in rows:
+        line = lines.get(row.line_id) if row.line_id else None
+        if line is None or row.kind != "product" or not (row.counted or row.camera_id):
+            continue
+        key = class_key(row.class_name)
+        own = not row.counted
+        if (row.line_id, key, own) not in tags:
+            tag = reset_tag(line, key, own_station=own)
+            tags[(row.line_id, key, own)] = (tag, parse_time(tag))
+        tag, since = tags[(row.line_id, key, own)]
+        if since is not None and utc(row.recorded_at) < since:
+            continue
+        entry = (row.line_id, row.camera_id if own else "", key, "reject" if row.result == "reject" else "good", tag)
+        kept[entry] = kept.get(entry, 0) + 1
+    return kept
+
+
+async def _note_deleted_through(newest: datetime) -> None:
+    """Keep the newest recorded_at ever deleted in storage_state.json: a rebuilt database re-imports after it."""
+    def change(state: Dict[str, Any]) -> None:
+        old = parse_time(state.get("deleted_through"))
+        if old is None or newest > old:
+            state["deleted_through"] = newest.isoformat()
+
+    try:
+        await asyncio.to_thread(storage_state.update, change)
+    except OSError as exc:
+        # The rows are gone either way: a rebuild may then re-import some of them.
+        logger.warning("Could not note the newest deleted product record in %s: %s", storage_state.STATE_FILE_NAME, exc)
+
+
+async def prune_kept_totals(session_factory: Optional[Callable[[], Any]] = None,
+                            lines: Optional[Dict[str, Dict[str, Any]]] = None) -> int:
+    """Delete the kept totals no counter reads any more: their line was reset since, or is gone. Returns how many."""
+    if session_factory is None:
+        from app.db.session import AsyncSessionLocal
+        session_factory = AsyncSessionLocal
+    if lines is None:
+        lines = saved_lines()
+    k = KeptTotal
+    async with session_factory() as db:
+        rows = (await db.execute(select(k.id, k.line_id, k.camera_id, k.class_name, k.reset_tag))).all()
+        stale = [row.id for row in rows if row.line_id not in lines
+                 or row.reset_tag != reset_tag(lines[row.line_id], row.class_name, own_station=bool(row.camera_id))]
+        for start in range(0, len(stale), _IDS_PER_STATEMENT):
+            await db.execute(delete(k).where(k.id.in_(stale[start:start + _IDS_PER_STATEMENT])))
+        await db.commit()
+    if stale:
+        logger.info("Deleted %d kept total(s) of lines reset or deleted since", len(stale))
+    return len(stale)

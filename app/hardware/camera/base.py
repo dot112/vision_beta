@@ -56,6 +56,10 @@ class BaseCamera(ABC):
     Abstract base class for all industrial vision camera drivers.
     """
 
+    # "off": the camera runs freely. An industrial camera can also be "hardware" (a signal on
+    # its own input takes each picture) or "software" (the server takes each picture).
+    trigger_mode: str = "off"
+
     def __init__(self, camera_id: str, name: str, source: str, settings: Optional[Dict[str, Any]] = None):
         self.camera_id = camera_id
         self.name = name

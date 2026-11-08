@@ -26,7 +26,7 @@ FIELD_LABELS = [
     ("class_name", "Class"),
     ("result", "Result (PASSED / REJECTED)"),
     ("is_defect", "Rejected (true / false)"),
-    ("reject_reason", "Reject reason (vision class, code not in list, code in reject list, no code, joined camera saw nothing)"),
+    ("reject_reason", "Reject reason (vision class, code not in list, code in reject list, no code, joined camera saw nothing, nothing detected, product check, no result in time, no picture, text does not fit, no text, text reader error)"),
     ("stations", "Joined cameras (what each saw of the product)"),
     ("reject_camera_id", "Camera that rejected the product (a line with joined cameras)"),
     ("confidence", "Confidence"),
@@ -37,6 +37,18 @@ FIELD_LABELS = [
     ("counts", "Counts per class"),
     ("metrics", "Totals (inspected, good, rejected, per minute, yield)"),
     ("alarm", "Alarm (code, message, severity)"),
+    ("product", "Product of the code (code, name, list and its fields)"),
+    ("product_check", "Product check that rejected the product"),
+    ("sequence", "Product sequence number (from the PLC)"),
+    ("read_text", "Read text (each text field's text, and good / wrong / none)"),
+    ("pattern", "Pattern check (each check's Match % and biggest defect, and good / not found / mismatch / defect / error)"),
+    ("input", "Input that changed (id, name, new and old value)"),
+]
+# Placeholders for the product of a known code; {product.<field key>} names one of its fields.
+PRODUCT_PLACEHOLDERS = [
+    ("product.name", "Product name (from its list)"),
+    ("product.code", "Product code (from its list)"),
+    ("product.list", "Product list"),
 ]
 
 
@@ -88,7 +100,8 @@ async def list_message_fields(user: User = Depends(require_operator)) -> Dict[st
     from app.services.send_dispatcher_service import MESSAGE_FIELDS, TEMPLATE_FIELDS
     return {
         "fields": [{"id": field, "label": label, "keys": list(MESSAGE_FIELDS[field])} for field, label in FIELD_LABELS],
-        "placeholders": [{"name": name, "label": label} for name, label in TEMPLATE_FIELDS.items()],
+        "placeholders": [{"name": name, "label": label}
+                         for name, label in [*TEMPLATE_FIELDS.items(), *PRODUCT_PLACEHOLDERS]],
     }
 
 

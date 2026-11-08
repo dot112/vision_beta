@@ -23,6 +23,7 @@ Two independent, per-configuration mechanisms (both off by default):
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -62,9 +63,14 @@ def validate_safe_state(card: dict) -> None:
             raise ValueError(f"PLC action card '{card.get('id', '')}' safe_value must be a number") from exc
 
 
-def validate_write_value(card: dict) -> None:
-    """Raise ValueError when a card's value to write (value_source) or its strobe is not valid."""
-    from app.services.line_config import PLC_VALUE_SOURCES
+def validate_write_value(card: dict, endpoints: Optional[List[dict]] = None) -> None:
+    """Raise ValueError when a card's value to write (value_source) or its strobe is not valid.
+
+    ``endpoints``: the PLC channels, when known; a text default value then needs an OPC UA one.
+    """
+    from app.services.formula import FormulaError, parse
+    from app.services.line_config import IF_MISSING, PLC_VALUE_SOURCES
+    from app.services.product_fields import MAX_TEXT_VALUE_LENGTH, VALUE_NAME_RE
 
     label = f"PLC action card '{card.get('name') or card.get('id', '')}'"
     source = str(card.get("value_source") or "fixed").strip().lower()
@@ -78,6 +84,28 @@ def validate_write_value(card: dict) -> None:
             float(card.get("write_value", 0) or 0)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{label}: the value to write must be a number") from exc
+    if source == "product_field" and not VALUE_NAME_RE.fullmatch(str(card.get("value_field") or "")):
+        raise ValueError(f"{label}: choose the product field to write")
+    if source == "input" and not VALUE_NAME_RE.fullmatch(str(card.get("value_input") or "")):
+        raise ValueError(f"{label}: choose the input whose value to write")
+    if source == "formula":
+        try:
+            parse(card.get("formula") if isinstance(card.get("formula"), str) else "")
+        except FormulaError as exc:
+            raise ValueError(f"{label}: the formula: {exc}") from exc
+    if_missing = str(card.get("if_missing") or "skip").strip().lower()
+    if if_missing not in IF_MISSING:
+        raise ValueError(f"{label}: If no value must be 'skip' or 'default'")
+    if if_missing == "default":
+        default = card.get("default_value")
+        is_number = isinstance(default, (int, float)) and not isinstance(default, bool) and math.isfinite(default)
+        is_text = isinstance(default, str) and 0 < len(default.strip()) <= MAX_TEXT_VALUE_LENGTH
+        if not (is_number or is_text):
+            raise ValueError(f"{label}: enter the default value to write: a number, or text of at most "
+                             f"{MAX_TEXT_VALUE_LENGTH} characters for an OPC UA controller")
+        endpoint = next((ep for ep in endpoints or [] if ep.get("id") == card.get("plc_endpoint_id")), None)
+        if is_text and endpoint is not None and str(endpoint.get("plc_sub_protocol") or "").lower() not in ("opc_ua", "opcua"):
+            raise ValueError(f"{label}: the default value is text, and only an OPC UA controller takes text; enter a number")
     strobe = card.get("strobe_address")
     if strobe not in (None, "") and (not isinstance(strobe, str) or len(strobe.strip()) > 128):
         raise ValueError(f"{label}: the strobe address must be text of at most 128 characters")
@@ -89,6 +117,39 @@ def validate_write_value(card: dict) -> None:
             whole = False
         if not whole or not 10 <= int(float(pulse)) <= 10000:
             raise ValueError(f"{label}: the strobe pulse must be a whole number of 10 to 10000 ms")
+
+
+def validate_confirmation(card: dict) -> None:
+    """Raise ValueError when a card's confirmation signal or the time it waits for it is not valid.
+
+    Whether the signal exists on the card's line is checked where the line's
+    signal cards are known (SettingsPersistenceService._check_confirmation_links).
+    """
+    from app.services.line_config import CONFIRM_TIMEOUT_LIMITS_MS
+
+    label = f"PLC action card '{card.get('name') or card.get('id', '')}'"
+    signal = card.get("confirm_input_id")
+    if signal not in (None, "") and (not isinstance(signal, str) or len(signal.strip()) > 64):
+        raise ValueError(f"{label}: the confirmation signal is not valid")
+    timeout = card.get("confirm_timeout_ms")
+    if timeout not in (None, ""):
+        low, high = CONFIRM_TIMEOUT_LIMITS_MS
+        try:
+            whole = not isinstance(timeout, bool) and float(timeout) == int(float(timeout))
+        except (TypeError, ValueError, OverflowError):
+            whole = False
+        if not whole or not low <= int(float(timeout)) <= high:
+            raise ValueError(f"{label}: the time to wait for the confirmation must be a whole number of {low} to {high} ms")
+
+
+def confirm_timeout_ms(card: dict) -> int:
+    """How long a card waits for its confirmation signal after its output was sent."""
+    from app.services.line_config import DEFAULT_CONFIRM_TIMEOUT_MS
+
+    try:
+        return int(float(card.get("confirm_timeout_ms") or DEFAULT_CONFIRM_TIMEOUT_MS))
+    except (TypeError, ValueError):
+        return DEFAULT_CONFIRM_TIMEOUT_MS
 
 
 def safe_operation(card: dict) -> Optional[Tuple[str, float]]:

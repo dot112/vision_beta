@@ -4,7 +4,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-from jose import JWTError, jwt
+import jwt
 from passlib.context import CryptContext
 
 from app.config import settings
@@ -66,6 +66,6 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
             logger.debug("Token boot_id mismatch (server was restarted): rejecting stale session")
             return None
         return payload
-    except JWTError as exc:
+    except jwt.PyJWTError as exc:
         logger.debug("JWT decode error: %s", exc)
         return None

@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.camera import Camera
 from app.hardware.camera.base import BaseCamera
-from app.hardware.camera.gige_camera import GigECamera
+from app.hardware.camera.gige_camera import GigECamera, clean_camera_settings
 from app.hardware.camera.ip_camera import IPCamera
 from app.hardware.camera.usb_camera import USBCamera
 from app.schemas.camera import (
@@ -62,12 +62,32 @@ def _instantiate_driver(camera: Camera) -> BaseCamera:
         )
 
 
+def _connection_settings(sent: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """A network camera channel's transport, buffer size and resolution as the camera's own settings.
+
+    Only what was sent is in the answer. A resolution of "native" gives width and height of None:
+    the camera's picture is then not resized.
+    """
+    from app.services.settings_persistence_service import picture_size
+
+    settings: Dict[str, Any] = {}
+    sent = sent or {}
+    if "transport" in sent:
+        settings["transport"] = sent["transport"]
+    if "buffer_size" in sent:
+        settings["buffer_size"] = sent["buffer_size"]
+    if "resolution" in sent:
+        settings["width"], settings["height"] = picture_size(sent["resolution"]) or (None, None)
+    return settings
+
+
 class CameraService:
     # Cameras being reconnected in the background after their address changed.
     _restarting: Dict[str, "asyncio.Task[None]"] = {}
 
     @staticmethod
-    async def sync_ip_cameras(db: Optional[AsyncSession] = None) -> List[str]:
+    async def sync_ip_cameras(db: Optional[AsyncSession] = None,
+                              connection: Optional[Dict[str, Dict[str, Any]]] = None) -> List[str]:
         """Bring the IP cameras saved under Connections into the database, and restart
         every running camera whose saved address is no longer the one it reads from.
 
@@ -78,7 +98,7 @@ class CameraService:
         if db is None:
             from app.db.session import AsyncSessionLocal
             async with AsyncSessionLocal() as own_db:
-                return await CameraService.sync_ip_cameras(own_db)
+                return await CameraService.sync_ip_cameras(own_db, connection)
 
         from app.services.settings_persistence_service import SettingsPersistenceService
         moved: List[str] = []
@@ -89,28 +109,53 @@ class CameraService:
             if not camera_id or not source:
                 continue
             name = saved.get("name") or "IP Camera"
+            # "gige": a GigE Vision camera, whose source is its serial number.
+            kind = "gige" if saved.get("type") == "gige" else "ip"
+            # Transport, buffer and picture size the Connections card was just saved with, if any.
+            sent = _connection_settings((connection or {}).get(camera_id)) if kind == "ip" else {}
+            reopen = False      # the running camera has to be opened again to take the change
             existing = await CameraService.get_camera_by_id(db, camera_id)
             if not existing:
+                settings = {"auto_connect": saved.get("auto_connect", True)}
+                settings.update({key: value for key, value in sent.items() if value is not None})
                 db.add(Camera(
                     id=camera_id,
                     name=name,
-                    type="ip",
+                    type=kind,
                     source=source,
-                    settings={"auto_connect": saved.get("auto_connect", True)},
+                    settings=settings,
                     is_active=False,
                 ))
                 dirty_db = True
-            elif existing.source != source or existing.name != name:
-                if existing.source != source:
-                    # A camera still waiting to connect is tried on the new address now.
-                    CameraReconnector.retry_now(camera_id)
-                existing.source = source
-                existing.name = name
-                dirty_db = True
+            else:
+                if existing.source != source or existing.name != name or existing.type != kind:
+                    if existing.source != source or existing.type != kind:
+                        # A camera still waiting to connect is tried on the new address now.
+                        CameraReconnector.retry_now(camera_id)
+                    reopen = existing.type != kind
+                    existing.source = source
+                    existing.name = name
+                    existing.type = kind
+                    dirty_db = True
+                if sent:
+                    merged = dict(existing.settings or {})
+                    for key, value in sent.items():
+                        if value is None:
+                            merged.pop(key, None)
+                        else:
+                            merged[key] = value
+                    if merged != (existing.settings or {}):
+                        # The stream is opened with its transport and buffer: a change needs a reopen.
+                        reopen = reopen or any(merged.get(k) != (existing.settings or {}).get(k) for k in ("transport", "buffer_size"))
+                        existing.settings = merged
+                        dirty_db = True
+                        live = app_state.cameras.get(camera_id)
+                        if live is not None:
+                            live.settings = dict(merged)
 
             driver = app_state.cameras.get(camera_id)
             running_on = getattr(driver, "source", None)
-            if running_on is not None and running_on != source:
+            if running_on is not None and (running_on != source or reopen):
                 moved.append(camera_id)
             elif driver is not None:
                 driver.name = name
@@ -152,6 +197,30 @@ class CameraService:
         return True
 
     @staticmethod
+    def kept(camera_id: str) -> bool:
+        """The camera's Connect switch (Line setup camera card) is on: it is kept connected."""
+        from app.services.settings_persistence_service import SettingsPersistenceService
+        return camera_id in SettingsPersistenceService.kept_cameras()
+
+    @staticmethod
+    def wanted(camera_id: str) -> bool:
+        """Someone wants the camera connected: its Connect switch is on, or its line is running."""
+        from app.services.line_service import line_manager
+        return CameraService.kept(camera_id) or line_manager.holds_camera(camera_id)
+
+    @staticmethod
+    def camera_limit_error(camera_id: str) -> Optional[str]:
+        """Why one more camera may not connect (MAX_CONNECTED_CAMERAS), or None. The camera itself does not count."""
+        from app.config import settings as app_settings
+        others = [cid for cid, drv in app_state.cameras.items() if cid != camera_id and getattr(drv, "is_connected", False)]
+        if len(others) >= app_settings.MAX_CONNECTED_CAMERAS:
+            return (
+                f"{len(others)} cameras are already connected, the most this server allows "
+                f"(MAX_CONNECTED_CAMERAS={app_settings.MAX_CONNECTED_CAMERAS}). Disconnect one first."
+            )
+        return None
+
+    @staticmethod
     def connection_state(camera: Camera) -> str:
         """What the Cameras page shows: connected, reconnecting, failed or disconnected.
 
@@ -186,13 +255,30 @@ class CameraService:
         return result.scalar_one_or_none()
 
     @staticmethod
+    async def cameras_with_source(db: AsyncSession, source: str, types: Tuple[str, ...] = ("ip", "gige")) -> List[Camera]:
+        """The cameras of these types with this address (an industrial camera's address is its serial number)."""
+        result = await db.execute(select(Camera).where(Camera.source == source, Camera.type.in_(types)))
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def check_serial_free(db: AsyncSession, serial: str, own_id: Optional[str] = None) -> None:
+        """ValueError naming the camera that already has this industrial camera's serial number."""
+        for camera in await CameraService.cameras_with_source(db, serial, ("gige",)):
+            if camera.id != own_id:
+                raise ValueError(f"The camera {serial} is already in the camera list as '{camera.name}'")
+
+    @staticmethod
     async def create_camera(db: AsyncSession, data: CameraCreate) -> Camera:
+        """Raises ValueError that names the setting when an industrial camera's setting is wrong,
+        or the camera when an industrial camera's serial number is already in the list."""
         cam_type_val = data.type.value if hasattr(data.type, "value") else str(data.type)
+        if cam_type_val == "gige":
+            await CameraService.check_serial_free(db, str(data.source or "").strip())
         camera = Camera(
             name=data.name,
             type=cam_type_val,
             source=data.source,
-            settings=data.settings,
+            settings=clean_camera_settings(data.settings or {}, cam_type_val),
             is_active=False,
         )
         db.add(camera)
@@ -206,6 +292,12 @@ class CameraService:
         camera = await CameraService.get_camera_by_id(db, camera_id)
         if not camera:
             return None
+        # Checked before anything is changed. Raises ValueError that names the setting.
+        new_settings = None if data.settings is None else \
+            clean_camera_settings(data.settings, camera.type, saved=camera.settings)
+
+        if data.source is not None and camera.type == "gige" and data.source != camera.source:
+            await CameraService.check_serial_free(db, str(data.source).strip(), own_id=camera_id)
 
         previous_source = camera.source
         if data.name is not None:
@@ -219,15 +311,15 @@ class CameraService:
                 from app.services.settings_persistence_service import _restore_redacted_url
                 source = _restore_redacted_url(source, camera.source)
             camera.source = source
-        if data.settings is not None:
+        if new_settings is not None:
             merged = dict(camera.settings or {})
-            merged.update(data.settings)
+            merged.update(new_settings)
             camera.settings = merged
 
             if camera_id in app_state.cameras:
                 driver: BaseCamera = app_state.cameras[camera_id]
                 try:
-                    driver.set_properties(data.settings)
+                    driver.set_properties(new_settings)
                 except Exception as prop_err:
                     logger.error("Failed to update dynamic properties on active driver %s: %s", camera_id, prop_err)
 
@@ -248,8 +340,10 @@ class CameraService:
 
     @staticmethod
     async def delete_camera(db: AsyncSession, camera_id: str) -> bool:
+        from app.services.settings_persistence_service import SettingsPersistenceService
         from app.services.vision_service import CameraStreamPipeline
         CameraReconnector.forget(camera_id)
+        SettingsPersistenceService.set_camera_kept(camera_id, False)
         # 1. Remove from active hardware/driver memory first so the vision runner stops
         # using it, then stop its workers and release the device. Both join threads,
         # so they run off the event loop.
@@ -290,6 +384,25 @@ class CameraService:
             return True
 
         return False
+
+    @staticmethod
+    async def discover_industrial_cameras(db: AsyncSession) -> List[Dict[str, Any]]:
+        """The GigE Vision and USB3 Vision cameras the makers' producers see; nothing is saved.
+
+        ``in_use`` marks a camera whose serial number a saved camera already has.
+        Raises GenICamUnavailable (what to install) when the library or every producer file is missing.
+        """
+        from app.hardware.camera import genicam_backend
+
+        backend = genicam_backend.default_backend()
+        rows = await asyncio.to_thread(backend.list_devices)      # a network scan can take a second or two
+        result = await db.execute(select(Camera.source).where(Camera.type == "gige"))
+        used = {str(source) for source in result.scalars().all()}
+        # The network camera channel that has it: a camera in the list without one is taken over by a new channel.
+        from app.services.settings_persistence_service import SettingsPersistenceService
+        channels = {str(ep.get("source")): ep.get("name") for ep in SettingsPersistenceService.get_endpoints("ipcam")
+                    if ep.get("camera_kind") == "gige"}
+        return [{**row, "in_use": row.get("serial") in used, "channel": channels.get(str(row.get("serial")))} for row in rows]
 
     @staticmethod
     async def discover_hardware_cameras(db: AsyncSession) -> List[DiscoveredUSBCamera]:
@@ -346,13 +459,9 @@ class CameraService:
 
         # Several cameras run at once (one or two per production line). A camera
         # that is already connected is reconnected in place.
-        from app.config import settings as app_settings
-        others = [cid for cid, drv in app_state.cameras.items() if cid != camera_id and getattr(drv, "is_connected", False)]
-        if len(others) >= app_settings.MAX_CONNECTED_CAMERAS:
-            return False, (
-                f"{len(others)} cameras are already connected, the most this server allows "
-                f"(MAX_CONNECTED_CAMERAS={app_settings.MAX_CONNECTED_CAMERAS}). Disconnect one first."
-            )
+        limit = CameraService.camera_limit_error(camera_id)
+        if limit is not None:
+            return False, limit
         previous = app_state.cameras.pop(camera_id, None)
         if previous is not None:
             from app.services.vision_service import CameraStreamPipeline
@@ -391,6 +500,9 @@ class CameraService:
         else:
             camera.is_active = False
             camera.last_error = last_err or "Unknown connection error"
+            if not _background and CameraService.kept(camera_id):
+                # Its Connect switch is on: retried in the background until it is switched off.
+                CameraReconnector.want(camera_id)
 
         await db.commit()
         await db.refresh(camera)
@@ -437,6 +549,7 @@ class CameraService:
             type=camera.type,
             is_active=camera.is_active,
             connection_state=CameraService.connection_state(camera),
+            kept_connected=CameraService.kept(camera.id),
             is_streaming=is_streaming,
             source=camera.source,
             properties=properties,
@@ -606,8 +719,9 @@ class CameraReconnector:
             async with AsyncSessionLocal() as db:
                 ok, err = await CameraService.connect_camera(db, camera_id, _background=True)
                 if camera_id not in cls._pending:
-                    # Disconnected by hand or its line stopped while this attempt ran.
-                    if ok:
+                    # Disconnected by hand or its line stopped while this attempt ran. A camera someone
+                    # still wants (Connect pressed again meanwhile) stays connected.
+                    if ok and not CameraService.wanted(camera_id):
                         await CameraService.disconnect_camera(db, camera_id)
                     continue
             if ok:

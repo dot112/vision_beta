@@ -155,6 +155,40 @@ def fake_camera(monkeypatch):
     return _attach
 
 
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+    """An empty data/ folder: the services that keep files there use this one for the test."""
+    monkeypatch.setattr(_persistence, "DATA_DIR", str(tmp_path))
+    return tmp_path
+
+
+@pytest.fixture
+def settings_file(tmp_path, monkeypatch):
+    """The settings service on an empty data/ folder with nothing loaded yet. Gives the path of system_state.json.
+
+    The line runtimes and the Line 1 counter that load() sets up are the test's own, and the
+    session's are put back afterwards (the counter's settings, line and event sink), so the shared
+    test client is not touched.
+    """
+    import app.services.line_service as line_module
+    from app.events.alarm_events import alarm_manager
+    from app.services.counting_service import counting_service
+
+    path = tmp_path / "system_state.json"
+    monkeypatch.setattr(_persistence, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(_persistence, "STATE_FILE", str(path))
+    monkeypatch.setattr(_persistence.SettingsPersistenceService, "_state", {})
+    monkeypatch.setattr(line_module, "line_manager", line_module.LineManager())
+    saved_config = counting_service.config
+    # load() configures Line 1's runtime, which names the shared counter and gives it an event sink.
+    saved_line = (counting_service.line_id, counting_service.line_name, counting_service.event_sink)
+    alarm_manager.reset()
+    yield str(path)
+    alarm_manager.reset()
+    counting_service.update_config(saved_config)
+    counting_service.line_id, counting_service.line_name, counting_service.event_sink = saved_line
+
+
 # ── API client ────────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="session")
@@ -162,13 +196,19 @@ def client():
     """App with its real lifespan (migrations, admin seed) but no background hardware."""
     from fastapi.testclient import TestClient
 
-    from app.services import camera_service, discovery_service, health_service, plc_failsafe_service, vision_service
+    from app.services import (
+        camera_service, data_keeper, discovery_service, health_service, plc_failsafe_service, plc_input_service,
+        vision_service,
+    )
     import main
 
     patches = [
         # The fail-safe watchdog would keep ticking in the client's event-loop
         # thread and write to whatever fake PLC a later test sets up.
         (plc_failsafe_service.PLCFailsafeService, "start", classmethod(lambda cls: None)),
+        # The same for the PLC signal poller: it would read whatever PLC channel
+        # a later test saves a signal card for.
+        (plc_input_service.PLCInputService, "start", classmethod(lambda cls: None)),
         # Same for the health watchdog: it would raise camera and inference
         # alarms against whatever fakes later tests put in app_state.
         (health_service.HealthMonitor, "start", classmethod(lambda cls: None)),
@@ -176,6 +216,8 @@ def client():
         (vision_service.ContinuousVisionRunner, "start", staticmethod(lambda *a, **k: None)),
         # Background camera retries would reconnect whatever cameras tests leave behind.
         (camera_service.CameraReconnector, "start", classmethod(lambda cls: None)),
+        # The data keeper would clean up and back up whatever test data is about a minute later.
+        (data_keeper.DataKeeper, "start", lambda self: None),
     ]
     originals = [(obj, name, obj.__dict__[name]) for obj, name, _ in patches]
     for obj, name, value in patches:

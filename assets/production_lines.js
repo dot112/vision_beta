@@ -10,8 +10,9 @@
  *     8) holding every setting of that camera: device, job, model and
  *     classes, counting (flow, count lines drawn on its picture, tracking),
  *     code reading, image (resolution, ROI...) and video. One Save;
- *   - on Line dashboard, a camera strip beside the large feed and a list of
- *     recent QR reads;
+ *   - on Line dashboard, a camera strip beside the large feed, a list of
+ *     recent QR reads, and for a camera in trigger mode "Waiting for trigger"
+ *     and each picture taken in place of the live video;
  *   - Line and Role columns on Cameras, "Used by" on Connections, and a
  *     line filter on Audit log.
  *
@@ -20,8 +21,58 @@
  * counting, PLC card and send card calls and routes the counting settings
  * to that line, so the existing pages work per line without being rewritten.
  */
+/*
+ * The Line Dashboard's view of a camera in trigger mode. These helpers are pure: the script's closure
+ * below draws the view from them, and tests/test_trigger_view_markup.py runs them with node
+ * (module.exports, as assets/card_values.js does).
+ */
+const TRIGGER_VIEW_MS = 5000;  // how long the page shows a capture before it waits for the next trigger
+
+// What the video box of a trigger camera shows now.
+//   row         the camera's entry of the line status' trigger_cameras ({capture, counters, ...})
+//   shown       {id, atMs}: the capture the page is showing and since when (the browser's clock), or null
+//   nowMs       the browser's clock now
+//   lineRunning false when the line is stopped (the row does not say)
+// Returns {mode: "waiting" | "picture" | "no_picture" | "stopped"}, and fetchId (the capture whose
+// picture the page asks for, once) when the capture is new to the page and has a picture.
+function triggerViewState(row, shown, nowMs, lineRunning) {
+    if (lineRunning === false) return { mode: "stopped" };
+    const capture = row && row.capture;
+    if (!capture) return { mode: "waiting" };
+    const isNew = !shown || shown.id !== capture.id;
+    if (!isNew && nowMs - shown.atMs >= TRIGGER_VIEW_MS) return { mode: "waiting" };
+    if (!capture.has_picture) return { mode: "no_picture" };
+    return isNew ? { mode: "picture", fetchId: capture.id } : { mode: "picture" };
+}
+
+// The picture's caption: class · Good / Reject (reason) · trigger N · time.
+function triggerCaption(capture, reasonLabels) {
+    const reason = capture.reason ? ((reasonLabels || {})[capture.reason] || capture.reason) : "";
+    const result = capture.result === "good" ? "Good" : capture.result === "reject" ? `Reject${reason ? ` (${reason})` : ""}` : "No result";
+    const parts = [capture.class_name || "nothing found", result];
+    if (capture.trigger_no !== null && capture.trigger_no !== undefined) parts.push(`trigger ${capture.trigger_no}`);
+    parts.push(new Date(capture.at).toLocaleTimeString());
+    return parts.join(" \u00b7 ");
+}
+
+// The counters under the video box, as [label, value]. Late and Extra only count for a camera that
+// takes the picture itself and tells the server with a trigger notice.
+function triggerCounterFigures(row) {
+    const counters = (row && row.counters) || {};
+    const figures = [["Triggers", counters.triggers], ["Pictures", counters.pictures], ["Results", counters.results], ["Missing", counters.missing]];
+    if (row && row.picture_source === "camera" && row.notice_trigger !== null && row.notice_trigger !== undefined) {
+        figures.push(["Late", counters.late], ["Extra", counters.extra]);
+    }
+    return figures.map(([label, value]) => [label, Number(value) || 0]);
+}
+
+if (typeof module !== "undefined" && module.exports) module.exports = { TRIGGER_VIEW_MS, triggerViewState, triggerCaption, triggerCounterFigures };
+
 (function () {
     "use strict";
+
+    // Under node (the tests) only the helpers above are loaded.
+    if (typeof window === "undefined" || typeof document === "undefined") return;
 
     const PRIMARY = "line-1";
     const MAX_CAMERAS_PER_LINE = 8;  // line_config.MAX_CAMERAS_PER_LINE
@@ -34,6 +85,8 @@
         trigger: null,        // that line's action_trigger, for the settings wrapper
         cameras: [],          // GET /cameras
         models: [],           // GET /models
+        // GET /ocr/models, asked for a line with a text reader (it starts the reader); "small" is always there.
+        ocrModels: { models: ["small"], new: "small", ready: true, error: null, loaded: false },
         endpoints: [],        // GET /system/endpoints (with used_by)
         tileVideo: false,
         auditLine: "",
@@ -44,7 +97,6 @@
         timers: {},
         blobUrls: {},
         codeTypes: [],        // GET /qr/code-types (set to the three groups below until it loads)
-        secondView: {},       // camera_id -> "live" | "capture" on the Line Dashboard
         captureShown: {},     // where a QR picture is shown -> id of the picture on screen
         bigCamera: {},        // line id -> camera shown large on the Line Dashboard (picked in the strip)
     };
@@ -54,7 +106,7 @@
     const esc = (value) => (typeof escapeHtml === "function"
         ? escapeHtml(value === null || value === undefined ? "" : String(value))
         : String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])));
-    const level = () => parseInt(localStorage.getItem("clearance_level") || "1", 10);
+    const level = () => parseInt(sessionStorage.getItem("clearance_level") || "1", 10);
     const toast = (msg, kind) => { if (typeof showToast === "function") showToast(msg, kind || "info"); };
     const byId = (id) => document.getElementById(id);
     const isTab = (id) => byId(id)?.classList.contains("active");
@@ -146,6 +198,13 @@
         .pl-cam-box { border:1px solid var(--border-color); border-radius:8px; padding:14px; }
         .pl-cam-box h4 { margin:0 0 10px; font-size:13px; color:var(--text-color); }
         .pl-note { font-size:11px; color:var(--text-muted); margin-top:4px; }
+        .pl-carton-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:14px; }
+        .pl-carton-state { display:flex; flex-wrap:wrap; align-items:baseline; gap:8px; margin-bottom:8px; font-size:13px; }
+        .pl-carton-figs { display:grid; grid-template-columns:repeat(auto-fill, minmax(110px, 1fr)); gap:8px; }
+        .pl-carton-fig { border:1px solid var(--border-color); border-radius:6px; padding:6px 8px; display:flex; flex-direction:column; gap:2px; min-width:0; }
+        .pl-carton-fig span { font-size:11px; color:var(--text-muted); }
+        .pl-carton-fig b { font-size:16px; color:var(--text-color); }
+        #plHandshakeBox .pl-hs[hidden] { display:none; }
         .pl-warn { border-left:3px solid var(--warning-color); padding:8px 12px; font-size:12px; margin-top:12px; }
         .pl-classes { max-height:172px; overflow:auto; border:1px solid var(--border-color); border-radius:6px; padding:6px 10px; display:grid; grid-template-columns:repeat(auto-fill, minmax(118px, 1fr)); gap:2px 12px; }
         .pl-class { display:flex; align-items:center; gap:6px; min-width:0; padding:2px 0; font-size:12.5px; color:var(--text-color); cursor:pointer; }
@@ -174,17 +233,14 @@
         .pl-strip-pic .video-img { object-fit:contain; }
         .pl-strip-overlay { font-size:11px; font-weight:700; letter-spacing:1.5px; color:rgba(255,255,255,.75); text-transform:uppercase; }
         .pl-strip-figures { margin-top:8px; }
-        .pl-strip-tools { margin-top:8px; }
-        .pl-strip-tools .pl-seg button { white-space:nowrap; padding:5px 9px; }
-        .pl-strip-test { font-size:11px; padding:4px 10px; }
         .pl-badge { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; border-radius:4px; padding:2px 7px; white-space:nowrap; background:var(--panel-head, rgba(127,127,127,.12)); color:var(--text-muted); border:1px solid var(--border-color); flex:none; }
         .pl-badge.job-counting { color:var(--primary-color); border-color:var(--primary-color); }
         .pl-badge.job-station { color:var(--warning-color); border-color:var(--warning-color); }
         .pl-badge.job-qr { color:var(--success-color); border-color:var(--success-color); }
+        .pl-badge.job-text { color:var(--text-color); border-color:var(--text-color); }
         .pl-cam-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(360px, 1fr)); gap:16px; align-items:start; margin-bottom:20px; }
         .pl-card { margin-bottom:0; min-width:0; padding:14px 16px; }
         .pl-card [hidden] { display:none !important; }
-        .pl-card.pl-flash { box-shadow:0 0 0 3px var(--primary-color); transition:box-shadow .3s; }
         .pl-card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
         .pl-card-title { display:flex; align-items:center; gap:7px; min-width:0; }
         .pl-card-title .pl-dot { margin-right:0; flex:none; }
@@ -199,12 +255,42 @@
         .pl-card-live img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; opacity:0; }
         .pl-card-live img.on { opacity:1; }
         .pl-card-live-note { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-size:11px; letter-spacing:1px; text-transform:uppercase; color:rgba(255,255,255,.6); pointer-events:none; }
-        .pl-fold { border-top:1px solid var(--border-color); }
-        .pl-fold-head { display:flex; width:100%; align-items:center; justify-content:space-between; gap:8px; padding:10px 2px; background:transparent; border:0; color:var(--text-color); font-size:13px; font-weight:600; cursor:pointer; text-align:left; }
-        .pl-fold-head svg { transition:transform .15s; color:var(--text-muted); flex:none; }
-        .pl-fold.open .pl-fold-head svg { transform:rotate(180deg); }
-        .pl-fold-body { display:none; padding:2px 2px 14px; }
+        .pl-card-warn { font-size:12px; color:var(--warning-color); margin:-4px 0 10px; }
+        .pl-card-actions { display:flex; gap:8px; }
+        .pl-card-actions .btn-action { flex:1; justify-content:center; }
+        /* The small card shows the camera; its menu, pages and the page's Back and Save show on the camera page. */
+        .pl-card:not(.pl-card-page) .pl-folds, .pl-card:not(.pl-card-page) .pl-page-menu, .pl-card:not(.pl-card-page) .pl-back,
+        .pl-card:not(.pl-card-page) .pl-card-unsaved, .pl-card:not(.pl-card-page) .pl-card-save { display:none; }
+        .pl-back { display:inline-flex; align-items:center; gap:4px; height:28px; padding:0 10px 0 6px; margin-right:6px; border-radius:6px; border:1px solid var(--border-color); background:transparent; color:var(--text-color); font-size:13px; font-weight:600; cursor:pointer; flex:none; }
+        .pl-back:hover { border-color:var(--primary-color); }
+        .pl-page-title { font-size:15px; font-weight:700; color:var(--text-color); margin:0 0 12px; }
+        .pl-page-sub { font-size:13px; font-weight:700; color:var(--text-color); margin:18px 0 10px; padding-top:14px; border-top:1px solid var(--border-color); }
+        .pl-fold-body { display:none; }
         .pl-fold.open .pl-fold-body { display:block; }
+        /* A camera's page: it takes Line setup's place; the line panel, the other cards and the sections below stay hidden on the page. */
+        #tabActionTrigger.pl-page-mode > :not(#plLineSetup), #tabActionTrigger.pl-page-mode #plLineSetup > :not(#plCamGrid),
+        #tabActionTrigger.pl-page-mode #plCamGrid > :not(.pl-card-page) { display:none !important; }
+        #tabActionTrigger.pl-page-mode #plCamGrid { display:block; }
+        .pl-card-page { display:grid; grid-template-columns:260px minmax(0, 1fr); grid-template-areas:"head head" "live pages" "menu pages"; grid-template-rows:auto auto 1fr; gap:12px 20px; padding:16px 20px; }
+        .pl-card-page .pl-card-head { grid-area:head; flex-wrap:wrap; gap:8px 12px; padding-bottom:12px; border-bottom:1px solid var(--border-color); }
+        .pl-card-page .pl-card-live { grid-area:live; margin-bottom:0; }
+        .pl-card-page .pl-page-menu { grid-area:menu; }
+        .pl-card-page .pl-folds { grid-area:pages; min-width:0; }
+        .pl-card-page .pl-card-sub, .pl-card-page .pl-card-warn, .pl-card-page .pl-card-actions,
+        .pl-card-page .pl-move, .pl-card-page .pl-fold:not(.open) { display:none; }
+        .pl-card-page .pl-card-tools { align-items:center; gap:10px; }
+        .pl-card-page .pl-card-unsaved { display:none; margin-left:0; }
+        #plLineSetup.pl-dirty .pl-card-page .pl-card-unsaved { display:inline; }
+        .pl-page-menu { display:flex; flex-direction:column; gap:2px; align-self:start; }
+        .pl-page-link { display:block; width:100%; text-align:left; padding:8px 10px; border:0; border-radius:6px; background:transparent; color:var(--text-color); font-size:13px; font-weight:600; cursor:pointer; }
+        .pl-page-link:hover { background:var(--panel-head, rgba(127,127,127,.12)); }
+        .pl-page-link.on { color:var(--primary-color); background:rgba(127,127,127,.12); background:color-mix(in srgb, var(--primary-color) 14%, transparent); }
+        @media (max-width:720px) {
+            .pl-card-page { grid-template-columns:minmax(0, 1fr); grid-template-areas:"head" "live" "menu" "pages"; grid-template-rows:none; padding:12px; }
+            .pl-page-menu { flex-direction:row; overflow-x:auto; padding-bottom:4px; }
+            .pl-page-link { flex:none; width:auto; white-space:nowrap; }
+            .pl-card-page .pl-card-tools { flex-wrap:wrap; }
+        }
         .pl-form-tight { grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px 12px; }
         .pl-join { margin-top:12px; padding-top:12px; border-top:1px dashed var(--border-color); }
         .pl-join-wait { font-size:12px; margin-top:8px; }
@@ -221,16 +307,31 @@
         .pl-add-card { border-style:dashed; }
         .pl-setup-actions { display:flex; flex-wrap:wrap; gap:8px 10px; align-items:center; }
         .pl-unsaved { font-size:11px; font-weight:700; color:var(--warning-color); margin-left:8px; }
+        .pl-audit-line { display:flex; align-items:center; gap:8px; flex-wrap:nowrap; margin:0; font-size:12px; color:var(--text-muted); }
+        .pl-audit-line .custom-select-wrap { width:170px; }
         .dashboard-grid.pl-grid-single { grid-template-columns:1fr; }
         .pl-inline-capture { position:relative; margin-bottom:12px; max-width:640px; }
         .pl-inline-capture[hidden] { display:none; }
         .pl-feed-caption { position:absolute; left:0; right:0; bottom:0; z-index:5; display:flex; flex-wrap:wrap; gap:4px 14px; padding:8px 12px; font-size:12px; color:#fff; background:rgba(0,0,0,.62); }
-        .pl-seg { display:inline-flex; border:1px solid var(--border-color); border-radius:6px; overflow:hidden; }
-        .pl-seg button { background:transparent; border:0; padding:5px 11px; font-size:11px; font-weight:600; color:var(--text-muted); cursor:pointer; }
-        .pl-seg button.active { background:var(--primary-color); color:#fff; }
         @media (max-width:992px) { .pl-feed-row { grid-template-columns:1fr; } .pl-strip, .pl-strip.many { grid-template-columns:repeat(2, minmax(0, 1fr)); } }
         @media (max-width:520px) { .pl-cam-grid { grid-template-columns:1fr; } .pl-card { padding:12px; } }
         @media (max-width:700px) { .pl-line-select { margin-left:8px; } .pl-line-select > span { display:none; } .pl-stats { grid-template-columns:repeat(2, 1fr); } }
+        .pf-head, .pf-row { display:grid; grid-template-columns:minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 0.9fr) 150px; gap:8px; align-items:center; }
+        .pf-head { font-size:12px; color:var(--text-muted); }
+        .pf-rows { display:flex; flex-direction:column; gap:8px; }
+        .pf-buttons { display:flex; gap:4px; }
+        .pf-buttons .btn-action { padding:6px 10px; }
+        .pf-note, .pf-count { font-size:12px; color:var(--text-muted); }
+        .pf-add { align-self:flex-start; }
+        .pf-error { color:var(--danger-color); font-size:12.5px; padding:0 24px; }
+        .pf-error:empty { display:none; }
+        .pf-key-hint { font-size:11px; color:var(--text-faint); font-weight:400; margin-left:6px; }
+        .pf-cell { font-size:12.5px; white-space:nowrap; }
+        @media (max-width:640px) {
+            .pf-head { display:none; }
+            .pf-row { grid-template-columns:1fr 1fr; padding-bottom:8px; border-bottom:1px solid var(--border-color); }
+            .pf-buttons { justify-content:flex-end; }
+        }
     `;
     document.head.appendChild(style);
 
@@ -337,17 +438,38 @@
         if (typeof loadServerSettings === "function") loadServerSettings();
         if (typeof loadPlcActionCards === "function") loadPlcActionCards();
         if (typeof loadSendActionCards === "function") loadSendActionCards();
+        if (window.PlcSignals) window.PlcSignals.load(state.lineId);
         if (typeof fetchStats === "function") fetchStats();
         if (typeof checkActiveStream === "function") checkActiveStream();
     }
 
+    // Every read of a line's status (the full line view, or the 1 s poll of a trigger camera) is numbered when
+    // it is asked for. One that lands after a newer read was applied is older: its status, and the capture in
+    // it, must not replace the newer one.
+    let statusIssued = 0;
+    let statusApplied = 0;
+
     async function loadDetail() {
-        state.detail = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}`);
+        const issued = ++statusIssued;
+        const detail = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}`);
+        if (issued < statusApplied && state.detail && state.detail.id === detail.id && state.detail.status) {
+            // The newer status stays; the rest of this view (settings, warnings) is as new as it is.
+            detail.status = state.detail.status;
+            detail.enabled = state.detail.enabled;
+        } else {
+            statusApplied = issued;
+        }
+        state.detail = detail;
         state.trigger = state.detail.action_trigger || {};
+        const warnings = byId("plSetupWarnings");
+        if (warnings) warnings.innerHTML = warningsHtml(state.detail);
         // Lets a dashboard show the line's state without fetching it again.
         window.dispatchEvent(new CustomEvent("pl:detail", { detail: state.detail }));
         return state.detail;
     }
+
+    // What the server warns about in the line's setup, shown under the line's own settings.
+    const warningsHtml = (line) => (line.warnings || []).map((w) => `<div class="pl-warn" style="margin:0 0 12px">${esc(w)}</div>`).join("");
 
     async function loadCamerasList() {
         try { state.cameras = await api("/api/v1/cameras"); } catch (_) { state.cameras = []; }
@@ -357,6 +479,15 @@
     async function loadModelsList() {
         try { state.models = await api("/api/v1/models"); } catch (_) { state.models = []; }
         return state.models;
+    }
+
+    async function loadOcrModels() {
+        try {
+            state.ocrModels = { ...(await api("/api/v1/ocr/models")), loaded: true };
+        } catch (e) {
+            state.ocrModels = { models: ["small"], new: "small", ready: false, error: e.message, loaded: true };
+        }
+        return state.ocrModels;
     }
 
     // What a camera that reads codes can be limited to: all types, the 2D or the 1D
@@ -420,6 +551,13 @@
         if (persist) localStorage.setItem(STORAGE_KEY, state.lineId);
     }
 
+    // Unsaved edits on Line setup: the line and its cameras, or output action, send or input cards not applied yet.
+    function pendingEdits() {
+        let pending = setup.dirty;
+        try { pending = pending || Boolean(_plcActionPendingChanges) || Boolean(_sendActionPendingChanges); } catch (_) { /* not loaded */ }
+        return pending || Boolean(window.PlcSignals && window.PlcSignals.hasPending());
+    }
+
     function switchLine(id) {
         if (id === state.lineId) return;
         const go = async () => {
@@ -431,10 +569,8 @@
             if (isTab("tabDashboard")) renderLineExtras();
             toast(`Showing ${lineName(state.lineId)}`, "info");
         };
-        let pending = false;
-        try { pending = Boolean(_plcActionPendingChanges) || Boolean(_sendActionPendingChanges); } catch (_) { pending = false; }
-        if (pending || setup.dirty) {
-            const what = setup.dirty ? "The line setup (cameras and their settings)" : "The PLC action or send cards";
+        if (pendingEdits()) {
+            const what = setup.dirty ? "The line setup (cameras and their settings)" : "The output action, input or send cards";
             confirmAction("Unsaved changes", `${what} of this line ${setup.dirty ? "has" : "have"} changes that are not saved. Switch lines and discard them?`, () => { setup.dirty = false; go(); });
             const select = byId("plLineSelect");
             if (select) { select.value = state.lineId; if (select._refreshCustomSelect) select._refreshCustomSelect(); }
@@ -475,7 +611,7 @@
     function tileBodyHtml(row) {
         const cams = row.cameras.length
             ? row.cameras.map((c) => `<span><span class="pl-dot" style="background:${c.connected ? "var(--success-color)" : "var(--danger-color)"}"></span>${esc(c.name || cameraName(c.camera_id))} · ${roleLabel(c, true)}</span>`).join("")
-            : `<span>No camera assigned</span>`;
+            : `<span>${row.state === "running" ? "Products from a PLC product sensor" : "No camera assigned"}</span>`;
         const qr = row.has_qr
             ? `<div class="pl-row"><span>Codes read <b>${row.qr.codes_read}</b></span><span>Unknown <b style="color:var(--danger-color)">${row.qr.unknown}</b></span><span>No read <b style="color:var(--warning-color)">${row.qr.no_reads}</b></span></div>`
             : "";
@@ -644,7 +780,7 @@
                     <span class="card-panel-title">Production lines</span>
                     <div class="pl-inline">
                         <input type="text" id="plNewLineName" class="form-input" maxlength="64" placeholder="New line name, e.g. Packing 2">
-                        <button class="btn-action btn-blue" id="plAddLine">Add line</button>
+                        <button data-lock class="btn-action btn-blue" id="plAddLine">Add line</button>
                     </div>
                 </div>
                 <div class="table-responsive"><table class="pl-table">
@@ -685,9 +821,9 @@
                 <td><div class="pl-actions">
                     <button class="btn-action btn-blue" data-act="logic" data-id="${esc(l.id)}">Setup</button>
                     <button class="btn-action ${running ? "btn-outline" : "btn-blue"}" data-act="${running ? "stop" : "start"}" data-id="${esc(l.id)}">${running ? "Stop" : "Start"}</button>
-                    <button class="btn-action btn-outline" data-act="rename" data-id="${esc(l.id)}">Rename</button>
-                    <button class="btn-action btn-outline" data-act="clone" data-id="${esc(l.id)}">Clone</button>
-                    ${l.id === PRIMARY ? "" : `<button class="btn-action btn-red" data-act="delete" data-id="${esc(l.id)}">Delete</button>`}
+                    <button data-lock class="btn-action btn-outline" data-act="rename" data-id="${esc(l.id)}">Rename</button>
+                    <button data-lock class="btn-action btn-outline" data-act="clone" data-id="${esc(l.id)}">Clone</button>
+                    ${l.id === PRIMARY ? "" : `<button data-lock class="btn-action btn-red" data-act="delete" data-id="${esc(l.id)}">Delete</button>`}
                 </div></td>
             </tr>`;
         }).join("");
@@ -741,7 +877,7 @@
                 await api(`/api/v1/lines/${encodeURIComponent(id)}/clone`, { method: "POST", body: { name: newName.trim() } });
                 toast("Line copied", "success");
             } else if (act === "delete") {
-                confirmAction("Delete production line", `Delete ${name}? Its logic and PLC action cards are removed; its cameras stay connected but unassigned.`, async () => {
+                confirmAction("Delete production line", `Delete ${name}? Its logic and output actions are removed; its cameras stay connected but unassigned.`, async () => {
                     try {
                         await api(`/api/v1/lines/${encodeURIComponent(id)}`, { method: "DELETE" });
                         if (id === state.lineId) switchLine(PRIMARY);
@@ -763,11 +899,14 @@
         counting: { label: "Counting", short: "Counting", role: "vision", counting: true, codes: false },
         station: { label: "Inspection station", short: "Station", role: "vision", counting: false, codes: false },
         qr: { label: "Code reader", short: "Code reader", role: "qr", counting: false, codes: true },
+        text: { label: "Text reader", short: "Text reader", role: "ocr", counting: false, codes: false },
+        pattern: { label: "Pattern check", short: "Pattern check", role: "match", counting: false, codes: false },
         counting_qr: { label: "Counting + code reader", short: "Counting + codes", role: "vision", counting: true, codes: true },
         station_qr: { label: "Inspection station + code reader", short: "Station + codes", role: "vision", counting: false, codes: true },
     };
-    const START_JOBS = ["counting", "station", "qr", "counting_qr"];
-    const jobOf = (cam) => (cam.role === "qr" ? "qr" : (cam.counting ? "counting" : "station") + (cam.read_codes ? "_qr" : ""));
+    const START_JOBS = ["counting", "station", "qr", "text", "pattern", "counting_qr"];
+    const jobOf = (cam) => (cam.role === "ocr" ? "text" : cam.role === "match" ? "pattern" : cam.role === "qr" ? "qr"
+        : (cam.counting ? "counting" : "station") + (cam.read_codes ? "_qr" : ""));
     const isVisionJob = (job) => JOBS[job] && JOBS[job].role === "vision";
     const isCountingJob = (job) => Boolean(JOBS[job] && JOBS[job].counting);
 
@@ -795,17 +934,14 @@
     };
     const DEFAULT_LINES = { line1_position: 0.35, line2_position: 0.65, orientation: "horizontal", direction: "forward" };
 
-    const FOLDS = [
-        ["camera", "Camera"],
-        ["job", "Job"],
-        ["model", "AI model and classes"],
-        ["counting", "Counting"],
-        ["codes", "Codes"],
-        ["image", "Image"],
-        ["video", "Video"],
-    ];
-    // Which folds a job shows.
-    const foldShown = (fold, job) => (fold === "model" || fold === "counting" ? isVisionJob(job) : fold === "codes" ? JOBS[job].codes : true);
+    // What a job is to the camera's pages (assets/camera_pages.js): a vision job, a job that reads codes, the text
+    // reader, the pattern check.
+    const jobKind = (job) => ({ vision: isVisionJob(job), codes: Boolean(JOBS[job].codes), text: job === "text", pattern: job === "pattern" });
+    // Count mode's first choice: a text reader or a pattern check reading continuously only shows what it finds.
+    const trackLabel = (job) => (job === "text" ? "Continuously (shows the text only)"
+        : job === "pattern" ? "Continuously (shows the result only)" : "Moving products cross count lines");
+    const TEXT_TRACK_NOTE = "The text is only shown: on the camera's picture and in the line's latest text reads. Nothing is decided, sent or saved.";
+    const PATTERN_TRACK_NOTE = "The result is only shown on the camera's picture. Nothing is decided, sent or saved.";
 
     const setup = {
         lineId: null,
@@ -813,6 +949,7 @@
         cards: new Map(),     // card key -> { picks, cam (camera row), initialSettings, initialName, feed }
         nextKey: 1,
         focusCamera: null,    // open this camera's card once Line setup is drawn (Cameras page "Settings")
+        openCamera: null,     // the camera page open: { id, page, lineId }, opened again when Line setup is drawn again
     };
 
     const cardsOnPage = () => [...document.querySelectorAll("#plCamGrid .pl-card:not(.pl-add-card)")];
@@ -820,12 +957,23 @@
     const cardValue = (card, name) => (cardField(card, name) ? cardField(card, name).value : "");
     const cardJob = (card) => cardValue(card, "job") || "counting";
     const cameraRow = (id) => state.cameras.find((c) => c.id === id) || null;
+    const CAMERA_TYPES = { usb: "USB", ip: "IP", gige: "Industrial" };
+    const typeLabel = (type) => CAMERA_TYPES[type] || String(type || "").toUpperCase();
+    // An industrial camera's Trigger as its card shows it now (saved with Apply), else as saved: off, hardware or software.
+    function cameraTrigger(card) {
+        const row = cameraRow(card.dataset.camera);
+        if (!row || row.type !== "gige") return "off";
+        const shown = card.querySelector('[data-cs="trigger_mode"]');
+        const mode = shown ? shown.value : (row.settings || {}).trigger_mode;
+        return mode === "hardware" || mode === "software" ? mode : "off";
+    }
 
     function markDirty() {
         if (setup.dirty) return;
         setup.dirty = true;
         const note = byId("plSetupDirty");
         if (note) note.hidden = false;
+        byId("plLineSetup")?.classList.add("pl-dirty");    // the camera page's Unsaved changes
     }
 
     // Which line other than this one owns each camera.
@@ -851,7 +999,7 @@
         const onCards = new Set(cardsOnPage().filter((c) => c !== card).map((c) => c.dataset.camera));
         const options = state.cameras.map((c) => {
             const taken = owners[c.id] ? `on ${owners[c.id]}` : onCards.has(c.id) ? "on another card" : "";
-            return `<option value="${esc(c.id)}" ${c.id === selected ? "selected" : ""} ${taken && c.id !== selected ? "disabled" : ""}>${esc(c.name)} (${esc(String(c.type || "").toUpperCase())})${taken ? ` · ${esc(taken)}` : ""}</option>`;
+            return `<option value="${esc(c.id)}" ${c.id === selected ? "selected" : ""} ${taken && c.id !== selected ? "disabled" : ""}>${esc(c.name)} (${esc(typeLabel(c.type))})${taken ? ` · ${esc(taken)}` : ""}</option>`;
         });
         if (selected && !cameraRow(selected)) options.unshift(`<option value="${esc(selected)}" selected>${esc(selected)} (not found)</option>`);
         return options.join("");
@@ -884,27 +1032,57 @@
     const option = (value, label, current) => `<option value="${value}" ${current === value ? "selected" : ""}>${label}</option>`;
     const numOrEmpty = (v) => (v === null || v === undefined || v === "" ? "" : v);
 
-    // What the folds remember being open, per camera, in this browser.
-    function openFolds(cameraId, fallback) {
-        try {
-            const saved = JSON.parse(localStorage.getItem(`pl_card_folds::${cameraId}`) || "null");
-            if (Array.isArray(saved)) return new Set(saved);
-        } catch (_) { /* not saved */ }
-        return new Set(fallback);
-    }
-    function rememberFolds(card) {
-        const open = [...card.querySelectorAll(".pl-fold.open")].map((f) => f.dataset.fold);
-        try { localStorage.setItem(`pl_card_folds::${card.dataset.camera}`, JSON.stringify(open)); } catch (_) { /* storage off */ }
+    // What a card's Text fields page offers: the reader models on this server, a new reader's model, the YOLO models.
+    const textReaderOptions = () => ({ models: state.ocrModels.models, newModel: state.ocrModels.new, ready: state.ocrModels.ready,
+                                       error: state.ocrModels.error, yoloModels: state.models, readOnly: level() < 2 });
+
+    // ── One picture per trigger: Picture taken by, its delay, its notice and its wait ──
+
+    const DEFAULT_PICTURE_WAIT_MS = 1000;
+    // On the card the Trigger of the camera says where it is set; the Settings dialog says "Line setup".
+    const TRIGGER_SET_BY_CARD_NOTE = "Set by Picture taken by above";
+
+    // The Trigger notice choices: None, and each "Take a picture" input of the line by its trigger number.
+    function noticeOptions(selected) {
+        const chosen = selected === null || selected === undefined || selected === "" ? "" : String(selected);
+        const inputs = window.PlcSignals && PlcSignals.triggers ? PlcSignals.triggers() : [];
+        const rows = inputs.map((t) => ({ no: String(t.no), label: `Trigger ${t.no}${t.name ? ` · ${t.name}` : ""}${t.enabled ? "" : " (switched off)"}` }));
+        // A number no input has stays chosen (the server warns about it), as with the ticks.
+        if (chosen && !rows.some((r) => r.no === chosen)) rows.push({ no: chosen, label: `Trigger ${chosen} (no input has this number)` });
+        rows.sort((a, b) => Number(a.no) - Number(b.no));
+        return `<option value="" ${chosen ? "" : "selected"}>None</option>`
+            + rows.map((r) => `<option value="${esc(r.no)}" ${r.no === chosen ? "selected" : ""}>${esc(r.label)}</option>`).join("");
     }
 
-    function foldHtml(name, title, body, open) {
-        return `<section class="pl-fold${open ? " open" : ""}" data-fold="${name}">
-            <button type="button" class="pl-fold-head" aria-expanded="${open ? "true" : "false"}"><span>${title}</span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg></button>
+    // The Trigger an industrial camera gets from its card: only a vision card with Count mode "One picture per
+    // trigger" sets it (Picture taken by decides); any other card leaves the camera's own Trigger alone (null).
+    // The server sets the same on a save (trigger_mode_for_card).
+    function triggerSetByCard({ industrial, vision, countMode, source }) {
+        if (!industrial || !vision || countMode !== "trigger") return null;
+        return source === "camera" ? "hardware" : "software";
+    }
+
+    // A card's camera settings as PATCH /cameras/{id} wants them. The Trigger is left out unless it was changed by
+    // hand: while the card sets it, the form shows it read-only (and a save of the line sets it before this PATCH,
+    // which a stale mode would be refused with 409).
+    function cardCameraSettings(card, row) {
+        const settings = CameraSettingsForm.read(card, row.type);
+        const own = ["hardware", "software"].includes((row.settings || {}).trigger_mode) ? row.settings.trigger_mode : "off";
+        if (settings.trigger_mode === own) delete settings.trigger_mode;
+        return settings;
+    }
+
+    // One page of a camera's settings page (its class "open" while it is the page shown).
+    function pageHtml(name, title, body) {
+        return `<section class="pl-fold" data-fold="${name}"><h3 class="pl-page-title">${title}</h3>
             <div class="pl-fold-body">${body}</div></section>`;
     }
 
-    // One camera card. ``cam`` is the line's camera entry (or a new one), ``trigger`` the line's action_trigger.
-    function cameraCardHtml(key, cam, trigger, openSet) {
+    const ICON = (path) => `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
+
+    // One camera: the small card on Line setup, and its settings page (shown by openCameraPage). ``cam`` is
+    // the line's camera entry (or a new one), ``trigger`` the line's action_trigger.
+    function cameraCardHtml(key, cam, trigger) {
         const job = jobOf(cam);
         const row = cameraRow(cam.camera_id) || { name: cam.camera_id, type: "" };
         const eff = (k) => (cam[k] !== undefined && cam[k] !== null && cam[k] !== "" ? cam[k] : (trigger[k] !== undefined && trigger[k] !== null && trigger[k] !== "" ? trigger[k] : DEFAULT_LINES[k]));
@@ -917,22 +1095,29 @@
         const action = cam.qr_action || "report";
         const listId = readsCodes(cam) ? (cam.product_list_id || "") : ((state.productLists[0] || {}).id || "");
         const station = cam.station || "own";
+        const countMode = cam.count_mode === "trigger" ? "trigger" : "track";
+        const noProduct = cam.no_product || "ignore";
+        // Picture taken by. Camera trigger is for an industrial camera; a card saved before it held the source follows
+        // the camera's own Trigger (Hardware is Camera trigger), as the server does.
+        const industrial = row.type === "gige";
+        const savedSource = cam.picture_source === "camera" || cam.picture_source === "system" ? cam.picture_source
+            : (row.settings || {}).trigger_mode === "hardware" ? "camera" : "system";
+        const pictureSource = industrial && savedSource === "camera" ? "camera" : "system";
         const readOnly = level() < 2;
-        const fold = (name, title, body) => foldHtml(name, title, body, openSet.has(name));
 
         const cameraBody = `
             <div class="form-group"><label class="form-label">Device</label><select class="form-input" data-f="device">${deviceOptions(cam.camera_id, null)}</select>
                 <div class="pl-note">Change the device this card uses. Cameras on another line are greyed out.</div></div>
             <div class="form-group"><label class="form-label">Name</label><input type="text" class="form-input" data-f="name" maxlength="128" value="${esc(row.name || "")}">
                 <div class="pl-note">The camera's name everywhere (Cameras page, messages). Saved with the line setup.</div></div>
-            <div class="pl-inline"><button type="button" class="btn-action btn-sm btn-outline" data-act="connect">Connect</button><button type="button" class="btn-action btn-sm btn-outline" data-act="disconnect">Disconnect</button>
-                <span class="pl-note pl-conn-note" style="margin:0"></span></div>`;
+            <div class="pl-inline"><label class="switch"><input type="checkbox" data-act="keep-connected" aria-label="Connect"><span class="slider"></span></label>
+                <span class="form-label" style="margin:0">Connect</span><span class="pl-note pl-conn-note" style="margin:0"></span></div>`;
 
         const jobBody = `
             <div class="form-group"><label class="form-label">What this camera does</label><select class="form-input" data-f="job">${Object.keys(JOBS).map((j) => option(j, JOBS[j].label, job)).join("")}</select>
                 <div class="pl-note pl-job-note"></div></div>
             <div class="form-group pl-station" style="margin-bottom:0"><label class="form-label">Inspection station result</label>
-                <select class="form-input" data-f="station">${option("own", "Own station: counts and rejects on its own", station)}${option("join", "Joins the product result", station)}</select>
+                <select class="form-input" data-f="station" data-help="Whether this camera counts and rejects on its own, or adds its result to the counted product.">${option("own", "Own station: counts and rejects on its own", station)}${option("join", "Joins the product result", station)}</select>
                 <div class="pl-note pl-station-note"></div>
                 <div class="pl-join">
                     <div class="pl-form-grid pl-form-tight">
@@ -944,7 +1129,7 @@
                             <div class="pl-note">How far from that time a crossing still belongs to the product (50 to 10000).</div></div>
                     </div>
                     <div class="form-group" style="margin:10px 0 0"><label class="form-label">When no result</label>
-                        <select class="form-input" data-f="join_missing">${option("ignore", "Ignore: the other cameras decide", cam.join_missing || "ignore")}${option("reject", "Reject the product", cam.join_missing || "ignore")}</select>
+                        <select class="form-input" data-f="join_missing" data-help="What a product gets when this camera sees nothing of it within the match window.">${option("ignore", "Ignore: the other cameras decide", cam.join_missing || "ignore")}${option("reject", "Reject the product", cam.join_missing || "ignore")}</select>
                         <div class="pl-note">What a product gets when this camera sees nothing of it within the match window (reason "station_no_result").</div></div>
                     <div class="pl-note pl-join-wait"></div>
                     <div class="pl-join-late" hidden></div>
@@ -966,65 +1151,111 @@
         const trackingFields = Object.entries(TRACKING).map(([k, [label, min, max, step, def]]) =>
             `<div class="form-group" style="margin:0"><label class="form-label">${label}</label><input type="number" class="form-input" data-track="${k}" min="${min}" max="${max}" step="${step}" placeholder="${esc(lineTracking[k] ?? def)}" value="${esc(numOrEmpty(tracking[k]))}"></div>`).join("");
         const countingBody = `
-            <div class="pl-form-grid pl-form-tight">
-                <div class="form-group"><label class="form-label">Flow direction</label><select class="form-input" data-f="flow">${Object.keys(FLOWS).map((f) => option(f, FLOWS[f].label, flowOf(orientation, direction))).join("")}</select></div>
-                <div class="form-group"><label class="form-label">Count mode</label><select class="form-input" data-f="mode">${option("one", "A then B (the flow above)", direction === "both" ? "both" : "one")}${option("both", "Both ways", direction === "both" ? "both" : "one")}</select></div>
+            <div class="form-group"><label class="form-label">Count mode</label><select class="form-input" data-f="count_mode">${option("track", trackLabel(job), countMode)}${option("trigger", "One picture per trigger", countMode)}</select>
+                <div class="pl-note pl-count-mode-note"></div></div>
+            <div class="pl-picture" hidden>
+                <div class="form-group"><label class="form-label">Picture taken by</label>
+                    <select class="form-input" data-f="picture_source" data-help="Who takes the picture for each trigger: this server, or the camera itself.">
+                        <option value="system" ${pictureSource === "system" ? "selected" : ""}>System trigger</option>
+                        <option value="camera" ${pictureSource === "camera" ? "selected" : ""} ${industrial ? "" : "disabled"}>Camera trigger</option></select>
+                    <div class="pl-note pl-picture-industrial" hidden>Only an industrial camera can trigger itself</div></div>
+                <div class="pl-picture-system">
+                    <div class="pl-triggers" data-for="count" hidden></div>
+                    <div class="form-group"><label class="form-label">Picture delay (ms)</label>
+                        <input type="number" class="form-input" data-f="picture_delay" min="0" max="5000" step="10" value="${esc(numOrEmpty(cam.picture_delay_ms) === "" ? 0 : cam.picture_delay_ms)}">
+                        <div class="pl-note">How long after the trigger the picture is taken (0 to 5000). 0 = at once.</div></div>
+                </div>
+                <div class="pl-picture-camera">
+                    <div class="form-group"><label class="form-label">Trigger notice</label>
+                        <select class="form-input" data-f="notice_trigger" data-help="The Take a picture input that tells the server a picture is coming, so each picture is paired with its trigger.">${noticeOptions(cam.notice_trigger)}</select>
+                        <div class="pl-note">The input that tells the server a picture is coming (add it under Inputs on Line setup). None: every picture the camera takes is one product.</div></div>
+                    <div class="form-group pl-picture-wait"><label class="form-label">Wait for the picture (ms)</label>
+                        <input type="number" class="form-input" data-f="picture_wait" min="50" max="10000" step="10" value="${esc(numOrEmpty(cam.picture_wait_ms) === "" ? DEFAULT_PICTURE_WAIT_MS : cam.picture_wait_ms)}">
+                        <div class="pl-note">How far apart a notice and its picture may come, in either order (50 to 10000). Shorter than the time between two products.</div></div>
+                </div>
             </div>
-            <div class="pl-lines-pic" data-f="lines-pic"><img alt="" hidden><canvas></canvas><span class="pl-lines-note">Drag line A or B. <button type="button" class="pl-link" data-act="picture">Take a picture</button></span></div>
-            <div class="pl-form-grid pl-form-tight">
-                <div class="form-group"><label class="form-label">Count line A</label><input type="number" class="form-input" data-f="line1" min="0" max="1" step="0.01" value="${esc(eff("line1_position"))}"></div>
-                <div class="form-group"><label class="form-label">Count line B</label><input type="number" class="form-input" data-f="line2" min="0" max="1" step="0.01" value="${esc(eff("line2_position"))}"></div>
-            </div>
-            <div class="pl-note pl-lines-hint"></div>
-            <details class="pl-advanced"><summary>Advanced tracking</summary>
-                <div class="pl-note" style="margin:6px 0 10px">Empty: the default, shown in grey.</div>
-                <div class="pl-form-grid pl-form-tight">${trackingFields}</div></details>`;
+            <div class="form-group pl-no-product"><label class="form-label">When nothing is found</label><select class="form-input" data-f="no_product" data-help="What a triggered picture counts as when none of this camera's classes is in it.">${option("ignore", "Ignore: no product is counted", noProduct)}${option("reject", "Reject: counted as a rejected product", noProduct)}${option("good", "Good: counted as a good product", noProduct)}</select>
+                <div class="pl-note">What a trigger gives when its picture shows none of this camera's classes. A reject then has the reason "nothing detected".</div></div>
+            <div class="pl-track-fields">
+                <div class="pl-form-grid pl-form-tight">
+                    <div class="form-group"><label class="form-label">Flow direction</label><select class="form-input" data-f="flow" data-help="The direction the products move through the picture.">${Object.keys(FLOWS).map((f) => option(f, FLOWS[f].label, flowOf(orientation, direction))).join("")}</select></div>
+                    <div class="form-group"><label class="form-label">Count crossings</label><select class="form-input" data-f="mode" data-help="Count crossings in the flow direction only, or both ways.">${option("one", "A then B (the flow above)", direction === "both" ? "both" : "one")}${option("both", "Both ways", direction === "both" ? "both" : "one")}</select></div>
+                </div>
+                <div class="pl-lines-pic" data-f="lines-pic"><img alt="" hidden><canvas></canvas><span class="pl-lines-note">Drag line A or B. <button type="button" class="pl-link" data-act="picture" data-help="Takes a still picture to draw the count lines on.">Take a picture</button></span></div>
+                <div class="pl-form-grid pl-form-tight">
+                    <div class="form-group"><label class="form-label">Count line A</label><input type="number" class="form-input" data-f="line1" min="0" max="1" step="0.01" value="${esc(eff("line1_position"))}"></div>
+                    <div class="form-group"><label class="form-label">Count line B</label><input type="number" class="form-input" data-f="line2" min="0" max="1" step="0.01" value="${esc(eff("line2_position"))}"></div>
+                </div>
+                <div class="pl-note pl-lines-hint"></div>
+                <details class="pl-advanced"><summary>Advanced tracking</summary>
+                    <div class="pl-note" style="margin:6px 0 10px">Empty: the default, shown in grey.</div>
+                    <div class="pl-form-grid pl-form-tight">${trackingFields}</div></details>
+            </div>`;
 
         const codesBody = `
             <div class="form-group"><label class="form-label">Code type</label><select class="form-input" data-f="code_type">${codeTypeOptions(codeType)}</select>
                 <div class="pl-note">Only codes of this type are read; any other code in the picture is ignored. 2D and 1D read every type of that kind.</div></div>
             <div class="form-group"><label class="form-label">Read codes</label><select class="form-input" data-f="qr_trigger">
-                ${option("continuous", "Continuously, on every frame", trigger1)}${option("line1", "One picture when a product crosses wire line 1", trigger1)}${option("line2", "One picture when a product crosses wire line 2", trigger1)}</select>
-                <div class="pl-note">A picture is taken each time the counting camera sees a product cross the chosen wire line. It shows on the Line dashboard with every code outlined.</div></div>
-            <div class="form-group pl-trigger-delay"><label class="form-label">Picture delay after the crossing (ms)</label>
+                ${option("continuous", "Continuously (show only: sends and saves nothing)", trigger1)}${option("line1", "One picture when a product crosses wire line 1", trigger1)}${option("line2", "One picture when a product crosses wire line 2", trigger1)}${option("signal", "When an input asks", trigger1)}</select>
+                <div class="pl-note pl-trigger-note"></div>
+                <div class="pl-triggers" data-for="codes" hidden></div>
+                <div class="pl-warn pl-trigger-warn" hidden>The counting camera takes one picture per trigger and tracks nothing across its count lines, so no product crosses a wire line. Choose "When an input asks".</div>
+                <div class="pl-warn pl-review" hidden><span>Since the upgrade this camera only shows codes. Choose when it reads codes.</span>
+                    <span class="pl-review-first"></span>
+                    <button data-lock type="button" class="btn-action btn-outline pl-review-keep" style="margin-top:6px" data-help="Keeps this camera showing codes only, and saves the line.">Keep show only</button></div></div>
+            <div class="form-group pl-trigger-delay"><label class="form-label pl-trigger-delay-label">Picture delay after the crossing (ms)</label>
                 <input type="number" class="form-input" data-f="qr_delay" min="0" max="10000" step="10" value="${esc(cam.qr_trigger_delay_ms || 0)}">
                 <div class="pl-note">For a code camera further along the belt: how long the product takes to reach it. 0 = at once.</div></div>
             <div class="form-group pl-hold"><label class="form-label">QR hold time (ms)</label>
                 <input type="number" class="form-input" data-f="qr_hold" min="100" max="60000" step="100" value="${esc(cam.qr_hold_ms || 1500)}">
                 <div class="pl-note">A code counts again only after it has been out of view this long.</div></div>
-            <div class="form-group"><label class="form-label">Action</label><select class="form-input" data-f="qr_action">
+            <div class="form-group"><label class="form-label">Sorting verification</label><select class="form-input" data-f="sorting_lane" data-help="Off, or the outfeed this camera watches to check that the products were sorted right.">
+                ${option("", "Off: the codes of the products being inspected", cam.sorting_lane || "")}${option("accepted", "Watches the accepted outfeed", cam.sorting_lane || "")}${option("rejected", "Watches the rejected outfeed", cam.sorting_lane || "")}</select>
+                <div class="pl-note pl-sorting-note"></div></div>
+            <div class="form-group pl-action"><label class="form-label">Action</label><select class="form-input" data-f="qr_action">
                 ${option("report", "Report only", action)}${option("accept_listed", "Accept only listed codes", action)}${option("reject_listed", "Reject listed codes", action)}</select>
                 <div class="pl-note pl-action-note"></div></div>
             <div class="form-group"><label class="form-label">Product list</label><select class="form-input" data-f="qr_list">${listOptions(listId)}</select>
                 <div class="pl-note">The list this camera checks its codes against. The lists are on the Products page.</div></div>
+            <div class="form-group pl-sets-batch"><label class="pl-inline pl-check"><input type="checkbox" data-f="code_sets_batch" ${cam.code_sets_batch ? "checked" : ""}> The code's batch sets the line's batch</label>
+                <div class="pl-note">For listed products only. Each change is written to the audit log.</div></div>
             <div class="form-group pl-no-read" style="margin-bottom:0"><label class="form-label">When no code is read</label><select class="form-input" data-f="qr_no_read">
                 ${option("reject", "Reject", cam.qr_no_read || "ignore")}${option("ignore", "Ignore", cam.qr_no_read || "ignore")}</select>
                 <div class="pl-note">Ignore: the product is good or bad according to the vision camera alone.</div></div>`;
 
         return `
-            <div class="card-panel pl-card" data-key="${key}" data-camera="${esc(cam.camera_id)}">
+            <div class="card-panel pl-card" data-key="${key}" data-camera="${esc(cam.camera_id)}" data-review="${cam.qr_trigger_review ? 1 : 0}">
                 <div class="pl-card-head">
                     <div class="pl-card-title">
+                        <button type="button" class="pl-back" data-act="back" title="Back to the cameras">${ICON('<polyline points="15 18 9 12 15 6"/>')}<span class="pl-back-line">${esc((state.detail && state.detail.name) || "Line setup")}</span></button>
                         <span class="pl-dot pl-card-dot"></span>
                         <span class="pl-card-name">${esc(row.name || cam.camera_id)}</span>
                         <span class="pl-badge" data-f="badge">${esc(JOBS[job].short)}</span>
                     </div>
                     <div class="pl-card-tools">
-                        <button type="button" class="pl-icon-btn" data-act="up" title="Move up" aria-label="Move up"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg></button>
-                        <button type="button" class="pl-icon-btn" data-act="down" title="Move down" aria-label="Move down"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg></button>
-                        <button type="button" class="pl-icon-btn danger restricted-l2" data-act="remove" title="Remove from the line" aria-label="Remove from the line" ${readOnly ? "disabled" : ""}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+                        <button data-lock type="button" class="pl-icon-btn pl-move" data-act="up" title="Move earlier" aria-label="Move earlier">${ICON('<polyline points="15 18 9 12 15 6"/>')}</button>
+                        <button data-lock type="button" class="pl-icon-btn pl-move" data-act="down" title="Move later" aria-label="Move later">${ICON('<polyline points="9 18 15 12 9 6"/>')}</button>
+                        <span class="pl-unsaved pl-card-unsaved">Unsaved changes</span>
+                        <button data-lock type="button" class="btn-action btn-blue restricted-l2 pl-card-save" data-act="save" ${readOnly ? "disabled" : ""}>Save</button>
                     </div>
                 </div>
                 <div class="pl-card-sub"></div>
+                <div class="pl-card-warn" hidden>Choose when it reads codes (Settings → Codes)</div>
                 <div class="pl-card-live"><img alt="Live picture"><span class="pl-card-live-note">No picture</span></div>
+                <div class="pl-card-actions">
+                    <button type="button" class="btn-action btn-outline" data-act="settings">Settings</button>
+                    <button data-lock type="button" class="btn-action btn-red restricted-l2" data-act="remove" ${readOnly ? "disabled" : ""}>Delete</button>
+                </div>
+                ${CameraPages.menuHtml(jobKind(job), null)}
                 <div class="pl-folds">
-                    ${fold("camera", "Camera", cameraBody)}
-                    ${fold("job", "Job", jobBody)}
-                    ${fold("model", "AI model and classes", modelBody)}
-                    ${fold("counting", "Counting", countingBody)}
-                    ${fold("codes", "Codes", codesBody)}
-                    ${fold("image", "Image", `<div data-f="image-form"></div>`)}
-                    ${fold("video", "Video", `<div data-f="video-form"></div>`)}
+                    ${pageHtml("camera", "Camera", cameraBody)}
+                    ${pageHtml("job", "Job", jobBody)}
+                    ${pageHtml("model", "AI model and classes", modelBody)}
+                    ${pageHtml("counting", CameraPages.pageTitle("counting", jobKind(job)), countingBody)}
+                    ${pageHtml("codes", "Codes", codesBody)}
+                    ${pageHtml("text", "Text fields", TextReader.foldHtml(cam.role === "ocr" ? cam.ocr : null, textReaderOptions()))}
+                    ${pageHtml("pattern", "Pattern and checks", PatternCheck.foldHtml(cam.role === "match" ? cam.match : null, { readOnly }))}
+                    ${pageHtml("image", "Image and video", `<div data-f="image-form"></div><h4 class="pl-page-sub">Video</h4><div data-f="video-form"></div>`)}
                 </div>
             </div>`;
     }
@@ -1111,28 +1342,69 @@
         accept_listed: "A product whose code is not in the product list is rejected. A product is good only when the vision camera found it good and its code is in the list.",
         reject_listed: "A product whose code is in the product list is rejected. A product is good only when the vision camera found it good and its code is not in the list.",
     };
-    const READER_ONLY_NOTE = " This line has no vision camera, so each code read counts as one product, good or reject. The same code counts again only after it has been out of view for the hold time: counting is reliable when products pass further apart than that. For exact counts, add a vision camera.";
+    const READER_ONLY_NOTE = " This line has no vision camera, so each picture an input asks for is one product, good or reject.";
+    const SHOWN_ONLY_NOTE = "Read codes \"Continuously\" only shows the codes: they are not reported or checked. Choose a wire line or \"When an input asks\" to use them.";
     const JOB_NOTES = {
         counting: "Line totals come from this camera. Exactly one vision camera counts.",
         counting_qr: "Counts and inspects with the AI model and reads codes on the same picture, for a line with one camera.",
         station: "An inspection station: on its own (it counts and rejects by itself) or joined to the counting camera's product result.",
         station_qr: "An inspection station that also reads codes on the same picture.",
         qr: "Reads codes. With a vision camera on the line, Sync pairs each product with its code.",
+        text: "Reads printed text (dates, lot codes) and checks it against a format. One picture per trigger decides good or reject, on its own or joined to the counting camera's product.",
+        pattern: "Finds the trained reference on each product by its edges and compares it with the good samples. One picture per trigger decides good or reject, on its own or joined to the counting camera's product.",
     };
 
     const setupHasVision = () => cardsOnPage().some((c) => isVisionJob(cardJob(c)));
-    const setupChecksCodes = () => cardsOnPage().some((c) => JOBS[cardJob(c)].codes && cardValue(c, "qr_action") !== "report");
+    // A camera that reads the codes of the products being inspected (not one that verifies an outfeed).
+    const readsProductCodes = (c) => Boolean(JOBS[cardJob(c)].codes) && !cardValue(c, "sorting_lane");
+    const setupChecksCodes = () => cardsOnPage().some((c) => readsProductCodes(c) && cardValue(c, "qr_action") !== "report");
+    const setupReadsCodes = () => cardsOnPage().some(readsProductCodes);
+    // A camera whose codes reach the line: it reads on a wire line or when an input asks (Continuously only shows them).
+    const setupReadsCodesTriggered = () => cardsOnPage().some((c) => readsProductCodes(c) && cardValue(c, "qr_trigger") !== "continuous");
+    // Where the line's products come from: a vision camera, or a product sensor input on the PLC.
+    const setupHasSource = () => setupHasVision() || Boolean(window.PlcSignals && window.PlcSignals.hasProductSensor && window.PlcSignals.hasProductSensor());
 
     // Show the folds and fields that apply to a card's job and choices.
+    // The note on a camera the version 9 upgrade flagged: it reads Continuously, which only shows codes.
+    // "Keep show only" is offered only when the line could be saved that way (no code check on it, and
+    // Sync does not depend on it).
+    function syncReviewNote(card, trigger, checks) {
+        const note = card.querySelector(".pl-review");
+        if (!note) return;
+        const flagged = card.dataset.review === "1" && trigger === "continuous";
+        note.hidden = !flagged;
+        if (!flagged) return;
+        const syncOn = syncPossible();
+        const otherReader = cardsOnPage().some((c) => c !== card && JOBS[cardJob(c)].codes && cardValue(c, "qr_trigger") !== "continuous");
+        const canKeep = !checks && (!syncOn || otherReader);
+        note.querySelector(".pl-review-keep").hidden = !canKeep;
+        note.querySelector(".pl-review-first").textContent = canKeep ? "" : " First choose a trigger, or switch off its code check / Sync.";
+    }
+
     function syncCard(card, index) {
         const job = cardJob(card);
         const row = cameraRow(card.dataset.camera);
-        card.querySelectorAll(".pl-fold").forEach((f) => { f.hidden = !foldShown(f.dataset.fold, job); });
+        const kind = jobKind(job);
+        // The pages and their menu links that fit the job; a text reader's Counting is its Reading.
+        card.querySelectorAll(".pl-fold").forEach((f) => { f.hidden = !CameraPages.fits(f.dataset.fold, kind); });
+        card.querySelectorAll(".pl-page-link").forEach((link) => { link.hidden = !CameraPages.fits(link.dataset.page, kind); });
+        const countingTitle = CameraPages.pageTitle("counting", kind);
+        card.querySelector('.pl-fold[data-fold="counting"] .pl-page-title').textContent = countingTitle;
+        card.querySelector('.pl-page-link[data-page="counting"]').textContent = countingTitle;
         cardField(card, "badge").textContent = JOBS[job].short;
         cardField(card, "badge").className = `pl-badge job-${job.replace("_qr", "")}`;
-        card.querySelector(".pl-card-sub").textContent = `Camera ${index + 1}${row ? ` · ${String(row.type || "").toUpperCase()}` : ""}`;
         card.querySelector(".pl-job-note").textContent = JOB_NOTES[job] || "";
-        const stationShown = job === "station" || job === "station_qr";
+        const textJob = job === "text";
+        const patternJob = job === "pattern";
+        // Jobs that check one picture per trigger without a model: the text reader and the pattern check.
+        const pictureJob = textJob || patternJob;
+        // A text reader or a pattern check is a station while it takes one picture per trigger.
+        const stationShown = job === "station" || job === "station_qr" || (pictureJob && cardValue(card, "count_mode") === "trigger");
+        const countSelect = cardField(card, "count_mode");
+        if (countSelect.options[0].textContent !== trackLabel(job)) {
+            countSelect.options[0].textContent = trackLabel(job);
+            if (countSelect._refreshCustomSelect) countSelect._refreshCustomSelect();
+        }
         card.querySelector(".pl-station").hidden = !stationShown;
         const joins = cardValue(card, "station") === "join";
         card.querySelector(".pl-station-note").textContent = joins
@@ -1142,15 +1414,111 @@
         if (stationShown && joins) syncJoin(card);
         // Codes
         const trigger = cardValue(card, "qr_trigger");
+        card.querySelector(".pl-card-sub").textContent = CameraPages.summary({ index, type: row ? typeLabel(row.type) : "", kind,
+            countMode: cardValue(card, "count_mode"), joined: stationShown && joins, codeTrigger: trigger });
+        card.querySelector(".pl-card-warn").hidden = !(card.dataset.review === "1" && trigger === "continuous");
         const action = cardValue(card, "qr_action");
         const checks = JOBS[job].codes && action !== "report";
         const hasVision = setupHasVision();
         card.querySelector(".pl-trigger-delay").hidden = trigger === "continuous";
+        card.querySelector(".pl-trigger-delay-label").textContent = `Picture delay after the ${trigger === "signal" ? "signal" : "crossing"} (ms)`;
+        card.querySelector(".pl-trigger-note").textContent = trigger === "signal"
+            ? "A picture is taken each time an input with the action \"Take a picture\" names this camera (add it under Inputs on Line setup). It shows on the Line dashboard with every code outlined."
+            : trigger === "continuous"
+                ? "Codes are only shown: on the camera's picture and in the line's recent reads. Nothing goes to the PLC, messages or records. To use the codes, choose a wire line or \"When an input asks\"."
+                : "A picture is taken each time the counting camera sees a product cross the chosen wire line. It shows on the Line dashboard with every code outlined.";
+        syncReviewNote(card, trigger, checks);
+        // A counting camera in trigger mode tracks nothing, so no product crosses a wire line.
+        const noCrossings = cardsOnPage().some((c) => isCountingJob(cardJob(c)) && cardValue(c, "count_mode") === "trigger");
+        const triggerSelect = cardField(card, "qr_trigger");
+        let optionsChanged = false;
+        [...triggerSelect.options].forEach((o) => {
+            const off = noCrossings && (o.value === "line1" || o.value === "line2") && o.value !== trigger;
+            if (o.disabled !== off) { o.disabled = off; optionsChanged = true; }
+        });
+        if (optionsChanged && triggerSelect._refreshCustomSelect) triggerSelect._refreshCustomSelect();
+        card.querySelector(".pl-trigger-warn").hidden = !(JOBS[job].codes && noCrossings && (trigger === "line1" || trigger === "line2"));
         card.querySelector(".pl-hold").hidden = trigger !== "continuous";
         // "No code was read" only exists where the line knows a product was there.
         card.querySelector(".pl-no-read").hidden = !(checks && hasVision);
-        card.querySelector(".pl-action-note").textContent = (ACTION_NOTES[action] || "") + (checks && !hasVision ? READER_ONLY_NOTE : "");
-        // Counting
+        card.querySelector(".pl-action-note").textContent = trigger === "continuous" ? SHOWN_ONLY_NOTE
+            : (ACTION_NOTES[action] || "") + (checks && !hasVision ? READER_ONLY_NOTE : "");
+        // Sorting verification: the camera checks the outfeed each product went to; it never decides.
+        const lane = cardValue(card, "sorting_lane");
+        const sortingNote = card.querySelector(".pl-sorting-note");
+        if (sortingNote) {
+            sortingNote.textContent = lane
+                ? `Each code read here is matched to the oldest inspected product with that code that is not verified yet. A ${lane === "accepted" ? "rejected" : "good"} product here is a mismatch: an alarm, the trigger "Sorting mismatch" and a record. It counts nothing and pairs with nothing; reading Continuously verifies too.`
+                : "Off: this camera reads the codes of the products being inspected.";
+            const actionSelect = cardField(card, "qr_action");
+            if (lane && actionSelect.value !== "report") {
+                actionSelect.value = "report";
+                if (actionSelect._refreshCustomSelect) actionSelect._refreshCustomSelect();
+            }
+            actionSelect.disabled = Boolean(lane) || level() < 2;
+            card.querySelector(".pl-sets-batch").hidden = Boolean(lane);
+            if (lane) {
+                card.querySelector(".pl-no-read").hidden = true;
+                card.querySelector(".pl-action-note").textContent = "A sorting verification camera only reports.";
+                card.querySelector(".pl-review").hidden = true;
+            }
+        }
+        // Counting: products tracked across the count lines, or one picture per trigger
+        const triggerMode = cardValue(card, "count_mode") === "trigger";
+        card.querySelector(".pl-no-product").hidden = !triggerMode || pictureJob;
+        card.querySelector(".pl-track-fields").hidden = triggerMode || pictureJob;
+        // Picture taken by: System trigger for any vision camera, Camera trigger for an industrial camera only.
+        const industrial = Boolean(row && row.type === "gige");
+        const sourceSelect = cardField(card, "picture_source");
+        const cameraChoice = [...sourceSelect.options].find((o) => o.value === "camera");
+        let source = sourceSelect.value === "camera" ? "camera" : "system";
+        let sourceChanged = false;
+        if (cameraChoice && cameraChoice.disabled === industrial) { cameraChoice.disabled = !industrial; sourceChanged = true; }
+        // A card that holds Camera trigger for a camera that cannot do it (a new device) goes back to System trigger.
+        if (!industrial && source === "camera") { source = "system"; sourceSelect.value = source; sourceChanged = true; }
+        if (sourceChanged && sourceSelect._refreshCustomSelect) sourceSelect._refreshCustomSelect();
+        card.querySelector(".pl-picture").hidden = !triggerMode;
+        card.querySelector(".pl-picture-industrial").hidden = industrial;
+        card.querySelector(".pl-picture-system").hidden = source !== "system";
+        card.querySelector(".pl-picture-camera").hidden = source !== "camera";
+        renderNoticeOptions(card);
+        const notice = cardValue(card, "notice_trigger");
+        card.querySelector(".pl-picture-wait").hidden = !notice;
+        // The camera's Trigger follows this card's own form (not only what the server saved): with One picture per
+        // trigger it is shown as the card sets it, read-only, and is not sent back; the line save sets it.
+        CameraSettingsForm.lockTrigger(card, triggerSetByCard({ industrial, vision: isVisionJob(job) || pictureJob, countMode: triggerMode ? "trigger" : "track", source }), TRIGGER_SET_BY_CARD_NOTE);
+        const camTrigger = cameraTrigger(card);
+        const COUNT_NOTES = {
+            track: { off: "Counts products as they cross the count lines.",
+                     hardware: "Counts products as they cross the count lines. The camera's trigger must come fast and steadily.",
+                     software: "A camera on Software trigger cannot count moving products. Choose One picture per trigger." },
+            trigger: {
+                system: "A picture is taken each time a ticked trigger asks, after the Picture delay. Each picture is one product.",
+                camera: "Each picture the camera takes is one product. No input is needed. A missed or double trigger cannot be seen. Use a trigger notice when a PLC or robot waits for each answer.",
+                notice: "The camera takes its own pictures. A notice and a picture within the wait of each other are one product; a notice with no picture is a rejected product.",
+            },
+        };
+        card.querySelector(".pl-count-mode-note").textContent = triggerMode
+            ? COUNT_NOTES.trigger[source === "camera" ? (notice ? "notice" : "camera") : "system"]
+            : textJob ? TEXT_TRACK_NOTE : patternJob ? PATTERN_TRACK_NOTE : COUNT_NOTES.track[camTrigger];
+        // The ticks are for System trigger: for Camera trigger the notice replaces them.
+        renderTriggers(card, triggerMode && (isVisionJob(job) || pictureJob) && source === "system", Boolean(JOBS[job].codes) && trigger === "signal", camTrigger);
+        if (camTrigger !== "off") {
+            const readNote = card.querySelector(".pl-trigger-note");
+            if (trigger === "signal") {
+                readNote.textContent = camTrigger === "hardware"
+                    ? "Every picture the camera takes is read once. No input is needed."
+                    : "Each ticked trigger makes the server trigger the camera, and that picture is read.";
+            } else if (trigger === "continuous") {
+                readNote.textContent = camTrigger === "hardware"
+                    ? "Used like a video: its codes are only shown. Choose \"When an input asks\" to read every picture it takes."
+                    : "A camera on Software trigger reads nothing continuously. Choose \"When an input asks\" or a wire line.";
+            } else {
+                readNote.textContent += camTrigger === "hardware"
+                    ? " The camera's newest picture is read."
+                    : " The crossing makes the server trigger the camera.";
+            }
+        }
         const flow = FLOWS[cardValue(card, "flow")] || FLOWS.down;
         const vertical = flow.orientation === "vertical";
         const a = parseFloat(cardValue(card, "line1"));
@@ -1181,20 +1549,20 @@
         const box = card.querySelector(".pl-join-late");
         box.hidden = !late.length;
         box.textContent = late.length
-            ? `Fires late: ${late.map((c) => `PLC action '${c.name || c.id}' (${parseInt(c.delay_ms ?? c.travel_delay_ms, 10) || 0} ms)`).join(", ")} ${late.length === 1 ? "has a travel delay" : "have travel delays"} shorter than ${latest} ms. Make ${late.length === 1 ? "it" : "them"} longer on the PLC page.`
+            ? `Fires late: ${late.map((c) => `Output action '${c.name || c.id}' (${parseInt(c.delay_ms ?? c.travel_delay_ms, 10) || 0} ms)`).join(", ")} ${late.length === 1 ? "has a travel delay" : "have travel delays"} shorter than ${latest} ms. Make ${late.length === 1 ? "it" : "them"} longer on the PLC page.`
             : "";
     }
 
+    // Sync (each counted product paired with its code) is always on where the line can pair: it has a product
+    // source (a vision camera or a PLC product sensor) and a camera that reads codes on a wire line or when an
+    // input asks. Without them it is off, as the server refuses Sync there. There is no box to switch it.
+    const syncPossible = () => setupHasSource() && setupReadsCodesTriggered();
+
     function syncLineSetup() {
         cardsOnPage().forEach(syncCard);
-        const sync = byId("plSync");
-        if (sync) {
-            // A camera that checks codes beside a vision camera needs Sync: it pairs each product with its code.
-            const forced = setupChecksCodes() && setupHasVision();
-            if (forced) sync.checked = true;
-            sync.disabled = forced || level() < 2;
-            byId("plSyncForced").style.display = forced ? "" : "none";
-        }
+        const checks = byId("plChecksPanel");
+        // Product checks need a camera that reads codes; checks already made stay in view, so they can be removed.
+        if (checks) checks.hidden = !setupReadsCodes() && !(setup.checks || []).length;
         const add = byId("plAddCard");
         if (add) {
             const full = cardsOnPage().length >= MAX_CAMERAS_PER_LINE;
@@ -1208,18 +1576,33 @@
         }
     }
 
+    // The card's Connect switch: on when the user switched it on (kept connected, saved) or while the line runs,
+    // which keeps its cameras connected and greys the switch out.
+    function connectionView(row, connected, running, canEdit) {
+        const kept = Boolean(row && row.kept_connected);
+        const state = connected ? "Connected"
+            : row && row.connection_state === "reconnecting" ? "Connecting (retrying)" : "Not connected";
+        return {
+            checked: kept || running,
+            disabled: running || !canEdit,
+            text: running ? `${state} · The running line keeps it connected` : state,
+        };
+    }
+
     function updateConnection(card) {
         const id = card.dataset.camera;
         const connected = cameraConnected(id);
         const dot = card.querySelector(".pl-card-dot");
         dot.style.background = connected ? "var(--success-color)" : "var(--danger-color)";
         dot.title = connected ? "Connected" : "Not connected";
+        const view = connectionView(cameraRow(id), connected, Boolean(state.detail && state.detail.enabled), level() >= 2);
         const note = card.querySelector(".pl-conn-note");
-        if (note) note.textContent = connected ? "Connected" : "Not connected";
-        const connect = card.querySelector('[data-act="connect"]');
-        const disconnect = card.querySelector('[data-act="disconnect"]');
-        if (connect) connect.disabled = connected || level() < 2;
-        if (disconnect) disconnect.disabled = !connected || level() < 2;
+        if (note) note.textContent = view.text;
+        const toggle = card.querySelector('[data-act="keep-connected"]');
+        if (toggle && !toggle.dataset.busy) {
+            toggle.checked = view.checked;
+            toggle.disabled = view.disabled;
+        }
     }
 
     // ── Count lines drawn on the camera's picture ─────────────────────────────
@@ -1342,6 +1725,8 @@
     const setupShown = () => isTab("tabActionTrigger") && !document.hidden;
 
     function startCardFeed(card) {
+        TextReader.wake(card);
+        PatternCheck.wake(card);
         const info = setup.cards.get(card.dataset.key);
         if (!info || info.feed) return;
         const feed = { controller: new AbortController(), url: null };
@@ -1394,13 +1779,76 @@
 
     function startCardFeeds() {
         if (!setupShown()) return;
-        cardsOnPage().forEach(startCardFeed);
+        const open = openCard();
+        (open ? [open] : cardsOnPage()).forEach(startCardFeed);
+    }
+
+    // ── The camera page: one camera's settings, a page at a time ──────────────
+
+    // The page each camera showed last, in this browser.
+    function rememberedPage(id) {
+        try { return localStorage.getItem(`pl_card_page::${id}`); } catch (_) { return null; }
+    }
+    function rememberPage(id, page) {
+        try { localStorage.setItem(`pl_card_page::${id}`, page); } catch (_) { /* storage off */ }
+    }
+    const openCard = () => cardsOnPage().find((c) => c.classList.contains("pl-card-page")) || null;
+
+    // A card back to its small look, with no page shown.
+    function leaveCameraPage(card) {
+        card.classList.remove("pl-card-page");
+        card.querySelectorAll(".pl-fold.open").forEach((f) => f.classList.remove("open"));
+    }
+
+    // Settings: the camera's page takes Line setup's place (the rest stays on the page, hidden, for the one Save).
+    function openCameraPage(card, asked) {
+        cardsOnPage().forEach((c) => {
+            if (c === card) return;
+            if (c.classList.contains("pl-card-page")) { leaveCameraPage(c); TextReader.wake(c); PatternCheck.wake(c); }
+            const info = setup.cards.get(c.dataset.key);
+            if (info && info.feed) { info.feed.controller.abort(); info.feed = null; }
+        });
+        card.classList.add("pl-card-page");
+        byId("tabActionTrigger").classList.add("pl-page-mode");
+        showCameraPage(card, CameraPages.pageToShow({ asked, remembered: rememberedPage(card.dataset.camera) }, jobKind(cardJob(card))));
+        startCardFeed(card);
+        card.scrollIntoView({ block: "start" });
+    }
+
+    // One page of the open camera; its pictures load as a fold's did when it opened.
+    function showCameraPage(card, page) {
+        card.querySelectorAll(".pl-fold").forEach((f) => f.classList.toggle("open", f.dataset.fold === page));
+        card.querySelectorAll(".pl-page-link").forEach((link) => {
+            const on = link.dataset.page === page;
+            link.classList.toggle("on", on);
+            link.setAttribute("aria-selected", on ? "true" : "false");
+        });
+        setup.openCamera = { id: card.dataset.camera, page, lineId: state.lineId };
+        rememberPage(card.dataset.camera, page);
+        if (page === "counting") loadLinesPicture(card);
+        if (page === "image") setup.cards.get(card.dataset.key)?.imageForm?.loadPicture(() => card.isConnected);
+        TextReader.wake(card);    // the Text fields page's Live runs while it is shown
+        PatternCheck.wake(card);  // so does the Pattern and checks page's
+        refreshSelects();
+    }
+
+    // Back: the cards again; every edit stays until Save.
+    function closeCameraPage() {
+        const card = openCard();
+        byId("tabActionTrigger").classList.remove("pl-page-mode");
+        setup.openCamera = null;
+        if (card) {
+            leaveCameraPage(card);
+            TextReader.wake(card);    // its Live stops: the page is no longer shown
+            PatternCheck.wake(card);
+        }
+        startCardFeeds();
     }
 
     // ── Building the page ─────────────────────────────────────────────────────
 
     // Add one card to the grid (before the Add camera card) and wire it up.
-    function addCard(cam, trigger, openSet) {
+    function addCard(cam, trigger) {
         const grid = byId("plCamGrid");
         const key = `k${setup.nextKey++}`;
         const row = cameraRow(cam.camera_id);
@@ -1411,22 +1859,31 @@
             initialSettings: null,
             feed: null,
             isNew: Boolean(cam.isNew),
+            // The trigger numbers ticked on this card (see renderTriggers).
+            triggers: new Set((cam.triggers || []).map(Number)),
+            namedMerged: false,
         });
-        grid.insertBefore(document.createRange().createContextualFragment(cameraCardHtml(key, cam, trigger, openSet)), byId("plAddCard"));
+        grid.insertBefore(document.createRange().createContextualFragment(cameraCardHtml(key, cam, trigger)), byId("plAddCard"));
         const card = grid.querySelector(`.pl-card[data-key="${key}"]`);
         renderImageForms(card);
         renderClassLists(card);
         bindCard(card);
-        if (cam.isNew) rememberFolds(card);
-        // A Counting fold remembered open shows its picture at once.
-        if (card.querySelector('.pl-fold[data-fold="counting"]').classList.contains("open")) requestAnimationFrame(() => loadLinesPicture(card));
+        TextReader.bind(card, {
+            fetchJson: api, fetchBlob: fetchPicture, entry: () => cardEntry(card), yoloModels: () => state.models,
+            active: () => cardJob(card) === "text" && setupShown(), readOnly: level() < 2,
+        });
+        PatternCheck.bind(card, {
+            fetchJson: api, fetchBlob: fetchPicture, sendBlob: sendPicture, entry: () => cardEntry(card),
+            active: () => cardJob(card) === "pattern" && setupShown(), readOnly: level() < 2,
+        });
         return card;
     }
 
     function renderImageForms(card) {
         const info = setup.cards.get(card.dataset.key);
         const row = cameraRow(card.dataset.camera);
-        const camForm = { id: card.dataset.camera, type: row ? row.type : "", settings: (row && row.settings) || {} };
+        const camForm = { id: card.dataset.camera, type: row ? row.type : "", settings: (row && row.settings) || {},
+                          line_trigger_mode: row ? row.line_trigger_mode : null };
         const imageBox = cardField(card, "image-form");
         if (!row) {
             imageBox.innerHTML = `<div class="pl-note">This camera is not in the camera list.</div>`;
@@ -1437,35 +1894,33 @@
         }
         info.imageForm = CameraSettingsForm.render(imageBox, camForm, ["image"]);
         CameraSettingsForm.render(cardField(card, "video-form"), camForm, ["video"]);
-        info.initialSettings = JSON.stringify(CameraSettingsForm.read(card, row.type));
+        info.initialSettings = JSON.stringify(cardCameraSettings(card, row));
         info.cam = row;
         if (card.querySelector('.pl-fold[data-fold="image"]').classList.contains("open")) info.imageForm.loadPicture(() => card.isConnected);
     }
 
     function bindCard(card) {
         card.addEventListener("click", (e) => {
-            const head = e.target.closest(".pl-fold-head");
-            if (head && card.contains(head)) {
-                const fold = head.closest(".pl-fold");
-                const open = !fold.classList.contains("open");
-                fold.classList.toggle("open", open);
-                head.setAttribute("aria-expanded", open ? "true" : "false");
-                rememberFolds(card);
-                if (open && fold.dataset.fold === "image") setup.cards.get(card.dataset.key)?.imageForm?.loadPicture(() => card.isConnected);
-                if (open && fold.dataset.fold === "counting") loadLinesPicture(card);
-                refreshSelects();
-                return;
-            }
             const button = e.target.closest("[data-act]");
             if (!button || !card.contains(button)) return;
             const act = button.dataset.act;
             if (act === "up" || act === "down") moveCard(card, act === "up" ? -1 : 1);
             else if (act === "remove") removeCard(card);
-            else if (act === "connect" || act === "disconnect") connectCard(card, act);
             else if (act === "picture") loadLinesPicture(card);
+            else if (act === "settings") openCameraPage(card, null);
+            else if (act === "back") closeCameraPage();
+            else if (act === "page") showCameraPage(card, button.dataset.page);
+            else if (act === "save") saveLineSetup();
         });
         card.addEventListener("change", (e) => {
             const t = e.target;
+            if (t.dataset.act === "keep-connected") { setKeptConnected(card, t.checked); return; }    // not a line setting
+            if (t.dataset.trigger) {
+                const ticked = cardTriggers(card);
+                const number = Number(t.dataset.trigger);
+                if (t.checked) ticked.add(number); else ticked.delete(number);
+                card.querySelectorAll(".pl-triggers").forEach((box) => { box.dataset.html = ""; });
+            }
             if (t.matches('.pl-class input[type="checkbox"]')) {
                 const own = t.closest("[data-kind]");
                 // A class is a product or a defect, not both: ticking it here unticks it in the other list.
@@ -1485,11 +1940,16 @@
             if (name === "job") onJobChange(card, t.value);
             if (name === "device") onDeviceChange(card, t.value);
             if (name === "name") card.querySelector(".pl-card-name").textContent = t.value.trim() || card.dataset.camera;
+            if (name === "count_mode") onCountModeChange(card, t.value);
             if (!t.classList.contains("pl-class-filter")) markDirty();
             syncLineSetup();
+            if (name === "job" && setup.openCamera && card.classList.contains("pl-card-page")) {
+                showCameraPage(card, CameraPages.pageAfterJobChange(setup.openCamera.page, jobKind(cardJob(card))));
+            }
         });
         card.addEventListener("input", (e) => {
             const t = e.target;
+            if (t.dataset.act === "keep-connected") return;
             if (t.classList.contains("pl-class-filter")) {
                 const text = t.value.trim().toLowerCase();
                 t.parentNode.querySelectorAll(".pl-class").forEach((label) => {
@@ -1502,6 +1962,16 @@
             if (t.dataset.f === "join_offset" || t.dataset.f === "join_window") syncJoin(card);
         });
         bindCountLineDrag(card);
+    }
+
+    // Count mode changed. One picture per trigger: a trigger that finds nothing is a rejected product (the user can
+    // change it). Back to tracking: the count lines are drawn on a picture again.
+    function onCountModeChange(card, mode) {
+        if (mode === "trigger") {
+            const noProduct = cardField(card, "no_product");
+            noProduct.value = "reject";
+            if (noProduct._refreshCustomSelect) noProduct._refreshCustomSelect();    // the custom select shows Reject too
+        } else if (mode === "track") setTimeout(() => loadLinesPicture(card), 0);
     }
 
     // Exactly one counting camera on a line with a vision camera.
@@ -1527,11 +1997,40 @@
             }
         }
         if (isVisionJob(cardJob(card))) renderClassLists(card);
+        if (job === "text") {
+            // A card that becomes a text reader offers the reader models on this server, and a new one gets the new model.
+            const models = state.ocrModels.loaded || level() < 2 ? Promise.resolve(state.ocrModels) : loadOcrModels();
+            models.then((info) => TextReader.setModels(card, info));
+            setTimeout(() => TextReader.wake(card), 0);
+        }
+        if (job === "pattern") setTimeout(() => PatternCheck.wake(card), 0);
+    }
+
+    // A picture as a blob; a refused one throws the server's reason.
+    // A picture sent as it is (the pattern check's mask, a PNG); a refused one throws the server's reason.
+    async function sendPicture(path, blob) {
+        const res = await fetch(path, { method: "PUT", body: blob, headers: { "Content-Type": "image/png" } });
+        let data = null;
+        try { data = await res.json(); } catch (_) { /* not JSON */ }
+        if (!res.ok) throw new Error(data && typeof data.detail === "string" ? data.detail : `HTTP ${res.status}`);
+        return data;
+    }
+
+    async function fetchPicture(path, options = {}) {
+        const res = await fetch(path, { cache: "no-store", ...options });
+        if (!res.ok) {
+            let detail = "";
+            try { detail = (await res.json()).detail; } catch (_) { /* not JSON */ }
+            throw new Error(typeof detail === "string" && detail ? detail : `HTTP ${res.status}`);
+        }
+        return res.blob();
     }
 
     function onDeviceChange(card, id) {
         const info = setup.cards.get(card.dataset.key);
+        const previous = card.dataset.camera;
         card.dataset.camera = id;
+        if (setup.openCamera && setup.openCamera.id === previous) setup.openCamera.id = id;
         const row = cameraRow(id);
         info.initialName = row ? row.name : "";
         cardField(card, "name").value = row ? row.name : "";
@@ -1586,15 +2085,21 @@
         });
     }
 
-    async function connectCard(card, act) {
+    // The Connect switch: on keeps the camera connected (saved; retried until switched off), off disconnects it.
+    async function setKeptConnected(card, on) {
         const id = card.dataset.camera;
         const name = card.querySelector(".pl-card-name").textContent;
+        const toggle = card.querySelector('[data-act="keep-connected"]');
+        if (toggle) { toggle.dataset.busy = "1"; toggle.disabled = true; }
         try {
-            await api(`/api/v1/cameras/${encodeURIComponent(id)}/${act}`, { method: "POST" });
-            toast(`${name} ${act === "connect" ? "connected" : "disconnected"}`, "success");
+            const answer = await api(`/api/v1/cameras/${encodeURIComponent(id)}/${on ? "connect" : "disconnect"}`, { method: "POST" });
+            const status = answer && answer.status;
+            if (status === "retrying") toast(`${name} did not connect yet: Connecting (retrying) until you switch it off`, "info");
+            else toast(`${name} ${status === "connected" ? "connected" : "disconnected"}`, "success");
         } catch (e) {
             toast(`${name}: ${e.message}`, "warning");
         }
+        if (toggle) delete toggle.dataset.busy;
         await loadCamerasList();
         try { await loadDetail(); } catch (_) { /* the dot uses the camera list */ }
         cardsOnPage().forEach(updateConnection);
@@ -1611,18 +2116,10 @@
                 <div class="pl-add-body">
                     <div class="form-group"><label class="form-label">Camera</label><select class="form-input" data-f="add-device"></select>
                         <div class="pl-note">Cameras on another line are greyed out.</div></div>
-                    <div class="pl-inline" style="margin-bottom:12px">
-                        <button type="button" class="btn-action btn-sm btn-outline" data-act="scan">Scan USB</button>
-                        <button type="button" class="btn-action btn-sm btn-outline" data-act="network">Add network camera</button>
-                    </div>
-                    <div class="pl-add-network" hidden>
-                        <div class="form-group"><label class="form-label">Name</label><input type="text" class="form-input" data-f="net-name" maxlength="64" placeholder="e.g. Infeed camera"></div>
-                        <div class="form-group"><label class="form-label">Stream URL</label><input type="text" class="form-input" data-f="net-url" placeholder="rtsp://user:pass@192.168.1.100:554/stream1"></div>
-                        <div class="pl-inline" style="margin-bottom:12px"><button type="button" class="btn-action btn-sm btn-blue" data-act="net-add">Add to the camera list</button></div>
-                    </div>
+                    <div class="pl-note" style="margin:-4px 0 12px">Add USB cameras on the Cameras page, and network and industrial cameras under Communication.</div>
                     <div class="form-group"><label class="form-label">Starting job</label><select class="form-input" data-f="add-job">${START_JOBS.map((j) => option(j, JOBS[j].label, "counting")).join("")}</select>
                         <div class="pl-note">The first vision camera is the counting camera. Everything can be changed on the card.</div></div>
-                    <button type="button" class="btn-action btn-blue" data-act="add">Add camera</button>
+                    <button data-lock type="button" class="btn-action btn-blue" data-act="add">Add camera</button>
                 </div>
             </div>`;
     }
@@ -1634,9 +2131,9 @@
         const onCards = new Set(cardsOnPage().map((c) => c.dataset.camera));
         const keep = select.value;
         const free = state.cameras.filter((c) => !owners[c.id] && !onCards.has(c.id));
-        const html = (free.length ? "" : `<option value="">No free camera: scan or add one</option>`) + state.cameras.map((c) => {
+        const html = (free.length ? "" : `<option value="">No free camera: add one on the Cameras page or under Communication</option>`) + state.cameras.map((c) => {
             const taken = owners[c.id] ? `on ${owners[c.id]}` : onCards.has(c.id) ? "on this line" : "";
-            return `<option value="${esc(c.id)}" ${taken ? "disabled" : ""} ${c.id === keep && !taken ? "selected" : ""}>${esc(c.name)} (${esc(String(c.type || "").toUpperCase())})${taken ? ` · ${esc(taken)}` : ""}</option>`;
+            return `<option value="${esc(c.id)}" ${taken ? "disabled" : ""} ${c.id === keep && !taken ? "selected" : ""}>${esc(c.name)} (${esc(typeLabel(c.type))})${taken ? ` · ${esc(taken)}` : ""}</option>`;
         }).join("");
         if (select.dataset.html === html) return;
         select.dataset.html = html;
@@ -1651,41 +2148,9 @@
             const button = e.target.closest("[data-act]");
             if (!button) return;
             const act = button.dataset.act;
-            if (act === "network") {
-                const box = card.querySelector(".pl-add-network");
-                box.hidden = !box.hidden;
-            } else if (act === "scan") {
-                button.disabled = true;
-                try {
-                    const found = await api("/api/v1/cameras/discover/usb");
-                    await loadCamerasList();
-                    toast(found && found.length ? `Found ${found.length} USB camera(s): ${found.map((c) => c.name).join(", ")}` : "No new USB camera found", found && found.length ? "success" : "info");
-                    refreshDeviceSelects();
-                    refreshAddDevices();
-                } catch (err) { toast(`Scan failed: ${err.message}`, "warning"); }
-                button.disabled = false;
-            } else if (act === "net-add") {
-                const name = cardField(card, "net-name").value.trim();
-                const source = cardField(card, "net-url").value.trim();
-                if (!name || !source) { toast("Enter the camera's name and its stream URL (rtsp:// or http://)", "warning"); return; }
-                button.disabled = true;
-                try {
-                    // The same channel the Connections page makes for a network camera.
-                    const saved = await api("/api/v1/system/endpoints", { method: "POST", body: { name, description: "", enabled: true, protocol: "ipcam", source, transport: "tcp", resolution: "640x480", buffer_size: 1 } });
-                    await loadCamerasList();
-                    refreshDeviceSelects();
-                    refreshAddDevices();
-                    const select = cardField(card, "add-device");
-                    if (saved && saved.id && cameraRow(saved.id)) { select.value = saved.id; if (select._updateCustomSelectUI) select._updateCustomSelectUI(); }
-                    cardField(card, "net-name").value = "";
-                    cardField(card, "net-url").value = "";
-                    card.querySelector(".pl-add-network").hidden = true;
-                    toast(`Network camera '${name}' added to the camera list`, "success");
-                } catch (err) { toast(`Could not add the camera: ${err.message}`, "warning"); }
-                button.disabled = false;
-            } else if (act === "add") {
+            if (act === "add") {
                 const id = cardField(card, "add-device").value;
-                if (!id) { toast("Choose a camera to add (or scan for one)", "warning"); return; }
+                if (!id) { toast("Choose a camera to add", "warning"); return; }
                 let job = cardField(card, "add-job").value;
                 const hasCounting = cardsOnPage().some((c) => isCountingJob(cardJob(c)));
                 // The first vision camera added is the counting camera.
@@ -1701,20 +2166,125 @@
                     orientation: DEFAULT_LINES.orientation, direction: DEFAULT_LINES.direction,
                     isNew: true,
                 };
-                const added = addCard(cam, trigger, new Set(["camera", "job", spec.role === "vision" ? "model" : "codes"]));
+                const added = addCard(cam, trigger);
                 cardField(added, "job").value = job;
                 if (isCountingJob(job)) onJobChange(added, job);
                 markDirty();
                 refreshDeviceSelects();
                 syncLineSetup();
-                startCardFeed(added);
-                refreshSelects();
-                added.scrollIntoView({ block: "nearest", behavior: "smooth" });
+                // Its page opens where it needs filling in first.
+                openCameraPage(added, CameraPages.startPage(jobKind(job)));
             }
         });
     }
 
+    // ── Triggers: which "Take a picture" inputs take this camera's picture ────
+
+    function cardTriggers(card) {
+        const info = setup.cards.get(card.dataset.key);
+        return info ? info.triggers : new Set();
+    }
+
+    // The Trigger notice choices follow the line's inputs (they change while the card is open).
+    function renderNoticeOptions(card) {
+        const select = cardField(card, "notice_trigger");
+        if (!select) return;
+        const html = noticeOptions(select.value);
+        if (select.dataset.options === html) return;
+        select.dataset.options = html;
+        select.innerHTML = html;
+        if (select._refreshCustomSelect) select._refreshCustomSelect();
+    }
+
+    // The tick boxes under Count mode and under Read codes: two views of the camera's one list.
+    function renderTriggers(card, forCount, forCodes, camTrigger) {
+        const info = setup.cards.get(card.dataset.key);
+        if (!info) return;
+        const inputs = window.PlcSignals && PlcSignals.triggers ? PlcSignals.triggers() : [];
+        // An input saved before cameras chose their triggers names its camera itself: shown ticked, once.
+        if (!info.namedMerged && inputs.length) {
+            inputs.forEach((t) => { if (t.cameras.includes(card.dataset.camera)) info.triggers.add(t.no); });
+            info.namedMerged = true;
+        }
+        const known = new Set(inputs.map((t) => t.no));
+        const rows = inputs.map((t) => ({ no: t.no, label: `Trigger ${t.no}${t.name ? ` · ${t.name}` : ""}${t.enabled ? "" : " (switched off)"}` }));
+        [...info.triggers].filter((n) => !known.has(n)).forEach((n) => rows.push({ no: n, label: `Trigger ${n} (no input has this number)` }));
+        rows.sort((a, b) => a.no - b.no);
+        const html = `<label class="form-label">Triggers that take its picture</label>` + (rows.length
+            ? `<div class="pl-trigger-list">${rows.map((r) => `<label><input type="checkbox" data-trigger="${r.no}" ${info.triggers.has(r.no) ? "checked" : ""}> ${esc(r.label)}</label>`).join("")}</div>`
+            : `<div class="pl-note">No trigger yet. Add an input with the action "Take a picture" under Inputs on Line setup.</div>`);
+        card.querySelectorAll(".pl-triggers").forEach((box) => {
+            // A camera on Hardware trigger takes its own pictures: no input is needed.
+            box.hidden = !(box.dataset.for === "count" ? forCount : forCodes) || camTrigger === "hardware";
+            if (box.dataset.html !== html) { box.dataset.html = html; box.innerHTML = html; }
+        });
+    }
+
+    // The inputs changed (assets/plc_signals.js): the cards list the line's triggers again.
+    document.addEventListener("pl:inputs", () => { if (byId("plCamGrid")) syncLineSetup(); });
+
     // ── Render ────────────────────────────────────────────────────────────────
+
+    // Product sequence and result handshake: chosen from the line's saved inputs.
+    function handshakeSetupHtml(d) {
+        const inputs = d.plc_inputs || [];
+        const hs = d.handshake || {};
+        const inputOptions = (current, filter, none) => `<option value="" ${current ? "" : "selected"}>${esc(none)}</option>`
+            + inputs.filter(filter).map((i) => `<option value="${esc(i.id)}" ${i.id === current ? "selected" : ""}>${esc(i.name || i.id)}</option>`).join("")
+            + (current && !inputs.some((i) => i.id === current) ? `<option value="${esc(current)}" selected>(input not found)</option>` : "");
+        const any = () => true;
+        const takes = (i) => i.action === "capture";
+        return `
+            <details class="pl-advanced" id="plHandshakeBox" ${d.sequence_input_id || hs.enabled ? "open" : ""}>
+                <summary>Product sequence and result handshake</summary>
+                <div class="pl-note" style="margin:6px 0 10px">Inputs are chosen from the line's saved inputs (Inputs below; apply a new input first).</div>
+                <div class="pl-form-grid pl-form-tight">
+                    <div class="form-group"><label class="form-label">Product sequence input</label>
+                        <select class="form-input" id="plSeqInput" data-help="The input read for each product's sequence number, or None.">${inputOptions(d.sequence_input_id || "", any, "None")}</select>
+                        <div class="pl-note">Read once each time a "Take a picture" input fires; each product keeps its own number (messages, PLC events, records, the value name <code>sequence</code>).</div></div>
+                    <div class="form-group"><label class="form-label">Result handshake</label>
+                        <label class="pl-inline pl-check" style="margin-top:6px"><input type="checkbox" id="plHsOn" ${hs.enabled ? "checked" : ""}> Wait for the PLC to acknowledge each result</label>
+                        <div class="pl-note">Capture request, result, acknowledge. Your output actions set the result flags and reset them on the acknowledge input.</div></div>
+                    <div class="form-group pl-hs"><label class="form-label">Capture request input</label>
+                        <select class="form-input" id="plHsCapture" data-help="The Take a picture input that starts each handshake.">${inputOptions(hs.capture_input_id || "", takes, "Choose a 'Take a picture' input")}</select></div>
+                    <div class="form-group pl-hs"><label class="form-label">Acknowledge input</label>
+                        <select class="form-input" id="plHsAck" data-help="The input the PLC acknowledges each result with.">${inputOptions(hs.ack_input_id || "", (i) => i.action !== "capture", "Choose an input")}</select>
+                        <div class="pl-note">For example an input with the action "Only fires cards". Its edge decides: Off to on, or On to off for a PLC that drops its request as the acknowledge.</div></div>
+                    <div class="form-group pl-hs"><label class="form-label">Result timeout (ms)</label>
+                        <input type="number" class="form-input" id="plHsResultMs" min="100" max="60000" step="100" value="${hs.result_timeout_ms || 3000}">
+                        <div class="pl-note">Longer than the camera's picture and the Sync window.</div></div>
+                    <div class="form-group pl-hs"><label class="form-label">No result in time</label>
+                        <select class="form-input" id="plHsOnTimeout" data-help="What happens when a result is not ready in time: reject the product or raise a fault.">${option("reject", "Reject the product", hs.on_timeout || "reject")}${option("fault", "Raise a fault (trigger \"Handshake fault\")", hs.on_timeout || "reject")}</select>
+                        <div class="pl-note">Never a pass.</div></div>
+                    <div class="form-group pl-hs"><label class="form-label">Acknowledge timeout (ms)</label>
+                        <input type="number" class="form-input" id="plHsAckMs" min="100" max="60000" step="100" value="${hs.ack_timeout_ms || 5000}">
+                        <div class="pl-note">No acknowledge in this time raises an alarm.</div></div>
+                </div>
+            </details>`;
+    }
+
+    function syncHandshakeSetup() {
+        const on = byId("plHsOn");
+        if (!on) return;
+        document.querySelectorAll("#plHandshakeBox .pl-hs").forEach((el) => { el.hidden = !on.checked; });
+    }
+
+    // The two settings as they are saved: a handshake switched off is kept only when it was saved before.
+    function handshakeBody() {
+        const on = byId("plHsOn");
+        if (!on) return {};
+        const saved = (state.detail && state.detail.handshake) || null;
+        const num = (id, fallback) => parseInt(byId(id).value, 10) || fallback;
+        const handshake = {
+            enabled: on.checked,
+            capture_input_id: byId("plHsCapture").value || null,
+            ack_input_id: byId("plHsAck").value || null,
+            result_timeout_ms: num("plHsResultMs", 3000),
+            ack_timeout_ms: num("plHsAckMs", 5000),
+            on_timeout: byId("plHsOnTimeout").value || "reject",
+        };
+        return { sequence_input_id: byId("plSeqInput").value || null, handshake: on.checked || saved ? handshake : null };
+    }
 
     async function renderLineSetup() {
         const page = byId("tabActionTrigger");
@@ -1732,9 +2302,14 @@
             page.insertBefore(card, page.firstChild);
         }
         stopCardFeeds();
+        page.classList.remove("pl-page-mode");
+        card.classList.remove("pl-dirty");
         card.innerHTML = `<div class="card-panel"><div class="card-panel-header"><span class="card-panel-title">Line setup</span></div><div class="pl-note">Loading…</div></div>`;
         try {
-            await Promise.all([loadDetail(), loadCamerasList(), loadModelsList(), loadCodeTypes(), loadProductLists().catch(() => [])]);
+            const line = state.lines.find((l) => l.id === state.lineId);
+            const hasTextReader = ((line && line.cameras) || []).some((c) => c.role === "ocr");
+            await Promise.all([loadDetail(), loadCamerasList(), loadModelsList(), loadCodeTypes(), loadProductLists().catch(() => []),
+                hasTextReader && level() >= 2 ? loadOcrModels() : null]);
         } catch (e) {
             card.innerHTML = `<div class="card-panel"><div class="card-panel-header"><span class="card-panel-title">Line setup</span></div><div class="pl-note">Could not load the line: ${esc(e.message)}</div></div>`;
             return;
@@ -1748,24 +2323,22 @@
         card.innerHTML = `
             <div class="card-panel">
                 <div class="card-panel-header">
-                    <span class="card-panel-title">Line setup · ${esc(d.name)}</span>
+                    <span class="card-panel-title">Line setup · ${esc(d.name)}${LineSetups.buttonsHtml(readOnly)}</span>
                     <span class="pl-inline">${statePill(d.status && d.status.state)}<span class="pl-unsaved" id="plSetupDirty" hidden>Unsaved changes</span></span>
                 </div>
                 <div class="pl-form-grid">
                     <div class="form-group"><label class="form-label">Line name</label><input type="text" class="form-input" id="plName" maxlength="64" value="${esc(d.name)}"></div>
-                    <div class="form-group"><label class="form-label">Minimum processed frames/s (0 = no alarm)</label><input type="number" class="form-input" id="plMinFps" min="0" max="240" step="1" value="${d.min_fps || 0}"></div>
+                    <div class="form-group"><label class="form-label">Minimum frames/s</label><input type="number" class="form-input" id="plMinFps" min="0" max="240" step="1" value="${d.min_fps || 0}">
+                        <div class="pl-note">An alarm is raised when the running line processes fewer frames per second. 0 = no alarm.</div></div>
                     <div class="form-group"><label class="form-label">Yield target (%)</label><input type="number" class="form-input" id="plYieldTarget" min="0" max="100" step="0.1" value="${d.yield_target || 0}">
                         <div class="pl-note">The dashboard marks the yield as below target under this value. 0 = no target.</div></div>
-                    <div class="form-group"><label class="form-label">Sync products and codes</label>
-                        <label class="pl-inline pl-check" style="margin-top:6px"><input type="checkbox" id="plSync" ${d.sync && d.sync.enabled ? "checked" : ""}> Pair each counted product with its code</label>
-                        <div class="pl-note">For a vision camera and a code reader looking at the same spot, or one vision camera that also reads codes.</div>
-                        <div class="pl-note" id="plSyncForced" style="display:none"><b>On while a camera accepts or rejects by code:</b> the line waits for the code (at most the Sync window) and then gives the product one result.</div></div>
                     <div class="form-group"><label class="form-label">Sync window (ms)</label><input type="number" class="form-input" id="plSyncWindow" min="50" max="10000" step="50" value="${(d.sync && d.sync.window_ms) || 500}">
                         <div class="pl-note">Products must pass further apart than this. A reject card's travel delay must be longer.</div></div>
                 </div>
-                ${(d.warnings || []).map((w) => `<div class="pl-warn" style="margin:0 0 12px">${esc(w)}</div>`).join("")}
+                ${handshakeSetupHtml(d)}
+                <div id="plSetupWarnings">${warningsHtml(d)}</div>
                 <div class="pl-setup-actions">
-                    <button class="btn-action btn-blue restricted-l2" id="plSaveSetup" ${readOnly ? "disabled" : ""}>Save line setup</button>
+                    <button data-lock class="btn-action btn-blue restricted-l2" id="plSaveSetup" ${readOnly ? "disabled" : ""}>Save line setup</button>
                     ${d.enabled
                         ? `<button class="btn-action btn-outline restricted-l2" id="plStopLine" ${readOnly ? "disabled" : ""}>Stop line</button>`
                         : `<button class="btn-action btn-outline restricted-l2" id="plStartLine" ${readOnly ? "disabled" : ""}>Start line</button>`}
@@ -1773,18 +2346,53 @@
                     <span class="pl-note" style="margin:0">One Save for the line and every camera card. To send results to another system, add a card under Send results below.</span>
                 </div>
             </div>
-            <div class="pl-cam-grid" id="plCamGrid">${addCardHtml()}</div>`;
+            <div class="pl-cam-grid" id="plCamGrid">${addCardHtml()}</div>
+            <div class="card-panel" id="plChecksPanel" hidden></div>`;
+        setup.checks = JSON.parse(JSON.stringify(d.product_checks || []));
         bindAddCard(trigger);
-        (d.cameras || []).forEach((cam) => addCard(cam, trigger, openFolds(cam.camera_id, [])));
+        (d.cameras || []).forEach((cam) => addCard(cam, trigger));
         card.querySelector(".card-panel").addEventListener("input", markDirty);
-        card.querySelector(".card-panel").addEventListener("change", (e) => { markDirty(); if (e.target.id === "plSync") syncLineSetup(); });
+        card.querySelector(".card-panel").addEventListener("change", (e) => {
+            markDirty();
+            if (e.target.id === "plHsOn") syncHandshakeSetup();
+        });
+        bindChecks();
+        renderChecks();
         syncLineSetup();
+        syncHandshakeSetup();
         byId("plSaveSetup").addEventListener("click", saveLineSetup);
+        // Save and Load in the header: the line's setup kept under a name on the server, and put back.
+        LineSetups.bind(card.querySelector(".card-panel-header"), {
+            lineId: () => d.id,
+            lineName: () => d.name,
+            dirty: pendingEdits,
+            running: () => Boolean(d.enabled),
+            fetchJson: api,
+            toast,
+            confirm: confirmAction,
+            // The output action, send and input panels show the loaded cards too.
+            afterLoad: async () => { setup.dirty = false; await loadLines(); reloadForLine(); await renderLineSetup(); },
+        });
+        // "Keep show only" on a camera the upgrade flagged: clear its flag and save the line.
+        byId("plCamGrid").addEventListener("click", (e) => {
+            const keep = e.target.closest(".pl-review-keep");
+            if (!keep) return;
+            const camCard = keep.closest(".pl-card");
+            camCard.dataset.review = "0";
+            camCard.querySelector(".pl-review").hidden = true;
+            saveLineSetup();
+        });
         byId("plStartLine")?.addEventListener("click", () => runLine("start"));
         byId("plStopLine")?.addEventListener("click", () => runLine("stop"));
         byId("plResetCounts").addEventListener("click", () => { if (typeof confirmResetAllCounts === "function") confirmResetAllCounts(); });
         if (typeof applyRoleRestrictions === "function") applyRoleRestrictions(card);
         refreshSelects();
+        const open = CameraPages.reopen(setup.openCamera, state.lineId, cardsOnPage().map((c) => c.dataset.camera));
+        if (open) openCameraPage(cardsOnPage().find((c) => c.dataset.camera === open.id), open.page);
+        else {
+            setup.openCamera = null;
+            page.classList.remove("pl-page-mode");
+        }
         startCardFeeds();
         focusCard();
     }
@@ -1795,28 +2403,116 @@
         else go();
     }
 
-    // The card the Cameras page asked for: open its Camera and Image folds and scroll to it.
+    // The camera the Cameras page asked for: its page, at Image and video.
     function focusCard() {
         const id = setup.focusCamera;
         if (!id) return;
         const card = cardsOnPage().find((c) => c.dataset.camera === id);
         if (!card) return;
         setup.focusCamera = null;
-        ["camera", "image"].forEach((name) => {
-            const fold = card.querySelector(`.pl-fold[data-fold="${name}"]`);
-            if (fold.classList.contains("open")) return;
-            fold.classList.add("open");
-            fold.querySelector(".pl-fold-head").setAttribute("aria-expanded", "true");
+        openCameraPage(card, "image");
+    }
+
+    // ── Product checks: reject a product when its rules pass ──────────────────
+
+    const MAX_PRODUCT_CHECKS = 10;
+    // What a check's rules can use: the product's values, the inputs, what the camera saw. Never the result,
+    // which the checks decide.
+    function checkChoices() {
+        if (!window.CardValues) return [];
+        const cameras = cardsOnPage().map(cardEntry);
+        const inputs = window.PlcSignals && PlcSignals.valueInputs ? PlcSignals.valueInputs() : [];
+        return CardValues.valueChoices({ fields: CardValues.fieldChoices(cameras, state.productLists), inputs })
+            .filter((c) => !["result", "result_code"].includes(c.name));
+    }
+
+    function renderChecks() {
+        const panel = byId("plChecksPanel");
+        if (!panel || !window.CardValues) return;
+        const readOnly = level() < 2;
+        const choices = checkChoices();
+        const items = (setup.checks || []).map((c, i) => `<div class="pl-check-item" data-check="${i}">
+            <div class="pl-check-top">
+                <input type="text" class="form-input pl-check-name" maxlength="64" value="${esc(c.name || "")}" placeholder="Name, for example Wrong bottle" aria-label="Check name">
+                <label class="pl-inline pl-check"><input type="checkbox" class="pl-check-on" ${c.enabled !== false ? "checked" : ""}> On</label>
+                <button data-lock type="button" class="btn-action btn-red pl-check-del restricted-l2">Remove</button>
+            </div>
+            ${CardValues.onlyWhenHtml(c.only_when, choices, null, { emptyText: "Add a rule: a check needs at least one." })}
+        </div>`).join("");
+        panel.innerHTML = `<div class="card-panel-header"><span class="card-panel-title">Product checks</span></div>
+            <div class="pl-note" style="margin-top:0">Reject a product when the rules of a check pass, for example when the class the camera saw is not the product's expected class (<span class="pl-code">class ≠ product.expected_class</span>). The checks run for a product whose code is in a list, after the camera's and the code's own result. The reason is <b>product check</b> (reject reason code 7 for an output action), with the check's name. The line pairs each product with its code (Sync).</div>
+            <div class="pl-checks">${items || `<div class="pl-note">No product checks.</div>`}</div>
+            <button data-lock type="button" class="btn-action btn-outline pl-check-add restricted-l2" ${readOnly || (setup.checks || []).length >= MAX_PRODUCT_CHECKS ? "disabled" : ""}>Add check</button>`;
+        if (typeof applyRoleRestrictions === "function") applyRoleRestrictions(panel);
+        refreshSelects();
+    }
+
+    function bindChecks() {
+        const panel = byId("plChecksPanel");
+        if (!panel) return;
+        const changed = (redraw) => { markDirty(); if (redraw) renderChecks(); syncLineSetup(); };
+        const onEdit = (e, action) => {
+            const item = e.target.closest(".pl-check-item");
+            if (!item) return;
+            const check = setup.checks[Number(item.dataset.check)];
+            const block = e.target.closest("[data-ow]");
+            if (block) {
+                const first = (checkChoices()[0] || {}).name || "class";
+                check.only_when = CardValues.applyEdit(block, e.target, action, first) || { match: "all", rules: [] };
+                changed(CardValues.needsRedraw(e.target, action));
+            } else if (e.target.classList.contains("pl-check-name")) {
+                check.name = e.target.value;
+                markDirty();
+            } else if (e.target.classList.contains("pl-check-on")) {
+                check.enabled = e.target.checked;
+                changed(false);
+            }
+        };
+        panel.addEventListener("input", (e) => onEdit(e));
+        panel.addEventListener("change", (e) => { if (!e.target.classList.contains("ow-right") || e.target.tagName === "SELECT") onEdit(e); });
+        panel.addEventListener("click", (e) => {
+            if (e.target.closest(".pl-check-add")) {
+                setup.checks.push({ name: "", enabled: true, only_when: { match: "all", rules: [
+                    { left: "class", op: "!=", right: "", right_kind: "value" }] } });
+                changed(true);
+            } else if (e.target.closest(".pl-check-del")) {
+                setup.checks.splice(Number(e.target.closest(".pl-check-item").dataset.check), 1);
+                changed(true);
+            } else if (e.target.closest(".ow-add")) {
+                onEdit(e, "add");
+            } else if (e.target.closest(".ow-del")) {
+                onEdit({ target: e.target.closest(".ow-del") }, "remove");
+            }
         });
-        setup.cards.get(card.dataset.key)?.imageForm?.loadPicture(() => card.isConnected);
-        setTimeout(() => {
-            card.scrollIntoView({ block: "start", behavior: "smooth" });
-            card.classList.add("pl-flash");
-            setTimeout(() => card.classList.remove("pl-flash"), 1600);
-        }, 60);
     }
 
     // ── Save: the line, then the cameras whose image or video settings changed ─
+
+    // Picture taken by and what goes with it. The server checks Camera trigger against the camera's type.
+    function pictureEntry(card) {
+        const camera = cardValue(card, "picture_source") === "camera";
+        const notice = parseInt(cardValue(card, "notice_trigger"), 10);
+        const wait = parseInt(cardValue(card, "picture_wait"), 10);
+        return {
+            picture_source: camera ? "camera" : "system",
+            picture_delay_ms: Math.max(0, parseInt(cardValue(card, "picture_delay"), 10) || 0),
+            notice_trigger: camera && notice >= 1 ? notice : null,
+            picture_wait_ms: Number.isFinite(wait) ? wait : DEFAULT_PICTURE_WAIT_MS,
+        };
+    }
+
+    // An inspection station's result: its own, or joined to the counting camera's product.
+    function stationEntry(card) {
+        const station = cardValue(card, "station") || "own";
+        if (station !== "join") return { station };
+        const num = (v) => (v === "" || v === null || v === undefined ? "" : Number(v));
+        return {
+            station,
+            join_offset_ms: num(cardValue(card, "join_offset")),
+            join_window_ms: num(cardValue(card, "join_window")),
+            join_missing: cardValue(card, "join_missing") || "ignore",
+        };
+    }
 
     function cardEntry(card) {
         const job = cardJob(card);
@@ -1839,16 +2535,25 @@
                 line1_position: num(cardValue(card, "line1")),
                 line2_position: num(cardValue(card, "line2")),
                 tracking,
+                // "track" is sent too: a key that is left out keeps its saved value.
+                count_mode: cardValue(card, "count_mode") === "trigger" ? "trigger" : "track",
             });
-            if (!spec.counting) entry.station = cardValue(card, "station") || "own";
-            if (entry.station === "join") {
-                Object.assign(entry, {
-                    join_offset_ms: num(cardValue(card, "join_offset")),
-                    join_window_ms: num(cardValue(card, "join_window")),
-                    join_missing: cardValue(card, "join_missing") || "ignore",
-                });
+            if (entry.count_mode === "trigger") {
+                entry.no_product = cardValue(card, "no_product") || "ignore";
+                Object.assign(entry, pictureEntry(card));
             }
+            if (!spec.counting) Object.assign(entry, stationEntry(card));
             if (spec.codes) entry.read_codes = true;
+        }
+        if (spec.role === "ocr") {
+            // Continuously (shown only), or one picture per trigger: a station of its own or joined to the product.
+            Object.assign(entry, { count_mode: cardValue(card, "count_mode") === "trigger" ? "trigger" : "track", ocr: TextReader.readCard(card) });
+            if (entry.count_mode === "trigger") Object.assign(entry, pictureEntry(card), stationEntry(card));
+        }
+        if (spec.role === "match") {
+            // Continuously (shown only), or one picture per trigger: a station of its own or joined to the product.
+            Object.assign(entry, { count_mode: cardValue(card, "count_mode") === "trigger" ? "trigger" : "track", match: PatternCheck.readCard(card) });
+            if (entry.count_mode === "trigger") Object.assign(entry, pictureEntry(card), stationEntry(card));
         }
         if (spec.codes) {
             Object.assign(entry, {
@@ -1858,58 +2563,95 @@
                 qr_action: cardValue(card, "qr_action") || "report",
                 product_list_id: cardValue(card, "qr_list") || null,
                 qr_no_read: cardValue(card, "qr_no_read") || "ignore",
+                // Sent back as it is: "Keep show only" clears it, a trigger drops it on the server.
+                qr_trigger_review: card.dataset.review === "1",
+                code_sets_batch: Boolean(cardField(card, "code_sets_batch") && cardField(card, "code_sets_batch").checked),
+                // Sent as null to switch it off (a key left out keeps the saved value).
+                sorting_lane: cardValue(card, "sorting_lane") || null,
             });
+            if (entry.sorting_lane) {
+                entry.qr_action = "report";
+                entry.code_sets_batch = false;
+            }
         }
+        // The triggers ticked on the card, while the camera takes one picture per trigger.
+        const onTrigger = entry.count_mode === "trigger" || (spec.codes && entry.qr_trigger === "signal");
+        entry.triggers = onTrigger ? [...cardTriggers(card)].sort((a, b) => a - b) : [];
         return entry;
     }
 
     async function saveLineSetup() {
+        // One save at a time: the camera page's Save line setup stays clickable while one runs.
+        if (setup.saving) return;
         const cards = cardsOnPage();
         const cameras = cards.map(cardEntry);
         const label = (i) => `Camera ${i + 1} (${cards[i].querySelector(".pl-card-name").textContent})`;
         const noModel = cameras.findIndex((c) => c.role === "vision" && !c.model_id);
-        if (noModel >= 0) { toast(`${label(noModel)}: choose its vision model. A vision camera cannot be saved without one.`, "warning"); return; }
+        // A camera's problem opens its page where the problem is.
+        const fix = (i, page) => openCameraPage(cards[i], page);
+        if (noModel >= 0) { toast(`${label(noModel)}: choose its vision model. A vision camera cannot be saved without one.`, "warning"); fix(noModel, CameraPages.pageForProblem("no_model")); return; }
         const noList = cameras.findIndex((c) => c.qr_action && c.qr_action !== "report" && !c.product_list_id);
-        if (noList >= 0) { toast(`${label(noList)}: choose the product list its codes are checked against.`, "warning"); return; }
+        if (noList >= 0) { toast(`${label(noList)}: choose the product list its codes are checked against.`, "warning"); fix(noList, CameraPages.pageForProblem("no_list")); return; }
+        for (let i = 0; i < cameras.length; i += 1) {
+            const ocr = cameras[i].ocr;
+            if (!ocr) continue;
+            if (ocr.fields.some((f) => f.find === "yolo") && !ocr.locator_model_id) { toast(`${label(i)}: choose the YOLO model its fields read in.`, "warning"); fix(i, CameraPages.pageForProblem("no_yolo")); return; }
+            const noFormat = ocr.fields.find((f) => !f.format);
+            if (noFormat) { toast(`${label(i)} text field '${noFormat.name}': give it a format.`, "warning"); fix(i, CameraPages.pageForProblem("no_format")); return; }
+        }
+        const noReference = cameras.findIndex((c) => c.role === "match" && !(c.match && c.match.reference_id));
+        if (noReference >= 0) { toast(`${label(noReference)}: train its reference on Pattern and checks.`, "warning"); fix(noReference, CameraPages.pageForProblem("no_reference")); return; }
+        const unnamed = (setup.checks || []).findIndex((c) => !String(c.name || "").trim());
+        if (unnamed >= 0) { toast(`Product check ${unnamed + 1}: give it a name.`, "warning"); return; }
         const body = {
             name: byId("plName").value.trim(),
             min_fps: parseFloat(byId("plMinFps").value) || 0,
             yield_target: parseFloat(byId("plYieldTarget").value) || 0,
             cameras,
-            sync: { enabled: byId("plSync").checked, window_ms: parseInt(byId("plSyncWindow").value, 10) || 500 },
+            sync: { enabled: syncPossible(), window_ms: parseInt(byId("plSyncWindow").value, 10) || 500 },
+            product_checks: (setup.checks || []).map((c) => ({
+                ...(c.id ? { id: c.id } : {}), name: String(c.name || "").trim(), enabled: c.enabled !== false,
+                only_when: c.only_when || { match: "all", rules: [] },
+            })),
+            ...handshakeBody(),
         };
-        const button = byId("plSaveSetup");
-        button.disabled = true;
-        let saved;
+        setup.saving = true;
         try {
-            saved = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}`, { method: "PUT", body });
-        } catch (e) {
-            button.disabled = false;
-            toast(`Could not save the line setup: ${e.message}`, "warning");
-            return;
-        }
-        // Then each camera whose name, image or video settings changed.
-        const failed = [];
-        for (const card of cards) {
-            const info = setup.cards.get(card.dataset.key);
-            const row = cameraRow(card.dataset.camera);
-            if (!info || !row) continue;
-            const patch = {};
-            const settings = CameraSettingsForm.read(card, row.type);
-            if (info.initialSettings !== null && JSON.stringify(settings) !== info.initialSettings) patch.settings = settings;
-            const name = cardValue(card, "name").trim();
-            if (name && name !== row.name) patch.name = name;
-            if (!Object.keys(patch).length) continue;
+            const button = byId("plSaveSetup");
+            button.disabled = true;
+            let saved;
             try {
-                await api(`/api/v1/cameras/${encodeURIComponent(row.id)}`, { method: "PATCH", body: patch });
-            } catch (e) { failed.push(`${name || row.name}: ${e.message}`); }
+                saved = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}`, { method: "PUT", body });
+            } catch (e) {
+                button.disabled = false;
+                toast(`Could not save the line setup: ${e.message}`, "warning");
+                return;
+            }
+            // Then each camera whose name, image or video settings changed.
+            const failed = [];
+            for (const card of cards) {
+                const info = setup.cards.get(card.dataset.key);
+                const row = cameraRow(card.dataset.camera);
+                if (!info || !row) continue;
+                const patch = {};
+                const settings = cardCameraSettings(card, row);
+                if (info.initialSettings !== null && JSON.stringify(settings) !== info.initialSettings) patch.settings = settings;
+                const name = cardValue(card, "name").trim();
+                if (name && name !== row.name) patch.name = name;
+                if (!Object.keys(patch).length) continue;
+                try {
+                    await api(`/api/v1/cameras/${encodeURIComponent(row.id)}`, { method: "PATCH", body: patch });
+                } catch (e) { failed.push(`${name || row.name}: ${e.message}`); }
+            }
+            setup.dirty = false;
+            if (failed.length) toast(`Line saved, but camera settings were not: ${failed.join("; ")}`, "warning");
+            else toast(saved.warning || "Line setup saved", saved.warning ? "warning" : "success");
+            await loadLines();
+            renderLineSetup();
+            if (typeof checkActiveStream === "function") checkActiveStream();
+        } finally {
+            setup.saving = false;
         }
-        setup.dirty = false;
-        if (failed.length) toast(`Line saved, but camera settings were not: ${failed.join("; ")}`, "warning");
-        else toast(saved.warning || "Line setup saved", saved.warning ? "warning" : "success");
-        await loadLines();
-        renderLineSetup();
-        if (typeof checkActiveStream === "function") checkActiveStream();
     }
 
     window.addEventListener("beforeunload", (e) => {
@@ -2039,12 +2781,6 @@
 
     const isTriggered = (cam) => Boolean(readsCodes(cam) && cam.qr_trigger && cam.qr_trigger !== "continuous");
 
-    // A camera that reads codes shows its live picture or the last picture taken for codes.
-    function secondView(cam) {
-        if (!readsCodes(cam)) return "live";
-        return state.secondView[cam.camera_id] || (isTriggered(cam) ? "capture" : "live");
-    }
-
     const stripCameras = () => {
         const big = lineFeedCamera();
         return big ? lineStatusCameras().filter((c) => c.camera_id !== big.camera_id) : [];
@@ -2055,6 +2791,14 @@
         if (cam.role === "qr") return `${isTriggered(cam) ? `One picture per product on wire line ${cam.qr_trigger === "line1" ? 1 : 2}` : "Reads codes continuously"}${limited ? ` · ${codeTypeLabel(cam.code_type)}` : ""}`;
         const ms = cam.join_offset_ms || 0;
         const job = cam.counting ? "Counting" : cam.station === "join" ? `Joined ${ms > 0 ? "+" : ""}${ms} ms` : "Own station";
+        if (cam.role === "ocr") {
+            const triggered = cam.count_mode === "trigger";
+            return `Text reader · ${triggered ? "one picture per trigger" : "reads continuously"}${triggered ? ` · ${job}` : ""}`;
+        }
+        if (cam.role === "match") {
+            const triggered = cam.count_mode === "trigger";
+            return `Pattern check · ${triggered ? "one picture per trigger" : "shows the pattern"}${triggered ? ` · ${job}` : ""}`;
+        }
         return `${job}${cam.read_codes ? " · reads codes" : ""}${cam.model_name ? ` · ${cam.model_name}` : ""}`;
     }
 
@@ -2085,7 +2829,7 @@
             state.codeTypesAsked = true;
             loadCodeTypes().then(renderFeedRow);
         }
-        const signature = JSON.stringify([state.lineId, cams.map((c) => [c.camera_id, c.name || cameraName(c.camera_id), c.role, c.counting, c.station, c.join_offset_ms, c.join_window_ms, c.read_codes, c.connected, c.qr_trigger, c.code_type, secondView(c)]), state.codeTypes.length]);
+        const signature = JSON.stringify([state.lineId, cams.map((c) => [c.camera_id, c.name || cameraName(c.camera_id), c.role, c.counting, c.station, c.join_offset_ms, c.join_window_ms, c.read_codes, c.connected, c.qr_trigger, c.code_type]), state.codeTypes.length]);
         if (!cams.length) { stopStripFeeds(); ensureFeedRow(false); return; }
         const row = ensureFeedRow(true);
         if (!row) return;
@@ -2099,14 +2843,10 @@
         row.dataset.signature = signature;
         stopStripFeeds();
         strip.classList.toggle("many", cams.length > 2);
-        const canTest = level() >= 2;
+        // Up to two rows of them are made as tall as the main camera together (dashboard.css).
+        strip.classList.toggle("fit", cams.length <= 4);
         strip.innerHTML = cams.map((cam) => {
             const name = cam.name || cameraName(cam.camera_id);
-            const view = secondView(cam);
-            const toggle = readsCodes(cam) ? `<div class="pl-seg" data-view-of="${esc(cam.camera_id)}">
-                    <button data-view="capture" class="${view === "capture" ? "active" : ""}">Last picture</button>
-                    <button data-view="live" class="${view === "live" ? "active" : ""}">Live</button></div>` : "";
-            const test = readsCodes(cam) && canTest ? `<button class="btn-action btn-outline pl-strip-test" data-test="${esc(cam.camera_id)}">Test picture</button>` : "";
             return `<div class="card-panel pl-strip-tile" data-camera="${esc(cam.camera_id)}">
                 <div class="pl-strip-head">
                     <span class="pl-dot" style="background:${cam.connected ? "var(--success-color)" : "var(--danger-color)"}"></span>
@@ -2116,11 +2856,9 @@
                 <div class="pl-note pl-strip-detail" title="${esc(tileTitle(cam))}">${esc(tileDetail(cam))}</div>
                 <button type="button" class="video-box pl-strip-pic" title="Show ${esc(name)} large" aria-label="Show ${esc(name)} large">
                     <img class="video-img" alt="${esc(name)}">
-                    <div class="pl-feed-caption" style="display:none"></div>
-                    <div class="no-video-overlay active"><div class="pl-strip-overlay">${cam.connected ? (view === "capture" ? "No picture yet" : "Connecting") : "No signal"}</div></div>
+                    <div class="no-video-overlay active"><div class="pl-strip-overlay">${cam.connected ? "Connecting" : "No signal"}</div></div>
                 </button>
                 <div class="pl-row pl-strip-figures">${tileFigures(cam)}</div>
-                ${toggle || test ? `<div class="pl-inline pl-strip-tools">${toggle}${test}</div>` : ""}
             </div>`;
         }).join("");
         strip.querySelectorAll(".pl-strip-pic").forEach((pic) => pic.addEventListener("click", () => {
@@ -2128,13 +2866,6 @@
             state.bigCamera[state.lineId] = id;
             refreshFeeds();
         }));
-        strip.querySelectorAll("[data-view-of] button").forEach((b) => b.addEventListener("click", () => {
-            state.secondView[b.parentNode.dataset.viewOf] = b.dataset.view;
-            renderFeedRow();
-            refreshLineExtras();
-        }));
-        strip.querySelectorAll("[data-test]").forEach((b) => b.addEventListener("click", testCapture));
-        state.captureShown = {};
         ensureStripFeeds();
         refreshLineExtras();
     }
@@ -2148,13 +2879,14 @@
         }
         window.dispatchEvent(new CustomEvent("pl:detail", { detail: state.detail }));
         renderLineExtras();
+        renderTriggerView((state.detail && state.detail.status) || {});
     }
 
     function ensureStripFeeds() {
         if (!dashboardShown()) { stopStripFeeds(); return; }
         stripCameras().forEach((cam) => {
             const img = document.querySelector(`#plStrip .pl-strip-tile[data-camera="${CSS.escape(cam.camera_id)}"] img`);
-            if (img && cam.connected && secondView(cam) === "live") startStripFeed(cam.camera_id, img);
+            if (img && cam.connected) startStripFeed(cam.camera_id, img);
             else stopStripFeed(cam.camera_id);
         });
     }
@@ -2163,6 +2895,7 @@
         known: ["Known", "var(--success-color)"],
         unknown: ["Unknown", "var(--danger-color)"],
         no_read: ["No read", "var(--warning-color)"],
+        no_result: ["No result in time", "var(--danger-color)"],
     };
     // Why a product was rejected (reject_reason).
     const REJECT_REASON = {
@@ -2171,15 +2904,27 @@
         code_in_reject_list: "code in reject list",
         no_code: "no code",
         station_no_result: "joined camera saw nothing",
+        nothing_detected: "nothing detected",
+        product_check: "product check",
+        inspection_timeout: "no result in time",
+        sorting_mismatch: "wrong outfeed",
+        no_picture: "no picture",
+        text_wrong: "text does not fit",
+        no_text: "no text",
+        reader_error: "text reader error",
+        pattern_not_found: "pattern not found",
+        pattern_mismatch: "pattern mismatch",
+        pattern_defect: "pattern defect",
+        pattern_error: "pattern check error",
+    };
+    const LANE = { accepted: "accepted outfeed", rejected: "rejected outfeed" };
+    const HANDSHAKE_STATE = {
+        idle: ["Idle", "var(--text-muted)"],
+        waiting_result: ["Waiting for the result", "var(--warning-color)"],
+        result_ready: ["Result sent, waiting for the acknowledge", "var(--accent-color, #3b82f6)"],
     };
 
-    // Where a capture is shown: a strip tile of the camera that took it, or the
-    // reads panel when the large camera took it.
-    function tileCaptureTarget(cameraId) {
-        const tile = document.querySelector(`#plStrip .pl-strip-tile[data-camera="${CSS.escape(cameraId)}"]`);
-        if (!tile) return null;
-        return { img: tile.querySelector("img"), caption: tile.querySelector(".pl-feed-caption"), overlay: tile.querySelector(".no-video-overlay"), shown: `tile:${cameraId}`, blob: `tile:${cameraId}` };
-    }
+    // A capture of the large camera is shown in the reads panel.
     const inlineCaptureTarget = () => (byId("plInlineImg")
         ? { img: byId("plInlineImg"), caption: byId("plInlineCaption"), box: byId("plInlineCapture"), shown: "inline", blob: "inlineCapture" }
         : null);
@@ -2191,7 +2936,7 @@
         state.captureShown[target.shown] = capture.id;
         if (target.box) target.box.hidden = false;
         const codes = capture.codes || [];
-        const parts = [`<b>${capture.test ? "Test picture" : "Picture"} #${capture.id}</b>`, esc(new Date(capture.timestamp).toLocaleTimeString())];
+        const parts = [`<b>Picture #${capture.id}</b>`, esc(new Date(capture.timestamp).toLocaleTimeString())];
         if (capture.wire_line) parts.push(`wire line ${capture.wire_line}`);
         if (capture.track_id !== null && capture.track_id !== undefined) parts.push(`product #${esc(capture.track_id)}`);
         if (codes.length) {
@@ -2217,27 +2962,6 @@
         } catch (_) { /* the next refresh tries again */ }
     }
 
-    async function testCapture(e) {
-        const button = e && e.currentTarget;
-        if (button) button.disabled = true;
-        try {
-            const capture = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}/qr/capture`, { method: "POST" });
-            const tile = stripCameras().find((c) => c.camera_id === capture.camera_id);
-            if (tile && readsCodes(tile)) {
-                state.secondView[tile.camera_id] = "capture";
-                renderFeedRow();
-                await showCapture(capture, tileCaptureTarget(tile.camera_id));
-            } else {
-                await showCapture(capture, inlineCaptureTarget());
-            }
-            toast(capture.codes && capture.codes.length ? `Test picture: ${capture.codes.map((c) => c.code).join(", ")}` : "Test picture: no code found", capture.codes && capture.codes.length ? "success" : "warning");
-        } catch (err) {
-            toast(`Test picture failed: ${err.message}`, "warning");
-        } finally {
-            if (button) button.disabled = false;
-        }
-    }
-
     function renderLineExtras() {
         const page = byId("tabDashboard");
         if (!page) return;
@@ -2251,22 +2975,48 @@
         const cams = lineStatusCameras();
         const hasQr = cams.some(readsCodes);
         const reader = mainCodeReader();
+        const status = (state.detail && state.detail.status) || {};
+        const hasHandshake = Boolean(status.handshake);
+        const hasSorting = Boolean(status.sorting);
+        const hasText = cams.some((c) => c.role === "ocr");
+        const hasPattern = cams.some((c) => c.role === "match");
         // Rebuild only when the cameras change, so the reads list does not blink.
-        const signature = JSON.stringify([state.lineId, hasQr, reader && reader.camera_id]);
+        const signature = JSON.stringify([state.lineId, hasQr, reader && reader.camera_id, hasHandshake, hasSorting, hasText, hasPattern]);
         if (box.dataset.signature === signature) return;
         box.dataset.signature = signature;
         if (state.captureShown) delete state.captureShown.inline;
-        const testBtn = reader && level() >= 2 ? `<button class="btn-action btn-outline" id="plInlineTest" style="font-size:12px;padding:6px 12px">Test picture</button>` : "";
-        box.innerHTML = hasQr
+        const carton = hasHandshake || hasSorting
+            ? `<div class="card-panel" id="plCartonPanel"><div class="card-panel-header"><span class="card-panel-title">${hasHandshake ? "Result handshake" : ""}${hasHandshake && hasSorting ? " · " : ""}${hasSorting ? "Sorting verification" : ""}</span></div>
+                <div class="pl-carton-grid">${hasHandshake ? `<div id="plHsView"></div>` : ""}${hasSorting ? `<div id="plSortView"></div>` : ""}</div></div>`
+            : "";
+        box.innerHTML = carton + (hasQr
             ? `<div class="card-panel"><div class="card-panel-header"><span class="card-panel-title">Latest code reads</span>
-                    <div class="pl-inline"><span id="plQrStats" style="font-size:12px;color:var(--text-muted)"></span>${testBtn}</div></div>
+                    <div class="pl-inline"><span id="plQrStats" style="font-size:12px;color:var(--text-muted)"></span></div></div>
                 ${reader ? `<div class="video-box pl-inline-capture" id="plInlineCapture" hidden>
                     <img class="video-img" id="plInlineImg" alt="Last picture taken for codes">
                     <div class="pl-feed-caption" id="plInlineCaption"></div></div>` : ""}
-                <div class="table-responsive"><table class="pl-table"><thead><tr><th>Time</th><th>Code</th><th>Code check</th><th>Product</th><th>Class</th><th>Product result</th></tr></thead>
-                <tbody id="plQrBody"><tr><td colspan="6">No reads yet.</td></tr></tbody></table></div></div>`
-            : "";
-        byId("plInlineTest")?.addEventListener("click", testCapture);
+                <div class="table-responsive"><table class="pl-table"><thead><tr><th>Time</th><th>Code</th><th>Code check</th><th>Product</th><th>Batch</th><th>Class</th><th>Product result</th></tr></thead>
+                <tbody id="plQrBody"><tr><td colspan="7">No reads yet.</td></tr></tbody></table></div></div>`
+            : "") + (hasText ? TextReader.readsPanelHtml() : "") + (hasPattern ? PatternCheck.checksPanelHtml() : "");
+        renderCartonView(status.handshake, status.sorting);
+    }
+
+    // The result handshake's state and counters, and the outfeed cameras' counts.
+    function renderCartonView(hs, sorting) {
+        const figure = (label, value, color) => `<div class="pl-carton-fig"><span>${esc(label)}</span><b${color ? ` style="color:${color}"` : ""}>${esc(String(value))}</b></div>`;
+        const hsBox = byId("plHsView");
+        if (hsBox && hs) {
+            const [label, color] = HANDSHAKE_STATE[hs.state] || [hs.state, "var(--text-muted)"];
+            const since = hs.since ? new Date(hs.since).toLocaleTimeString() : "—";
+            const last = hs.last_result === "good" ? "Good" : hs.last_result === "reject" ? "Rejected" : hs.last_result === "fault" ? "Fault" : "—";
+            hsBox.innerHTML = `<div class="pl-carton-state"><b style="color:${color}">${esc(label)}</b><span class="pl-note" style="margin:0">since ${esc(since)}${hs.sequence !== null && hs.sequence !== undefined ? ` · sequence ${esc(String(hs.sequence))}` : ""}</span></div>`
+                + `<div class="pl-carton-figs">${figure("Last result", last)}${figure("Stale acks", hs.stale_acks || 0)}${figure("Result timeouts", hs.timeouts || 0, hs.timeouts ? "var(--danger-color)" : "")}${figure("Ack timeouts", hs.ack_timeouts || 0, hs.ack_timeouts ? "var(--warning-color)" : "")}${figure("Duplicates", hs.duplicates || 0)}${figure("Late results", hs.late || 0)}</div>`
+                + (hs.last_error ? `<div class="pl-note">Last problem: ${esc({ inspection_timeout: "no result in time", ack_timeout: "no acknowledge in time", skipped_ack: "a capture request skipped the acknowledge", no_result: "a capture request came before the last result" }[hs.last_error] || hs.last_error)}</div>` : "");
+        }
+        const sortBox = byId("plSortView");
+        if (sortBox && sorting) {
+            sortBox.innerHTML = `<div class="pl-carton-figs">${figure("Verified", sorting.verified || 0, "var(--success-color)")}${figure("Wrong outfeed", sorting.mismatches || 0, sorting.mismatches ? "var(--danger-color)" : "")}${figure("Unmatched codes", sorting.unmatched || 0)}</div>`;
+        }
     }
 
     // The large camera, when it reads codes: its pictures show in the reads panel.
@@ -2275,29 +3025,205 @@
         return big && readsCodes(big) ? big : null;
     }
 
+    // ── Trigger cameras on the Line Dashboard ─────────────────────────────────
+    // A camera in trigger mode has no live picture. Its video box says "Waiting for trigger", shows each
+    // picture taken (with a caption) for 5 s of the browser's clock, then waits again; the counters sit
+    // under the box. The 1 s refresh polls the line's status (refreshTriggerStatus) and draws it (renderTriggerView).
+    const trig = {
+        key: null,      // line and camera on view; a change starts the view over
+        shown: null,    // {id, atMs}: the capture on view and since when
+        mode: null, capture: null,
+        url: null,      // object URL of the picture on screen
+        imgId: null,    // id of the capture that picture belongs to
+        loading: false, // the status poll is on its way
+    };
+    const TRIGGER_TEXT = { waiting: "Waiting for trigger", no_picture: "No picture: Reject", stopped: "The line is stopped" };
+
+    const triggerRow = (cameraId) => (((state.detail && state.detail.status) || {}).trigger_cameras || []).find((r) => r.camera_id === cameraId) || null;
+    const isTriggerCamera = (cameraId) => Boolean(cameraId && triggerRow(cameraId));
+
+    function clearTriggerPicture() {
+        const img = byId("trigViewImg");
+        if (img) { img.removeAttribute("src"); img.hidden = true; }
+        if (trig.url) URL.revokeObjectURL(trig.url);
+        trig.url = null;
+        trig.imgId = null;
+    }
+
+    function resetTriggerView() {
+        clearTriggerPicture();
+        trig.key = null;
+        trig.shown = null;
+        trig.mode = null;
+        trig.capture = null;
+    }
+
+    // Draw what trig.mode says on the panel.
+    function paintTriggerView() {
+        const view = byId("trigView");
+        const img = byId("trigViewImg");
+        const text = byId("trigViewText");
+        const caption = byId("trigViewCaption");
+        if (!view || !img || !text || !caption) return;
+        const mode = trig.mode;
+        const capture = trig.capture;
+        const hasCaption = Boolean(capture) && (mode === "picture" || mode === "no_picture");
+        img.hidden = !(mode === "picture" && capture && trig.url && trig.imgId === capture.id);
+        // While a picture is on its way the panel is black with the caption only.
+        text.hidden = mode === "picture";
+        text.textContent = TRIGGER_TEXT[mode] || "";
+        caption.hidden = !hasCaption;
+        if (hasCaption) caption.textContent = triggerCaption(capture, REJECT_REASON);
+        view.hidden = false;
+    }
+
+    // The capture's picture, once. A picture of another capture than the one asked for (a newer trigger
+    // came in between) is dropped: the next refresh sees that capture and asks for it.
+    async function fetchTriggerPicture(cameraId, id, key) {
+        // Still the capture on view, and still showing a picture (the 5 s may have run out meanwhile).
+        const current = () => trig.key === key && trig.shown && trig.shown.id === id && trig.mode === "picture";
+        try {
+            const res = await fetch(`/api/v1/lines/${encodeURIComponent(state.lineId)}/trigger/capture?camera_id=${encodeURIComponent(cameraId)}`, { cache: "no-store" });
+            if (!res.ok || res.headers.get("X-Capture-Id") !== String(id)) return;
+            const blob = await res.blob();
+            if (!current()) return;
+            const url = URL.createObjectURL(blob);
+            const previous = trig.url;
+            trig.url = url;
+            trig.imgId = id;
+            byId("trigViewImg").src = url;
+            if (previous) URL.revokeObjectURL(previous);
+            paintTriggerView();
+        } catch (_) { /* the capture shows without its picture; the next trigger tries again */ }
+    }
+
+    function renderTriggerView(status) {
+        const view = byId("trigView");
+        const counters = byId("trigCounters");
+        if (!view || !counters) return;
+        const cam = lineFeedCamera();
+        const row = cam ? ((status && status.trigger_cameras) || []).find((r) => r.camera_id === cam.camera_id) : null;
+        if (!row) {
+            view.hidden = true;
+            counters.hidden = true;
+            if (trig.key) resetTriggerView();
+            return;
+        }
+        // This camera has no live picture: a stream opened before its card was set to trigger is closed.
+        if (typeof isLiveFeedRunning === "function" && isLiveFeedRunning()) pauseMainFeed();
+        const key = `${state.lineId}/${row.camera_id}`;
+        if (trig.key !== key) { resetTriggerView(); trig.key = key; }
+        const html = `<div class="pl-carton-figs">${triggerCounterFigures(row).map(([label, value]) =>
+            `<div class="pl-carton-fig"><span>${esc(label)}</span><b>${esc(String(value))}</b></div>`).join("")}</div>`;
+        if (counters.dataset.html !== html) { counters.innerHTML = html; counters.dataset.html = html; }
+        counters.hidden = false;
+        const running = !status || status.state !== "stopped";
+        // A running line whose camera is not connected keeps the video box's own note. The page's status
+        // line writes it when the line view is read (every 5 s), so it is put in here at once.
+        if (running && !cam.connected) {
+            view.hidden = true;
+            byId("noVideoOverlay")?.classList.add("active");
+            const note = byId("noVideoNote");
+            if (note) note.textContent = `${cam.name || cameraName(cam.camera_id)} is not connected.`;
+            return;
+        }
+        const now = Date.now();
+        const next = triggerViewState(row, trig.shown, now, running);
+        const capture = row.capture;
+        // A capture new to the page: it is on view from now, and its picture is asked for once.
+        let fetchId;
+        if (next.mode !== "stopped" && capture && (!trig.shown || trig.shown.id !== capture.id)) {
+            trig.shown = { id: capture.id, atMs: now };
+            clearTriggerPicture();
+            fetchId = next.fetchId;
+        }
+        if (next.mode !== "picture") clearTriggerPicture();
+        trig.mode = next.mode;
+        trig.capture = capture;
+        paintTriggerView();
+        if (fetchId !== undefined) fetchTriggerPicture(row.camera_id, fetchId, key);
+    }
+
+    // A trigger camera's capture and counters change by the second, the line view is read every 5 s. Each
+    // second the status comes from /lines/overview (every line's summary, no database reads) and replaces
+    // only state.detail.status and enabled: the line view is not read again and pl:detail does not fire.
+    async function refreshTriggerStatus() {
+        if (trig.loading) return;
+        trig.loading = true;
+        const issued = ++statusIssued;
+        const lineId = state.lineId;
+        try {
+            const entry = (((await api("/api/v1/lines/overview")) || {}).lines || []).find((l) => l.id === lineId);
+            if (entry && issued > statusApplied && state.lineId === lineId && state.detail && state.detail.id === lineId) {
+                statusApplied = issued;
+                state.detail.status = entry;
+                state.detail.enabled = entry.enabled;
+            }
+        } catch (_) { /* the view goes on with what it has */ } finally { trig.loading = false; }
+    }
+
     async function refreshLineExtras() {
         if (!dashboardShown() || !state.detail) return;
         ensureStripFeeds();
+        const feed = lineFeedCamera();
+        if (feed && isTriggerCamera(feed.camera_id)) {
+            await refreshTriggerStatus();
+            if (!dashboardShown() || !state.detail) return;
+        }
+        const status = state.detail.status || {};
+        renderTriggerView(status);
+        if (byId("plHsView")) {
+            try {
+                renderCartonView(await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}/handshake`), null);
+            } catch (_) { /* next refresh retries */ }
+        }
+        if (byId("plSortView")) renderCartonView(null, status.sorting);
+        // The latest text reads, as often as the code reads.
+        const textBody = byId("plTextBody");
+        if (textBody) {
+            try {
+                const data = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}/ocr/recent?limit=25`);
+                textBody.innerHTML = TextReader.readsRowsHtml(data.reads || [], { name: cameraName, reasons: REJECT_REASON });
+            } catch (_) { /* next refresh retries */ }
+        }
+        // The latest pattern checks, as often.
+        const patternBody = byId("plPatternBody");
+        if (patternBody) {
+            try {
+                const data = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}/match/recent?limit=25`);
+                patternBody.innerHTML = PatternCheck.checksRowsHtml(data.checks || [], { name: cameraName, reasons: REJECT_REASON });
+            } catch (_) { /* next refresh retries */ }
+        }
         const body = byId("plQrBody");
         if (!body) return;
         try {
             const data = await api(`/api/v1/lines/${encodeURIComponent(state.lineId)}/qr/recent?limit=25`);
             const s = data.stats || {};
+            if (data.sorting) renderCartonView(null, data.sorting);
             byId("plQrStats").textContent = `Read ${s.codes_read || 0} · Unknown ${s.unknown || 0} · No read ${s.no_reads || 0} · Unpaired ${s.unpaired || 0}${s.code_rejects ? ` · Rejected by code ${s.code_rejects}` : ""}`;
             body.innerHTML = (data.reads || []).map((r) => {
                 const [label, color] = QR_RESULT[r.status] || [r.status, "var(--text-muted)"];
                 const paired = r.paired === false && r.status !== "no_read" ? " (unpaired)" : "";
+                // A camera that reads Continuously only shows its codes: they went nowhere else.
+                const shown = r.shown_only ? ` <span style="color:var(--text-muted);font-size:11px">shown only</span>` : "";
                 // The product's one result, where a camera accepts or rejects by code.
                 const verdict = !r.result ? `<span style="color:var(--text-muted)">—</span>`
-                    : r.result === "reject" ? `<b style="color:var(--danger-color)">Rejected</b>${r.reject_reason ? ` · ${esc(REJECT_REASON[r.reject_reason] || r.reject_reason)}` : ""}`
+                    : r.result === "reject" ? `<b style="color:var(--danger-color)">Rejected</b>${r.reject_reason ? ` · ${esc(REJECT_REASON[r.reject_reason] || r.reject_reason)}${r.product_check ? `: ${esc(r.product_check)}` : ""}` : ""}`
                         : `<b style="color:var(--success-color)">Good</b>`;
-                return `<tr><td class="pl-code">${esc(new Date(r.timestamp).toLocaleTimeString())}</td><td class="pl-code">${esc(r.code || "—")}</td>
-                    <td><b style="color:${color}">${esc(label)}</b>${esc(paired)}</td><td>${esc(r.product_name || "—")}</td><td>${esc(r.class_name || "—")}</td><td>${verdict}</td></tr>`;
-            }).join("") || `<tr><td colspan="6">No reads yet.</td></tr>`;
+                // The product ID, where the code holds more than it (a list with a code format).
+                const productId = r.product_id && r.product_id !== r.code ? `<div style="color:var(--text-muted);font-size:11px">${esc(r.product_id)}</div>` : "";
+                // The product sequence number the PLC held for the carton.
+                const sequence = r.sequence !== undefined && r.sequence !== null ? `<div style="color:var(--text-muted);font-size:11px">Sequence ${esc(String(r.sequence))}</div>` : "";
+                // A sorting verification read: the outfeed it saw, and whether the product belongs there.
+                const sorting = r.sorting_lane ? `<div style="font-size:11px">${esc(LANE[r.sorting_lane] || r.sorting_lane)}: ${
+                    r.verification === "verified" ? `<b style="color:var(--success-color)">verified</b>`
+                        : r.verification === "mismatch" ? `<b style="color:var(--danger-color)">wrong outfeed</b> (expected ${esc(LANE[r.expected_lane] || r.expected_lane || "")})`
+                            : `<span style="color:var(--text-muted)">no product waiting with this code</span>`}</div>` : "";
+                return `<tr><td class="pl-code">${esc(new Date(r.timestamp).toLocaleTimeString())}</td><td class="pl-code">${esc(r.code || "—")}${productId}${sequence}</td>
+                    <td><b style="color:${color}">${esc(label)}</b>${esc(paired)}${shown}${sorting}</td><td>${esc(r.product_name || "—")}</td><td class="pl-code">${esc(r.batch || "—")}</td><td>${esc(r.class_name || "—")}</td><td>${verdict}</td></tr>`;
+            }).join("") || `<tr><td colspan="7">No reads yet.</td></tr>`;
             const capture = data.last_capture;
             if (capture) {
-                const tile = stripCameras().find((c) => c.camera_id === capture.camera_id);
-                if (tile && readsCodes(tile) && secondView(tile) === "capture") showCapture(capture, tileCaptureTarget(tile.camera_id));
                 const reader = mainCodeReader();
                 if (reader && capture.camera_id === reader.camera_id) showCapture(capture, inlineCaptureTarget());
             }
@@ -2310,6 +3236,9 @@
     const originalReloadStream = window.reloadStream;
     window.reloadStream = function () {
         if (!dashboardShown()) { pauseMainFeed(); return; }
+        // Which camera the line shows is known once its status is read (a camera in trigger mode has no
+        // stream): checkActiveStream opens the feed then.
+        if (!state.detail) return;
         const main = lineFeedCamera();
         if (main) {
             if (!main.connected) {
@@ -2320,6 +3249,8 @@
             }
             // Selecting another camera on Cameras & Capture does not move the line's feed.
             activeCamId = main.camera_id;
+            // A camera in trigger mode has no live picture: its video box shows the trigger view instead.
+            if (isTriggerCamera(main.camera_id)) { pauseMainFeed(); return; }
         }
         return originalReloadStream.apply(this, arguments);
     };
@@ -2344,14 +3275,17 @@
             activeCamId = main.camera_id;
             // The server ends a feed when its camera is restarted (a new address, a
             // reconnect). The camera keeps its id, so the feed is opened again here.
-            const ended = dashboardShown() && typeof isLiveFeedRunning === "function" && !isLiveFeedRunning();
+            const ended = dashboardShown() && !isTriggerCamera(main.camera_id) && typeof isLiveFeedRunning === "function" && !isLiveFeedRunning();
             if (quiet !== true || changed || ended) window.reloadStream();
         } else {
             activeCamId = null;
             pauseMainFeed();
             byId("noVideoOverlay")?.classList.add("active");
         }
-        if (isTab("tabDashboard")) renderLineExtras();
+        if (isTab("tabDashboard")) {
+            renderLineExtras();
+            renderTriggerView((state.detail && state.detail.status) || {});
+        }
     };
 
     document.addEventListener("visibilitychange", () => {
@@ -2382,27 +3316,31 @@
                     <span class="card-panel-title">Product lists</span>
                     <div class="pl-inline">
                         <button class="btn-action btn-outline" id="plExport">Export CSV</button>
-                        <label class="btn-action btn-blue" id="plImportLabel" style="cursor:pointer"><span id="plImportText">Import CSV as a new list</span><input type="file" id="plImportFile" accept=".csv,text/csv" style="display:none"></label>
+                        <label data-lock class="btn-action btn-blue" id="plImportLabel" style="cursor:pointer"><span id="plImportText">Import CSV as a new list</span><input type="file" id="plImportFile" accept=".csv,text/csv" style="display:none"></label>
                     </div>
                 </div>
                 <div class="pl-note" style="margin-top:0;margin-bottom:12px">Up to <span id="plMaxLists">4</span> lists. Each camera that reads codes checks them against the list chosen for it on Line setup. CSV files need a header row: <span class="pl-code">code,name,description</span>.</div>
                 <div class="pl-inline" style="margin-bottom:6px">
                     <label class="form-label" for="plProdList" style="margin:0">List shown</label>
-                    <select id="plProdList" class="form-input" aria-label="Product list shown"></select>
-                    <button class="btn-action btn-outline" id="plListRename">Rename</button>
-                    <label class="btn-action btn-outline" id="plReplaceLabel" style="cursor:pointer">Replace contents<input type="file" id="plReplaceFile" accept=".csv,text/csv" style="display:none"></label>
-                    <button class="btn-action btn-red" id="plListDelete">Delete this list</button>
+                    <select data-lock-free id="plProdList" class="form-input" aria-label="Product list shown"></select>
+                    <button data-lock class="btn-action btn-outline" id="plListNew">New list</button>
+                    <button data-lock class="btn-action btn-outline" id="plListRename">Rename</button>
+                    <button class="btn-action btn-outline" id="plListFields" data-help="Sets the fields of the list shown: a value per product, such as a lane.">Fields</button>
+                    <button class="btn-action btn-outline" id="plListFormat" data-help="Sets how the codes of this list are built from a product ID and a batch.">Code format</button>
+                    <label data-lock class="btn-action btn-outline" id="plReplaceLabel" style="cursor:pointer">Replace contents<input type="file" id="plReplaceFile" accept=".csv,text/csv" style="display:none"></label>
+                    <button data-lock class="btn-action btn-red" id="plListDelete">Delete this list</button>
                 </div>
+                <div class="pl-note" id="plListFormatNote" style="margin-bottom:4px"></div>
                 <div class="pl-note" id="plListUsedBy" style="margin-bottom:14px"></div>
                 <div class="pl-inline" style="margin-bottom:14px">
                     <input type="text" id="plProdCode" class="form-input" maxlength="256" placeholder="Code">
                     <input type="text" id="plProdName" class="form-input" maxlength="128" placeholder="Product name">
                     <input type="text" id="plProdDesc" class="form-input" maxlength="512" placeholder="Description (optional)">
-                    <button class="btn-action btn-blue" id="plProdAdd">Add</button>
+                    <button data-lock class="btn-action btn-blue" id="plProdAdd">Add</button>
                 </div>
-                <div class="pl-inline" style="margin-bottom:10px"><input type="search" id="plProdSearch" class="form-input" placeholder="Search code or name"><span id="plProdCount" style="font-size:12px;color:var(--text-muted)"></span></div>
+                <div class="pl-inline" style="margin-bottom:10px"><input data-lock-free type="search" id="plProdSearch" class="form-input" placeholder="Search code or name"><span id="plProdCount" style="font-size:12px;color:var(--text-muted)"></span></div>
                 <div class="table-responsive"><table class="pl-table">
-                    <thead><tr><th>Code</th><th>Name</th><th>Description</th><th>Actions</th></tr></thead>
+                    <thead><tr id="plProdHeadRow"><th>Code</th><th>Name</th><th>Description</th><th>Actions</th></tr></thead>
                     <tbody id="plProdBody"><tr><td colspan="4">Loading…</td></tr></tbody>
                 </table></div>
             </div>`);
@@ -2410,7 +3348,10 @@
         byId("plExport").addEventListener("click", exportProducts);
         byId("plImportFile").addEventListener("change", importProducts);
         byId("plReplaceFile").addEventListener("change", replaceProductList);
+        byId("plListNew").addEventListener("click", newProductList);
         byId("plListRename").addEventListener("click", renameProductList);
+        byId("plListFields").addEventListener("click", editProductFields);
+        byId("plListFormat").addEventListener("click", editCodeFormat);
         byId("plListDelete").addEventListener("click", deleteProductList);
         byId("plProdList").addEventListener("change", (e) => { showProductList(e.target.value); refreshProducts(); });
         let timer = null;
@@ -2460,7 +3401,12 @@
         importLabel.style.cursor = full ? "not-allowed" : "pointer";
         importLabel.title = full ? `There are already ${state.maxProductLists} lists. Delete a list first, or use Replace contents.` : "Each imported file becomes a new list";
         byId("plImportFile").disabled = full;
-        ["plListRename", "plListDelete"].forEach((id) => { byId(id).disabled = !shown || !canEdit; byId(id).style.display = canEdit ? "" : "none"; });
+        ["plListRename", "plListFields", "plListFormat", "plListDelete"].forEach((id) => { byId(id).disabled = !shown || !canEdit; byId(id).style.display = canEdit ? "" : "none"; });
+        const newList = byId("plListNew");
+        newList.style.display = canEdit ? "" : "none";
+        newList.disabled = full;
+        newList.title = full ? `There are already ${state.maxProductLists} lists. Delete a list first.` : "Make an empty list, then add codes or import a file into it";
+        byId("plListFormatNote").textContent = shown ? `Codes: ${codeFormatText(shown.code_format)}` : "";
         byId("plReplaceLabel").style.display = canEdit && shown ? "" : "none";
         byId("plExport").disabled = !shown;
         const used = (shown && shown.used_by) || [];
@@ -2484,11 +3430,15 @@
             const q = state.productSearch ? `&search=${encodeURIComponent(state.productSearch)}` : "";
             const data = await api(`/api/v1/products?list_id=${encodeURIComponent(shown.id)}&limit=500${q}`);
             const canEdit = level() >= 2;
+            const fields = shown.fields || [];
+            byId("plProdHeadRow").innerHTML = `<th>Code</th><th>Name</th><th>Description</th>${fields.map((f) =>
+                `<th title="product.${esc(f.key)}">${esc(f.label)}</th>`).join("")}<th>Actions</th>`;
             byId("plProdCount").textContent = `${data.total} code(s)${data.total > data.products.length ? `, showing ${data.products.length}` : ""}`;
             body.innerHTML = data.products.map((p) => `<tr data-id="${esc(p.id)}">
                 <td class="pl-code">${esc(p.code)}</td><td>${esc(p.name)}</td><td style="font-size:12px;color:var(--text-muted)">${esc(p.description || "")}</td>
-                <td><div class="pl-actions">${canEdit ? `<button class="btn-action btn-outline" data-act="edit">Edit</button><button class="btn-action btn-red" data-act="delete">Delete</button>` : ""}</div></td>
-            </tr>`).join("") || `<tr><td colspan="4">${state.productSearch ? "No code matches the search." : "This list has no product codes yet."}</td></tr>`;
+                ${fields.map((f) => `<td class="pf-cell">${esc(window.ProductFields.cellText(f, (p.data || {})[f.key]))}</td>`).join("")}
+                <td><div class="pl-actions">${canEdit ? `<button class="btn-action btn-outline" data-act="edit">Edit</button><button data-lock class="btn-action btn-red" data-act="delete">Delete</button>` : ""}</div></td>
+            </tr>`).join("") || `<tr><td colspan="${4 + fields.length}">${state.productSearch ? "No code matches the search." : "This list has no product codes yet."}</td></tr>`;
             body.querySelectorAll("button[data-act]").forEach((b) => b.addEventListener("click", () => {
                 const row = b.closest("tr");
                 const product = data.products.find((p) => p.id === row.dataset.id);
@@ -2505,27 +3455,184 @@
         const name = byId("plProdName").value.trim();
         const description = byId("plProdDesc").value.trim();
         if (!code || !name) { toast("Enter a code and a product name", "warning"); return; }
+        if ((shownProductList()?.fields || []).length) {
+            // The list has fields: their values are entered in the dialog.
+            openProductDialog(null, { code, name, description });
+            return;
+        }
         try {
             const shown = shownProductList();
             // Without a list yet, the server makes "List 1" for the first code.
             const added = await api("/api/v1/products", { method: "POST", body: { code, name, description, list_id: shown ? shown.id : null } });
-            ["plProdCode", "plProdName", "plProdDesc"].forEach((id) => { byId(id).value = ""; });
+            ["plProdCode", "plProdName"].forEach((id) => { byId(id).value = ""; });
             if (!shown) showProductList(added.list_id);
             toast(`Product code ${code} added`, "success");
             refreshProducts();
         } catch (e) { toast(`Could not add the product: ${e.message}`, "warning"); }
     }
 
-    async function editProduct(p) {
-        const name = window.prompt(`Name for ${p.code}:`, p.name);
-        if (name === null) return;
-        const description = window.prompt(`Description for ${p.code} (optional):`, p.description || "");
-        if (description === null) return;
-        try {
-            await api(`/api/v1/products/${encodeURIComponent(p.id)}`, { method: "PUT", body: { name: name.trim(), description: description.trim() } });
-            toast("Product updated", "success");
-            refreshProducts();
-        } catch (e) { toast(`Could not update the product: ${e.message}`, "warning"); }
+    function editProduct(p) {
+        openProductDialog(p);
+    }
+
+    // A dialog of the Products page (made once): a title, a body, an error line, Cancel and Save.
+    function productsDialog(id, title, subtitle) {
+        let modal = byId(id);
+        if (!modal) {
+            document.body.insertAdjacentHTML("beforeend", `<div data-lock-root class="modal-backdrop" id="${id}">
+                <div class="modal-card action-trigger-modal-panel">
+                    <div class="comm-modal-header"><div>
+                        <div class="pf-title" style="font-size:15px;font-weight:700;color:var(--text-color)"></div>
+                        <div class="pf-subtitle" style="font-size:12.5px;color:var(--text-muted);margin-top:2px"></div>
+                    </div></div>
+                    <div class="comm-modal-body pf-body" style="display:flex;flex-direction:column;gap:12px"></div>
+                    <div class="pf-error" role="alert"></div>
+                    <div class="comm-modal-footer">
+                        <button type="button" class="btn-action btn-outline pf-cancel">Cancel</button>
+                        <div class="comm-modal-footer-actions"><button data-lock type="button" class="btn-action btn-blue pf-ok">Save</button></div>
+                    </div>
+                </div>
+            </div>`);
+            modal = byId(id);
+            modal.querySelector(".pf-cancel").addEventListener("click", () => modal.classList.remove("active"));
+            modal.querySelector(".pf-ok").addEventListener("click", () => { if (modal.onSave) modal.onSave(); });
+        }
+        modal.querySelector(".pf-title").textContent = title;
+        modal.querySelector(".pf-subtitle").textContent = subtitle;
+        modal.querySelector(".pf-error").textContent = "";
+        return modal;
+    }
+
+    // A list's code format in words: "whole code", "parts split by ';' (product ID: part 1, batch: part 2)", "GS1".
+    function codeFormatText(fmt) {
+        const f = fmt || { mode: "whole" };
+        if (f.mode === "gs1") return "GS1: product ID from (01), batch from (10)";
+        if (f.mode === "split") {
+            return `parts split by '${f.separator}' (product ID: part ${f.product_part}${f.batch_part ? `, batch: part ${f.batch_part}` : ", no batch"})`;
+        }
+        return "the whole code is the product ID";
+    }
+
+    // How the codes of the list shown are built, with a box to try a code before saving.
+    function editCodeFormat() {
+        const shown = shownProductList();
+        if (!shown) return;
+        const modal = productsDialog("plCodeFormatModal", `Code format of '${shown.name}'`,
+            "How the codes of this list are built: the product ID finds the product; a batch goes with each item.");
+        const f = shown.code_format || { mode: "whole" };
+        const parts = (selected, none) => (none ? `<option value="" ${selected ? "" : "selected"}>None</option>` : "")
+            + Array.from({ length: 10 }, (_, i) => `<option value="${i + 1}" ${selected === i + 1 ? "selected" : ""}>Part ${i + 1}</option>`).join("");
+        const body = modal.querySelector(".pf-body");
+        body.innerHTML = `
+            <div class="form-group"><label class="form-label">Codes</label><select class="form-input" data-cf="mode" data-help="How a code is built: the whole code, parts with a separator, or GS1.">
+                <option value="whole" ${f.mode === "whole" ? "selected" : ""}>Whole code: the code is the product ID</option>
+                <option value="split" ${f.mode === "split" ? "selected" : ""}>Parts with a separator, such as P-100;B-2026-07</option>
+                <option value="gs1" ${f.mode === "gs1" ? "selected" : ""}>GS1: (01) product ID (GTIN), (10) batch</option></select></div>
+            <div class="pl-form-grid pl-form-tight" data-cf-split>
+                <div class="form-group"><label class="form-label">Separator</label><input type="text" class="form-input" data-cf="separator" maxlength="3" value="${esc(f.separator || ";")}"></div>
+                <div class="form-group"><label class="form-label">Product ID</label><select class="form-input" data-cf="product_part">${parts(f.product_part || 1, false)}</select></div>
+                <div class="form-group"><label class="form-label">Batch</label><select class="form-input" data-cf="batch_part">${parts(f.mode === "split" ? f.batch_part : 2, true)}</select></div>
+            </div>
+            <div class="form-group" style="margin-bottom:0"><label class="form-label">Try a code</label>
+                <div class="pl-inline"><input data-lock-free type="text" class="form-input" data-cf="try" maxlength="512" placeholder="P-100;B-2026-07"><button type="button" class="btn-action btn-outline" data-cf="try-btn">Try</button></div>
+                <div class="pl-note" data-cf="result"></div></div>`;
+        const field = (name) => body.querySelector(`[data-cf="${name}"]`);
+        const read = () => {
+            const mode = field("mode").value;
+            if (mode !== "split") return { mode };
+            return { mode, separator: field("separator").value, product_part: Number(field("product_part").value),
+                batch_part: field("batch_part").value ? Number(field("batch_part").value) : null };
+        };
+        const sync = () => { body.querySelector("[data-cf-split]").hidden = field("mode").value !== "split"; };
+        field("mode").addEventListener("change", sync);
+        sync();
+        field("try-btn").addEventListener("click", async () => {
+            const out = field("result");
+            const code = field("try").value;
+            if (!code.trim()) { out.textContent = "Type a code to try."; return; }
+            try {
+                const r = await api(`/api/v1/products/lists/${encodeURIComponent(shown.id)}/code/check`, { method: "POST", body: { code, code_format: read() } });
+                const found = r.product ? `product: ${esc(r.product.name)}` : `<b style="color:var(--danger-color)">not in this list</b>`;
+                out.innerHTML = `Product ID: <span class="pl-code">${esc(r.product_id || "—")}</span> · Batch: <span class="pl-code">${esc(r.batch || "—")}</span> · ${found}`
+                    + (r.problem ? ` · <b style="color:var(--danger-color)">${esc(r.problem)}</b>` : "");
+            } catch (e) { out.innerHTML = `<b style="color:var(--danger-color)">${esc(e.message)}</b>`; }
+        });
+        modal.onSave = async () => {
+            const error = modal.querySelector(".pf-error");
+            try {
+                await api(`/api/v1/products/lists/${encodeURIComponent(shown.id)}`, { method: "PUT", body: { code_format: read() } });
+                modal.classList.remove("active");
+                toast("Code format saved", "success");
+                refreshProducts();
+            } catch (e) { error.textContent = e.message; }
+        };
+        modal.classList.add("active");
+        refreshSelects();
+    }
+
+    // The fields of the list shown: add, rename (label), change type, reorder, delete.
+    function editProductFields() {
+        const shown = shownProductList();
+        if (!shown) return;
+        const modal = productsDialog("plFieldsModal", `Fields of '${shown.name}'`,
+            "Each product of the list can have a value for each field: a number, text, or yes or no.");
+        const editor = window.ProductFields.mountFieldsEditor(modal.querySelector(".pf-body"), shown.fields || []);
+        let warned = false;
+        modal.onSave = async () => {
+            const error = modal.querySelector(".pf-error");
+            if (editor.changesValues() && !warned) {
+                // A deleted field or a new type removes values that do not fit: say so once, then save.
+                warned = true;
+                error.textContent = "A field is deleted or changes its type: product values that do not fit it are removed. Press Save again to go on.";
+                return;
+            }
+            try {
+                const r = await api(`/api/v1/products/lists/${encodeURIComponent(shown.id)}`, { method: "PUT", body: { fields: editor.read() } });
+                modal.classList.remove("active");
+                toast(r.dropped ? `Fields saved; ${r.dropped} value(s) that no longer fit were removed` : "Fields saved", "success");
+                refreshProducts();
+            } catch (e) { error.textContent = e.message; }
+        };
+        modal.classList.add("active");
+        refreshSelects();
+    }
+
+    // Add (product null; prefill: what was typed on the page) or edit a product, with its field values.
+    function openProductDialog(product, prefill) {
+        const shown = shownProductList();
+        if (!shown) return;
+        const fields = shown.fields || [];
+        const p = product || prefill || {};
+        const modal = productsDialog("plProductModal", product ? `Edit ${product.code}` : "Add a product", `List '${shown.name}'`);
+        const body = modal.querySelector(".pf-body");
+        body.innerHTML = `
+            <div class="form-group"><label class="form-label" for="pfCode">Code</label><input type="text" id="pfCode" class="form-input" maxlength="256" value="${esc(p.code || "")}"></div>
+            <div class="form-group"><label class="form-label" for="pfName">Name</label><input type="text" id="pfName" class="form-input" maxlength="128" value="${esc(p.name || "")}"></div>
+            <div class="form-group"><label class="form-label" for="pfDesc">Description (optional)</label><input type="text" id="pfDesc" class="form-input" maxlength="512" value="${esc(p.description || "")}"></div>
+            ${window.ProductFields.dataInputsHtml(fields, product ? product.data : null)}`;
+        modal.onSave = async () => {
+            const error = modal.querySelector(".pf-error");
+            const code = byId("pfCode").value.trim();
+            const name = byId("pfName").value.trim();
+            const description = byId("pfDesc").value.trim();
+            if (!code || !name) { error.textContent = "Enter a code and a product name."; return; }
+            const values = window.ProductFields.readDataInputs(body, fields);
+            if (values.error) { error.textContent = values.error; return; }
+            try {
+                if (product) {
+                    await api(`/api/v1/products/${encodeURIComponent(product.id)}`, { method: "PUT", body: { code, name, description, data: values.data } });
+                } else {
+                    await api("/api/v1/products", { method: "POST", body: { code, name, description, list_id: shown.id, data: values.data } });
+                    ["plProdCode", "plProdName"].forEach((id) => { byId(id).value = ""; });
+                }
+                modal.classList.remove("active");
+                toast(product ? "Product updated" : `Product code ${code} added`, "success");
+                refreshProducts();
+            } catch (e) { error.textContent = e.message; }
+        };
+        modal.classList.add("active");
+        refreshSelects();
+        byId(product ? "pfName" : "pfCode").focus();
     }
 
     function deleteProduct(p) {
@@ -2588,16 +3695,47 @@
         });
     }
 
-    async function renameProductList() {
+    // A dialog with one name field (New list, Rename). ``save(name)`` sends it; an error stays in the dialog.
+    function listNameDialog(title, subtitle, value, okText, save) {
+        const modal = productsDialog("plListNameModal", title, subtitle);
+        modal.querySelector(".pf-body").innerHTML = `<div class="form-group" style="margin:0"><label class="form-label" for="plListNameInput">List name</label>
+            <input type="text" class="form-input" id="plListNameInput" maxlength="64" value="${esc(value)}"></div>`;
+        modal.querySelector(".pf-ok").textContent = okText;
+        const input = byId("plListNameInput");
+        modal.onSave = async () => {
+            const error = modal.querySelector(".pf-error");
+            const name = input.value.trim();
+            if (!name) { error.textContent = "Type a name for the list."; input.focus(); return; }
+            try {
+                await save(name);
+                modal.classList.remove("active");
+            } catch (e) { error.textContent = e.message; }
+        };
+        input.onkeydown = (e) => { if (e.key === "Enter") modal.onSave(); };
+        modal.classList.add("active");
+        setTimeout(() => { input.focus(); input.select(); }, 0);
+    }
+
+    function newProductList() {
+        listNameDialog("New product list", "An empty list. Add codes below, import a file with Replace contents, or set its fields and code format.",
+            "", "Create", async (name) => {
+                const made = await api("/api/v1/products/lists", { method: "POST", body: { name } });
+                showProductList(made.id);
+                toast(`List '${made.name}' made`, "success");
+                await loadProductLists();
+                refreshProducts();
+            });
+    }
+
+    function renameProductList() {
         const shown = shownProductList();
         if (!shown) return;
-        const name = window.prompt("New name for this list:", shown.name);
-        if (!name || name.trim() === shown.name) return;
-        try {
-            await api(`/api/v1/products/lists/${encodeURIComponent(shown.id)}`, { method: "PUT", body: { name: name.trim() } });
+        listNameDialog(`Rename '${shown.name}'`, "The cameras set to this list keep using it.", shown.name, "Rename", async (name) => {
+            if (name === shown.name) return;
+            await api(`/api/v1/products/lists/${encodeURIComponent(shown.id)}`, { method: "PUT", body: { name } });
             toast("List renamed", "success");
             refreshProducts();
-        } catch (e) { toast(`Could not rename the list: ${e.message}`, "warning"); }
+        });
     }
 
     function deleteProductList() {
@@ -2665,7 +3803,12 @@
         return result;
     };
 
-    // ── Audit Logs: Line column and filter ────────────────────────────────────
+    // ── Audit Logs: Line column, line filter and Load older ───────────────────
+
+    const AUDIT_PAGE = 100;
+    let auditRows = [];      // the entries on screen, newest first
+    let auditMore = false;   // there may be entries older than the last one on screen
+    let auditSeq = 0;        // the newest request; the answer to an earlier one is dropped
 
     function auditCategoryClass(category) {
         const c = String(category || "");
@@ -2675,23 +3818,61 @@
         return "badge-cat-comms";
     }
 
-    // Same table as before, plus a Line column and a line filter.
-    window.loadAuditLogs = async function () {
+    function auditRow(l) {
+        return `<tr>
+            <td data-label="Timestamp" style="font-family:monospace;font-size:11px;color:var(--text-muted)">${esc(new Date(l.timestamp).toLocaleString())}</td>
+            <td data-label="User Account"><b>${esc(l.username)}</b></td>
+            <td data-label="Clearance"><span class="clearance-pill pill-lvl-${Number(l.clearance_level) || 1}">L${Number(l.clearance_level) || 1}: ${esc(l.role)}</span></td>
+            <td data-label="Category"><span class="badge-audit ${auditCategoryClass(l.category)}">${esc(l.category)}</span></td>
+            <td data-label="Details" style="font-size:12px">${esc(l.details)}</td>
+            <td data-label="Line" style="font-size:12px">${esc(l.line_id ? lineName(l.line_id) : "")}</td></tr>`;
+    }
+
+    // The page refreshes itself every few seconds. The newest page it gets goes on top of the entries
+    // Load older added, from where the two meet; when they do not meet, the list starts again.
+    function auditWithFresh(page) {
+        const at = page.length ? auditRows.findIndex((r) => r.id === page[page.length - 1].id) : -1;
+        if (at < 0) {
+            auditMore = page.length >= AUDIT_PAGE;
+            return page;
+        }
+        return page.concat(auditRows.slice(at + 1));
+    }
+
+    function showAuditMore() {
+        const row = byId("plAuditMoreRow");
+        if (row) row.hidden = !auditMore || !auditRows.length;
+        const button = byId("plAuditMore");
+        if (button) button.disabled = false;
+    }
+
+    // Same table as before, plus a Line column and a line filter. It shows the newest 100 entries;
+    // loadAuditLogs(true), the Load older button, adds the 100 before the oldest one shown.
+    window.loadAuditLogs = async function (older) {
         decorateAuditTable();
         const tbody = byId("auditTableBody");
         if (!tbody) return;
+        const loadOlder = older === true && auditRows.length > 0;
+        const seq = ++auditSeq;
+        if (loadOlder) byId("plAuditMore").disabled = true;
+        let page = null;
         try {
             const filter = state.auditLine ? `&line_id=${encodeURIComponent(state.auditLine)}` : "";
-            const logs = await api(`/api/v1/system/audit-logs?limit=100${filter}`);
-            tbody.innerHTML = logs.map((l) => `<tr>
-                <td data-label="Timestamp" style="font-family:monospace;font-size:11px;color:var(--text-muted)">${esc(new Date(l.timestamp).toLocaleString())}</td>
-                <td data-label="User Account"><b>${esc(l.username)}</b></td>
-                <td data-label="Clearance"><span class="clearance-pill pill-lvl-${Number(l.clearance_level) || 1}">L${Number(l.clearance_level) || 1}: ${esc(l.role)}</span></td>
-                <td data-label="Category"><span class="badge-audit ${auditCategoryClass(l.category)}">${esc(l.category)}</span></td>
-                <td data-label="Details" style="font-size:12px">${esc(l.details)}</td>
-                <td data-label="Line" style="font-size:12px">${esc(l.line_id ? lineName(l.line_id) : "")}</td></tr>`).join("")
-                || `<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:18px">No activity logged${state.auditLine ? " for this line" : " yet"}.</td></tr>`;
+            const before = loadOlder ? `&before=${encodeURIComponent(auditRows[auditRows.length - 1].timestamp)}` : "";
+            page = await api(`/api/v1/system/audit-logs?limit=${AUDIT_PAGE}${filter}${before}`);
         } catch (_) { /* keep the last view */ }
+        if (seq !== auditSeq) return;   // a newer request has taken over
+        if (page) {
+            if (loadOlder) {
+                auditRows = auditRows.concat(page);
+                auditMore = page.length >= AUDIT_PAGE;
+            } else {
+                auditRows = auditWithFresh(page);
+            }
+            tbody.innerHTML = auditRows.map(auditRow).join("")
+                || `<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:18px">No activity logged${state.auditLine ? " for this line" : " yet"}.</td></tr>`;
+        }
+        showAuditMore();
     };
 
     function decorateAuditTable() {
@@ -2702,10 +3883,22 @@
         if (headRow && !headRow.querySelector(".pl-th")) headRow.insertAdjacentHTML("beforeend", `<th class="pl-th">Line</th>`);
         const panelHeader = table.closest(".card-panel")?.querySelector(".card-panel-header");
         if (panelHeader && !byId("plAuditLine")) {
-            panelHeader.insertAdjacentHTML("beforeend", `<div class="pl-inline" style="font-size:12px;color:var(--text-muted)">Line
-                <select id="plAuditLine" class="form-input" style="min-width:150px" aria-label="Show the audit log of one line"></select></div>`);
-            byId("plAuditLine").addEventListener("change", (e) => { state.auditLine = e.target.value; window.loadAuditLogs(); });
+            // In the header's button group, before Refresh: the header keeps two items (title, buttons), so
+            // nothing moves about as the window changes size.
+            (panelHeader.querySelector(".card-actions") || panelHeader).insertAdjacentHTML("afterbegin", `<label class="pl-audit-line">Line
+                <select id="plAuditLine" class="form-input" aria-label="Show the audit log of one line"></select></label>`);
+            byId("plAuditLine").addEventListener("change", (e) => {
+                state.auditLine = e.target.value;
+                auditRows = [];   // another line: start again from its newest entries
+                auditMore = false;
+                window.loadAuditLogs();
+            });
             refreshSelects();
+        }
+        if (!byId("plAuditMore")) {
+            (table.closest(".table-responsive") || table).insertAdjacentHTML("afterend", `<div id="plAuditMoreRow" style="text-align:center;margin:12px 0 4px" hidden>
+                <button type="button" id="plAuditMore" class="btn-action btn-outline">Load older</button></div>`);
+            byId("plAuditMore").addEventListener("click", () => window.loadAuditLogs(true));
         }
         const select = byId("plAuditLine");
         if (select) {
@@ -2764,6 +3957,10 @@
                     <div class="pl-inline">
                         <button class="btn-action btn-outline" id="recExportCsv" type="button">Export CSV</button>
                         <button class="btn-action btn-outline" id="recExportXlsx" type="button">Export Excel</button>
+                        <span class="pl-inline" id="recArchive" hidden>
+                            <input type="date" id="recArchiveDay" class="form-input" aria-label="Archived day">
+                            <button class="btn-action btn-outline" id="recArchiveGet" type="button">Download archived day</button>
+                        </span>
                     </div>
                 </div>
                 <div class="rec-quick seg" role="group" aria-label="Time range">
@@ -2775,7 +3972,7 @@
                     <div class="form-group rec-time"><label class="form-label" for="recTo">To</label><input type="datetime-local" id="recTo" class="form-input"></div>
                     <div class="form-group"><label class="form-label" for="recResult">Result</label><select id="recResult" class="form-input">
                         <option value="">Any</option><option value="good">Good</option><option value="reject">Rejected</option></select></div>
-                    <div class="form-group"><label class="form-label" for="recKind">Kind</label><select id="recKind" class="form-input">
+                    <div class="form-group"><label class="form-label" for="recKind">Kind</label><select id="recKind" class="form-input" data-help="Shows the products, the code reads, or both.">
                         <option value="">All</option><option value="product">Products</option><option value="code">Code reads</option></select></div>
                     <div class="form-group"><label class="form-label" for="recCamera">Camera</label><select id="recCamera" class="form-input"></select></div>
                     <div class="form-group"><label class="form-label" for="recBatch">Batch</label><input type="text" id="recBatch" class="form-input" maxlength="64" placeholder="Any batch"></div>
@@ -2814,7 +4011,7 @@
             </div>`);
         byId("tabRecords").querySelectorAll("[data-range]").forEach((b) => b.addEventListener("click", () => setRecordRange(b.dataset.range)));
         ["recFrom", "recTo"].forEach((id) => byId(id).addEventListener("change", () => { records.quick = ""; markRecordRange(); reloadRecords(); }));
-        ["recResult", "recKind", "recCamera"].forEach((id) => byId(id).addEventListener("change", reloadRecords));
+        ["recResult", "recKind"].forEach((id) => byId(id).addEventListener("change", reloadRecords));
         byId("recLine").addEventListener("change", (e) => { records.lineId = e.target.value; fillRecordCameras(); reloadRecords(); });
         let timer = null;
         ["recBatch", "recCode"].forEach((id) => byId(id).addEventListener("input", () => {
@@ -2825,6 +4022,8 @@
         byId("recNext").addEventListener("click", () => { records.offset += RECORDS_PAGE_SIZE; refreshRecords(); });
         byId("recExportCsv").addEventListener("click", () => exportRecords("csv"));
         byId("recExportXlsx").addEventListener("click", () => exportRecords("xlsx"));
+        byId("recArchiveGet").addEventListener("click", downloadArchivedDay);
+        loadArchivedDays();
         setRecordRange(records.quick, false);
     }
 
@@ -2918,10 +4117,12 @@
     }
 
     function recordCode(r) {
-        if (r.code_status === "no_read") return `<span style="color:var(--warning-color)">No read</span>`;
-        if (!r.code) return "";
+        // What a text reader read and what a pattern check found of the product follow the code.
+        const text = TextReader.recordText(r.details) + PatternCheck.recordText(r.details);
+        if (r.code_status === "no_read") return `<span style="color:var(--warning-color)">No read</span>${text}`;
+        if (!r.code) return text;
         const [label, color] = QR_RESULT[r.code_status] || ["", "var(--text-muted)"];
-        return `<span class="pl-code">${esc(r.code)}</span>${label ? ` <span style="font-size:11.5px;color:${color}">${label}</span>` : ""}`;
+        return `<span class="pl-code">${esc(r.code)}</span>${label ? ` <span style="font-size:11.5px;color:${color}">${label}</span>` : ""}${text}`;
     }
 
     function recordBars(rows, fillClass, emptyText) {
@@ -2972,7 +4173,7 @@
             ${cell("Line", esc(lineNameOf(r)))}
             ${cell("Camera", `${esc(r.camera_name || cameraName(r.camera_id) || "")}${r.kind === "product" && !r.counted ? ` <span class="pl-note" style="display:inline">own station</span>` : ""}`)}
             ${cell("Result", recordResult(r))}
-            ${cell("Reason", esc(r.reject_reason ? (REJECT_REASON[r.reject_reason] || r.reject_reason) : ""))}
+            ${cell("Reason", esc(r.reject_reason ? (REJECT_REASON[r.reject_reason] || r.reject_reason) + ((r.details || {}).product_check ? `: ${r.details.product_check}` : "") : ""))}
             ${cell("Class", esc(r.class_name || ""))}
             ${cell("Code", recordCode(r))}
             ${cell("Product", esc(r.product_name || ""))}
@@ -2983,6 +4184,53 @@
         byId("recCount").textContent = data.total ? `${count(first)}–${count(last)} of ${count(data.total)}` : "";
         byId("recPrev").disabled = records.offset === 0;
         byId("recNext").disabled = last >= data.total;
+    }
+
+    // ── Archived days: one gzip CSV per UTC day, kept after the records leave the database ──
+
+    async function loadArchivedDays() {
+        const box = byId("recArchive");
+        if (!box) return;
+        try {
+            const archive = await api("/api/v1/records/archive");
+            const input = byId("recArchiveDay");
+            box.hidden = !archive.days.length;
+            if (!archive.days.length) return;
+            input.min = archive.oldest;
+            input.max = archive.newest;
+            if (!input.value) input.value = archive.newest;
+        } catch (_) {
+            box.hidden = true;
+        }
+    }
+
+    async function downloadArchivedDay() {
+        const day = byId("recArchiveDay").value;
+        if (!day) return;
+        const button = byId("recArchiveGet");
+        const label = button.textContent;
+        button.disabled = true;
+        button.textContent = "Preparing…";
+        try {
+            // fetch (not a plain link): the API needs the Authorization header the dashboard adds.
+            const res = await fetch(`/api/v1/records/archive/${encodeURIComponent(day)}`);
+            if (res.status === 404) throw new Error(`There is no archive file for ${day}.`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const url = URL.createObjectURL(await res.blob());
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `records-${day}.csv.gz`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 10000);
+            toast(`Downloaded records-${day}.csv.gz`, "success");
+        } catch (e) {
+            toast(e.message, "error");
+        } finally {
+            button.disabled = false;
+            button.textContent = label;
+        }
     }
 
     async function refreshRecords() {
@@ -3060,6 +4308,7 @@
         tabRecords: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><line x1="8" y1="9" x2="10" y2="9"/></svg>',
         tabProducts: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5v14M7 5v14M11 5v14M14 5v14M18 5v14M21 5v14"/></svg>',
     };
+
 
     function menuItem(tab, label) {
         const li = document.createElement("li");
@@ -3158,6 +4407,7 @@
                 if (typeof loadPlcActionCards === "function") loadPlcActionCards();
                 if (typeof checkActiveStream === "function") checkActiveStream();
             }
+            if (window.PlcSignals) window.PlcSignals.load(state.lineId);
             const tab = activeTabId();
             if (tab) enterTab(tab);
         }).catch(() => { /* not signed in yet; retried after login */ });
@@ -3171,6 +4421,7 @@
             applyRoleVisibility();
             loadLines().then(() => {
                 if (typeof checkActiveStream === "function") checkActiveStream();
+                if (window.PlcSignals) window.PlcSignals.load(state.lineId);
                 // The page shown after sign-in did not come through switchTab.
                 const tab = activeTabId();
                 if (tab) enterTab(tab);

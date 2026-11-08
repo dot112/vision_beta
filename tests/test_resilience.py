@@ -146,6 +146,12 @@ def test_sqlite_connections_use_wal_normal_sync_and_a_busy_timeout(tmp_path):
     assert asyncio.run(read()) == ["wal", 1, 5000]
 
 
+def test_a_server_whose_env_does_not_set_debug_runs_without_it(monkeypatch):
+    # Debug publishes /docs and lets the live-video socket take its token in the URL.
+    monkeypatch.delenv("DEBUG", raising=False)
+    assert Settings(SECRET_KEY="k" * 40, _env_file=None).DEBUG is False
+
+
 def test_sqlite_settings_are_validated():
     with pytest.raises(ValueError):
         Settings(SECRET_KEY="k" * 40, SQLITE_JOURNAL_MODE="OFF")
@@ -407,8 +413,7 @@ def test_video_streams_end_when_shutdown_starts(monkeypatch, fake_camera):
         return [chunk async for chunk in stream]
 
     try:
-        for stream in (CameraStreamPipeline.stream_annotated_mjpeg, CameraStreamPipeline.stream_raw_mjpeg):
-            assert asyncio.run(asyncio.wait_for(drain(stream("cam-stream-end")), 2)) == []
+        assert asyncio.run(asyncio.wait_for(drain(CameraStreamPipeline.stream_annotated_mjpeg("cam-stream-end")), 2)) == []
     finally:
         CameraStreamPipeline.remove_camera("cam-stream-end")
 

@@ -198,6 +198,15 @@ class CountingService:
         # each time a product crosses wire line 1 or 2, before it is counted:
         # a QR reader set to capture on a crossing takes its picture then.
         self.line_crossing_sink: Optional[Any] = None
+        # Set by a line that uses them (a product sequence, a result handshake, sorting
+        # verification): product_gate(crossing) -> False drops a product before it is
+        # counted (its request already got its one result); product_hook(crossing,
+        # payload, plc_event) sees each product's one event before it is recorded and sent.
+        self.product_gate: Optional[Any] = None
+        self.product_hook: Optional[Any] = None
+        # The line's batch (work order) number, "" for none: every product's message
+        # and PLC event carries it while the line has one.
+        self.batch: str = ""
         self.config = CountingConfig()
         self.tracker = WirelineTracker(
             track_high_thresh=self.config.track_high_thresh,
@@ -295,6 +304,10 @@ class CountingService:
         """
         tracker_key = camera_id or "default"
         config = self.config
+        if config.count_mode == "trigger":
+            # One picture per trigger makes this camera's products (trigger_inspection):
+            # nothing is tracked, so nothing crosses a count line.
+            return []
         with self._tracker_lock:
             tracker = self._trackers.get(tracker_key)
             if tracker is None:
@@ -338,16 +351,55 @@ class CountingService:
 
         now = time.time()
         for event in events:
-            crossing = self._crossing(event, camera_id, now)
-            sink = self.event_sink
-            if sink is not None:
-                try:
-                    sink(crossing)
-                    continue
-                except Exception as sink_err:
-                    logger.warning("Line %s sync hand-off failed, counting the product on its own: %s", self.line_id, sink_err)
-            self.finish_crossing(crossing)
+            self.emit_crossing(self._crossing(event, camera_id, now))
         return events
+
+    def emit_crossing(self, crossing: Dict[str, Any]) -> None:
+        """Hand a product that is not counted yet to the line (which decides its one
+        result first, when it has Sync or joined cameras), else count it at once."""
+        sink = self.event_sink
+        if sink is not None:
+            try:
+                sink(crossing)
+                return
+            except Exception as sink_err:
+                logger.warning("Line %s sync hand-off failed, counting the product on its own: %s", self.line_id, sink_err)
+        self.finish_crossing(crossing)
+
+    def make_crossing(
+        self,
+        class_name: str,
+        is_defect: bool = False,
+        track_id: Optional[int] = None,
+        confidence: float = 1.0,
+        bbox: Optional[Dict[str, Any]] = None,
+        camera_id: Optional[str] = None,
+        arrived_at: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """A product no tracker saw cross a count line (a PLC sensor saw it, or one
+        triggered picture did), as _crossing() describes one. Nothing is counted yet.
+
+        ``arrived_at``: the clock time the product's picture arrived. It is then the
+        product's time, however long the model took: a reject gate's travel delay runs from it.
+        """
+        now = time.time()
+        moment = now if arrived_at is None else min(float(arrived_at), now)
+        return {
+            "track_id": track_id,
+            "class_name": class_name,
+            "is_defect": bool(is_defect),
+            "confidence": float(confidence),
+            "bbox": bbox,
+            "polygon": None,
+            "sc_x": 0.0,
+            "sc_y": 0.0,
+            "vel_x": 0.0,
+            "vel_y": 0.0,
+            "camera_id": camera_id or self.camera_id,
+            "timestamp": datetime.fromtimestamp(moment, timezone.utc).isoformat(),
+            "time": moment,
+            "crossed_at": time.monotonic() - (now - moment),
+        }
 
     def _crossing(self, event: Tuple[Any, ...], camera_id: Optional[str], now: float) -> Dict[str, Any]:
         """What is known of a product when it crosses the count line. Nothing is counted yet."""
@@ -412,10 +464,14 @@ class CountingService:
         """
         from app.services.line_config import REASON_VISION
 
+        gate = self.product_gate
+        if gate is not None and not gate(crossing):
+            return {}, {}
         vision_reject = bool(crossing["is_defect"])
         is_reject = vision_reject if reject is None else bool(reject)
         if is_reject and reason is None and vision_reject:
-            reason = REASON_VISION
+            # A triggered picture in which nothing was found says so itself.
+            reason = crossing.get("reject_reason") or REASON_VISION
         if not is_reject:
             reason = None
         track_id = crossing["track_id"]
@@ -465,6 +521,9 @@ class CountingService:
             "line_name": self.line_name,
             "camera_id": crossing["camera_id"],
         }
+        # The number of the "Take a picture" input that asked for this product's picture, when one did.
+        if crossing.get("trigger_no") is not None:
+            payload["trigger_no"] = crossing["trigger_no"]
         plc_event = {
             "event_id": f"{track_id}_{current_total}",
             "event_type": "crossing",
@@ -475,6 +534,7 @@ class CountingService:
             "result": "reject" if is_reject else "good",
             "reject_reason": reason,
             "vision_result": "reject" if vision_reject else "good",
+            "confidence": round(float(crossing["confidence"]), 4),
             "good_count": self.good_count,
             "reject_count": self.rejected_count,
             "detected_classes": [class_name] if class_name else [],
@@ -482,10 +542,23 @@ class CountingService:
             "crossed_at": crossing["crossed_at"],
             "delay_from_crossing": bool(delay_from_crossing),
         }
+        # What a text reader read or a pattern check found, on its own product (a joined one's comes in ``fields``).
+        for key in ("text", "text_status", "match", "match_status"):
+            if crossing.get(key) is not None:
+                payload[key] = plc_event[key] = crossing[key]
+        if self.batch:
+            payload["batch"] = self.batch
+            plc_event["batch"] = self.batch
         if fields:
             payload.update(fields)
         if plc_fields:
             plc_event.update(plc_fields)
+        hook = self.product_hook
+        if hook is not None:
+            try:
+                hook(crossing, payload, plc_event)
+            except Exception as hook_err:
+                logger.exception("Line %s: the product hook failed: %s", self.line_id, hook_err)
         if self.dispatch_telemetry:
             # Own-station products are recorded too, but are not in the line totals.
             from app.services.production_records_service import record_event

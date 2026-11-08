@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.db.models.user import User
 from app.dependencies import get_current_user, get_db, require_operator, require_supervisor
+from app.services.production_records_service import parse_time
 from app.services.settings_persistence_service import SettingsPersistenceService
 from app.utils.logger import get_logger
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,6 +13,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/system", tags=["System Settings & Real-Time Sync"])
+
+
+@router.get("/usage", summary="How busy the machine is: CPU, RAM, disks, GPUs and this server (top bar)")
+async def get_system_usage(user: User = Depends(require_operator)) -> Dict[str, Any]:
+    """The latest reading, taken every 2 s while someone asks (app/services/system_usage.py).
+    503 while the very first reading has not come yet."""
+    from app.services.system_usage import usage_sampler
+
+    reading = await asyncio.to_thread(usage_sampler.latest)
+    if not reading:
+        raise HTTPException(status_code=503, detail="No usage reading yet")
+    return reading
 
 
 @router.get("/settings", summary="Get current persistent server settings")
@@ -55,10 +69,19 @@ async def _apply_ip_camera_addresses() -> None:
 async def get_audit_logs(
     limit: int = Query(default=100, ge=1, le=500),
     line_id: Optional[str] = Query(default=None, description="Only entries for this production line"),
+    before: Optional[str] = Query(default=None, description="Only entries older than this time, ISO 8601 with a time zone: the next page"),
     user: User = Depends(require_supervisor),
 ) -> List[Dict[str, Any]]:
-    """Returns chronological audit log of configuration updates, logins, and hardware actions."""
-    return SettingsPersistenceService.get_audit_logs(limit=limit, line_id=line_id)
+    """Returns chronological audit log of configuration updates, logins, and hardware actions, newest first."""
+    older_than = None
+    if before is not None:
+        older_than = parse_time(before)
+        if older_than is None:
+            raise HTTPException(status_code=422, detail="before must be an ISO 8601 time with a time zone, e.g. 2026-10-09T06:00:00Z")
+    # Reads the month files (and loads the settings the first time): off the event loop.
+    return await asyncio.to_thread(
+        SettingsPersistenceService.get_audit_logs, limit=limit, line_id=line_id, before=older_than
+    )
 
 
 @router.get("/poll-changes", summary="Poll for server configuration changes across connected clients")
@@ -94,15 +117,41 @@ async def list_communication_endpoints(
     return endpoints
 
 
+def _gige_serial(endpoint_data: Dict[str, Any]) -> str:
+    """The serial number of a GigE Vision network camera channel; "" for any other channel."""
+    if str(endpoint_data.get("protocol") or "").strip().lower() != "ipcam"             or str(endpoint_data.get("camera_kind") or "").strip().lower() != "gige":
+        return ""
+    return str(endpoint_data.get("source") or "").strip()
+
+
+async def _take_over_listed_camera(db: AsyncSession, endpoint_data: Dict[str, Any]) -> None:
+    """A new GigE channel for a camera already in the camera list (with no channel) becomes that camera.
+
+    It keeps the camera's id, settings and line places, instead of adding a second camera with the
+    same serial number (one camera can be opened by one program only).
+    """
+    serial = _gige_serial(endpoint_data)
+    if not serial or endpoint_data.get("id"):
+        return
+    from app.services.camera_service import CameraService
+    channels = {ep.get("id") for ep in SettingsPersistenceService.get_endpoints()}
+    for camera in await CameraService.cameras_with_source(db, serial, ("gige",)):
+        if camera.id not in channels:
+            endpoint_data["id"] = camera.id
+            return
+
+
 @router.post("/endpoints", summary="Create or update communication endpoint (Level 2+ Supervisor)")
 async def create_communication_endpoint(
     endpoint_data: Dict[str, Any],
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_supervisor),
 ) -> Dict[str, Any]:
     if not endpoint_data.get("name"):
         raise HTTPException(status_code=400, detail="Channel name is required")
     if not endpoint_data.get("protocol"):
         raise HTTPException(status_code=400, detail="Protocol (tcp, mqtt, ipcam, webhook) is required")
+    await _take_over_listed_camera(db, endpoint_data)
     try:
         result = await SettingsPersistenceService.add_or_update_endpoint(
             endpoint_data=endpoint_data,
@@ -119,10 +168,19 @@ async def create_communication_endpoint(
 async def update_communication_endpoint(
     endpoint_id: str,
     endpoint_data: Dict[str, Any],
+    db: AsyncSession = Depends(get_db),
     user: User = Depends(require_supervisor),
 ) -> Dict[str, Any]:
     endpoint_data["id"] = endpoint_id
     try:
+        serial = _gige_serial(endpoint_data)
+        if serial:
+            from app.services.camera_service import CameraService
+            channels = {ep.get("id") for ep in SettingsPersistenceService.get_endpoints()}
+            for camera in await CameraService.cameras_with_source(db, serial, ("gige",)):
+                # Another channel's camera is named by the save itself, with the channel's name.
+                if camera.id != endpoint_id and camera.id not in channels:
+                    raise ValueError(f"The camera {serial} is already in the camera list as '{camera.name}'")
         result = await SettingsPersistenceService.add_or_update_endpoint(
             endpoint_data=endpoint_data,
             username=user.username,
@@ -146,7 +204,17 @@ async def delete_communication_endpoint(
     target = next((ep for ep in endpoints if ep.get("id") == endpoint_id), None)
     target_src = (target.get("source") or "").strip() if target else ""
 
-    using = SettingsPersistenceService.lines_using_endpoint(endpoint_id)
+    # A network camera channel takes its camera with it, and every copy of it (same address,
+    # e.g. from a double save before 2026-10-14): those are the cameras deleted below.
+    from app.services.camera_service import CameraService
+    cameras: List[str] = []
+    if target and str(target.get("protocol", "")).lower() == "ipcam":
+        cameras = SettingsPersistenceService.ip_camera_ids_removed_with(
+            endpoint_id, source=target_src, name=(target.get("name") or "").strip())
+        if target_src:
+            cameras += [c.id for c in await CameraService.cameras_with_source(db, target_src) if c.id not in cameras]
+
+    using = sorted({name for used in [endpoint_id, *cameras] for name in SettingsPersistenceService.lines_using_endpoint(used)})
     if using:
         raise HTTPException(
             status_code=409,
@@ -162,22 +230,13 @@ async def delete_communication_endpoint(
     if not deleted:
         raise HTTPException(status_code=404, detail="Endpoint not found")
 
-    # Also delete from Camera DB if this was an IP camera or has matching DB entry
-    try:
-        from app.services.camera_service import CameraService
-        from app.db.models.camera import Camera
-        from sqlalchemy import select as sa_select
-
-        camera = await CameraService.get_camera_by_id(db, endpoint_id)
-        if not camera and target_src:
-            stmt = sa_select(Camera).where(Camera.source == target_src)
-            res = await db.execute(stmt)
-            camera = res.scalar_one_or_none()
-        if camera:
-            await db.delete(camera)
-            await db.commit()
-    except Exception:
-        pass
+    # The cameras go too: their drivers are closed (an industrial camera is set free for
+    # the next program) and they leave the camera list.
+    for camera_id in cameras:
+        try:
+            await CameraService.delete_camera(db, camera_id)
+        except Exception:
+            logger.exception("Channel '%s' was deleted, but its camera %s could not be removed", endpoint_id, camera_id)
 
     return {"status": "deleted", "id": endpoint_id}
 

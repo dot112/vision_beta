@@ -6,8 +6,9 @@ import ipaddress
 import math
 import re
 import struct
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+from app.hardware.plc._common import coerce_read, round_real
 from app.hardware.plc.base import PLCDriver
 from app.utils.logger import get_logger
 
@@ -44,6 +45,9 @@ _CIP_TYPES: Dict[int, Tuple[str, str]] = {
     0x00CB: ("LREAL", "<d"),
 }
 _BOOL = 0x00C1
+_STRUCTURE = 0x02A0            # a structure: its handle follows the type code
+_LOGIX_STRING_HANDLE = 0x0FCE  # the built-in STRING: a DINT length, then 82 characters
+_SHORT_STRING = 0x00DA         # Micro800 STRING: one length byte, then the characters
 
 _CIP_STATUS_TEXT = {
     0x01: "connection failure",
@@ -248,6 +252,33 @@ def _parse_cip_reply(cip: bytes, service: int) -> bytes:
     return cip[data_offset:]
 
 
+def _decode_cip_value(tag: str, data: bytes) -> Any:
+    """The value in a Read Tag reply: a bool, an int, a float or, for a STRING tag, text."""
+    if len(data) < 2:
+        raise ConnectionError("CIP Read Tag reply has no data")
+    type_code = struct.unpack_from("<H", data, 0)[0]
+    body = data[2:]
+    if type_code == _STRUCTURE:
+        if len(body) < 6 or struct.unpack_from("<H", body, 0)[0] != _LOGIX_STRING_HANDLE:
+            raise CIPError(f"Tag '{tag}' is a structure (UDT); address one of its members")
+        length = max(0, struct.unpack_from("<i", body, 2)[0])
+        return body[6:6 + length].decode("utf-8", errors="replace")
+    if type_code == _SHORT_STRING:
+        length = body[0] if body else 0
+        return body[1:1 + length].decode("utf-8", errors="replace")
+    if type_code not in _CIP_TYPES:
+        raise CIPError(f"Tag '{tag}' has unsupported CIP type 0x{type_code:04X}")
+    name, fmt = _CIP_TYPES[type_code]
+    if len(body) < struct.calcsize(fmt):
+        raise ConnectionError(f"CIP Read Tag reply for '{tag}' is too short for {name}")
+    value = struct.unpack_from(fmt, body)[0]
+    if type_code == _BOOL:
+        return bool(value)
+    if name == "REAL":
+        return round_real(value)
+    return float(value) if name == "LREAL" else int(value)
+
+
 class EtherNetIPDriver(PLCDriver):
     """
     Allen-Bradley / Rockwell EtherNet/IP driver using pure asyncio CIP over TCP.
@@ -415,6 +446,19 @@ class EtherNetIPDriver(PLCDriver):
         except Exception as exc:
             return False, None, f"EIP BOOL read error: {exc}"
 
+    async def _read(self, address: str, data_type: str) -> Tuple[bool, Any, str]:
+        try:
+            # Not _read_tag(): that one refuses every structure, and a STRING tag is one.
+            data = await self._request(
+                _CIP_READ_TAG, _cip_request(_CIP_READ_TAG, _encode_tag_path(address), struct.pack("<H", 1))
+            )
+            value = coerce_read(_decode_cip_value(address, data), data_type)
+            return True, value, f"EIP READ {address} = {value}"
+        except (CIPError, ValueError) as exc:
+            return False, None, f"EIP READ {address} failed: {exc}"
+        except Exception as exc:
+            return False, None, f"EIP READ {address} error: {exc}"
+
     async def toggle(self, address: str) -> Tuple[bool, str]:
         ok, current, message = await self._read_bool(address)
         if not ok or current is None:
@@ -430,7 +474,7 @@ class EtherNetIPDriver(PLCDriver):
         if not ok1:
             return False, f"EIP PULSE ON failed for {address}: {msg1}"
         try:
-            await asyncio.sleep(duration_ms / 1000.0)
+            await self._pulse_wait(duration_ms)
         finally:
             reset_task = asyncio.create_task(self.reset(address))
             try:

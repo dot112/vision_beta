@@ -48,6 +48,9 @@ class ModbusTCPClient:
         self._io_lock = asyncio.Lock()
         self._coils = [False] * 512
         self._registers = [0] * 512
+        # Simulation mode only: the read-only tables a real device fills itself.
+        self._inputs = [False] * 512
+        self._input_registers = [0] * 512
 
     async def connect(self) -> bool:
         if self._writer is not None:
@@ -155,19 +158,27 @@ class ModbusTCPClient:
             return False, str(exc)
 
     async def read_coils(self, address: int, count: int = 1) -> Tuple[bool, List[bool], Optional[str]]:
+        return await self._read_bits(0x01, self._coils, address, count, "coil")
+
+    async def read_discrete_inputs(self, address: int, count: int = 1) -> Tuple[bool, List[bool], Optional[str]]:
+        """Read discrete inputs (function 2): the read-only bits a device reports, such as its sensors."""
+        return await self._read_bits(0x02, self._inputs, address, count, "discrete input")
+
+    async def _read_bits(self, function: int, simulated: List[bool], address: int, count: int,
+                         name: str) -> Tuple[bool, List[bool], Optional[str]]:
         if address < 0 or address > 0xFFFF or count < 1 or count > 2000 or address + count > 0x10000:
-            return False, [], f"Invalid Modbus coil range {address}..{address + count - 1}"
+            return False, [], f"Invalid Modbus {name} range {address}..{address + count - 1}"
         if self._simulation_active:
-            if address + count > len(self._coils):
-                return False, [], f"Simulation coil range exceeds local memory (0..{len(self._coils)-1})"
-            return True, self._coils[address:address + count], None
+            if address + count > len(simulated):
+                return False, [], f"Simulation {name} range exceeds local memory (0..{len(simulated)-1})"
+            return True, simulated[address:address + count], None
         try:
-            response = await self._exchange(0x01, address, count)
+            response = await self._exchange(function, address, count)
             byte_count = response[8]
-            coil_bytes = response[9:9 + byte_count]
-            if len(coil_bytes) != byte_count or byte_count < (count + 7) // 8:
-                raise ValueError("Incomplete Modbus coil response")
-            values = [bool((coil_bytes[i // 8] >> (i % 8)) & 1) for i in range(count)]
+            bit_bytes = response[9:9 + byte_count]
+            if len(bit_bytes) != byte_count or byte_count < (count + 7) // 8:
+                raise ValueError(f"Incomplete Modbus {name} response")
+            values = [bool((bit_bytes[i // 8] >> (i % 8)) & 1) for i in range(count)]
             return True, values, None
         except ModbusExceptionResponse as exc:
             return False, [], str(exc)
@@ -222,18 +233,26 @@ class ModbusTCPClient:
             return False, str(exc)
 
     async def read_registers(self, address: int, count: int = 1) -> Tuple[bool, List[int], Optional[str]]:
+        return await self._read_words(0x03, self._registers, address, count, "register")
+
+    async def read_input_registers(self, address: int, count: int = 1) -> Tuple[bool, List[int], Optional[str]]:
+        """Read input registers (function 4): the read-only words a device reports, such as a counter."""
+        return await self._read_words(0x04, self._input_registers, address, count, "input register")
+
+    async def _read_words(self, function: int, simulated: List[int], address: int, count: int,
+                          name: str) -> Tuple[bool, List[int], Optional[str]]:
         if address < 0 or address > 0xFFFF or count < 1 or count > 125 or address + count > 0x10000:
-            return False, [], f"Invalid Modbus register range {address}..{address + count - 1}"
+            return False, [], f"Invalid Modbus {name} range {address}..{address + count - 1}"
         if self._simulation_active:
-            if address + count > len(self._registers):
-                return False, [], f"Simulation register range exceeds local memory (0..{len(self._registers)-1})"
-            return True, self._registers[address:address + count], None
+            if address + count > len(simulated):
+                return False, [], f"Simulation {name} range exceeds local memory (0..{len(simulated)-1})"
+            return True, simulated[address:address + count], None
         try:
-            response = await self._exchange(0x03, address, count)
+            response = await self._exchange(function, address, count)
             byte_count = response[8]
             data = response[9:9 + byte_count]
             if byte_count != count * 2 or len(data) != byte_count:
-                raise ValueError("Incomplete Modbus register response")
+                raise ValueError(f"Incomplete Modbus {name} response")
             values = [struct.unpack(">H", data[i:i + 2])[0] for i in range(0, len(data), 2)]
             return True, values, None
         except ModbusExceptionResponse as exc:

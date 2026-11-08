@@ -4,8 +4,9 @@ from __future__ import annotations
 import asyncio
 import math
 import struct
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
+from app.hardware.plc._common import round_real
 from app.hardware.plc.base import PLCDriver
 from app.utils.logger import get_logger
 
@@ -166,7 +167,12 @@ def _build_s7_write_bytes_pdu(parsed: dict, payload: bytes, pdu_ref: int = 1) ->
 
 def _build_s7_read_byte_pdu(parsed: dict, pdu_ref: int = 1) -> bytes:
     """Build a Read Var request for the byte containing a bit address."""
-    params = b"\x04\x01" + _address_spec(parsed, word_len=0x02)
+    return _build_s7_read_bytes_pdu(parsed, 1, pdu_ref)
+
+
+def _build_s7_read_bytes_pdu(parsed: dict, size: int, pdu_ref: int = 1) -> bytes:
+    """Build a Read Var request for ``size`` bytes starting at an address's byte."""
+    params = b"\x04\x01" + _address_spec(parsed, word_len=0x02, count=size)
     return _wrap_s7_request(params, pdu_ref=pdu_ref)
 
 
@@ -355,11 +361,16 @@ class S7Driver(PLCDriver):
 
     async def _read_byte(self, parsed: dict) -> Tuple[bool, Optional[int], str]:
         """Read the byte containing an S7 bit or byte address."""
+        ok, data, message = await self._read_bytes(parsed, 1)
+        return ok, (data[0] if ok and data else None), message
+
+    async def _read_bytes(self, parsed: dict, size: int) -> Tuple[bool, Optional[bytes], str]:
+        """Read ``size`` bytes starting at the byte of an S7 address."""
         if not self.is_connected and not await self.connect():
             return False, None, self.last_error or "S7 not connected"
         async with self._lock:
             try:
-                pdu = _build_s7_read_byte_pdu(parsed, self._next_pdu_ref())
+                pdu = _build_s7_read_bytes_pdu(parsed, size, self._next_pdu_ref())
                 self._writer.write(pdu)
                 await self._writer.drain()
                 resp = await _read_tpkt(self._reader, self.timeout)
@@ -376,11 +387,12 @@ class S7Driver(PLCDriver):
                 data = s7[12 + param_len:]
                 if len(params) < 2 or params[0] != 0x04 or params[1] != 1:
                     raise ConnectionError(f"Unexpected S7 read response parameters ({params.hex()})")
-                if len(data) < 5 or data[0] != 0xFF or data[1] != 0x04 or int.from_bytes(data[2:4], "big") < 8:
+                if len(data) < 4 + size or data[0] != 0xFF or data[1] != 0x04 \
+                        or int.from_bytes(data[2:4], "big") < size * 8:
                     code = data[0] if data else 0
                     raise ConnectionError(f"PLC rejected S7 read (return code 0x{code:02x})")
                 self.last_error = ""
-                return True, data[4], "PLC read acknowledged"
+                return True, bytes(data[4:4 + size]), "PLC read acknowledged"
             except Exception as exc:
                 self.is_connected = False
                 self.last_error = f"S7 read error: {exc}"
@@ -395,6 +407,35 @@ class S7Driver(PLCDriver):
         if not ok or byte_value is None:
             return False, None, message
         return True, bool(byte_value & (1 << parsed["bit"])), message
+
+    async def _read(self, address: str, data_type: str) -> Tuple[bool, Any, str]:
+        parsed = _parse_s7_address(address)
+        kind = parsed["type"]
+        if data_type == "string":
+            raise ValueError("An S7 address is read as a bit or a number; a string cannot be read from it")
+        if kind in ("bit", "db_bit"):
+            ok, bit, message = await self.read_bit(address)
+            if not ok or bit is None:
+                return False, None, message
+            return True, bit, f"S7 READ {address} = {'ON' if bit else 'OFF'}"
+
+        size = _S7_SIZES[kind]
+        wanted = _S7_READ_SIZES.get(data_type)
+        if wanted is not None and wanted != size:
+            needs = "a word address such as MW10 or DB1.DBW2" if wanted == 2 \
+                else "a double-word address such as MD10 or DB1.DBD4"
+            raise ValueError(f"S7 {data_type} needs {needs}, not '{address}'")
+        ok, data, message = await self._read_bytes(parsed, size)
+        if not ok or data is None:
+            return False, None, message
+        value: Any
+        if parsed.get("real") or data_type == "real":
+            value = round_real(struct.unpack(">f", data)[0])
+        else:
+            value = int.from_bytes(data, "big", signed=data_type in ("int16", "int32"))
+        if data_type == "bool":
+            value = value != 0
+        return True, value, f"S7 READ {address} = {value}"
 
     async def _write_bit(self, address: str, value: bool) -> Tuple[bool, str]:
         """Write one BOOL with a native S7 bit write.
@@ -455,7 +496,7 @@ class S7Driver(PLCDriver):
             suffix = "OFF cleanup acknowledged" if ok_off else f"OFF cleanup failed: {off_msg}"
             return False, f"S7 PULSE ON failed for {address}; {suffix}"
         try:
-            await asyncio.sleep(duration_ms / 1000.0)
+            await self._pulse_wait(duration_ms)
         finally:
             reset_task = asyncio.create_task(self.reset(address))
             try:
@@ -482,6 +523,10 @@ class S7Driver(PLCDriver):
         ok, msg = await self._send_pdu(pdu)
         return ok, f"S7 WRITE {address} = {shown} — {msg}"
 
+
+# Bytes behind each kind of address, and the bytes each read type needs.
+_S7_SIZES = {"byte": 1, "db_byte": 1, "word": 2, "db_word": 2, "dword": 4, "db_dword": 4}
+_S7_READ_SIZES = {"int16": 2, "uint16": 2, "int32": 4, "real": 4}
 
 _S7_INTEGER_RANGES = {
     1: (-128, 255, "BYTE (-128..255)"),

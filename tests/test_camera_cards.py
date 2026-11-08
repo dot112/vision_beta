@@ -311,7 +311,7 @@ def _v7_state():
 def test_version_8_copies_the_lines_count_lines_into_its_cameras():
     state = _v7_state()
     before = copy.deepcopy(state)
-    assert upgrade_state(state) is True and state["schema_version"] == SCHEMA_VERSION == 8
+    assert upgrade_state(state) is True and state["schema_version"] == SCHEMA_VERSION == 9
     main, reader = state["lines"][0]["cameras"]
     assert (main["line1_position"], main["line2_position"], main["orientation"]) == (0.25, 0.55, "vertical")
     assert not any(key in reader for key in ("line1_position", "line2_position", "orientation"))

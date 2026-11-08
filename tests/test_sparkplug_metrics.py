@@ -29,6 +29,14 @@ def test_a_lines_metrics():
     assert got["Commands/Reset Counters"] == (DataType.Boolean, False)
 
 
+def test_a_line_publishes_its_batch_number():
+    """Always in the birth (empty without a batch), so a batch set later needs no new birth."""
+    got = {m.name: (m.datatype, m.value) for m in line_metrics(VIEW)}
+    assert got["Line/Batch"] == (DataType.String, "")
+    got = {m.name: (m.datatype, m.value) for m in line_metrics({**VIEW, "batch": "WO-2026-118"})}
+    assert got["Line/Batch"] == (DataType.String, "WO-2026-118")
+
+
 def test_a_birth_never_lists_a_metric_twice():
     view = {**VIEW, "counts": {"a/b": 1, "": 2}, "classes": ["a/b", "A/B", "a_b"],
             "cameras": [{"camera_id": "c1", "name": "Top", "connected": True}, {"camera_id": "c2", "name": "Top", "connected": False},

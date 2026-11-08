@@ -111,12 +111,13 @@ async def get_current_user(
                 required_scopes.add("plc:configure")
 
         # A line's PLC cards are executable too: sending them needs plc:configure.
+        # So are its PLC signal cards, which start and stop the line.
         if request.url.path.rstrip("/").startswith("/api/v1/lines") and request.method in {"POST", "PUT", "PATCH"}:
             try:
                 body = await request.json()
             except Exception:
                 body = {}
-            if isinstance(body, dict) and "plc_actions" in body:
+            if isinstance(body, dict) and ("plc_actions" in body or "plc_inputs" in body):
                 required_scopes.add("plc:configure")
 
         endpoint_path = request.url.path.rstrip("/")
@@ -229,6 +230,21 @@ def require_clearance(min_level: int) -> Callable:
         return current_user
 
     return _clearance_checker
+
+
+async def enforce_config_lock(request: Request) -> None:
+    """While the configuration is locked, refuse every change that is not on the free list
+    (app/security/config_lock.py). Runs after the sign-in, before the route's own checks."""
+    from app.security.config_lock import LOCKED_MESSAGE, blocks_when_locked
+    from app.services.config_lock_service import ConfigLockService
+
+    route = request.scope.get("route")
+    route_path = getattr(route, "path", None) or request.url.path
+    # FastAPI 0.142 hands over the router module's own route, without the /api/v1 it is included under.
+    if not route_path.startswith("/api/v1/"):
+        route_path = "/api/v1" + route_path
+    if blocks_when_locked(request.method, route_path) and ConfigLockService.is_locked():
+        raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=LOCKED_MESSAGE)
 
 
 require_operator = require_clearance(1)    # Level 1+ (Operator, Supervisor, Admin)

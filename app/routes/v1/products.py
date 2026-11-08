@@ -85,7 +85,8 @@ async def list_product_lists(db: AsyncSession = Depends(get_db), user: User = De
 @router.post("/lists", status_code=201, summary="Create an empty product list (Level 2+ Supervisor)")
 async def create_product_list(body: Dict[str, Any], db: AsyncSession = Depends(get_db), user: User = Depends(require_supervisor)) -> Dict[str, Any]:
     try:
-        product_list = await ProductService.create_list(db, body.get("name"))
+        product_list = await ProductService.create_list(db, body.get("name"), fields=body.get("fields"),
+                                                        code_format=body.get("code_format"))
     except ProductListLimit as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
@@ -94,16 +95,56 @@ async def create_product_list(body: Dict[str, Any], db: AsyncSession = Depends(g
     return {**product_list, "used_by": []}
 
 
-@router.put("/lists/{list_id}", summary="Rename a product list (Level 2+ Supervisor)")
+@router.put("/lists/{list_id}", summary="Rename a product list or change its fields (Level 2+ Supervisor)")
 async def rename_product_list(list_id: str, body: Dict[str, Any], db: AsyncSession = Depends(get_db), user: User = Depends(require_supervisor)) -> Dict[str, Any]:
+    """``name``: the list's new name. ``fields``: the list's fields, ``[{"key", "label", "type"}]``
+    with the type number, text or yes_no. Values that no longer fit their field are removed;
+    ``dropped`` says how many."""
     try:
-        product_list = await ProductService.rename_list(db, list_id, body.get("name"))
+        product_list = await ProductService.update_list(db, list_id, name=body.get("name"), fields=body.get("fields"),
+                                                        code_format=body.get("code_format"))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if product_list is None:
         raise HTTPException(status_code=404, detail="Product list not found")
-    _audit(user, "RENAME_PRODUCT_LIST", f"Renamed a product list to '{product_list['name']}'")
+    if body.get("name") is not None:
+        _audit(user, "RENAME_PRODUCT_LIST", f"Renamed a product list to '{product_list['name']}'")
+    if body.get("fields") is not None:
+        _audit(user, "CHANGE_PRODUCT_FIELDS",
+               f"Changed the fields of '{product_list['name']}' ({product_list['dropped']} value(s) removed)")
+    if body.get("code_format") is not None:
+        _audit(user, "CHANGE_CODE_FORMAT",
+               f"Changed the code format of '{product_list['name']}' to {product_list['code_format']['mode']}")
     return {**product_list, "used_by": await _readers(db, list_id)}
+
+
+@router.post("/lists/{list_id}/code/check", summary="Try a code against a list's code format (Level 2+ Supervisor)")
+async def check_code(list_id: str, body: Dict[str, Any], db: AsyncSession = Depends(get_db),
+                     user: User = Depends(require_supervisor)) -> Dict[str, Any]:
+    """``{"code", "code_format"?}``: the product ID and the batch the code holds, the product it
+    finds in the list (or null), and why it does not fit (``problem``). With ``code_format`` that
+    format is tried instead of the list's own; nothing is saved."""
+    from app.services.code_format import normalize_code_format
+    from app.services.product_service import product_catalog
+
+    code = body.get("code")
+    if not isinstance(code, str) or not code.strip() or len(code) > 512:
+        raise HTTPException(status_code=422, detail="Send the code to try as text of 1 to 512 characters")
+    if await ProductService.get_list(db, list_id) is None:
+        raise HTTPException(status_code=404, detail="Product list not found")
+    fmt = None
+    if body.get("code_format") is not None:
+        try:
+            fmt = normalize_code_format(body["code_format"])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    found = product_catalog.match(code, list_id, fmt=fmt)
+    return {
+        "product_id": found.product_id,
+        "batch": found.batch,
+        "problem": found.problem,
+        "product": product_catalog.product_info(found.product, list_id) if found.product else None,
+    }
 
 
 @router.delete("/lists/{list_id}", summary="Delete a product list and its codes (Level 2+ Supervisor)")

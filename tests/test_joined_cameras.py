@@ -218,7 +218,7 @@ def test_a_client_that_does_not_send_the_join_settings_keeps_them(lines):
 def test_version_8_settings_load_without_the_new_keys(lines):
     state = copy.deepcopy(DEFAULT_STATE)
     upgrade_state(state)
-    assert state["schema_version"] == SCHEMA_VERSION == 8
+    assert state["schema_version"] == SCHEMA_VERSION == 9
     # A file saved before the join settings existed: a camera set to "join" with none of them.
     state["lines"].append({"id": "line-old", "name": "Old", "enabled": True, "sync": {"enabled": False, "window_ms": 500},
                            "cameras": [
@@ -385,7 +385,7 @@ def test_a_crossing_that_matches_no_product_is_dropped_and_counted(lines):
 def test_joined_camera_sync_and_a_code_check_give_one_result(lines):
     runtime = _line(lines, [
         {"camera_id": "top"}, _joined("side", 150, 100),
-        {"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed", "qr_no_read": "reject"},
+        {"camera_id": "qr", "role": "qr", "product_list_id": LIST, "qr_action": "accept_listed", "qr_trigger": "signal", "qr_no_read": "reject"},
     ])
     assert runtime.sync_enabled
     side = runtime.aux_counters["side"]
@@ -478,7 +478,7 @@ def test_the_travel_delay_warning_names_the_card_and_the_camera():
     # An upstream camera's result is there when the counting camera sees the product.
     assert line_warnings(_warning_line(_joined("before", -400, 300), plc_actions=[{**gate, "delay_ms": 0}])) == []
     # With a code check too, the longer of the two waits is named.
-    reader = {"camera_id": "qr", "role": "qr", "qr_action": "accept_listed", "product_list_id": LIST}
+    reader = {"camera_id": "qr", "role": "qr", "qr_action": "accept_listed", "qr_trigger": "line1", "product_list_id": LIST}
     (sync_first,) = line_warnings(_warning_line(_joined("side", 100, 100), reader, plc_actions=[{**gate, "delay_ms": 300}]))
     assert "Sync window (500 ms)" in sync_first
     (join_first,) = line_warnings(_warning_line(_joined("side", 400, 300), reader, plc_actions=[gate]))

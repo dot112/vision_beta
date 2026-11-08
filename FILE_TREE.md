@@ -21,10 +21,12 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 ├── pyproject.toml
 ├── README.md
 ├── requirements-dev.txt
+├── requirements-industrial.txt   # optional: GigE Vision / USB3 Vision cameras (harvesters)
 ├── requirements-runtime.txt
 ├── requirements-training.txt
 ├── requirements.txt
 ├── start_server.bat
+├── THIRD_PARTY_NOTICES.md
 ├── terms_of_use.html
 ├── .github/
 │   └── workflows/
@@ -37,7 +39,8 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │       ├── 0003_encrypted_api_key_secrets.py
 │       ├── 0004_products.py
 │       ├── 0005_product_lists.py
-│       └── 0006_product_records.py
+│       ├── 0006_product_records.py
+│       └── 0007_product_data.py   # product_lists.fields and products.data
 ├── app/
 │   ├── __init__.py
 │   ├── config.py
@@ -67,6 +70,9 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │   ├── action_engine.py
 │   │   ├── flow_engine.py
 │   │   ├── inference_engine.py
+│   │   ├── pattern_check.py      # pattern check: one picture's Match % and defects per check
+│   │   ├── pattern_find.py       # pattern check: the edge-shape search (coarse to fine, turned)
+│   │   ├── pattern_training.py   # pattern check: a reference set and suggested thresholds from good samples
 │   │   ├── qr_engine.py
 │   │   ├── rule_engine.py
 │   │   └── tracker.py
@@ -81,7 +87,9 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │   ├── camera/
 │   │   │   ├── __init__.py
 │   │   │   ├── base.py
-│   │   │   ├── gige_camera.py
+│   │   │   ├── genicam_backend.py   # the calls into the GenICam library (the only file that imports harvesters)
+│   │   │   ├── genicam_sim.py       # a stand-in industrial camera (tests, and GENTL_CTI_PATH=simulator)
+│   │   │   ├── gige_camera.py       # GigE Vision / USB3 Vision driver: trigger modes, the picture queue
 │   │   │   ├── http_capture.py
 │   │   │   ├── ip_camera.py
 │   │   │   └── usb_camera.py
@@ -125,6 +133,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │       ├── flows.py
 │   │       ├── health.py
 │   │       ├── lines.py
+│   │       ├── match.py             # Line setup's pattern check: picture, draft, Train, preview
 │   │       ├── models.py
 │   │       ├── mqtt.py
 │   │       ├── plc.py
@@ -164,26 +173,37 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   │   ├── card_triggers.py
 │   │   ├── counting_service.py
 │   │   ├── discovery_service.py
+│   │   ├── handshake.py   # result handshake state machine: capture request -> result -> PLC acknowledge
 │   │   ├── health_service.py
+│   │   ├── held_pictures.py      # the still picture Line setup's text reader and pattern check set up on
 │   │   ├── line_config.py
 │   │   ├── line_service.py
+│   │   ├── match_references.py   # pattern check reference sets and drafts (data/match-references)
+│   │   ├── match_service.py      # one pattern check thread per camera, its video overlay
 │   │   ├── modbus_service.py
 │   │   ├── model_service.py
 │   │   ├── mqtt_service.py
+│   │   ├── opcua_cert_service.py    # uploaded client certificates and keys of secured OPC UA channels
 │   │   ├── opcua_discovery_service.py
 │   │   ├── ota_service.py
 │   │   ├── plc_dispatcher_service.py
+│   │   ├── event_values.py   # one set of value names per event (result, class, code, product.*, input.*)
+│   │   ├── formula.py   # the formula language of output actions (ast whitelist, never eval) and compare()
 │   │   ├── plc_failsafe_service.py
+│   │   ├── plc_input_service.py   # PLC signals: reads each channel's signal cards and acts on the line
+│   │   ├── product_fields.py   # a list's fields and a product's values: checks, CSV cells
 │   │   ├── product_service.py
 │   │   ├── production_records_service.py   # recorder (queue + batch writer, retention), filters, summary, restored counters
 │   │   ├── qr_service.py
 │   │   ├── records_export.py   # CSV and .xlsx (zipfile + XML) files of the records
+│   │   ├── rules.py   # only-when rules of cards and product checks
 │   │   ├── rule_service.py
 │   │   ├── send_dispatcher_service.py
 │   │   ├── settings_persistence_service.py
 │   │   ├── sparkplug_metrics.py
 │   │   ├── sparkplug_service.py
 │   │   ├── tcp_channels.py
+│   │   ├── trigger_inspection.py   # one picture, one product, for a vision camera in trigger mode
 │   │   ├── telemetry_service.py
 │   │   └── vision_service.py
 │   ├── state/
@@ -206,23 +226,38 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │       └── shared_memory.py
 ├── assets/
 │   ├── camera_settings.js     # a camera's image/video settings form (Line setup cards, Cameras dialog)
+│   ├── card_values.js         # card dialogs: the value names a card can use, what a card writes
 │   ├── dashboard.css
+│   ├── help_tips.js           # help icons: the data-help text of a button, drop-down or menu item on hover, focus or tap
+│   ├── plc_signals.js         # the PLC signals (inputs) step of Line setup: cards, dialog, live values
+│   ├── product_fields.js      # Products page: the fields editor and a product's values
+│   ├── pattern_check.js       # Line setup's Pattern and checks page, Latest pattern checks
 │   ├── production_lines.js    # lines, Line setup camera cards, Line dashboard camera strip
-│   ├── zajel_logo.png
-│   ├── zajel_logo_small.png
+│   ├── universalz_logo.png       # the wordmark, light theme
+│   ├── universalz_logo_dark.png  # the wordmark with near-white letters, dark theme
+│   ├── universalz_mark.png       # the Z mark: page icon
 │   └── fonts/
 │       ├── inter-latin.woff2
 │       └── Inter-LICENSE.txt
 ├── docs/
-│   └── progress/          # handoff files: the work split into 5 sections (README.md first)
-│       ├── README.md
-│       ├── section-1-logic-fixes.md
-│       ├── section-2-camera-cards.md
-│       ├── section-3-joined-cameras.md
-│       ├── section-4-product-records.md
-│       ├── section-5-plc-inputs.md
-│       ├── session-prompts.md   # the first message for each section's session
-│       └── screenshots/         # dashboard screenshots a section took (section-2/, section-3/: Line setup, Line dashboard; section-4/: Production records)
+│   ├── progress/          # handoff files: the work split into 5 sections (README.md first)
+│   │   ├── README.md
+│   │   ├── section-1-logic-fixes.md
+│   │   ├── section-2-camera-cards.md
+│   │   ├── section-3-joined-cameras.md
+│   │   ├── section-4-product-records.md
+│   │   ├── section-5-plc-inputs.md
+│   │   ├── session-prompts.md   # the first message for each section's session
+│   │   └── screenshots/         # dashboard screenshots a section took (section-2/, section-3/: Line setup, Line dashboard; section-4/: Production records; section-5/: PLC signals, their dialog, the batch field)
+│   ├── real-life-tests/
+│   │   └── triggered-cameras.md # what to check on the first real industrial camera, step by step
+│   └── superpowers/
+│       ├── plans/           # the step-by-step plan a piece of work was built from
+│       │   ├── 2026-10-06-sparkplug-b.md
+│       │   ├── 2026-10-12-section-5-plc-inputs.md
+│       │   └── 2026-10-13-triggered-industrial-cameras.md
+│       └── specs/
+│           └── 2026-10-06-sparkplug-b-design.md
 ├── docker/
 │   ├── mosquitto/
 │   │   ├── mosquitto.conf
@@ -233,6 +268,7 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
 │   ├── modbus port502 test.py
 │   ├── opc au tag control.py
 │   ├── opc ua server scan detection and DB control.py
+│   ├── industrial_camera_check.py   # lists the industrial cameras found and prints what one offers
 │   ├── plc_simulator.py
 │   └── test_modbus_full.py
 └── tests/
@@ -243,38 +279,62 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_alarm_events.py
     ├── test_api.py
     ├── test_auto_connect.py
+    ├── test_batch.py
     ├── test_bundled_broker.py
     ├── test_bytetrack_kalman.py
     ├── test_camera_cards.py
     ├── test_camera_models.py
     ├── test_camera_orientation.py
     ├── test_camera_roi_and_qr.py
+    ├── test_camera_trigger_modes.py # triggered cameras on a line: products and code reads from each picture
+    ├── test_card_rules.py        # Only when on output actions and send cards
+    ├── test_card_values_js.py    # assets/card_values.js, run with node
     ├── test_code_types.py
     ├── test_detect_hardware.py
     ├── test_error_alarms.py
+    ├── test_event_values.py      # one set of value names per event; input value names
     ├── test_flow_engine.py
+    ├── test_formula.py           # the formula language: what it computes and what it refuses
     ├── test_health.py
+    ├── test_help_tips.py         # every button, drop-down and menu item has help text; assets/help_tips.js with node
     ├── test_ip_camera_http.py
+    ├── test_industrial_camera.py    # the GigE / USB3 Vision driver and its API, on a stand-in camera
+    ├── test_input_trigger.py     # the trigger Input changed
+    ├── test_inputs_see_output_pulses.py # an input reads what an output action's pulse switches on
     ├── test_joined_cameras.py
     ├── test_lines.py
     ├── test_lines_api.py
     ├── test_logic_fixes.py
     ├── test_messages_and_plc_values.py
     ├── test_mqtt_channels.py
+    ├── test_network_camera_channel.py # the network camera card: IP camera or GigE Vision
+    ├── test_opcua_certs.py          # uploading and choosing OPC UA certificates and keys
+    ├── test_opcua_tag_names.py      # an OPC UA address as a tag's name: finding its full NodeId
     ├── test_mqtt_client.py
     ├── test_plc_action_persistence.py
     ├── test_plc_dispatcher.py
     ├── test_plc_drivers.py
     ├── test_plc_failsafe.py
+    ├── test_plc_inputs.py
+    ├── test_plc_inputs_e2e.py   # a real Modbus TCP driver against test codes/plc_simulator.py
     ├── test_plc_protocols.py
+    ├── test_plc_read.py
+    ├── test_product_checks.py    # product checks: settings, reason product_check, Sync, export column
+    ├── test_product_data.py      # migration 0007, fields and data in the API and CSV, the product with the item
+    ├── test_product_fields.py
+    ├── test_product_fields_js.py # assets/product_fields.js, run with node
     ├── test_product_lists.py
     ├── test_production_records.py
     ├── test_qr_trigger.py
     ├── test_reader_actions.py
+    ├── test_reject_confirmation.py
     ├── test_request_load_protection.py
     ├── test_resilience.py
     ├── test_rule_engine.py
+    ├── test_rules.py             # only-when rules
+    ├── test_segment_masks.py        # segmentation masks worked out inside each object's box
     ├── test_send_cards.py
+    ├── test_send_timer.py           # send cards with the Timer trigger: a message every N ms
     ├── test_session_and_continuous_vision.py
     ├── test_snapshot_width.py
     ├── test_sparkplug_api.py
@@ -283,7 +343,12 @@ Curated source, configuration, dashboard, and test files for the Industrial Visi
     ├── test_sparkplug_metrics.py
     ├── test_sparkplug_node.py
     ├── test_sparkplug_service.py
-    └── test_vision_pipeline.py
+    ├── test_tokens.py               # which sign-in tokens are accepted (hand-built JWTs)
+    ├── test_trigger_inspection.py
+    ├── test_trigger_numbers.py      # a Take a picture input's trigger number; the triggers a camera ticks
+    ├── test_video_overlay.py        # the video's status bar: same size on screen; a stopped line says so
+    ├── test_vision_pipeline.py
+    └── test_write_any_value.py   # value sources, If no value, text writes, the formula check, Test with a code
 ```
 
 ## Environment and runtime files not listed

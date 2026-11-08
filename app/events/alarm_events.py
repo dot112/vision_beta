@@ -51,10 +51,16 @@ class AlarmCode:
     """Well-known alarm codes. Free-form codes are allowed; these keep callers consistent."""
 
     CAMERA_MODEL_UNAVAILABLE = "camera.model_unavailable"
+    CAMERA_TRIGGER_OVERRUN = "camera.trigger_overrun"
+    CAMERA_PICTURE_MISSING = "camera.picture_missing"
+    CAMERA_PICTURE_UNPAIRED = "camera.picture_unpaired"
     PLC_CONNECT_FAILED = "plc.connect_failed"
     PLC_DISCONNECT_ERROR = "plc.disconnect_error"
     PLC_ACTION_FAILED = "plc.action_failed"
     PLC_ACTION_TIMEOUT = "plc.action_timeout"
+    PLC_ACTION_NOT_CONFIRMED = "plc.action_not_confirmed"
+    PLC_INPUT_FAILED = "plc.input_failed"
+    PLC_INPUT_ALARM = "plc.input_alarm"
     FLOW_ACTION_FAILED = "flow.action_failed"
     FLOW_NODE_ERROR = "flow.node_error"
     FLOW_RUN_FAILED = "flow.run_failed"
@@ -64,6 +70,20 @@ class AlarmCode:
     SEND_CHANNEL_DOWN = "send.channel_down"
     RECORDS_DROPPED = "records.dropped"
     RECORDS_WRITE_FAILED = "records.write_failed"
+    LINE_CODES_SHOW_ONLY = "line.codes_show_only"
+    LINE_INSPECTION_TIMEOUT = "line.inspection_timeout"
+    LINE_ACK_TIMEOUT = "line.ack_timeout"
+    LINE_HANDSHAKE_FAULT = "line.handshake_fault"
+    LINE_SORTING_MISMATCH = "line.sorting_mismatch"
+    STORAGE_LOW = "storage.low"
+    STORAGE_FULL = "storage.full"
+    STORAGE_RECORDS_LOST = "storage.records_lost"
+    STORAGE_CLOCK_CHECK = "storage.clock_check"
+    STORAGE_SETTINGS_RESTORED = "storage.settings_restored"
+    STORAGE_DATABASE_RESTORED = "storage.database_restored"
+    STORAGE_ARCHIVE_FAILED = "storage.archive_failed"
+    STORAGE_BACKUP_FAILED = "storage.backup_failed"
+    STORAGE_COPY_FAILED = "storage.copy_failed"
 
 
 # Every well-known alarm, for pick-lists such as a PLC action's "Alarm" trigger.
@@ -76,19 +96,52 @@ ALARM_CATALOG: List[Dict[str, str]] = [
      "description": "A camera on the line is not connected."},
     {"code": "camera.stalled", "label": "Camera stalled", "group": "Cameras",
      "severity": "critical", "scope": "line",
-     "description": "A connected camera on the line has sent no new frame for a few seconds."},
+     "description": "A connected camera on the line has sent no new frame for a few seconds, or a triggered camera has stopped answering."},
     {"code": "camera.model_unavailable", "label": "Camera has no model it can run", "group": "Cameras",
      "severity": "critical", "scope": "line",
      "description": "A vision camera on the running line has no model, or its model could not be loaded: nothing is detected on it."},
+    {"code": "camera.trigger_overrun", "label": "Camera pictures arrive faster than they are inspected", "group": "Cameras",
+     "severity": "warning", "scope": "line",
+     "description": "A triggered camera took pictures faster than its line could inspect them: the oldest waiting pictures were dropped and their products were not counted."},
+    {"code": "camera.picture_missing", "label": "A trigger got no picture", "group": "Cameras",
+     "severity": "warning", "scope": "line",
+     "description": "A camera on One picture per trigger got no picture for a trigger (no frame in time, or the camera is not connected): the product was rejected with the reason \"no picture\". Cleared by the camera's next picture."},
+    {"code": "camera.picture_unpaired", "label": "Camera pictures without a trigger notice", "group": "Cameras",
+     "severity": "warning", "scope": "line",
+     "description": "A camera that takes its own pictures with a trigger notice took 3 pictures in a row that no notice claimed (late or extra): they were not inspected. Cleared by the next picture paired with a notice."},
     {"code": "line.fps_low", "label": "Line frame rate low", "group": "Lines",
      "severity": "warning", "scope": "line",
      "description": "The running line processes fewer frames/s than its minimum; counts may be missed."},
-    {"code": "plc.action_failed", "label": "PLC action failed", "group": "PLC",
+    {"code": "line.codes_show_only", "label": "Codes only shown", "group": "Lines",
+     "severity": "warning", "scope": "line",
+     "description": "Since the settings upgrade a camera of the line reads codes Continuously, which only shows them; choose when it reads codes on Line setup."},
+    {"code": "line.inspection_timeout", "label": "No inspection result in time", "group": "Lines",
      "severity": "critical", "scope": "line",
-     "description": "One of the line's PLC actions could not be sent."},
-    {"code": "plc.action_timeout", "label": "PLC action timed out", "group": "PLC",
+     "description": "The result handshake got no result for a capture request within its result timeout, and is set to raise a fault."},
+    {"code": "line.ack_timeout", "label": "PLC did not acknowledge the result", "group": "Lines",
+     "severity": "warning", "scope": "line",
+     "description": "The result handshake sent a result, but the PLC's acknowledge input did not come within its ack timeout."},
+    {"code": "line.handshake_fault", "label": "Result handshake out of step", "group": "Lines",
+     "severity": "warning", "scope": "line",
+     "description": "The PLC asked for a new picture before it acknowledged the last result, or before that result came."},
+    {"code": "line.sorting_mismatch", "label": "Product in the wrong outfeed", "group": "Lines",
      "severity": "critical", "scope": "line",
-     "description": "The PLC did not answer one of the line's PLC actions; whether the output fired is unknown."},
+     "description": "A sorting verification camera saw a product in the outfeed that does not match its result."},
+    {"code": "plc.action_failed", "label": "Output action failed", "group": "PLC",
+     "severity": "critical", "scope": "line",
+     "description": "One of the line's output actions could not be sent."},
+    {"code": "plc.action_timeout", "label": "Output action timed out", "group": "PLC",
+     "severity": "critical", "scope": "line",
+     "description": "The PLC did not answer one of the line's output actions; whether the output fired is unknown."},
+    {"code": "plc.action_not_confirmed", "label": "Output action not confirmed", "group": "PLC",
+     "severity": "critical", "scope": "line",
+     "description": "One of the line's output actions was sent, but its confirmation input did not come in time."},
+    {"code": "plc.input_failed", "label": "Input cannot be read", "group": "PLC",
+     "severity": "warning", "scope": "line",
+     "description": "One of the line's inputs could not be read from the PLC."},
+    {"code": "plc.input_alarm", "label": "Alarm from an input", "group": "PLC",
+     "severity": "warning", "scope": "line",
+     "description": "An input with the action 'Raise an alarm' is on. The input sets its text and severity."},
     {"code": "plc.connect_failed", "label": "PLC cannot connect", "group": "PLC",
      "severity": "critical", "scope": "server",
      "description": "The server cannot reach a PLC connection."},
@@ -131,6 +184,33 @@ ALARM_CATALOG: List[Dict[str, str]] = [
     {"code": "records.write_failed", "label": "Product records not written", "group": "Records",
      "severity": "critical", "scope": "server",
      "description": "The product records could not be written to the database several times in a row; they are kept and retried."},
+    {"code": "storage.low", "label": "Disk nearly full", "group": "Storage",
+     "severity": "warning", "scope": "server",
+     "description": "The disk that holds the server's data is nearly full."},
+    {"code": "storage.full", "label": "Disk below its free-space floor", "group": "Storage",
+     "severity": "critical", "scope": "server",
+     "description": "Less free space than the floor is left; the oldest data is being deleted to make room."},
+    {"code": "storage.records_lost", "label": "Records deleted for space", "group": "Storage",
+     "severity": "critical", "scope": "server",
+     "description": "Records that were in no archive file were deleted early to keep the disk from filling."},
+    {"code": "storage.clock_check", "label": "Clock check: deleting paused", "group": "Storage",
+     "severity": "warning", "scope": "server",
+     "description": "The clock looks wrong, so old data is not deleted by age until an Admin confirms the clock on Data and backups."},
+    {"code": "storage.settings_restored", "label": "Settings restored from a copy", "group": "Storage",
+     "severity": "critical", "scope": "server",
+     "description": "The settings file could not be read; a saved copy (or the defaults) was loaded and the damaged file kept."},
+    {"code": "storage.database_restored", "label": "Database rebuilt", "group": "Storage",
+     "severity": "critical", "scope": "server",
+     "description": "The database was damaged; it was set aside and rebuilt from the newest backup and the archive."},
+    {"code": "storage.archive_failed", "label": "Records archive failed", "group": "Storage",
+     "severity": "warning", "scope": "server",
+     "description": "Records could not be written to their archive file; old records are kept until it works."},
+    {"code": "storage.backup_failed", "label": "Backup failed", "group": "Storage",
+     "severity": "warning", "scope": "server",
+     "description": "A backup could not be made; it is tried again every hour."},
+    {"code": "storage.copy_failed", "label": "Second backup folder not written", "group": "Storage",
+     "severity": "warning", "scope": "server",
+     "description": "Backups and archive files could not be copied to the second folder (BACKUP_COPY_DIR)."},
 ]
 
 

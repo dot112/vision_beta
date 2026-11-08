@@ -20,7 +20,7 @@ aiosqlite>=0.22.1
 greenlet>=3.5.6
 
 # ─── Auth & Security ───────────────────────────────────────────────────────────
-python-jose[cryptography]>=3.5.0
+PyJWT>=2.10.1
 passlib[bcrypt]>=1.7.4
 bcrypt>=5.0.0
 python-multipart>=0.0.32
@@ -31,6 +31,7 @@ httpx>=0.28.1
 httpcore>=1.0.9
 websockets>=17.1
 requests>=2.34.2
+urllib3>=2.8.0                  # requests' HTTP library; 2.8.0 fixes CVE-2026-97687/97688/97689
 paho-mqtt>=2.1.0
 # Sparkplug B payloads (app/hardware/mqtt/sparkplug_codec.py). ONNX Runtime needs it too.
 protobuf>=4.25
@@ -42,6 +43,7 @@ opencv-python-headless>=5.0.0.93   # headless (server); swap for opencv-python o
 numpy>=2.5.3
 pillow>=12.3.0
 zxing-cpp>=2.2,<4             # QR / Data Matrix / 1D code reader with corner points (wheels for x86-64 and arm64)
+rapidocr==3.10.*             # OCR: PaddleOCR's PP-OCR models on ONNX Runtime (text reader cameras)
 
 # Use one ONNX Runtime distribution per platform to avoid provider-package conflicts.
 onnxruntime-directml>=1.24.4; platform_system == "Windows"
@@ -49,6 +51,7 @@ onnxruntime>=1.30.0; platform_system != "Windows"
 
 # ─── Monitoring & Utilities ────────────────────────────────────────────────────
 psutil>=7.2.2                   # System resource monitoring
+nvidia-ml-py>=12.535            # GPU usage on NVIDIA cards (System usage in the top bar)
 nvidia-ml-py>=13.615.71         # NVIDIA GPU stats (optional, Windows/Linux)
 PyYAML>=6.0.3
 packaging>=26.3

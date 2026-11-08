@@ -6,10 +6,13 @@ temporary database; inference, cameras and PLC outputs are faked in conftest.
 from __future__ import annotations
 
 import io
+import os
+import uuid
 
 import pytest
 
 API = "/api/v1"
+ADMIN_PASSWORD = os.environ["ADMIN_INITIAL_PASSWORD"]  # set by conftest
 
 
 # ── Public and auth ───────────────────────────────────────────────────────────
@@ -57,6 +60,27 @@ def test_operator_cannot_create_rules(client, admin_headers):
         "name": "nope", "condition_field": "defect_count", "operator": "gt", "threshold_value": "0",
     })
     assert res.status_code == 403
+
+
+def test_a_new_account_needs_a_password_of_at_least_6_characters(client, admin_headers):
+    name = f"pw_{uuid.uuid4().hex[:8]}"
+    short = client.post(f"{API}/auth/users", headers=admin_headers, json={
+        "username": name, "password": "five5", "role": "operator", "clearance_level": 1})
+    assert short.status_code == 422, short.text
+
+    made = client.post(f"{API}/auth/users", headers=admin_headers, json={
+        "username": name, "password": "six666", "role": "operator", "clearance_level": 1})
+    assert made.status_code == 201, made.text
+    client.delete(f"{API}/auth/users/{made.json()['id']}", headers=admin_headers)
+
+
+def test_a_password_cannot_be_changed_to_one_shorter_than_6_characters(client, admin_headers):
+    res = client.post(f"{API}/auth/change-password", headers=admin_headers, json={
+        "current_password": ADMIN_PASSWORD, "new_password": "five5"})
+    assert res.status_code == 422, res.text
+    still = client.post(f"{API}/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD, "force": True})
+    assert still.status_code == 200
+    admin_headers["Authorization"] = f"Bearer {still.json()['access_token']}"
 
 
 def test_api_key_scopes_are_enforced(client, admin_headers):
@@ -283,6 +307,44 @@ def test_plc_action_cards_list(client, admin_headers):
 
 def test_dashboard_is_served_to_local_clients(client):
     res = client.get("/dashboard")
+    assert res.status_code == 200
+    assert 'id="loginScreen"' in res.text
+
+
+def _client_at(client, address):
+    from fastapi.testclient import TestClient
+    return TestClient(client.app, client=(address, 50000))
+
+
+@pytest.mark.parametrize("host_header", ["vision.example.com", "localhost", "127.0.0.1:8000"])
+def test_dashboard_is_refused_to_an_internet_address_whatever_host_it_names(client, host_header):
+    # The Host header is the client's own text: naming localhost must not pass the network check.
+    res = _client_at(client, "8.8.8.8").get("/dashboard", headers={"Host": host_header})
+    assert res.status_code == 403
+    assert 'id="loginScreen"' not in res.text
+    # The refusal page loads nothing from other servers (fonts included).
+    assert "https://" not in res.text and "http://" not in res.text
+
+
+def _policy(res) -> dict:
+    header = res.headers.get("Content-Security-Policy", "")
+    return {part.split()[0]: part.split()[1:] for part in header.split(";") if part.strip()}
+
+
+@pytest.mark.parametrize("page,address", [("/dashboard", "127.0.0.1"), ("/terms-of-use", "127.0.0.1"), ("/dashboard", "8.8.8.8")])
+def test_pages_tell_the_browser_to_load_scripts_from_and_send_data_to_this_server_only(client, page, address):
+    # An injected script then cannot load code from elsewhere or send a token away.
+    policy = _policy(_client_at(client, address).get(page))
+    assert policy.get("default-src") == ["'self'"]
+    assert policy.get("connect-src") == ["'self'"]
+    assert set(policy.get("script-src", ["*"])) <= {"'self'", "'unsafe-inline'"}
+    assert policy.get("object-src") == ["'none'"]
+    assert policy.get("base-uri") == ["'none'"]
+    assert policy.get("frame-ancestors") == ["'none'"]
+
+
+def test_dashboard_is_served_to_a_plant_network_address(client):
+    res = _client_at(client, "192.168.1.20").get("/dashboard", headers={"Host": "192.168.1.5:8000"})
     assert res.status_code == 200
     assert 'id="loginScreen"' in res.text
 

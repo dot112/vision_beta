@@ -69,7 +69,7 @@ class PLCActionStatus(BaseModel):
     """Live execution status for a single PLC Action card."""
     card_id: str
     name: str
-    status: str                         # idle | queued | executing | sent | failed | timeout
+    status: str                         # idle | queued | executing | sent | confirmed | not_confirmed | failed | timeout
     last_result: Dict[str, Any] = Field(default_factory=dict)
     last_fired_at: Optional[float] = None
 
@@ -78,6 +78,8 @@ class PLCActionTestRequest(BaseModel):
     """Body for manual test execution."""
     confirm: bool = Field(False, description="Must be true to execute the physical PLC output")
     card: Optional[Dict[str, Any]] = Field(None, description="Optional card configuration to test directly")
+    code: Optional[str] = Field(None, max_length=256,
+                                description="A product code: the test writes that code's product values (from the lists of the line's code readers)")
 
 
 class PLCActionTestResult(BaseModel):
@@ -88,6 +90,9 @@ class PLCActionTestResult(BaseModel):
     status: str
     endpoint_name: Optional[str] = None
     protocol: Optional[str] = None
+    # Tested with a code: the product ID and the batch it holds (by its list's code format).
+    product_id: Optional[str] = None
+    batch: Optional[str] = None
 
 
 class OPCUAScanRequest(BaseModel):

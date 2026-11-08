@@ -8,9 +8,13 @@ import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from app.events.alarm_events import AlarmCode, AlarmSeverity, raise_alarm
+from app.services import audit_log, storage_state
 from app.services.line_config import (
+    COUNTS_RESET_KEYS,
     OLD_CLASS_KEYS,
     OLD_SEND_KEYS,
     PLC_CARD_KEPT_KEYS,
@@ -18,10 +22,13 @@ from app.services.line_config import (
     SEND_CARD_KEPT_KEYS,
     TRACKING_KEYS,
     check_camera_ownership,
+    check_output_action_ids,
+    clean_batch,
     endpoints_used_by_line,
     keep_card_fields,
     normalize_line,
     normalize_send_cards,
+    require_match_references,
     require_camera_models,
     upgrade_state,
     utc_now_iso,
@@ -114,6 +121,51 @@ def _redact_url(url: str) -> str:
         return "[redacted URL]"
 
 
+def _opcua_file_path(endpoint_data: Dict[str, Any], existing: Optional[Dict[str, Any]], key: str, label: str) -> str:
+    """The path of one OPC UA file of a channel: the uploaded file named in ``<key>_file``, else the
+    path that was sent or is saved. Raises ValueError when the named file was not uploaded."""
+    if f"{key}_file" in endpoint_data:
+        from app.services import opcua_cert_service
+        return opcua_cert_service.resolve(endpoint_data.get(f"{key}_file"))
+    return _endpoint_text(endpoint_data.get(f"{key}_path", (existing or {}).get(f"{key}_path", "")), label, maximum=512)
+
+
+def picture_size(resolution: Any) -> Optional[Tuple[int, int]]:
+    """(width, height) of a resolution written as "1280x720"; None when it is not one."""
+    match = re.fullmatch(r"(\d{2,5})\s*x\s*(\d{2,5})", str(resolution or "").strip().lower())
+    if not match:
+        return None
+    width, height = int(match.group(1)), int(match.group(2))
+    return (width, height) if 16 <= width <= 7680 and 16 <= height <= 4320 else None
+
+
+async def _test_gige_camera(serial: str) -> Dict[str, Any]:
+    """The Test button of a GigE Vision channel: is a camera with this serial number there?"""
+    from app.hardware.camera import genicam_backend
+    from app.state.application_state import app_state
+
+    if not serial:
+        return {"success": False, "message": "The camera's serial number is empty. Press Scan to find it."}
+    for camera_id, driver in list(app_state.cameras.items()):
+        if type(driver).__name__ == "GigECamera" and str(getattr(driver, "source", "")) == serial \
+                and getattr(driver, "is_connected", False) and not getattr(driver, "reconnecting", False):
+            return {"success": True, "message": f"Camera {serial} is connected ({camera_id})"}
+    try:
+        backend = genicam_backend.default_backend()
+        devices = await asyncio.to_thread(backend.list_devices)
+    except genicam_backend.GenICamUnavailable as exc:
+        return {"success": False, "message": str(exc)}
+    except Exception as exc:
+        return {"success": False, "message": f"The scan failed: {type(exc).__name__}: {exc}"}
+    found = next((device for device in devices if device.get("serial") == serial), None)
+    if found is None:
+        return {"success": False, "message": f"No camera with the serial number {serial} was found. Is it powered, "
+                                                "on the same network as the server, and not open in another program?"}
+    what = " ".join(part for part in (found.get("vendor"), found.get("model")) if part) or "camera"
+    where = f" on {found['interface']}" if found.get("interface") else ""
+    return {"success": True, "message": f"Camera {serial} was found: {what}{where}"}
+
+
 def _restore_redacted_url(value: str, original: str) -> str:
     """Preserve credentials when a UI round-trips the redacted API view."""
     if not value or not original:
@@ -143,6 +195,8 @@ def _restore_redacted_url(value: str, original: str) -> str:
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "data")
 STATE_FILE = os.path.join(DATA_DIR, "system_state.json")
+# A settings history copy: the UTC time with microseconds, so names sort by time.
+_HISTORY_NAME = re.compile(r"system_state-(\d{8}T\d{12}Z)\.json")
 
 def _sqlite_path(database_url: str) -> Optional[str]:
     """File path of a SQLite database URL, or None for other databases and in-memory ones."""
@@ -229,6 +283,9 @@ def counting_config_from_dict(cfg_data: Dict[str, Any], camera: Optional[Dict[st
         defect_classes=list(camera.get("defect_classes") or []),
         # A camera saved before this switch existed keeps the old name rule.
         name_based_defects=camera.get("name_based_defects", True) is not False,
+        # One picture per trigger instead of tracking, and what an empty picture counts as.
+        count_mode=camera.get("count_mode") or "track",
+        no_product=camera.get("no_product") or "ignore",
         **{key: tracking[key] for key in TRACKING_KEYS if tracking.get(key) not in (None, "")},
     )
 
@@ -270,87 +327,260 @@ DEFAULT_STATE: Dict[str, Any] = {
     },
     "active_camera_id": None,
     "camera_auto_connect": False,
-    "audit_logs": [],
+    # Cameras whose Connect switch (Line setup camera card) is on: connected at start, retried until switched off.
+    "cameras_kept_connected": [],
+    # The configuration lock (app/services/config_lock_service.py); code_hash is never sent out.
+    "config_lock": {
+        "locked": False,
+        "changed_by": None,
+        "changed_at": None,
+        "code_hash": None,
+        "code_set_by": None,
+        "code_set_at": None,
+    },
 }
 
 
 class SettingsPersistenceService:
+    # The settings history: the newest copies kept, and the newest of each day for this many days.
+    HISTORY_KEEP = 20
+    HISTORY_DAYS = 30
+
     _state: Dict[str, Any] = {}
     _recent_changes: List[Dict[str, Any]] = []
     _boot_id: str = str(uuid.uuid4())[:8]
     _boot_time: str = datetime.now(timezone.utc).isoformat()
 
     @classmethod
-    def _prune_expired_audit_logs(cls) -> None:
-        """Removes all audit log entries older than 24 hours."""
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-        logs = cls._state.get("audit_logs", [])
-        retained = []
-        for entry in logs:
-            ts_str = entry.get("timestamp")
-            if not ts_str:
-                continue
+    def _history_dir(cls) -> str:
+        return os.path.join(DATA_DIR, "settings-history")
+
+    @classmethod
+    def _history_copies(cls) -> List[Tuple[str, datetime]]:
+        """The copies in the history folder, newest first, each as (file name, the time in its name)."""
+        try:
+            names = os.listdir(cls._history_dir())
+        except FileNotFoundError:
+            return []
+        copies = []
+        for name in names:
+            match = _HISTORY_NAME.fullmatch(name)
+            if match:
+                try:
+                    copies.append((name, datetime.strptime(match.group(1), "%Y%m%dT%H%M%S%fZ").replace(tzinfo=timezone.utc)))
+                except ValueError:
+                    continue  # the digits are not a date: not one of ours
+        return sorted(copies, reverse=True)
+
+    @classmethod
+    def _copy_to_history(cls, now: Optional[datetime] = None) -> Optional[str]:
+        """Keep a copy of the settings file as it is on disk, before a save replaces it.
+
+        Returns the copy's path; None when there is no file or it is not a JSON object
+        (a damaged file is no use as a copy). Raises OSError when the copy cannot be written.
+        """
+        try:
+            with open(STATE_FILE, "rb") as f:
+                data = f.read()
+        except FileNotFoundError:
+            return None
+        try:
+            if not isinstance(json.loads(data.decode("utf-8")), dict):
+                return None
+        except ValueError:
+            return None
+        name = f"system_state-{storage_state.stamp(now or datetime.now(timezone.utc), micro=True)}.json"
+        path = os.path.join(cls._history_dir(), name)
+        os.makedirs(cls._history_dir(), exist_ok=True)
+        storage_state.write_atomic(Path(path), data)
+        return path
+
+    @classmethod
+    def _trim_history(cls, now: datetime) -> None:
+        """Keep the HISTORY_KEEP newest copies and the newest copy of each UTC day of the last HISTORY_DAYS days."""
+        copies = cls._history_copies()
+        keep = {name for name, _ in copies[:cls.HISTORY_KEEP]}
+        cutoff = now - timedelta(days=cls.HISTORY_DAYS)
+        days = set()
+        for name, when in copies:
+            if when < cutoff:
+                break
+            if when.date() not in days:
+                # Newest first, so the first copy of a day is its newest.
+                days.add(when.date())
+                keep.add(name)
+        for name, _ in copies:
+            if name not in keep:
+                try:
+                    os.remove(os.path.join(cls._history_dir(), name))
+                except OSError as exc:
+                    logger.warning("Could not delete the old settings copy %s: %s", name, exc)
+
+    @classmethod
+    def _load_file(cls, path: str, upgraded: Optional[List[bool]] = None) -> Dict[str, Any]:
+        """Read a settings file, merge it with the defaults and upgrade it. Raises when any of that fails.
+
+        ``upgraded`` is a list that gets one item when the upgrade changed the settings.
+        """
+        with open(path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        if not isinstance(loaded, dict):
+            raise ValueError("it does not hold a JSON object")
+        # Deep copy: nested defaults must not be shared with the live state.
+        merged = copy.deepcopy(DEFAULT_STATE)
+        if "send_actions" not in loaded:
+            # The upgrade below makes this list from the file's old send settings.
+            del merged["send_actions"]
+        merged.update(loaded)
+        before = merged.get("schema_version", 1)
+        if upgrade_state(merged):
+            logger.info("Settings upgraded from version %s to %s", before, merged.get("schema_version"))
+            if upgraded is not None:
+                upgraded.append(True)
+        return merged
+
+    @classmethod
+    def _move_audit_logs(cls) -> bool:
+        """Move the audit entries that an earlier version kept in the settings into the audit files.
+        True when that took them out of the settings."""
+        if "audit_logs" not in cls._state:
+            return False
+        entries = cls._state["audit_logs"]
+        try:
+            moved = audit_log.move_from_state(entries if isinstance(entries, list) else [])
+        except Exception as exc:
+            # Loading goes on. The entries stay in the settings and are moved at the next start.
+            logger.error("Could not move the audit entries out of the settings file: %s", exc)
+            return False
+        del cls._state["audit_logs"]
+        logger.info("Moved %d audit entries from the settings file to the audit files", moved)
+        return True
+
+    @classmethod
+    def _adopt(cls, path: str) -> bool:
+        """Make a settings file the live settings; True when loading changed them (an upgrade, or audit
+        entries moved out) so that they need saving. Raises when the file does not load."""
+        upgraded: List[bool] = []
+        cls._state = cls._load_file(path, upgraded)
+        return cls._move_audit_logs() or bool(upgraded)
+
+    @classmethod
+    def _keep_broken_file(cls) -> Optional[str]:
+        """Rename the settings file that did not load to system_state.broken-<time>.json, so that
+        nothing writes over it. Returns the new name; None when the file could not be renamed."""
+        folder = os.path.dirname(STATE_FILE)
+        now = datetime.now(timezone.utc)
+        name = f"system_state.broken-{storage_state.stamp(now)}.json"
+        if os.path.exists(os.path.join(folder, name)):
+            name = f"system_state.broken-{storage_state.stamp(now, micro=True)}.json"
+        try:
+            os.rename(STATE_FILE, os.path.join(folder, name))
+        except OSError as exc:
+            logger.error("Could not rename the damaged settings file %s: %s", STATE_FILE, exc)
+            return None
+        storage_state.fsync_dir(Path(folder))
+        return name
+
+    @classmethod
+    def _restore_from_history(cls) -> Optional[str]:
+        """Make the newest history copy that loads the live settings. Returns its file name; None when none does."""
+        try:
+            copies = cls._history_copies()
+        except OSError as exc:
+            logger.error("Could not read the settings history: %s", exc)
+            return None
+        for name, _ in copies:
             try:
-                entry_dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                if entry_dt.tzinfo is None:
-                    entry_dt = entry_dt.replace(tzinfo=timezone.utc)
-                if entry_dt >= cutoff:
-                    retained.append(entry)
-            except Exception:
-                continue
-        cls._state["audit_logs"] = retained
+                cls._adopt(os.path.join(cls._history_dir(), name))
+                return name
+            except Exception as exc:
+                logger.warning("The settings copy %s does not load either: %s", name, exc)
+        return None
+
+    @classmethod
+    def _report_damage(cls, error: Exception, broken: Optional[str], restored_from: Optional[str]) -> None:
+        """Raise the alarm and keep the notice that the settings file did not load, and what was loaded instead."""
+        what = f"was kept as {broken}" if broken else "could not be moved aside"
+        outcome = f"the settings were restored from the copy {restored_from}" if restored_from \
+            else "no good copy was found; the defaults were loaded"
+        message = f"The settings file could not be read ({error}) and {what}; {outcome}."
+        details = {"error": str(error), "broken_file": broken, "restored_from": restored_from}
+        raise_alarm(AlarmCode.STORAGE_SETTINGS_RESTORED, storage_state.STORAGE_SOURCE, message, AlarmSeverity.CRITICAL, details)
+        try:
+            storage_state.add_notice(AlarmCode.STORAGE_SETTINGS_RESTORED, message, details)
+        except OSError as exc:
+            # Loading the settings goes on without the notice; the alarm is raised.
+            logger.error("Could not keep the notice about the damaged settings file: %s", exc)
 
     @classmethod
     def load(cls) -> Dict[str, Any]:
         os.makedirs(DATA_DIR, exist_ok=True)
+        # Left by a save that was cut short. The settings file is whole: the old one or the new one.
+        try:
+            os.remove(STATE_FILE + ".tmp")
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.warning("Could not delete %s.tmp: %s", STATE_FILE, exc)
+
+        failure: Optional[Exception] = None
+        broken: Optional[str] = None
+        restored_from: Optional[str] = None
         if os.path.exists(STATE_FILE):
             try:
-                with open(STATE_FILE, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
+                upgraded = cls._adopt(STATE_FILE)
+            except Exception as exc:
+                failure = exc
+                logger.error("Error loading system_state.json: %s. Looking for a good copy.", exc)
+            else:
                 # The file is closed before an upgrade is saved: Windows does not
                 # replace a file that is still open.
-                # Merge with default state structure
-                # Deep copy: nested defaults must not be shared with the live state.
-                merged = copy.deepcopy(DEFAULT_STATE)
-                if "send_actions" not in loaded:
-                    # The upgrade below makes this list from the file's old send settings.
-                    del merged["send_actions"]
-                merged.update(loaded)
-                cls._state = merged
-                cls._prune_expired_audit_logs()
-                before = cls._state.get("schema_version", 1)
-                if upgrade_state(cls._state):
-                    logger.info("Settings upgraded from version %s to %s", before, cls._state.get("schema_version"))
+                if upgraded:
                     cls.save()
                 cls._apply_to_runtime_services()
                 return cls._state
-            except Exception as exc:
-                logger.error("Error loading system_state.json: %s. Using default state.", exc)
+            # Kept as it was, and renamed first: nothing below saves over it.
+            broken = cls._keep_broken_file()
+            restored_from = cls._restore_from_history()
 
-        cls._state = copy.deepcopy(DEFAULT_STATE)
-        upgrade_state(cls._state)
-        cls._state["audit_logs"] = [
-            {
-                "id": str(uuid.uuid4())[:8],
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "username": "system",
-                "role": "SYSTEM",
-                "clearance_level": 3,
-                "action": "SYSTEM_INIT",
-                "category": "System",
-                "details": "Initialized factory state and persistent telemetry engine.",
-            }
-        ]
-        cls.save()
+        if restored_from is None:
+            cls._state = copy.deepcopy(DEFAULT_STATE)
+            upgrade_state(cls._state)
+            try:
+                audit_log.append({
+                    "id": str(uuid.uuid4())[:8],
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "username": "system",
+                    "role": "SYSTEM",
+                    "clearance_level": 3,
+                    "action": "SYSTEM_INIT",
+                    "category": "System",
+                    "details": "Initialized factory state and persistent telemetry engine.",
+                })
+            except OSError as exc:
+                logger.error("Could not write the first audit entry: %s", exc)
+        # A file that could not be renamed is not saved over.
+        if failure is None or broken is not None:
+            cls.save()
+        if failure is not None:
+            cls._report_damage(failure, broken, restored_from)
+        if restored_from is not None:
+            cls._apply_to_runtime_services()
         return cls._state
 
     @classmethod
     def save(cls) -> None:
         try:
             os.makedirs(DATA_DIR, exist_ok=True)
-            cls._prune_expired_audit_logs()
-            cls._state["last_updated"] = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(timezone.utc)
+            cls._state["last_updated"] = now.isoformat()
             cls._state["version"] = cls._state.get("version", 0) + 1
+            try:
+                # The file about to be replaced is kept, so that a bad save can be undone.
+                cls._copy_to_history(now)
+                cls._trim_history(now)
+            except Exception as exc:
+                logger.error("Could not keep a copy of the settings file: %s", exc)
             temp_file = STATE_FILE + ".tmp"
             with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(cls._state, f, indent=2)
@@ -361,6 +591,7 @@ class SettingsPersistenceService:
                 os.replace(temp_file, STATE_FILE)
             else:
                 os.rename(temp_file, STATE_FILE)
+            storage_state.fsync_dir(Path(os.path.dirname(STATE_FILE)))
         except Exception as exc:
             logger.error("Failed to save system state: %s", exc)
 
@@ -388,6 +619,22 @@ class SettingsPersistenceService:
     def camera_auto_connect(cls) -> bool:
         """The Cameras page switch "Connect cameras when the server starts"."""
         return cls.get_state().get("camera_auto_connect") is True
+
+    @classmethod
+    def kept_cameras(cls) -> List[str]:
+        """The cameras whose Connect switch is on (``cameras_kept_connected``), in the order they were switched on."""
+        return [str(c) for c in (cls.get_state().get("cameras_kept_connected") or [])]
+
+    @classmethod
+    def set_camera_kept(cls, camera_id: str, kept: bool) -> None:
+        """Switch a camera's Connect switch on or off; saved only when it changes."""
+        if not cls._state:
+            cls.load()
+        current = cls.kept_cameras()
+        if kept == (camera_id in current):
+            return
+        cls._state["cameras_kept_connected"] = current + [camera_id] if kept else [c for c in current if c != camera_id]
+        cls.save()
 
     @classmethod
     def set_active_camera_id(cls, camera_id: Optional[str]) -> None:
@@ -422,7 +669,7 @@ class SettingsPersistenceService:
         return copy.deepcopy(raw_cards)
 
     @classmethod
-    def replace_plc_actions(cls, cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def replace_plc_actions(cls, cards: List[Dict[str, Any]], keep: bool = True) -> List[Dict[str, Any]]:
         """Replace PLC cards in the authoritative state object.
 
         The return value is detached so callers cannot mutate the saved
@@ -432,12 +679,21 @@ class SettingsPersistenceService:
             cls.load()
         if not isinstance(cards, list) or any(not isinstance(card, dict) for card in cards):
             raise ValueError("PLC action cards must be a list of objects")
+        check_output_action_ids(cards)
 
-        from app.services.plc_failsafe_service import validate_safe_state, validate_write_value
-        cards = keep_card_fields(cards, cls._state.get("plc_actions"), PLC_CARD_KEPT_KEYS)
+        from app.services.plc_failsafe_service import validate_confirmation, validate_safe_state, validate_write_value
+        from app.services.rules import validate_card_rules
+        cards = keep_card_fields(cards, cls._state.get("plc_actions") if keep else [], PLC_CARD_KEPT_KEYS)
+        endpoints = cls.get_endpoints(protocol="plc")
         for card in cards:
             validate_safe_state(card)
-            validate_write_value(card)
+            validate_write_value(card, endpoints)
+            validate_confirmation(card)
+            validate_card_rules(card, f"Output action '{card.get('name') or card.get('id')}'")
+        # These are Line 1's cards; its PLC signal cards are in its own entry.
+        primary = next((ln for ln in cls._state.get("lines") or [] if ln.get("id") == PRIMARY_LINE_ID), None) or {}
+        cls._check_confirmation_links(cards, primary.get("plc_inputs"))
+        cls._check_input_links(cards, primary.get("plc_inputs"))
 
         saved_cards = copy.deepcopy(cards)
         cls._state["plc_actions"] = saved_cards
@@ -500,11 +756,17 @@ class SettingsPersistenceService:
         return cls._state if line_id == PRIMARY_LINE_ID else line
 
     @classmethod
-    def replace_line_send_actions(cls, line_id: str, cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Replace one line's send cards; returns a detached copy of what was saved. Raises ValueError."""
+    def replace_line_send_actions(cls, line_id: str, cards: List[Dict[str, Any]], keep: bool = True) -> List[Dict[str, Any]]:
+        """Replace one line's send cards; returns a detached copy of what was saved. Raises ValueError.
+
+        ``keep``: a card's settings that the client left out are kept as saved (an older dashboard).
+        """
         holder = cls._send_holder(line_id)
         cards = [{k: v for k, v in c.items() if k != "line_id"} if isinstance(c, dict) else c for c in cards]
-        holder["send_actions"] = normalize_send_cards(keep_card_fields(cards, holder.get("send_actions"), SEND_CARD_KEPT_KEYS))
+        kept = holder.get("send_actions") if keep else []
+        checked = normalize_send_cards(keep_card_fields(cards, kept, SEND_CARD_KEPT_KEYS))
+        cls._check_input_links(checked, (cls._find_line(line_id) or {}).get("plc_inputs"))
+        holder["send_actions"] = checked
         return copy.deepcopy(holder["send_actions"])
 
     @classmethod
@@ -540,22 +802,83 @@ class SettingsPersistenceService:
         return copy.deepcopy(cards) if isinstance(cards, list) else []
 
     @classmethod
-    def replace_line_plc_actions(cls, line_id: str, cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Replace one line's PLC cards; returns a detached copy of what was saved."""
+    def replace_line_plc_actions(cls, line_id: str, cards: List[Dict[str, Any]], keep: bool = True) -> List[Dict[str, Any]]:
+        """Replace one line's PLC cards; returns a detached copy of what was saved. ``keep`` as for send cards."""
         if line_id == PRIMARY_LINE_ID:
-            return cls.replace_plc_actions(cards)
+            return cls.replace_plc_actions(cards, keep=keep)
         line = cls._find_line(line_id)
         if line is None:
             raise KeyError(line_id)
         if not isinstance(cards, list) or any(not isinstance(card, dict) for card in cards):
             raise ValueError("PLC action cards must be a list of objects")
-        from app.services.plc_failsafe_service import validate_safe_state, validate_write_value
-        cards = keep_card_fields(cards, line.get("plc_actions"), PLC_CARD_KEPT_KEYS)
+        check_output_action_ids(cards)
+        from app.services.plc_failsafe_service import validate_confirmation, validate_safe_state, validate_write_value
+        from app.services.rules import validate_card_rules
+        cards = keep_card_fields(cards, line.get("plc_actions") if keep else [], PLC_CARD_KEPT_KEYS)
+        endpoints = cls.get_endpoints(protocol="plc")
         for card in cards:
             validate_safe_state(card)
-            validate_write_value(card)
+            validate_write_value(card, endpoints)
+            validate_confirmation(card)
+            validate_card_rules(card, f"Output action '{card.get('name') or card.get('id')}'")
+        cls._check_confirmation_links(cards, line.get("plc_inputs"))
+        cls._check_input_links(cards, line.get("plc_inputs"))
         line["plc_actions"] = [{k: v for k, v in c.items() if k != "line_id"} for c in copy.deepcopy(cards)]
         return copy.deepcopy(line["plc_actions"])
+
+    @staticmethod
+    def _check_confirmation_links(cards: Any, inputs: Any) -> None:
+        """A PLC card's confirmation signal is a signal card of the same line with the action "confirm_card".
+
+        Raises ValueError naming the PLC card. Run when a line's cards or its
+        signals are saved, so a signal an action still waits for cannot be
+        deleted or given another action.
+        """
+        signals = {card.get("id"): card for card in inputs or [] if isinstance(card, dict)}
+        for card in cards or []:
+            wanted = str(card.get("confirm_input_id") or "").strip() if isinstance(card, dict) else ""
+            if not wanted:
+                continue
+            name = card.get("name") or card.get("id")
+            signal = signals.get(wanted)
+            if signal is None:
+                raise ValueError(
+                    f"Output action '{name}' is confirmed by an input that is not on this line. "
+                    f"Choose another confirmation signal for that action, or none, first."
+                )
+            if signal.get("action") != "confirm_card":
+                raise ValueError(
+                    f"Output action '{name}' is confirmed by the input '{signal.get('name')}', so that input's "
+                    f"action must stay 'Confirm an output action'. Choose another confirmation input for the action first."
+                )
+
+    @staticmethod
+    def _check_input_links(cards: Any, inputs: Any) -> None:
+        """An output action that writes an input's value names a value name of an input of the same line.
+
+        Raises ValueError naming the action. Run when a line's cards or its inputs are
+        saved, so an input whose value an action writes cannot be deleted or renamed.
+        """
+        names = {card.get("value_name") for card in inputs or [] if isinstance(card, dict) and card.get("value_name")}
+        ids = {card.get("id") for card in inputs or [] if isinstance(card, dict)}
+        for card in cards or []:
+            if not isinstance(card, dict):
+                continue
+            if str(card.get("trigger") or card.get("trigger_type") or "").strip().lower() == "input":
+                wanted = str(card.get("input_id") or "").strip()
+                if wanted not in ids:
+                    raise ValueError(
+                        f"'{card.get('name') or card.get('id')}' fires when the input '{wanted}' changes, but this line "
+                        f"has no such input. Choose another input or trigger for it first."
+                    )
+            if str(card.get("value_source") or "").strip().lower() != "input":
+                continue
+            wanted = str(card.get("value_input") or "").strip()
+            if wanted not in names:
+                raise ValueError(
+                    f"Output action '{card.get('name') or card.get('id')}' writes the input value '{wanted}', which no "
+                    f"input of this line has. Give an input that value name, or choose another value for the action."
+                )
 
     @classmethod
     def get_all_plc_actions(cls) -> List[Dict[str, Any]]:
@@ -568,18 +891,27 @@ class SettingsPersistenceService:
         return cards
 
     @classmethod
-    def save_line(cls, raw: Dict[str, Any]) -> Dict[str, Any]:
-        """Create or replace a line. Raises ValueError on invalid input."""
+    def save_line(cls, raw: Dict[str, Any], replace: bool = False) -> Dict[str, Any]:
+        """Create or replace a line. Raises ValueError on invalid input.
+
+        A client that leaves a setting out keeps it as saved. With ``replace`` (a saved setup put back)
+        ``raw`` is the whole setup: only the line's running state, batch and count resets are kept.
+        """
         lines = cls._raw_lines()
         line_id = str(raw.get("id") or "").strip().lower()
         existing = next((ln for ln in lines if ln.get("id") == line_id), None) if line_id else None
         if existing is not None and line_id == PRIMARY_LINE_ID:
             existing = {**existing, "action_trigger": cls.get_line_action_trigger(line_id)}
-        line = normalize_line(raw, existing)
+        if replace and existing is not None:
+            line = normalize_line(raw, {k: v for k, v in existing.items() if k in ("id", "enabled", "batch") + COUNTS_RESET_KEYS})
+        else:
+            line = normalize_line(raw, existing)
         if "cameras" in raw:
             # Only when the cameras are sent: a line saved before models were
             # picked per camera can still be started, stopped and renamed.
             require_camera_models(line)
+            from app.services import match_references
+            require_match_references(line, match_references.set_info)
         if existing is None and any(ln.get("id") == line["id"] for ln in lines):
             raise ValueError(f"Line id '{line['id']}' is already in use")
         if any(ln.get("name", "").lower() == line["name"].lower() and ln.get("id") != line["id"] for ln in lines):
@@ -598,12 +930,27 @@ class SettingsPersistenceService:
             trigger = {k: v for k, v in trigger.items() if k not in OLD_SEND_KEYS and k not in OLD_CLASS_KEYS}
         cards = line.pop("plc_actions", None)
         if cards is not None:
-            from app.services.plc_failsafe_service import validate_safe_state, validate_write_value
+            from app.services.plc_failsafe_service import validate_confirmation, validate_safe_state, validate_write_value
+            from app.services.rules import validate_card_rules
+            endpoints = cls.get_endpoints(protocol="plc")
             for card in cards:
                 if not isinstance(card, dict):
                     raise ValueError("PLC action cards must be a list of objects")
                 validate_safe_state(card)
-                validate_write_value(card)
+                validate_write_value(card, endpoints)
+                validate_confirmation(card)
+                validate_card_rules(card, f"Output action '{card.get('name') or card.get('id')}'")
+        # The cards as they will be saved (what an older client left out is kept),
+        # against the signal cards as they will be saved: checked before anything changes.
+        saved_cards = cls.get_line_plc_actions(line["id"]) if existing is not None else []
+        will_save = keep_card_fields(cards, [] if replace else saved_cards, PLC_CARD_KEPT_KEYS) if cards is not None else saved_cards
+        cls._check_confirmation_links(will_save, line.get("plc_inputs"))
+        cls._check_input_links(will_save, line.get("plc_inputs"))
+        # The send cards as they will be saved, against the inputs as they will be saved.
+        saved_send = cls.get_line_send_actions(line["id"]) if existing is not None else []
+        send_will_save = keep_card_fields(send_cards, [] if replace else saved_send, SEND_CARD_KEPT_KEYS) \
+            if send_cards is not None else saved_send
+        cls._check_input_links(send_will_save, line.get("plc_inputs"))
 
         if line["id"] == PRIMARY_LINE_ID:
             if isinstance(trigger, dict):
@@ -625,10 +972,35 @@ class SettingsPersistenceService:
         else:
             lines[lines.index(next(ln for ln in lines if ln.get("id") == line["id"]))] = line
         if cards is not None:
-            cls.replace_line_plc_actions(line["id"], cards)
+            cls.replace_line_plc_actions(line["id"], cards, keep=not replace)
         if send_cards is not None:
-            cls.replace_line_send_actions(line["id"], send_cards)
+            cls.replace_line_send_actions(line["id"], send_cards, keep=not replace)
+        if "cameras" in raw:
+            cls.clean_up_soon()
         return cls.get_line(line["id"])
+
+    @classmethod
+    def clean_up_soon(cls) -> None:
+        """The clean-up beside the request, with the lines as they are now (a copy: they may change meanwhile)."""
+        lines = copy.deepcopy(cls._raw_lines())
+        cls._clean_up_later(lambda: cls.clean_up_references(lines))
+
+    @classmethod
+    def clean_up_references(cls, lines: Optional[List[Dict[str, Any]]] = None) -> None:
+        """Remove the pattern check reference sets that nothing names any more (match_references.clean_up)."""
+        from app.services import match_references
+
+        try:
+            match_references.clean_up(lines if lines is not None else copy.deepcopy(cls._raw_lines()))
+        except Exception as exc:        # a clean-up that fails must never stop a save or a start
+            logger.warning("Reference set clean-up failed: %s", exc)
+
+    @staticmethod
+    def _clean_up_later(run: Any) -> None:
+        """Run the clean-up beside the request, not in it (it reads and removes files)."""
+        import threading
+
+        threading.Thread(target=run, name="match-references-clean-up", daemon=True).start()
 
     @classmethod
     def mark_counts_reset(cls, line_id: str, classes: Optional[List[str]] = None) -> None:
@@ -652,6 +1024,24 @@ class SettingsPersistenceService:
             line["counts_reset_at"] = now
             line.pop("counts_reset_classes", None)
         cls.save()
+
+    @classmethod
+    def set_line_batch(cls, line_id: str, batch: Any) -> str:
+        """Save a line's batch (work order) number, "" for none. Returns the text that was saved.
+
+        Raises KeyError for a line that does not exist and ValueError for a
+        batch that cannot be one (line_config.clean_batch).
+        """
+        line = cls._find_line(line_id)
+        if line is None:
+            raise KeyError(line_id)
+        text = clean_batch(batch)
+        if text:
+            line["batch"] = text
+        else:
+            line.pop("batch", None)
+        cls.save()
+        return text
 
     @classmethod
     def delete_line(cls, line_id: str) -> bool:
@@ -685,7 +1075,7 @@ class SettingsPersistenceService:
         """Return a deep-copied API-safe view without credentials or auth headers."""
         sensitive = {
             "password", "headers", "header", "authorization", "token", "secret", "private_key",
-            "api_key", "client_secret", "access_token", "refresh_token", "credentials",
+            "api_key", "client_secret", "access_token", "refresh_token", "credentials", "code_hash",
         }
         if isinstance(value, dict):
             redacted = {}
@@ -820,8 +1210,6 @@ class SettingsPersistenceService:
         if not cls._state:
             cls.load()
 
-        cls._prune_expired_audit_logs()
-
         event = {
             "id": str(uuid.uuid4())[:8],
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -835,10 +1223,11 @@ class SettingsPersistenceService:
         if line_id:
             event["line_id"] = line_id
 
-        logs = cls._state.setdefault("audit_logs", [])
-        logs.insert(0, event)
-        if len(logs) > 500:
-            cls._state["audit_logs"] = logs[:500]
+        try:
+            audit_log.append(event)
+        except OSError as exc:
+            # The action being written down goes on, and the entry still reaches the recent changes below.
+            logger.error("Could not write the audit entry %s: %s", action, exc)
 
         # Record in recent changes ring for multi-client polling
         cls._recent_changes.append(event)
@@ -848,24 +1237,30 @@ class SettingsPersistenceService:
         return event
 
     @classmethod
-    def get_audit_logs(cls, limit: int = 100, line_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        state = cls.get_state()
-        cls._prune_expired_audit_logs()
-        logs = state.get("audit_logs", [])
-        if line_id:
-            logs = [entry for entry in logs if entry.get("line_id") == line_id]
-        return logs[:limit]
+    def get_audit_logs(
+        cls, limit: int = 100, line_id: Optional[str] = None, before: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """Up to ``limit`` audit entries, newest first; only the entries older than ``before`` (a time with
+        a zone) and, when given, those of ``line_id``."""
+        if not cls._state:
+            cls.load()  # moves the entries an earlier version kept in the settings
+        return audit_log.read(limit=limit, before=before, line_id=line_id)
 
     @classmethod
     def get_changes_since(cls, since_version: int, client_boot_id: Optional[str] = None) -> Dict[str, Any]:
+        from app.services.config_lock_service import ConfigLockService
+
         state = cls.get_state()
         cur_ver = state.get("version", 1)
+        # In every answer: each open dashboard follows a lock or unlock within its poll.
+        config_lock = ConfigLockService.status()
 
         # Detect if the server restarted since the client connected
         if client_boot_id and client_boot_id != cls._boot_id:
             return {
                 "version": cur_ver,
                 "boot_id": cls._boot_id,
+            "config_lock": config_lock,
                 "server_restarted": True,
                 "has_changes": True,
                 "recent_events": [
@@ -895,6 +1290,7 @@ class SettingsPersistenceService:
             return {
                 "version": cur_ver,
                 "boot_id": cls._boot_id,
+            "config_lock": config_lock,
                 "server_restarted": False,
                 "has_changes": False,
                 "recent_events": [],
@@ -904,6 +1300,7 @@ class SettingsPersistenceService:
         return {
             "version": cur_ver,
             "boot_id": cls._boot_id,
+            "config_lock": config_lock,
             "server_restarted": False,
             "has_changes": True,
             "recent_events": cls._recent_changes[-10:],
@@ -936,7 +1333,8 @@ class SettingsPersistenceService:
         record = {
             "id": cam_id,
             "name": cam_data.get("name") or f"IP Camera {len(cameras)+1}",
-            "type": "ip",
+            # "gige": a GigE Vision camera, whose source is its serial number.
+            "type": "gige" if cam_data.get("type") == "gige" else "ip",
             "source": _restore_redacted_url(
                 cam_data.get("source", "").strip(),
                 existing.get("source", "") if existing else "",
@@ -983,6 +1381,43 @@ class SettingsPersistenceService:
         return changed
 
     @classmethod
+    def _ip_camera_matches(cls, cam_id: str, source: str = "", name: str = ""):
+        """What delete_ip_camera(cam_id, source, name) removes: (camera entry test, channel test, the camera's name).
+
+        Besides the id itself, every entry with the same address (source) goes, and every
+        network camera channel with the same name: copies of one camera.
+        """
+        cameras: List[Dict[str, Any]] = cls._state.get("ip_cameras", [])
+        target_cam = next((c for c in cameras if c.get("id") == cam_id or c.get("name") == cam_id), None)
+        target_source = (source or (target_cam.get("source") if target_cam else "") or "").strip()
+        target_name = (name or (target_cam.get("name") if target_cam else "") or "").strip()
+
+        def camera_hit(c: Dict[str, Any]) -> bool:
+            return c.get("id") == cam_id or c.get("name") == cam_id or bool(target_source and c.get("source") == target_source)
+
+        def channel_hit(ep: Dict[str, Any]) -> bool:
+            return ep.get("protocol") == "ipcam" and (
+                ep.get("id") == cam_id
+                or ep.get("name") == cam_id
+                or bool(target_source and ep.get("source") == target_source)
+                or bool(target_name and ep.get("name") == target_name)
+            )
+
+        return camera_hit, channel_hit, target_name
+
+    @classmethod
+    def ip_camera_ids_removed_with(cls, cam_id: str, source: str = "", name: str = "") -> List[str]:
+        """The camera ids delete_ip_camera(cam_id, source, name) would remove, cam_id first."""
+        if not cls._state:
+            cls.load()
+        camera_hit, channel_hit, _ = cls._ip_camera_matches(cam_id, source, name)
+        ids = [cam_id]
+        for entry in [c for c in cls._state.get("ip_cameras", []) if camera_hit(c)] +                 [ep for ep in cls._state.get("communication_endpoints", []) if channel_hit(ep)]:
+            if entry.get("id") and entry["id"] not in ids:
+                ids.append(entry["id"])
+        return ids
+
+    @classmethod
     def delete_ip_camera(
         cls,
         cam_id: str,
@@ -997,35 +1432,15 @@ class SettingsPersistenceService:
             cls.load()
         cameras: List[Dict[str, Any]] = cls._state.get("ip_cameras", [])
         original_len = len(cameras)
+        camera_hit, channel_hit, target_name = cls._ip_camera_matches(cam_id, source, name)
 
-        # Find target camera info if not provided
-        target_cam = next((c for c in cameras if c.get("id") == cam_id or c.get("name") == cam_id), None)
-        target_source = (source or (target_cam.get("source") if target_cam else "") or "").strip()
-        target_name = (name or (target_cam.get("name") if target_cam else "") or "").strip()
-
-        cls._state["ip_cameras"] = [
-            c for c in cameras
-            if c.get("id") != cam_id
-            and c.get("name") != cam_id
-            and (not target_source or c.get("source") != target_source)
-        ]
+        cls._state["ip_cameras"] = [c for c in cameras if not camera_hit(c)]
         removed = len(cls._state["ip_cameras"]) < original_len
 
         # Also remove from communication_endpoints list
         comm_endpoints = cls._state.setdefault("communication_endpoints", [])
         orig_comm_len = len(comm_endpoints)
-        cls._state["communication_endpoints"] = [
-            ep for ep in comm_endpoints
-            if not (
-                ep.get("protocol") == "ipcam"
-                and (
-                    ep.get("id") == cam_id
-                    or ep.get("name") == cam_id
-                    or (target_source and ep.get("source") == target_source)
-                    or (target_name and ep.get("name") == target_name)
-                )
-            )
-        ]
+        cls._state["communication_endpoints"] = [ep for ep in comm_endpoints if not channel_hit(ep)]
         if len(cls._state["communication_endpoints"]) < orig_comm_len:
             removed = True
 
@@ -1216,30 +1631,60 @@ class SettingsPersistenceService:
                         )
             record.update(sparkplug)
         elif proto == "ipcam":
+            # A network camera: an IP camera (its stream URL) or a GigE Vision camera (its serial number).
+            kind = str(endpoint_data.get("camera_kind", (existing or {}).get("camera_kind", "ip")) or "ip").strip().lower()
+            if kind not in {"ip", "gige"}:
+                raise ValueError("The camera type must be 'ip' (IP camera) or 'gige' (GigE Vision)")
             source = _endpoint_text(
                 endpoint_data.get("source", (existing or {}).get("source", "")),
-                "IP camera source",
+                "Camera serial number" if kind == "gige" else "IP camera source",
                 maximum=2048,
                 required=record["enabled"],
-            )
-            if existing and isinstance(existing.get("source"), str):
-                source = _restore_redacted_url(source, existing["source"])
-            if source:
-                try:
-                    parsed_source = urlsplit(source)
-                except ValueError as exc:
-                    raise ValueError("IP camera source URL is invalid") from exc
-                if parsed_source.scheme.lower() not in {"rtsp", "rtsps", "http", "https"} or not parsed_source.hostname:
-                    raise ValueError("IP camera source must be an RTSP, RTSPS, HTTP, or HTTPS URL")
+            ).strip()
+            if kind == "gige":
+                if source and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:\-]{0,127}", source):
+                    raise ValueError("The camera's serial number may hold letters, digits and . _ : - (128 at most)")
+                # One camera, one channel: a second channel (a double click on Save) would open it twice.
+                # Checked before anything awaits, so two saves at the same moment cannot both pass.
+                twin = next((ep for ep in endpoints if ep is not existing and str(ep.get("protocol", "")).lower() == "ipcam"
+                             and ep.get("camera_kind") == "gige" and ep.get("source") == source), None) if source else None
+                if twin is not None:
+                    raise ValueError(f"The camera {source} is already the network camera '{twin.get('name')}'. "
+                                     "Edit that one, or delete it first.")
+            else:
+                if existing and isinstance(existing.get("source"), str):
+                    source = _restore_redacted_url(source, existing["source"])
+                if source:
+                    try:
+                        parsed_source = urlsplit(source)
+                    except ValueError as exc:
+                        raise ValueError("IP camera source URL is invalid") from exc
+                    if parsed_source.scheme.lower() not in {"rtsp", "rtsps", "http", "https"} or not parsed_source.hostname:
+                        raise ValueError("IP camera source must be an RTSP, RTSPS, HTTP, or HTTPS URL")
+            transport = _endpoint_text(endpoint_data.get("transport", (existing or {}).get("transport", "tcp")),
+                                       "IP camera transport", maximum=16).strip().lower() or "tcp"
+            if transport not in {"tcp", "udp", "http"}:
+                raise ValueError("IP camera transport must be tcp, udp or http")
+            resolution = _endpoint_text(endpoint_data.get("resolution", (existing or {}).get("resolution", "native")),
+                                        "IP camera resolution", maximum=32).strip().lower() or "native"
+            if resolution != "native" and picture_size(resolution) is None:
+                raise ValueError("IP camera resolution must be 'native' or width x height, such as 1280x720")
             record.update({
+                "camera_kind": kind,
                 "source": source,
-                "transport": _endpoint_text(endpoint_data.get("transport", (existing or {}).get("transport", "tcp")), "IP camera transport", maximum=16),
-                "resolution": _endpoint_text(endpoint_data.get("resolution", (existing or {}).get("resolution", "640x480")), "IP camera resolution", maximum=32),
-                "buffer_size": _bounded_int(endpoint_data.get("buffer_size"), "IP camera buffer size", 1, 1, 16),
+                "transport": transport,
+                "resolution": resolution,
+                "buffer_size": _bounded_int(endpoint_data.get("buffer_size", (existing or {}).get("buffer_size")),
+                                            "IP camera buffer size", 1, 1, 16),
             })
+            # What the camera itself is given: only what this save sent, so that a rename does not
+            # undo what the camera's own card set. A GigE camera has none of the three.
+            camera_connection = {key: record[key] for key in ("transport", "resolution", "buffer_size")
+                                 if key in endpoint_data} if kind == "ip" else {}
             # Sync into ip_cameras list
             cls.add_or_update_ip_camera({
                 "id": record["id"],
+                "type": kind,
                 "name": record["name"],
                 "source": record["source"],
                 "is_active": False,
@@ -1412,12 +1857,18 @@ class SettingsPersistenceService:
                 "serial_stopbits": _bounded_int(endpoint_data.get("serial_stopbits", (existing or {}).get("serial_stopbits")), "Serial stop bits", 1, 1, 2),
                 "melsec_xy_octal": _endpoint_bool(endpoint_data.get("melsec_xy_octal", (existing or {}).get("melsec_xy_octal", False)), "MELSEC octal X/Y", False),
                 # OPC UA secured connections and user login
-                "opcua_cert_path": _endpoint_text(endpoint_data.get("opcua_cert_path", (existing or {}).get("opcua_cert_path", "")), "OPC UA client certificate path", maximum=512),
-                "opcua_key_path": _endpoint_text(endpoint_data.get("opcua_key_path", (existing or {}).get("opcua_key_path", "")), "OPC UA private key path", maximum=512),
-                "opcua_server_cert_path": _endpoint_text(endpoint_data.get("opcua_server_cert_path", (existing or {}).get("opcua_server_cert_path", "")), "OPC UA server certificate path", maximum=512),
+                # A file uploaded on the Connections page is named in opcua_cert_file, opcua_key_file and
+                # opcua_server_cert_file ("" = none); a path on the server can still be given instead.
+                "opcua_cert_path": _opcua_file_path(endpoint_data, existing, "opcua_cert", "OPC UA client certificate path"),
+                "opcua_key_path": _opcua_file_path(endpoint_data, existing, "opcua_key", "OPC UA private key path"),
+                "opcua_server_cert_path": _opcua_file_path(endpoint_data, existing, "opcua_server_cert", "OPC UA server certificate path"),
                 "username": _endpoint_text(endpoint_data.get("username", (existing or {}).get("username", "")), "PLC username", maximum=256),
                 "password": _endpoint_text(endpoint_data.get("password") or (existing or {}).get("password", ""), "PLC password", maximum=512),
             })
+            if record["opcua_cert_path"] and record["opcua_key_path"] \
+                    and ("opcua_cert_file" in endpoint_data or "opcua_key_file" in endpoint_data):
+                from app.services import opcua_cert_service
+                opcua_cert_service.check_pair(record["opcua_cert_path"], record["opcua_key_path"])
 
         if existing:
             existing.update(record)
@@ -1442,6 +1893,7 @@ class SettingsPersistenceService:
                 PLCDriverFactory.invalidate(ep_id)
             except Exception as exc:
                 logger.warning("Could not invalidate cached PLC driver for endpoint %s: %s", ep_id, exc)
+            cls._reload_plc_inputs()
         if proto == "mqtt" or previous_protocol == "mqtt":
             # Each MQTT channel has its own broker connection: connect it with what was
             # just saved, or close it when the channel was switched off.
@@ -1466,10 +1918,19 @@ class SettingsPersistenceService:
             # its stream open: without this the old address stays in use.
             try:
                 from app.services.camera_service import CameraService
-                await CameraService.sync_ip_cameras()
+                await CameraService.sync_ip_cameras(connection={ep_id: camera_connection})
             except Exception:
                 logger.exception("Could not apply the saved address of IP camera %s", ep_id)
         return record
+
+    @staticmethod
+    def _reload_plc_inputs() -> None:
+        """A PLC channel was saved or removed: the signal cards that read it start again."""
+        try:
+            from app.services.plc_input_service import PLCInputService
+            PLCInputService.reload()
+        except Exception:
+            logger.exception("Could not reload the PLC signal cards")
 
     @classmethod
     def delete_endpoint(
@@ -1502,6 +1963,7 @@ class SettingsPersistenceService:
                     PLCDriverFactory.invalidate(endpoint_id)
                 except Exception as exc:
                     logger.warning("Could not invalidate cached PLC driver for endpoint %s: %s", endpoint_id, exc)
+                cls._reload_plc_inputs()
             if target and target.get("protocol") == "tcp":
                 from app.services.tcp_channels import TcpChannels
                 TcpChannels.drop(endpoint_id)
@@ -1616,6 +2078,8 @@ class SettingsPersistenceService:
 
         elif proto == "ipcam":
             source = ep.get("source", "")
+            if str(ep.get("camera_kind") or "ip") == "gige":
+                return await _test_gige_camera(str(source or "").strip())
             if not source:
                 return {"success": False, "message": "IP stream source URL is empty."}
 
@@ -1764,6 +2228,9 @@ class SettingsPersistenceService:
             asyncio.create_task(PLCDispatcherService.autoconnect_drivers())
             from app.services.plc_failsafe_service import PLCFailsafeService
             PLCFailsafeService.start()
+            # The lines' PLC signal cards: read from here on.
+            from app.services.plc_input_service import PLCInputService
+            PLCInputService.start()
             logger.info("PLCDispatcherService initialised with %d card(s)", len(PLCDispatcherService._cards))
         except Exception as plc_err:
             logger.warning("PLC dispatcher startup error: %s", plc_err)
@@ -1773,6 +2240,8 @@ class SettingsPersistenceService:
             from app.services.send_dispatcher_service import SendDispatcherService
             SendDispatcherService.load_cards()
             SendDispatcherService.watch_alarms()
+            # Timer cards: a message every N ms from now on.
+            SendDispatcherService.start_timers()
         except Exception as send_err:
             logger.warning("Send card startup error: %s", send_err)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import functools
 import logging
 import threading
 import time
@@ -13,7 +14,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.models.detection import DetectionLog
-from app.engines.inference_engine import begin_model_timing, end_model_timing
+from app.engines.inference_engine import (
+    STATUS_NO_LINE,
+    STATUS_NO_MODEL,
+    STATUS_STOPPED,
+    STATUS_WAITING_TRIGGER,
+    begin_model_timing,
+    end_model_timing,
+)
+from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
 from app.schemas.vision import DetectionResponse, LiveInspectionResponse
 from app.services.camera_service import CameraService
 from app.state.application_state import app_state
@@ -23,6 +32,25 @@ from app.utils.threads import run_supervised
 logger = get_logger(__name__)
 # A model or tracker that fails on every frame is reported once a minute, not 30 times a second.
 _error_log = LogThrottle(60.0)
+
+def inspection_status(routed: Optional[Tuple[Any, str]], engine: Any, camera_id: Optional[str] = None) -> Optional[str]:
+    """Why a camera's pictures go to no model now, or None while they do.
+
+    ``routed`` is line_manager.route(camera): the runner only feeds cameras of a
+    running line (ContinuousVisionRunner._feed_camera). With ``camera_id``, a camera
+    whose model runs only on a trigger's picture is STATUS_WAITING_TRIGGER.
+    """
+    if routed is None:
+        return STATUS_NO_LINE
+    if not getattr(routed[0], "enabled", False):
+        return STATUS_STOPPED
+    if not getattr(engine, "is_loaded", True):
+        return STATUS_NO_MODEL
+    on_demand = getattr(routed[0], "infers_on_demand", None)
+    if camera_id is not None and callable(on_demand) and on_demand(camera_id):
+        return STATUS_WAITING_TRIGGER
+    return None
+
 
 def _clamp_int(value: Any, default: int, low: int, high: int) -> int:
     try:
@@ -66,10 +94,20 @@ class _CameraInferenceWorker:
         self._pending_frame: Optional[Any] = None
         self._pending_fid: int = 0
         self._pending_conf: Optional[float] = None
+        self._pending_arrived: Optional[float] = None
+        self._pending_failure: Optional[Callable[[int, str], None]] = None
+        self._pending_callback: Optional[Callable[[int, List[Any], float, Optional[float]], None]] = None
 
         self._latest_detections: List[Any] = []
         self._latest_inference_ms: float = 0.0
         self._processed_frame_id: int = 0
+        # Goes up by one with every frame the worker got through (the frame id
+        # starts again when a camera reconnects; this does not).
+        self.result_seq: int = 0
+        # The frame the model last got through. A trigger camera's picture is this frame with the
+        # boxes drawn; it is set before the result callback runs. Drivers replace frames and never
+        # modify them, so it is kept as it is (drawing is done on a copy).
+        self.last_inferred_frame: Optional[Any] = None
 
         name = f"InferenceWorker-{camera_id[:8]}"
         self._thread = threading.Thread(
@@ -96,15 +134,25 @@ class _CameraInferenceWorker:
         frame_id: int,
         conf_thresh: Optional[float] = None,
         copy: bool = True,
+        arrived_at: Optional[float] = None,
+        on_result: Optional[Callable[[int, List[Any], float, Optional[float]], None]] = None,
+        on_failure: Optional[Callable[[int, str], None]] = None,
     ) -> bool:
         """
         Queue a frame for inference unless one is already in flight.
         copy=False hands over frame_mat as is; only pass it for an array nobody
         will draw on, such as a camera driver's latest frame, which drivers
         replace rather than modify.
+        arrived_at: the time a triggered picture arrived. Such a picture is never
+        taken for a repeat of the last one (a camera's frame ids start again when
+        it reconnects). on_result is called on the worker's thread once the model
+        got through this picture, with (frame id, detections, inference ms,
+        arrived at); it is not called when no model is loaded or the model fails.
+        on_failure is called instead, on the worker's thread, with (frame id, why) when
+        this picture got no result: no model is loaded, or the model raised.
         Returns True if the frame was accepted.
         """
-        if frame_mat is None or frame_id == self._processed_frame_id:
+        if frame_mat is None or (arrived_at is None and frame_id == self._processed_frame_id):
             return False
 
         with self._input_lock:
@@ -115,6 +163,9 @@ class _CameraInferenceWorker:
             self._pending_frame = frame_mat.copy() if copy else frame_mat
             self._pending_fid = frame_id
             self._pending_conf = conf_thresh
+            self._pending_arrived = arrived_at
+            self._pending_callback = on_result
+            self._pending_failure = on_failure
         self._trigger_event.set()
         return True
 
@@ -129,7 +180,11 @@ class _CameraInferenceWorker:
                 mat = self._pending_frame
                 fid = self._pending_fid
                 conf = self._pending_conf
+                arrived, callback = self._pending_arrived, self._pending_callback
+                on_failure = self._pending_failure
                 self._pending_frame = None
+                self._pending_callback = None
+                self._pending_failure = None
 
             if mat is None:
                 continue
@@ -144,6 +199,8 @@ class _CameraInferenceWorker:
                         self._latest_detections = []
                         self._latest_inference_ms = 0.0
                         self._processed_frame_id = fid
+                        self.result_seq += 1
+                    self._tell_failure(on_failure, fid, "no vision model is loaded for the camera")
                     continue
                 det_response = engine.predict_mat(mat, conf_threshold=conf)
 
@@ -168,16 +225,41 @@ class _CameraInferenceWorker:
                     self._latest_detections = det_response.detections
                     self._latest_inference_ms = det_response.inference_time_ms
                     self._processed_frame_id = fid
+                    self.last_inferred_frame = mat
+                    self.result_seq += 1
                     app_state.detection_count += det_response.total_detections
                     app_state.processed_frames += 1
+                if callback is not None:
+                    try:
+                        callback(fid, det_response.detections, det_response.inference_time_ms, arrived)
+                    except Exception as cb_err:
+                        _error_log.log(
+                            logger, logging.WARNING, ("result", self.camera_id),
+                            "The result of a triggered picture of camera %s could not be used: %s: %s",
+                            self.camera_id, type(cb_err).__name__, cb_err,
+                        )
             except Exception as exc:
                 _error_log.log(
                     logger, logging.WARNING, ("inference", self.camera_id),
                     "Inference failed on camera %s: %s: %s", self.camera_id, type(exc).__name__, exc,
                 )
+                self._tell_failure(on_failure, fid, f"{type(exc).__name__}: {exc}")
             finally:
                 with self._input_lock:
                     self._busy = False
+
+    def _tell_failure(self, on_failure: Optional[Callable[[int, str], None]], fid: int, why: str) -> None:
+        """Say that the picture got no result (a trigger waits for its answer); never raises."""
+        if on_failure is None:
+            return
+        try:
+            on_failure(fid, why)
+        except Exception as cb_err:
+            _error_log.log(
+                logger, logging.WARNING, ("result", self.camera_id),
+                "The failure of a triggered picture of camera %s could not be told: %s: %s",
+                self.camera_id, type(cb_err).__name__, cb_err,
+            )
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -208,15 +290,11 @@ class _CameraStreamPublisher:
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._subscribers = 0
-        self._annotated_subscribers = 0
-        self._raw_subscribers = 0
         self._last_active_time = time.time()
 
         self._latest_annotated_jpeg: Optional[bytes] = None
-        self._latest_raw_jpeg: Optional[bytes] = None
-        # Each goes up when a picture that differs from the last one is ready to send.
+        # Goes up when a picture that differs from the last one is ready to send.
         self._annotated_seq: int = 0
-        self._raw_seq: int = 0
         # Smaller copies of the latest annotated picture, {width: (seq, jpeg)},
         # so every viewer of a small tile shares one resize per picture.
         self._scaled: Dict[int, Tuple[int, bytes]] = {}
@@ -233,22 +311,14 @@ class _CameraStreamPublisher:
         )
         self._thread.start()
 
-    def add_subscriber(self, stream_type: str = "annotated") -> None:
+    def add_subscriber(self) -> None:
         with self._lock:
             self._subscribers += 1
-            if stream_type == "raw":
-                self._raw_subscribers += 1
-            else:
-                self._annotated_subscribers += 1
             self._last_active_time = time.time()
 
-    def remove_subscriber(self, stream_type: str = "annotated") -> None:
+    def remove_subscriber(self) -> None:
         with self._lock:
             self._subscribers = max(0, self._subscribers - 1)
-            if stream_type == "raw":
-                self._raw_subscribers = max(0, self._raw_subscribers - 1)
-            else:
-                self._annotated_subscribers = max(0, self._annotated_subscribers - 1)
 
     @property
     def has_subscribers(self) -> bool:
@@ -259,11 +329,6 @@ class _CameraStreamPublisher:
         with self._lock:
             self._last_active_time = time.time()
             return self._latest_annotated_jpeg
-
-    def get_latest_raw(self) -> Optional[bytes]:
-        with self._lock:
-            self._last_active_time = time.time()
-            return self._latest_raw_jpeg
 
     _MAX_SCALED_WIDTHS = 4
 
@@ -290,10 +355,10 @@ class _CameraStreamPublisher:
                 self._scaled.pop(next(iter(self._scaled)))
             self._scaled[max_width] = (self._annotated_seq, scaled)
 
-    def get_latest_frame_id(self, stream_type: str = "annotated") -> int:
-        """A number that changes whenever a new picture of that kind is ready to send."""
+    def get_latest_frame_id(self) -> int:
+        """A number that changes whenever a new picture is ready to send."""
         with self._lock:
-            return self._raw_seq if stream_type == "raw" else self._annotated_seq
+            return self._annotated_seq
 
     def _publisher_loop(self) -> None:
         import cv2
@@ -314,7 +379,6 @@ class _CameraStreamPublisher:
                     paused = True
                     with self._lock:
                         self._latest_annotated_jpeg = None
-                        self._latest_raw_jpeg = None
                         self._scaled.clear()
                 time.sleep(0.1)
                 continue
@@ -375,31 +439,35 @@ class _CameraStreamPublisher:
             else:
                 display_mat = mat.copy()
 
-            with self._lock:
-                want_raw = (self._raw_subscribers > 0)
-                want_ann = (self._annotated_subscribers > 0 or self._subscribers == 0)
-
-            # 2. Render Raw JPEG only if raw subscribers exist
-            raw_jpeg = None
-            if want_raw:
-                ret_raw, raw_buf = cv2.imencode(".jpg", display_mat, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
-                raw_jpeg = raw_buf.tobytes() if ret_raw else None
-
-            # 3. Retrieve latest AI detections & tracking info
+            # 2. Retrieve latest AI detections & tracking info
             annotated_jpeg = None
             from app.services.line_service import line_manager
             routed = line_manager.route(self.camera_id)
-            if want_ann and routed and routed[1] == "qr":
+            if routed and routed[1] == "qr":
                 from app.services.qr_service import QRReaderPipeline
                 annotated_mat = QRReaderPipeline.draw_reads(self.camera_id, display_mat, scale_x, scale_y, fps)
                 ret_ann, ann_buf = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
                 annotated_jpeg = ann_buf.tobytes() if ret_ann else None
-            elif want_ann:
-                worker = CameraStreamPipeline.get_worker(self.camera_id)
-                detections, latency_ms = worker.get_latest_inference()
-
-                # 4. Draw annotations directly onto BGR display_mat
+            elif routed and routed[1] == "ocr":
+                from app.services.ocr_service import OcrReaderPipeline
+                annotated_mat = OcrReaderPipeline.draw_reads(self.camera_id, display_mat, scale_x, scale_y, fps)
+                ret_ann, ann_buf = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+                annotated_jpeg = ann_buf.tobytes() if ret_ann else None
+            elif routed and routed[1] == "match":
+                from app.services.match_service import PatternCheckPipeline
+                annotated_mat = PatternCheckPipeline.draw_checks(self.camera_id, display_mat, scale_x, scale_y, fps)
+                ret_ann, ann_buf = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+                annotated_jpeg = ann_buf.tobytes() if ret_ann else None
+            else:
+                # 3. Draw annotations directly onto BGR display_mat. A camera that is not
+                # inspected now shows why, not the last results it had (they would stand
+                # still on the moving picture); so does one inspected only on a trigger.
                 engine, _, _ = line_manager.engine_for_camera(self.camera_id)
+                status = inspection_status(routed, engine, self.camera_id)
+                if status in (STATUS_STOPPED, STATUS_NO_LINE, STATUS_WAITING_TRIGGER):
+                    detections, latency_ms = [], 0.0
+                else:
+                    detections, latency_ms = CameraStreamPipeline.get_worker(self.camera_id).get_latest_inference()
                 annotated_mat = engine.draw_annotations_mat(
                     display_mat,
                     detections,
@@ -409,26 +477,31 @@ class _CameraStreamPublisher:
                     scale_y=scale_y,
                     fps=fps,
                     camera_id=self.camera_id,
+                    status=status,
                 )
 
                 # Codes a vision camera read beside its model are outlined on its video too.
                 if routed and routed[1] == "vision" and routed[0].reads_codes(self.camera_id):
+                    from app.engines.inference_engine import hud_parts, status_bar_height
                     from app.services.qr_service import QRReaderPipeline
-                    QRReaderPipeline.draw_reads(self.camera_id, annotated_mat, scale_x, scale_y, banner=False)
+                    # The picture of the last code read goes below the vision bar.
+                    try:
+                        bar = status_bar_height(hud_parts(line_manager.counter_for_camera(self.camera_id), fps, latency_ms, status),
+                                                annotated_mat.shape[1], annotated_mat.shape[0])
+                    except Exception:
+                        bar = 0
+                    QRReaderPipeline.draw_reads(self.camera_id, annotated_mat, scale_x, scale_y, banner=False, top=bar)
 
-                # 5. Render Annotated JPEG (single encode per frame)
+                # 4. Render Annotated JPEG (single encode per frame)
                 ret_ann, ann_buf = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
                 annotated_jpeg = ann_buf.tobytes() if ret_ann else None
 
-            # 6. Atomic update of cached frame bytes. A redraw that came out the
+            # 5. Atomic update of cached frame bytes. A redraw that came out the
             # same as the picture already sent is not sent again.
             with self._lock:
                 if annotated_jpeg is not None and annotated_jpeg != self._latest_annotated_jpeg:
                     self._latest_annotated_jpeg = annotated_jpeg
                     self._annotated_seq += 1
-                if raw_jpeg is not None and raw_jpeg != self._latest_raw_jpeg:
-                    self._latest_raw_jpeg = raw_jpeg
-                    self._raw_seq += 1
 
             # Maintain smooth 30 FPS timing
             elapsed = time.perf_counter() - loop_start
@@ -474,8 +547,12 @@ class CameraStreamPipeline:
             worker.stop()
         if publisher:
             publisher.stop()
+        from app.services.match_service import PatternCheckPipeline
+        from app.services.ocr_service import OcrReaderPipeline
         from app.services.qr_service import QRReaderPipeline
         QRReaderPipeline.remove_camera(camera_id)
+        OcrReaderPipeline.remove_camera(camera_id)
+        PatternCheckPipeline.remove_camera(camera_id)
 
     @classmethod
     def stop_all(cls) -> None:
@@ -489,8 +566,12 @@ class CameraStreamPipeline:
             worker.stop()
         for publisher in publishers:
             publisher.stop()
+        from app.services.match_service import PatternCheckPipeline
+        from app.services.ocr_service import OcrReaderPipeline
         from app.services.qr_service import QRReaderPipeline
         QRReaderPipeline.stop_all()
+        OcrReaderPipeline.stop_all()
+        PatternCheckPipeline.stop_all()
 
     @classmethod
     async def stream_annotated_mjpeg(cls, camera_id: str) -> AsyncGenerator[bytes, None]:
@@ -501,7 +582,7 @@ class CameraStreamPipeline:
         ZERO OpenCV work runs on the FastAPI asyncio event loop.
         """
         publisher = cls.get_publisher(camera_id)
-        publisher.add_subscriber(stream_type="annotated")
+        publisher.add_subscriber()
         last_fid = -1
 
         try:
@@ -524,38 +605,7 @@ class CameraStreamPipeline:
 
                 await asyncio.sleep(0.010)
         finally:
-            publisher.remove_subscriber(stream_type="annotated")
-
-    @classmethod
-    async def stream_raw_mjpeg(cls, camera_id: str) -> AsyncGenerator[bytes, None]:
-        """
-        High-efficiency async generator for raw MJPEG streaming.
-        """
-        publisher = cls.get_publisher(camera_id)
-        publisher.add_subscriber(stream_type="raw")
-        last_fid = -1
-
-        try:
-            while not app_state.shutting_down:
-                driver = app_state.cameras.get(camera_id)
-                if not driver or not getattr(driver, "is_connected", False):
-                    break
-
-                fid = publisher.get_latest_frame_id("raw")
-                jpeg = publisher.get_latest_raw()
-
-                if jpeg and fid != last_fid:
-                    last_fid = fid
-                    header = (
-                        b"--frame\r\n"
-                        b"Content-Type: image/jpeg\r\n"
-                        b"Content-Length: " + str(len(jpeg)).encode("ascii") + b"\r\n\r\n"
-                    )
-                    yield header + jpeg + b"\r\n"
-
-                await asyncio.sleep(0.010)
-        finally:
-            publisher.remove_subscriber(stream_type="raw")
+            publisher.remove_subscriber()
 
     @classmethod
     def render_annotated_frame(
@@ -628,39 +678,54 @@ class CameraStreamPipeline:
 
         return True, buf.tobytes()
 
-    @classmethod
-    def render_raw_frame(
-        cls,
-        camera_id: str,
-        max_width: int = 640,
-        jpeg_quality: int = 70,
-    ) -> Tuple[bool, Optional[bytes]]:
-        """Fast raw video frame without annotations, encoded once."""
-        publisher = cls.get_publisher(camera_id)
-        cached = publisher.get_latest_raw()
-        if cached:
-            return True, cached
 
-        driver = app_state.cameras.get(camera_id)
-        if not driver or not driver.is_connected:
-            return False, None
+# The overrun alarm of a triggered camera is cleared after this long without a lost picture.
+OVERRUN_CLEAR_S = 60.0
 
-        import cv2
-        success, mat, _ = driver.grab_raw_frame()
-        if not success or mat is None:
-            return False, None
 
-        h, w = mat.shape[:2]
-        if max_width and max_width > 0 and w > max_width:
-            scale = max_width / float(w)
-            new_h = max(1, int(h * scale))
-            mat = cv2.resize(mat, (max_width, new_h), interpolation=cv2.INTER_LINEAR)
+def picture_worker(camera_id: str, role: str) -> Any:
+    """Where a triggered picture of a camera goes, by its job (role): its pattern check, its text reader, or
+    its model's inference worker."""
+    if role == "match":
+        from app.services.match_service import PatternCheckPipeline
+        return PatternCheckPipeline.get_worker(camera_id)
+    if role == "ocr":
+        from app.services.ocr_service import OcrReaderPipeline
+        return OcrReaderPipeline.get_worker(camera_id)
+    return CameraStreamPipeline.get_worker(camera_id)
 
-        ret, buf = cv2.imencode(".jpg", mat, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality])
-        if not ret:
-            return False, None
 
-        return True, buf.tobytes()
+def _hardware_result(camera_id: str, frame_id: int, detections: List[Any], inference_ms: float,
+                     arrived_at: Optional[float], context: Optional[Dict[str, Any]] = None) -> None:
+    """The model got through a picture a hardware trigger took: it is one product of the camera's line.
+
+    ``context``: the trigger notice the picture was paired with (``trigger_no``, ``sequence``,
+    ``request_id``); the product keeps it. None for a camera without a notice. Runs on the camera's
+    inference thread, as its result callback: the picture with its boxes is drawn from the frame the
+    worker has just got through, and becomes the camera's latest capture.
+    """
+    from app.services.line_service import line_manager
+    from app.services.trigger_inspection import product_from_result, render_trigger_capture
+
+    routed = line_manager.route(camera_id)
+    if routed is None or not routed[0].enabled:
+        return      # the line was stopped while the model ran
+    runtime = routed[0]
+    # Not get_worker: a result that comes after the camera was removed must not start a new worker.
+    if routed[1] == "ocr":
+        from app.services.ocr_service import OcrReaderPipeline
+        frame = getattr(OcrReaderPipeline.peek(camera_id), "last_inferred_frame", None)
+    elif routed[1] == "match":
+        from app.services.match_service import PatternCheckPipeline
+        frame = getattr(PatternCheckPipeline.peek(camera_id), "last_inferred_frame", None)
+    else:
+        frame = getattr(CameraStreamPipeline._workers.get(camera_id), "last_inferred_frame", None)
+    context = context or {}
+    answer = product_from_result(runtime, camera_id, detections, arrived_at, context.get("trigger_no"),
+                                 context.get("sequence"), context.get("request_id"))
+    runtime.count_trigger(camera_id, "results")
+    alarm_manager.clear_alarm(AlarmCode.CAMERA_PICTURE_MISSING, f"camera:{camera_id}", "the camera's next picture came")
+    runtime.remember_trigger_capture(camera_id, answer, render_trigger_capture(camera_id, frame, detections))
 
 
 class ContinuousVisionRunner:
@@ -702,77 +767,207 @@ class ContinuousVisionRunner:
                 cls._thread = None
             logger.info("Continuous Server Vision Runner stopped")
 
+    @staticmethod
+    def new_memory() -> Dict[str, Dict[str, Any]]:
+        """What the runner remembers per camera between two passes."""
+        return {
+            # The last frame handed over per camera, as (driver, frame id): frame ids
+            # start again at 1 when a camera is reconnected, and a still picture's
+            # only frame must not be mistaken for the one already processed.
+            "submitted": {},
+            # Frames handed to the code reader, kept apart: a vision camera with
+            # Read codes on feeds its model and its code reader independently.
+            "codes": {},
+            # A triggered camera: (driver, pictures it had dropped when last looked at),
+            # and when its overrun alarm was last raised.
+            "dropped": {},
+            "overrun": {},
+        }
+
     @classmethod
     def _loop(cls) -> None:
-        # The last frame handed over per camera, as (driver, frame id): frame ids
-        # start again at 1 when a camera is reconnected, and a still picture's
-        # only frame must not be mistaken for the one already processed.
-        last_submitted_fids: Dict[str, Tuple[Any, int]] = {}
-        # Frames handed to the code reader, kept apart: a vision camera with
-        # Read codes on feeds its model and its code reader independently.
-        last_code_fids: Dict[str, Tuple[Any, int]] = {}
+        memory = cls.new_memory()
         while not cls._stop_event.is_set():
-            cams = list(app_state.cameras.items())
-            if not cams:
+            if not app_state.cameras:
                 time.sleep(0.04)
                 continue
+            cls.feed_once(memory)
+            # Polling loop (~100 Hz) with zero-copy frame ID check
+            time.sleep(0.010)
 
-            from app.services.line_service import line_manager
-            for camera_id, driver in cams:
-                if not getattr(driver, "is_connected", False):
-                    continue
-                try:
-                    # Each camera feeds the production line that owns it. A camera no
-                    # line claims, or one on a stopped line, is streamed but not processed.
-                    routed = line_manager.route(camera_id)
-                    if routed is None or not routed[0].enabled:
-                        continue
-                    cur_fid = driver.get_latest_frame_id() if hasattr(driver, "get_latest_frame_id") else getattr(driver, "_latest_frame_id", 0)
-                    if cur_fid == 0:
-                        continue
+    @classmethod
+    def feed_once(cls, memory: Dict[str, Dict[str, Any]]) -> None:
+        """One pass: hand each connected camera's pictures to its model and its code reader."""
+        from app.services.line_service import line_manager
 
-                    runtime, role = routed
-                    # Codes: a QR reader, or a vision camera with Read codes on. A camera
-                    # set to one picture per product decodes on a wire line crossing instead.
-                    if (role == "qr" or runtime.reads_codes(camera_id)) and not runtime.qr_triggered(camera_id) \
-                            and (driver, cur_fid) != last_code_fids.get(camera_id):
-                        from app.services.qr_service import QRReaderPipeline
-                        reader = QRReaderPipeline.get_worker(camera_id)
-                        if not reader.is_busy:
-                            if hasattr(driver, "get_latest_raw_mat"):
-                                success, mat, fid = driver.get_latest_raw_mat(copy=False)
-                            else:
-                                success, mat, fid = driver.grab_raw_frame()
-                            if success and mat is not None and reader.submit_frame_if_idle(mat, fid):
-                                last_code_fids[camera_id] = (driver, fid)
-                    if role == "qr" or (driver, cur_fid) == last_submitted_fids.get(camera_id):
-                        continue
+        for camera_id, driver in list(app_state.cameras.items()):
+            if not getattr(driver, "is_connected", False):
+                continue
+            try:
+                cls._feed_camera(camera_id, driver, line_manager, memory)
+            except Exception as ex:
+                _error_log.log(
+                    logger, logging.WARNING, ("runner", camera_id),
+                    "Could not hand the frame of camera %s to its worker: %s: %s", camera_id, type(ex).__name__, ex,
+                )
 
-                    # Leave the frame for the next pass while inference is running,
-                    # so the newest frame goes in as soon as the worker is free.
-                    worker = CameraStreamPipeline.get_worker(camera_id)
-                    if worker.is_busy:
-                        continue
+    @classmethod
+    def _feed_camera(cls, camera_id: str, driver: Any, line_manager: Any, memory: Dict[str, Dict[str, Any]]) -> None:
+        last_submitted_fids, last_code_fids = memory["submitted"], memory["codes"]
+        # "hardware": a signal on the camera's own input takes each picture. "software": the server does.
+        trigger = getattr(driver, "trigger_mode", "off")
+        # Each camera feeds the production line that owns it. A camera no
+        # line claims, or one on a stopped line, is streamed but not processed.
+        routed = line_manager.route(camera_id)
+        if routed is None or not routed[0].enabled:
+            if trigger != "off":
+                cls._forget_triggered(camera_id, driver, memory)   # pictures taken meanwhile are not kept
+            return
+        runtime, role = routed
+        reads = role == "qr" or runtime.reads_codes(camera_id)
+        # The uses of a triggered camera that count every picture: one product per picture,
+        # one read per picture. The other uses take the camera as a stream (the newest picture).
+        every_model = every_reader = False
+        if trigger != "off":
+            entry = runtime.camera_entry(camera_id) or {}
+            every_model = role in ("vision", "ocr", "match") and entry.get("count_mode") == "trigger"
+            every_reader = reads and camera_id in runtime.signal_readers
+        if trigger == "hardware":
+            if every_model or every_reader:
+                cls._push_triggered(camera_id, driver, runtime, every_model, every_reader, memory)
+            else:
+                cls._forget_triggered(camera_id, driver, memory)
+        # "software": whoever needs a picture takes it (driver.take_picture); nothing is pushed.
 
-                    # Inference only reads the frame, so take the driver's latest
-                    # frame without copying it; drivers replace it, never modify it.
+        cur_fid = driver.get_latest_frame_id() if hasattr(driver, "get_latest_frame_id") else getattr(driver, "_latest_frame_id", 0)
+        if cur_fid == 0:
+            return
+
+        # A text reader or a pattern check: Continuously, it gets the newest frame whenever it is free; on
+        # One picture per trigger its pictures come from the triggers.
+        if role in ("ocr", "match"):
+            entry = runtime.camera_entry(camera_id) or {}
+            if entry.get("count_mode") != "trigger" and (driver, cur_fid) != last_code_fids.get(camera_id):
+                reader = picture_worker(camera_id, role)
+                if not reader.is_busy:
                     if hasattr(driver, "get_latest_raw_mat"):
                         success, mat, fid = driver.get_latest_raw_mat(copy=False)
                     else:
                         success, mat, fid = driver.grab_raw_frame()
-                    if success and mat is not None and (driver, fid) != last_submitted_fids.get(camera_id):
-                        # Runs AI inference + counting tracker on the worker thread
-                        # With the camera's own confidence threshold, if it has one (else the model's).
-                        if worker.submit_frame_if_idle(mat, fid, conf_thresh=runtime.confidence_for(camera_id), copy=False):
-                            last_submitted_fids[camera_id] = (driver, fid)
-                except Exception as ex:
-                    _error_log.log(
-                        logger, logging.WARNING, ("runner", camera_id),
-                        "Could not hand the frame of camera %s to its worker: %s: %s", camera_id, type(ex).__name__, ex,
-                    )
+                    if success and mat is not None and reader.submit_frame_if_idle(mat, fid):
+                        last_code_fids[camera_id] = (driver, fid)
+            return
 
-            # Polling loop (~100 Hz) with zero-copy frame ID check
-            time.sleep(0.010)
+        # Codes: a QR reader, or a vision camera with Read codes on. A camera
+        # set to one picture per product decodes on a wire line crossing instead.
+        if reads and not runtime.qr_triggered(camera_id) and (driver, cur_fid) != last_code_fids.get(camera_id):
+            from app.services.qr_service import QRReaderPipeline
+            reader = QRReaderPipeline.get_worker(camera_id)
+            if not reader.is_busy:
+                if hasattr(driver, "get_latest_raw_mat"):
+                    success, mat, fid = driver.get_latest_raw_mat(copy=False)
+                else:
+                    success, mat, fid = driver.grab_raw_frame()
+                if success and mat is not None and reader.submit_frame_if_idle(mat, fid):
+                    last_code_fids[camera_id] = (driver, fid)
+        # A vision camera whose picture a trigger takes gets its model only for that picture
+        # (trigger_inspection); its code reader above is fed as before.
+        if role == "qr" or every_model or runtime.infers_on_demand(camera_id) \
+                or (driver, cur_fid) == last_submitted_fids.get(camera_id):
+            return
+
+        # Leave the frame for the next pass while inference is running,
+        # so the newest frame goes in as soon as the worker is free.
+        worker = CameraStreamPipeline.get_worker(camera_id)
+        if worker.is_busy:
+            return
+
+        # Inference only reads the frame, so take the driver's latest
+        # frame without copying it; drivers replace it, never modify it.
+        if hasattr(driver, "get_latest_raw_mat"):
+            success, mat, fid = driver.get_latest_raw_mat(copy=False)
+        else:
+            success, mat, fid = driver.grab_raw_frame()
+        if success and mat is not None and (driver, fid) != last_submitted_fids.get(camera_id):
+            # Runs AI inference + counting tracker on the worker thread
+            # With the camera's own confidence threshold, if it has one (else the model's).
+            if worker.submit_frame_if_idle(mat, fid, conf_thresh=runtime.confidence_for(camera_id), copy=False):
+                last_submitted_fids[camera_id] = (driver, fid)
+
+    @classmethod
+    def _push_triggered(cls, camera_id: str, driver: Any, runtime: Any, to_model: bool, to_reader: bool,
+                        memory: Dict[str, Dict[str, Any]]) -> None:
+        """Give the oldest waiting picture of a hardware triggered camera to every use that counts every picture.
+
+        One picture serves the model and the code reader. The next one waits until both are free,
+        so no picture is skipped and they stay in the order taken.
+
+        A camera with a trigger notice hands each picture to its line instead of the model
+        (LineRuntime.trigger_picture): it is paired with a notice by time, and only a paired picture
+        goes to the model, with the notice's context. That pairing does not wait for the model; the
+        pairs wait for it in the line, and each pass offers the oldest to the model (drain_pairs).
+        """
+        from app.services.line_service import pairing_time
+        from app.services.qr_service import QRReaderPipeline
+
+        cls._watch_overrun(camera_id, driver, runtime, memory)
+        notice = to_model and runtime.has_notice(camera_id)
+        if notice:
+            runtime.drain_pairs(camera_id)
+        role = (runtime.camera_entry(camera_id) or {}).get("role", "vision")
+        worker = picture_worker(camera_id, role) if to_model and not notice else None
+        reader = QRReaderPipeline.get_worker(camera_id) if to_reader else None
+        if (worker is not None and worker.is_busy) or (reader is not None and reader.capture_busy):
+            return
+        shot = driver.next_triggered_frame()
+        if shot is None:
+            return
+        mat, frame_id, arrived = shot
+        if notice:
+            # The driver's time is the wall clock's; notices and pictures are paired on the monotonic one.
+            runtime.trigger_picture(camera_id, mat, frame_id, pairing_time(arrived))
+        elif worker is not None:
+            runtime.count_trigger(camera_id, "pictures")
+            worker.submit_frame_if_idle(
+                mat, frame_id, conf_thresh=runtime.confidence_for(camera_id), copy=False, arrived_at=arrived,
+                on_result=functools.partial(_hardware_result, camera_id),
+            )
+        if reader is not None:
+            reader.request_capture(frame=mat)
+
+    @staticmethod
+    def _clear_overrun(camera_id: str, memory: Dict[str, Dict[str, Any]], reason: str) -> None:
+        if memory["overrun"].pop(camera_id, None) is not None:
+            alarm_manager.clear_alarm(AlarmCode.CAMERA_TRIGGER_OVERRUN, f"camera:{camera_id}", reason)
+
+    @classmethod
+    def _forget_triggered(cls, camera_id: str, driver: Any, memory: Dict[str, Dict[str, Any]]) -> None:
+        """Nothing counts every picture of this triggered camera now: its waiting pictures are not kept."""
+        if getattr(driver, "pending_triggered", 0):
+            driver.clear_triggered_frames()
+        memory["dropped"][camera_id] = (driver, getattr(driver, "dropped_frames", 0))
+        cls._clear_overrun(camera_id, memory, "nothing counts every picture of this camera")
+
+    @classmethod
+    def _watch_overrun(cls, camera_id: str, driver: Any, runtime: Any, memory: Dict[str, Dict[str, Any]]) -> None:
+        """Raise the overrun alarm when the camera dropped a waiting picture; clear it after a quiet while."""
+        seen_driver, seen = memory["dropped"].get(camera_id, (driver, 0))
+        if seen_driver is not driver:
+            seen = 0
+        dropped = int(getattr(driver, "dropped_frames", 0))
+        memory["dropped"][camera_id] = (driver, dropped)
+        now = time.monotonic()
+        if dropped > seen:
+            memory["overrun"][camera_id] = now
+            name = getattr(driver, "name", camera_id)
+            alarm_manager.raise_alarm(
+                AlarmCode.CAMERA_TRIGGER_OVERRUN, f"camera:{camera_id}",
+                f"Camera '{name}' on line '{runtime.name}' takes pictures faster than they are inspected: "
+                f"{dropped} picture(s) were dropped and their products were not counted",
+                AlarmSeverity.WARNING, {"line_id": runtime.id, "camera_id": camera_id, "dropped": dropped},
+            )
+        elif camera_id in memory["overrun"] and now - memory["overrun"][camera_id] >= OVERRUN_CLEAR_S:
+            cls._clear_overrun(camera_id, memory, "no picture was dropped for a while")
 
 
 class ApiInferenceBusy(RuntimeError):
@@ -1032,6 +1227,8 @@ class VisionService:
 
         from app.services.line_service import line_manager
         engine, _, _ = line_manager.engine_for_camera(camera_id)
+        # This picture is inspected now, on request; the bar still says when the camera's line is not.
+        status = inspection_status(line_manager.route(camera_id), engine)
 
         def _infer_and_render() -> bytes:
             # Inference, drawing and JPEG encoding all run off the event loop.
@@ -1041,7 +1238,7 @@ class VisionService:
                 detections, latency_ms = det_response.detections, det_response.inference_time_ms
             else:
                 detections, latency_ms = [], 0.0  # no model runs on this camera
-            annotated_mat = engine.draw_annotations_mat(mat, detections, latency_ms, camera_id=camera_id)
+            annotated_mat = engine.draw_annotations_mat(mat, detections, latency_ms, camera_id=camera_id, status=status)
             _, jpeg = cv2.imencode(".jpg", annotated_mat, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
             return shrink_jpeg(jpeg.tobytes(), max_width) if max_width else jpeg.tobytes()
 

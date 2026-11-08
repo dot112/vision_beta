@@ -18,20 +18,20 @@ Select the scope that matches the endpoints the client needs. The key owner must
 
 | Checkbox in the dashboard | Scope sent when creating the key | Minimum owner clearance | Endpoint access examples |
 | --- | --- | --- | --- |
-| Monitoring | `monitor:read` | Level 1 Operator | `GET /api/v1/cameras`; `GET /api/v1/cameras/{camera_id}/status`; `GET /api/v1/vision/stream/camera/{camera_id}`; `GET /api/v1/vision/annotated/camera/{camera_id}`; `GET /api/v1/qr/annotated/camera/{camera_id}`; read routes under `/api/v1/counting/`, `/api/v1/telemetry/` (including `/telemetry/health` and `/telemetry/metrics`), and `/api/v1/plc/`; `GET /api/v1/mqtt/status`; `GET /api/v1/alarms` and `/api/v1/alarms/history` |
+| Monitoring | `monitor:read` | Level 1 Operator | `GET /api/v1/cameras`; `GET /api/v1/cameras/{camera_id}/status`; `GET /api/v1/system/lock` (whether the configuration is locked); `GET /api/v1/vision/stream/camera/{camera_id}`; `GET /api/v1/vision/annotated/camera/{camera_id}`; `GET /api/v1/qr/annotated/camera/{camera_id}`; read routes under `/api/v1/counting/`, `/api/v1/telemetry/` (including `/telemetry/health` and `/telemetry/metrics`), and `/api/v1/plc/`; `GET /api/v1/mqtt/status`; `GET /api/v1/alarms` and `/api/v1/alarms/history`; `GET /api/v1/lines`, `/api/v1/lines/{line_id}` `/api/v1/lines/{line_id}/plc-inputs/status` (what each PLC signal last read) `/api/v1/lines/{line_id}/handshake` (the result handshake's state) `/api/v1/lines/{line_id}/ocr/recent` (the latest text reads) and `/api/v1/lines/{line_id}/match/recent` (the latest pattern checks) |
 | Inspection history | `inspection:read` | Level 1 Operator | `GET /api/v1/vision/detections` |
-| Production records | `records:read` | Level 1 Operator | `GET /api/v1/records`, `/api/v1/records/summary` and `/api/v1/records/export` (CSV / Excel) |
-| Run inspections | `inspection:trigger` | Level 2 Supervisor | Image and camera detection under `/api/v1/vision/`; QR decode and mobile scan under `/api/v1/qr/`; `/api/v1/control/trigger...` |
+| Production records | `records:read` | Level 1 Operator | `GET /api/v1/records`, `/api/v1/records/summary`, `/api/v1/records/export` (CSV / Excel) and `/api/v1/records/archive[/{day}]` (the archived days) |
+| Run inspections | `inspection:trigger` | Level 2 Supervisor | Image and camera detection under `/api/v1/vision/`; QR decode and mobile scan under `/api/v1/qr/`; `/api/v1/control/trigger...`; `POST /api/v1/lines/{line_id}/trigger` (one picture, one product, for the line's cameras in trigger mode) |
 | Reset production counts | `production:reset` | Level 2 Supervisor | `POST /api/v1/counting/reset` |
 | Read configuration | `configuration:read` | Level 1 Operator | `GET /api/v1/system/settings`; `GET /api/v1/system/endpoints`; `GET /api/v1/models`; `GET /api/v1/rules`; `GET /api/v1/actions`; `GET /api/v1/flows`; PLC action configuration reads; audit and change polling; `GET /api/v1/mqtt/certs` |
-| Change configuration | `configuration:write` | Level 2 Supervisor | Camera create/update/delete; system settings and communication endpoint changes; model, rule, and counting configuration changes; other system configuration routes |
+| Change configuration | `configuration:write` | Level 2 Supervisor | Camera create/update/delete; system settings and communication endpoint changes; model, rule, and counting configuration changes; product list changes (`/api/v1/products...`: lists, their fields, products and their values, CSV import and replace); production line changes (`POST`/`PUT`/`DELETE /api/v1/lines...`, including the line's `product_checks`) and `POST /api/v1/lines/{line_id}/formula/check` (checks an output action's formula; changes nothing) and `PUT /api/v1/lines/{line_id}/batch` (the line's batch number); other system configuration routes |
 | Camera control | `camera:control` | Level 2 Supervisor | `POST /api/v1/cameras/{camera_id}/connect`; `POST /api/v1/cameras/{camera_id}/disconnect` |
-| Configure PLC actions | `plc:configure` | Level 2 Supervisor | PLC action setup and endpoint changes under `/api/v1/plc/`; `POST /api/v1/plc/opcua/scan`; action configuration under `/api/v1/actions/` |
-| Operate PLC actions | `plc:operate` | Level 2 Supervisor | `POST /api/v1/plc/actions/{id}/test`; `POST /api/v1/actions/{id}/execute`; PLC operation routes; flow tests also require this scope |
+| Configure PLC actions | `plc:configure` | Level 2 Supervisor | PLC action setup and endpoint changes under `/api/v1/plc/`; `POST /api/v1/plc/opcua/scan`; action configuration under `/api/v1/actions/`; a line change that carries PLC action cards or PLC signal cards (`plc_actions` or `plc_inputs` in the body of `PUT /api/v1/lines/{line_id}`) needs this scope as well as `configuration:write`; `POST /api/v1/lines/{line_id}/plc-inputs/{input_id}/read` (read a PLC signal's address once) |
+| Operate PLC actions | `plc:operate` | Level 2 Supervisor | `POST /api/v1/plc/actions/{id}/test` (with an optional product `code`); `POST /api/v1/actions/{id}/execute`; PLC operation routes; flow tests also require this scope |
 | Operate integrations | `integrations:operate` | Level 2 Supervisor | MQTT and `/api/v1/comms/` operations; `POST /api/v1/system/endpoints/{id}/test`; flow tests also require `plc:operate` |
 | Acknowledge alarms | `alarms:acknowledge` | Level 1 Operator | `POST /api/v1/alarms/{alarm_id}/acknowledge` |
 
-API key creation, listing, revealing, and user administration are admin-only and cannot be done with an API key. Flow tests require several scopes together; consult the API's route policy before granting flow permissions. Requests that lack a required scope return `403`.
+API key creation, listing, revealing, and user administration are admin-only and cannot be done with an API key. Line setup's text reader routes under `/api/v1/ocr/` (a held picture, the preview of unsaved settings, the models) and pattern check routes under `/api/v1/match/` (a held picture, the training draft, Train, the preview) are for the dashboard only: no scope gives an API key access to them. Flow tests require several scopes together; consult the API's route policy before granting flow permissions. Requests that lack a required scope return `403`.
 
 ## 1. Sign in as an administrator
 
@@ -113,13 +113,7 @@ curl.exe -N "$BaseUrl/api/v1/vision/stream/camera/$CameraId" `
   -H "X-API-Key: $ApiKey"
 ```
 
-The raw camera feed, without YOLO annotations, is:
-
-```http
-GET /api/v1/cameras/{camera_id}/stream
-```
-
-Use the same `X-API-Key` header. A browser's plain `<img src="...">` request cannot set this custom header; use an HTTP client that supports request headers or a trusted backend proxy.
+Send the `X-API-Key` header. A browser's plain `<img src="...">` request cannot set this custom header; use an HTTP client that supports request headers or a trusted backend proxy.
 
 ## Optional: connect a camera through the API
 
@@ -135,5 +129,6 @@ Invoke-RestMethod -Method Post -Uri "$BaseUrl/api/v1/cameras/$CameraId/connect" 
 - `401`: the key is invalid, expired, or revoked. Create a replacement key if needed.
 - `403`: the key is missing `monitor:read`, or its owner does not meet the scope's clearance requirement.
 - `404` from the stream endpoint: the camera ID is wrong, or the camera is offline or disconnected.
+- `423`: the configuration is locked. Changes to lines, cameras, connections, models and product lists wait until an Admin, or a Level 2 user with the lock code, unlocks it in the dashboard; running the line, triggers and tests still work.
 
 For interactive API exploration, open `/docs` when the server is running with `DEBUG=true`.

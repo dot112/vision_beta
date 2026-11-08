@@ -44,6 +44,10 @@ def required_api_key_scopes(method: str, path: str) -> set[str] | None:
         return {"monitor:read"}
     if path.startswith("/api/v1/vision/"):
         return {"inspection:trigger"}
+    if path.startswith("/api/v1/ocr/"):
+        return None  # Line setup's text reader picture and preview: JWT-only
+    if path.startswith("/api/v1/match/"):
+        return None  # Line setup's pattern check: picture, preview, draft and training: JWT-only
     if path.startswith("/api/v1/qr/annotated"):
         return {"monitor:read"}
     if path.startswith("/api/v1/qr/") or path.startswith("/api/v1/control/trigger"):
@@ -88,6 +92,17 @@ def required_api_key_scopes(method: str, path: str) -> set[str] | None:
     if path.startswith("/api/v1/comms/"):
         return {"integrations:operate"}
 
+    if path == "/api/v1/system/lock" and method in {"GET", "HEAD"}:
+        return {"monitor:read"}
+    if path == "/api/v1/system/usage" and method in {"GET", "HEAD"}:
+        return {"monitor:read"}
+    if path in {"/api/v1/system/lock", "/api/v1/system/unlock"} or path.startswith("/api/v1/system/lock/"):
+        return None  # locking, unlocking and the lock code are for signed-in users only
+
+    if path in {"/api/v1/system/data", "/api/v1/system/backups"} or path.startswith(
+            ("/api/v1/system/data/", "/api/v1/system/backups/")):
+        return None  # backups hold password hashes and connection settings: signed-in Admins only
+
     if path.startswith("/api/v1/system/settings"):
         return {"configuration:read"} if method in {"GET", "HEAD"} else {"configuration:write"}
     if path.startswith("/api/v1/system/audit-logs") or path.startswith("/api/v1/system/poll-changes"):
@@ -118,6 +133,15 @@ def required_api_key_scopes(method: str, path: str) -> set[str] | None:
     if path == "/api/v1/lines" or path.startswith("/api/v1/lines/"):
         if method in {"GET", "HEAD"}:
             return {"monitor:read"}
+        if "/setups" in path:
+            # A save holds connection passwords, and a load changes connections other lines use.
+            return None
+        if "/plc-inputs/" in path:
+            # "Read now" reads any address of a PLC channel.
+            return {"plc:configure"}
+        if path.endswith("/trigger") and method == "POST":
+            # One picture, one product: it is counted and fires the line's cards.
+            return {"inspection:trigger"}
         if path.endswith("/clone"):
             # A clone copies the line's PLC action cards.
             return {"configuration:write", "plc:configure"}

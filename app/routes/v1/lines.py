@@ -8,15 +8,17 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.user import User
-from app.dependencies import require_operator, require_supervisor
+from app.dependencies import get_db, require_operator, require_supervisor
 from app.services.line_config import (
     code_check,
     line_warnings,
     model_warnings,
     plc_address_clashes,
     reads_codes,
+    trigger_mode_to_set,
     vision_models,
 )
 
@@ -70,7 +72,9 @@ async def _view(line_id: str, with_logic: bool) -> Dict[str, Any]:
         rate = runtime.counter.products_per_minute if runtime and runtime.enabled else 0.0
         line["warnings"] = [
             await _name_cameras(warning, line.get("cameras"))
-            for warning in line_warnings(line, await _model_info(line), products_per_minute=rate)
+            for warning in line_warnings(line, await _model_info(line), products_per_minute=rate,
+                                         trigger_modes=await _trigger_modes(line.get("cameras")),
+                                         list_formats=_list_formats(), send_protocols=_send_protocols())
         ]
     return line
 
@@ -101,6 +105,9 @@ async def apply_line(line_id: Optional[str] = None) -> Dict[str, str]:
         exists = svc.get_line(line_id, with_logic=False) is not None
         PLCDispatcherService.set_cards(svc.get_line_plc_actions(line_id) if exists else [], line_id=line_id)
         SendDispatcherService.set_cards(svc.get_line_send_actions(line_id) if exists else [], line_id=line_id)
+    # The lines' PLC signal cards, read again whichever line changed.
+    from app.services.plc_input_service import PLCInputService
+    PLCInputService.reload()
     return await _manager().refresh_models()
 
 
@@ -193,6 +200,30 @@ def _check_camera_count(raw: Dict[str, Any]) -> None:
         )
 
 
+async def _check_picture_sources(raw: Dict[str, Any]) -> None:
+    """Camera trigger (the camera takes its own picture) is only for an industrial camera (row type gige)."""
+    from app.db.models.camera import Camera
+    from app.db.session import AsyncSessionLocal
+
+    cameras = raw.get("cameras")
+    asked = [
+        (index, str(cam.get("camera_id") or "").strip())
+        for index, cam in enumerate(cameras if isinstance(cameras, list) else [])
+        if isinstance(cam, dict) and str(cam.get("picture_source") or "").strip().lower() == "camera"
+        # The key counts only on a vision camera, a text reader or a pattern check with One picture per trigger
+        # (else the save drops it).
+        and str(cam.get("role") or "vision").strip().lower() in ("vision", "ocr", "match")
+        and str(cam.get("count_mode") or "trigger").strip().lower() == "trigger"
+    ]
+    if not asked:
+        return
+    async with AsyncSessionLocal() as db:
+        for index, camera_id in asked:
+            row = await db.get(Camera, camera_id) if camera_id else None
+            if row is not None and row.type != "gige":
+                raise HTTPException(status_code=422, detail=f"Camera {index + 1}: only an industrial camera can trigger itself")
+
+
 _CAMERA_LABEL = re.compile(r"\bCamera (\d+)\b(?! \()")
 
 
@@ -222,6 +253,85 @@ async def _camera_names(cameras: Any) -> Dict[str, str]:
     return names
 
 
+def _list_formats() -> Dict[str, Dict[str, Any]]:
+    """Each product list's code format, for the line warnings (a list missing reads whole codes)."""
+    from app.services.product_service import product_catalog
+
+    return product_catalog.formats()
+
+
+def _send_protocols() -> Dict[str, str]:
+    """{endpoint_id: protocol} of the communication channels, for the line warnings (who waits for an answer)."""
+    return {str(endpoint["id"]): str(endpoint.get("protocol", "")).lower()
+            for endpoint in _svc().get_endpoints() if endpoint.get("id")}
+
+
+async def _trigger_modes(cameras: Any) -> Dict[str, str]:
+    """{camera_id: "hardware" | "software"} for the line's industrial cameras that are set to a trigger.
+
+    The Trigger is the camera's own setting (Cameras page), so the line's settings do not hold it.
+    """
+    from app.db.models.camera import Camera
+    from app.db.session import AsyncSessionLocal
+
+    ids = [str(c.get("camera_id")) for c in cameras if isinstance(c, dict) and c.get("camera_id")] \
+        if isinstance(cameras, list) else []
+    modes: Dict[str, str] = {}
+    if not ids:
+        return modes
+    try:
+        async with AsyncSessionLocal() as db:
+            for camera_id in ids:
+                row = await db.get(Camera, camera_id)
+                mode = str((row.settings or {}).get("trigger_mode") or "off").lower() \
+                    if row is not None and row.type == "gige" else "off"
+                if mode in ("hardware", "software"):
+                    modes[camera_id] = mode
+    except Exception:
+        pass    # the line is shown without these warnings
+    return modes
+
+
+async def _apply_trigger_modes(line: Dict[str, Any]) -> List[str]:
+    """Set each industrial vision camera of a saved line to the trigger mode its card asks for.
+
+    A card with Count mode One picture per trigger (a vision camera or a text reader) sets it: from the
+    camera Hardware, from the system Software. Any other vision card leaves the camera's mode alone (a tracking camera on Hardware, a camera
+    that reads codes), except Software with nothing to trigger it that reads no codes, which is Off
+    (``trigger_mode_to_set``).
+    Only a mode that differs is set, through the path the camera's Settings use. A QR reader keeps its
+    own mode. A camera that cannot be set is a warning, never a refused save:
+    ["Camera 2's trigger mode could not be set: ..."].
+    """
+    from app.db.models.camera import Camera
+    from app.db.session import AsyncSessionLocal
+    from app.schemas.camera import CameraUpdate
+    from app.services.camera_service import CameraService
+
+    cameras = line.get("cameras")
+    warnings: List[str] = []
+    async with AsyncSessionLocal() as db:
+        for index, cam in enumerate(cameras if isinstance(cameras, list) else []):
+            if not isinstance(cam, dict) or cam.get("role", "vision") not in ("vision", "ocr", "match") \
+                    or not cam.get("camera_id"):
+                continue
+            try:
+                row = await db.get(Camera, str(cam["camera_id"]))
+                if row is None or row.type != "gige":
+                    continue
+                # A card saved without a picture source follows the camera's mode: Hardware stays Hardware.
+                current = str((row.settings or {}).get("trigger_mode") or "off").strip().lower()
+                wanted = trigger_mode_to_set(cam, current)
+                if wanted is None or wanted == current:
+                    continue
+                if await CameraService.update_camera(db, row.id, CameraUpdate(settings={"trigger_mode": wanted})) is None:
+                    raise LookupError("the camera is not in the camera list")
+            except Exception as exc:
+                await db.rollback()
+                warnings.append(f"Camera {index + 1}'s trigger mode could not be set: {str(exc) or type(exc).__name__}")
+    return warnings
+
+
 async def _name_cameras(text: Optional[str], cameras: Any) -> Optional[str]:
     """A message with each "Camera N" followed by that camera's name: "Camera 2 ('Packing left')"."""
     if not text or not isinstance(cameras, list) or not _CAMERA_LABEL.search(text):
@@ -237,14 +347,15 @@ async def _name_cameras(text: Optional[str], cameras: Any) -> Optional[str]:
     return _CAMERA_LABEL.sub(named, text)
 
 
-async def _save(raw: Dict[str, Any]) -> Dict[str, Any]:
+async def _save(raw: Dict[str, Any], replace: bool = False) -> Dict[str, Any]:
     try:
         _check_camera_count(raw)
         _check_code_types(raw)
         _check_product_lists(raw)
         await _check_models(raw)
+        await _check_picture_sources(raw)
         try:
-            return _svc().save_line(raw)
+            return _svc().save_line(raw, replace=replace)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
     except HTTPException as exc:
@@ -262,12 +373,15 @@ def _sync_forced(body: Dict[str, Any], saved: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-async def _save_warning(body: Dict[str, Any], view: Dict[str, Any]) -> Optional[str]:
-    """What the user is told after a save: the first of a model problem, Sync switched on, or a line warning."""
+async def _save_warning(body: Dict[str, Any], view: Dict[str, Any], not_set: Optional[List[str]] = None) -> Optional[str]:
+    """What the user is told after a save: the first of a model problem, a camera whose trigger mode
+    could not be set (``not_set``, all of them), Sync switched on, or a line warning."""
     about_models = model_warnings(view, await _model_info(view))
     first = next(iter(about_models), None)
     if first:
         return await _name_cameras(first, view.get("cameras"))
+    if not_set:
+        return " ".join(not_set)
     return _sync_forced(body, view) or next(iter(view.get("warnings") or []), None)
 
 
@@ -309,8 +423,34 @@ async def recent_qr_reads(
         "line_id": line_id,
         "reads": runtime.recent_reads(limit),
         "stats": stats,
+        # Sorting verification at the outfeeds, when a camera of the line verifies one.
+        "sorting": runtime.sorting_counts() if runtime.sorting_lanes else None,
         "last_capture": _capture_view(capture),
     }
+
+
+@router.get("/{line_id}/ocr/recent", summary="The line's latest text reads: what each text reader read, and its product's result")
+async def recent_text_reads(
+    line_id: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    user: User = Depends(require_operator),
+) -> Dict[str, Any]:
+    runtime = _manager().get(line_id)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    return {"line_id": line_id, "reads": runtime.recent_text_reads(limit)}
+
+
+@router.get("/{line_id}/match/recent", summary="The line's latest pattern checks: each triggered check's scores and its product's result")
+async def recent_pattern_checks(
+    line_id: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    user: User = Depends(require_operator),
+) -> Dict[str, Any]:
+    runtime = _manager().get(line_id)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    return {"line_id": line_id, "checks": runtime.recent_pattern_checks(limit)}
 
 
 def _capture_view(capture: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -336,34 +476,128 @@ async def last_qr_capture(line_id: str, user: User = Depends(require_operator)) 
     )
 
 
-@router.post("/{line_id}/qr/capture", summary="Take a test picture with the line's QR reader (sends no events; Level 2+)")
-async def test_qr_capture(line_id: str, user: User = Depends(require_supervisor)) -> Dict[str, Any]:
-    """Take and decode one picture now, to check the QR camera's aim and focus.
-    The result shows on the Line Dashboard; no read, PLC card or message is triggered."""
-    import asyncio
-
-    from app.services.qr_service import QRReaderPipeline
-    from app.state.application_state import app_state
-
+@router.get("/{line_id}/trigger/capture", summary="The latest picture a camera in trigger mode took, with the model's boxes (JPEG)")
+async def last_trigger_capture(
+    line_id: str,
+    camera_id: str = Query(..., description="The trigger camera"),
+    user: User = Depends(require_operator),
+) -> Response:
+    """``X-Capture-Id`` is the capture's id (it goes up with each picture); 404 when the camera has
+    not taken one yet, or its last trigger got no picture."""
     runtime = _manager().get(line_id)
     if runtime is None:
         raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
-    # The QR reader, else a vision camera with Read codes on.
-    readers = sorted((c for c in runtime.cameras if reads_codes(c)), key=lambda c: c.get("role") != "qr")
-    qr_camera = readers[0]["camera_id"] if readers else None
-    if qr_camera is None:
-        raise HTTPException(status_code=409, detail="No camera on this line reads codes")
-    if not getattr(app_state.cameras.get(qr_camera), "is_connected", False):
-        raise HTTPException(status_code=409, detail="The camera that reads codes is not connected")
-    before, _ = runtime.capture_image()
-    before_id = before["id"] if before else 0
-    QRReaderPipeline.get_worker(qr_camera).request_capture(test=True)
-    for _ in range(60):  # up to 3 s
-        await asyncio.sleep(0.05)
-        capture, _ = runtime.capture_image()
-        if capture and capture["id"] > before_id:
-            return _capture_view(capture)
-    raise HTTPException(status_code=504, detail="The QR reader did not return a picture in time")
+    capture, jpeg = runtime.trigger_capture(camera_id)
+    if not capture or not jpeg:
+        raise HTTPException(status_code=404, detail="No picture has been taken yet")
+    return Response(
+        content=jpeg,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store", "X-Capture-Id": str(capture["id"])},
+    )
+
+
+# ── PLC signals (inputs) ──────────────────────────────────────────────────────
+
+@router.get("/{line_id}/plc-inputs/status", summary="What each of the line's PLC signals last read")
+async def plc_inputs_status(line_id: str, user: User = Depends(require_operator)) -> Dict[str, Any]:
+    """Per signal card: its value, when it last changed, how often it was read and its error.
+    ``running`` is false when the server is not reading PLC signals at all."""
+    from app.services.plc_input_service import PLCInputService
+
+    if _svc().get_line(line_id, with_logic=False) is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    return {"line_id": line_id, "running": PLCInputService.is_running(), "inputs": PLCInputService.get_status(line_id)}
+
+
+@router.get("/{line_id}/handshake", summary="The line's result handshake: its state, sequence and counters")
+async def line_handshake(line_id: str, user: User = Depends(require_operator)) -> Dict[str, Any]:
+    """``state``: idle, waiting_result (a capture request waits for its result) or result_ready (the
+    result went out and waits for the PLC's acknowledge); ``sequence`` of the request under way;
+    ``since`` (ISO time of the last change of state); ``last_result``; ``stale_acks``, ``timeouts``,
+    ``ack_timeouts``, ``duplicates`` and ``late`` (results that came after their timeout);
+    ``last_error``; ``settings``. ``enabled`` is false when the line has no handshake switched on."""
+    runtime = _manager().get(line_id)
+    if runtime is None or _svc().get_line(line_id, with_logic=False) is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    return {"line_id": line_id, **runtime.handshake.view()}
+
+
+@router.post("/{line_id}/plc-inputs/{input_id}/read", summary="Read a PLC signal's address once, now (Level 2+ Supervisor)")
+async def read_plc_input(
+    line_id: str,
+    input_id: str,
+    body: Optional[Dict[str, Any]] = None,
+    user: User = Depends(require_supervisor),
+) -> Dict[str, Any]:
+    """The signal dialog's "Read now". A card that is not saved yet is sent as ``{"input": {...}}``.
+    Answers ``{"ok", "value", "message"}``; nothing the card would do is done."""
+    from app.services.line_config import normalize_plc_input
+    from app.services.plc_input_service import PLCInputService
+
+    line = _svc().get_line(line_id, with_logic=False)
+    if line is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    draft = (body or {}).get("input")
+    if isinstance(draft, dict):
+        try:
+            card = normalize_plc_input({**draft, "id": draft.get("id") or input_id})
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    else:
+        card = next((c for c in line.get("plc_inputs") or [] if c.get("id") == input_id), None)
+        if card is None:
+            raise HTTPException(status_code=404, detail=f"PLC signal '{input_id}' is not saved on this line")
+    return await PLCInputService.read_now(card)
+
+
+# ── Trigger inspection ────────────────────────────────────────────────────────
+
+@router.post("/{line_id}/trigger", summary="One picture, one product, for the line's cameras in trigger mode (Level 2+ Supervisor)")
+async def trigger_line(line_id: str, body: Optional[Dict[str, Any]] = None,
+                       user: User = Depends(require_supervisor)) -> Dict[str, Any]:
+    """Trigger every vision camera of the line that has Count mode "One picture per trigger",
+    or only ``{"camera_id": "..."}``. Without a camera_id, only the cameras whose picture the server
+    takes (not Camera trigger, not a hardware trigger) are triggered. Each makes one product from its next picture: it is
+    counted, recorded and sent, and fires the line's cards. Answers what each camera's own
+    picture said; 409 when the line is stopped or has no such camera.
+
+    ``{"trigger_no": N}`` fires the line's "Take a picture" input with that trigger number
+    instead, as its signal would: every camera that has the trigger ticked takes a picture,
+    code readers included. 404 when the line has no such input switched on."""
+    import asyncio
+
+    from app.services.trigger_inspection import system_trigger_cameras, trigger_camera, trigger_cameras, trigger_input
+
+    if _svc().get_line(line_id, with_logic=False) is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    runtime = _manager().get(line_id)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    number = (body or {}).get("trigger_no")
+    if number not in (None, ""):
+        try:
+            return {"line_id": line_id, "trigger_no": int(number), "results": await trigger_input(runtime, int(number))}
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="This line has no 'Take a picture' input with the trigger "
+                                                        f"number {number} switched on") from exc
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    wanted = str((body or {}).get("camera_id") or "").strip()
+    if wanted:
+        cameras = [wanted]
+    else:
+        # Every trigger gets one answer: only the cameras whose picture the server takes (not Camera trigger, not Hardware).
+        cameras = system_trigger_cameras(runtime)
+        if not cameras and trigger_cameras(runtime):
+            raise HTTPException(status_code=409, detail="This line has no camera whose picture the server takes")
+    if not cameras:
+        raise HTTPException(status_code=409, detail="This line has no vision camera with Count mode 'One picture per trigger'")
+    try:
+        results = await asyncio.gather(*(trigger_camera(runtime, camera_id) for camera_id in cameras))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"line_id": line_id, "results": list(results)}
 
 
 # ── Change ────────────────────────────────────────────────────────────────────
@@ -375,14 +609,23 @@ async def create_line(body: Dict[str, Any], user: User = Depends(require_supervi
     raw.setdefault("enabled", False)  # starts stopped; Start connects its cameras
     line = await _save(raw)
     _audit(user, "CREATE_LINE", f"Created production line '{line['name']}'", line["id"])
+    not_set = await _apply_trigger_modes(line)
     await apply_line(line["id"])
     view = await _view(line["id"], with_logic=True)
-    view["warning"] = await _save_warning(body, view)
+    view["warning"] = await _save_warning(body, view, not_set)
     return view
 
 
 @router.put("/{line_id}", summary="Change a production line, its cameras, roles and Sync (Level 2+ Supervisor)")
 async def update_line(line_id: str, body: Dict[str, Any], user: User = Depends(require_supervisor)) -> Dict[str, Any]:
+    return await _update_line(line_id, body, user)
+
+
+async def _update_line(line_id: str, body: Dict[str, Any], user: Any, replace: bool = False) -> Dict[str, Any]:
+    """Change a line as Save line setup does (and a saved setup's load): checks, saving, trigger modes, applying.
+
+    ``replace``: ``body`` is the whole setup (a saved setup's load); nothing it leaves out is kept.
+    """
     existing = _svc().get_line(line_id, with_logic=True)
     if existing is None:
         raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
@@ -400,12 +643,13 @@ async def update_line(line_id: str, body: Dict[str, Any], user: User = Depends(r
     from app.routes.v1.send_actions import check_send_cards
     send_cards = body.get("send_actions") if isinstance(body.get("send_actions"), list) else existing.get("send_actions", [])
     check_send_cards({"cameras": [c for c in cameras if isinstance(c, dict)]}, send_cards)
-    line = await _save({**body, "id": line_id})
+    line = await _save({**body, "id": line_id}, replace=replace)
     _audit(user, "UPDATE_LINE", f"Updated production line '{line['name']}'", line_id)
+    not_set = await _apply_trigger_modes(line)
     await apply_line(line_id)
     await _fire_line_state(line, existing.get("enabled"))
     view = await _view(line_id, with_logic=True)
-    view["warning"] = await _save_warning(body, view)
+    view["warning"] = await _save_warning(body, view, not_set)
     return view
 
 
@@ -448,6 +692,84 @@ async def set_line_running(line_id: str, running: bool, actor: Any) -> Dict[str,
     return view
 
 
+def set_line_batch(line_id: str, batch: Any, actor: Any) -> str:
+    """Set a line's batch (work order) number for whoever asked: a signed-in user, or a PLC signal.
+
+    Returns the batch as it was saved ("" clears it). Every product, code read,
+    message and record of the line carries it from now on. Raises 404 for a
+    line that does not exist and ValueError for a batch that cannot be one.
+    ``actor`` has a username, role and clearance_level, for the audit entry.
+    """
+    from app.services.line_config import clean_batch
+
+    svc = _svc()
+    line = svc.get_line(line_id, with_logic=False)
+    if line is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    batch = clean_batch(batch)
+    if batch == (line.get("batch") or ""):
+        return batch        # nothing changes, nothing to write down
+    svc.record_audit(
+        username=actor.username,
+        role=actor.role,
+        clearance_level=actor.clearance_level,
+        action="SET_BATCH",
+        category="PRODUCTION",
+        details=f"Batch of line '{line['name']}' set to '{batch}'" if batch else f"Batch of line '{line['name']}' cleared",
+        line_id=line_id,
+    )
+    svc.set_line_batch(line_id, batch)
+    runtime = _manager().get(line_id)
+    if runtime is not None:
+        runtime.set_batch(batch)
+    return batch
+
+
+@router.put("/{line_id}/batch", summary="Set the line's batch (work order) number (Level 2+ Supervisor)")
+async def put_line_batch(line_id: str, body: Dict[str, Any], user: User = Depends(require_supervisor)) -> Dict[str, Any]:
+    """``{"batch": "WO-2026-118"}``; an empty text clears it. At most 64 characters."""
+    if "batch" not in body:
+        raise HTTPException(status_code=422, detail="Send the batch number as {\"batch\": \"...\"}")
+    try:
+        return {"line_id": line_id, "batch": set_line_batch(line_id, body["batch"], user)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/{line_id}/formula/check", summary="Check a formula of an output action (Level 2+ Supervisor)")
+async def check_formula(line_id: str, body: Dict[str, Any], user: User = Depends(require_supervisor)) -> Dict[str, Any]:
+    """``{"formula": "..."}``. Answers ``{"ok": true, "names", "warnings"}``, or ``{"ok": false, "error", "position"}``.
+
+    The warnings name product fields that no product list of the line's code readers has, and
+    input values the line has none of: allowed when saving, because lists and inputs change.
+    """
+    from app.services.formula import FormulaError, parse
+    from app.services.product_service import product_catalog
+    from app.services.settings_persistence_service import SettingsPersistenceService
+
+    line = SettingsPersistenceService.get_line(line_id, with_logic=False)
+    if line is None:
+        raise HTTPException(status_code=404, detail="Line not found")
+    text = body.get("formula")
+    try:
+        formula = parse(text if isinstance(text, str) else "")
+    except FormulaError as exc:
+        return {"ok": False, "error": str(exc), "position": exc.position}
+    fields = {"name", "code", "list"}
+    for camera in line.get("cameras") or []:
+        if reads_codes(camera):
+            fields.update(field["key"] for field in product_catalog.fields(camera.get("product_list_id")))
+    inputs = {"value", "previous"} | {card.get("value_name") for card in line.get("plc_inputs") or [] if card.get("value_name")}
+    warnings = []
+    for name in sorted(formula.names):
+        root, _, key = name.partition(".")
+        if root == "product" and key not in fields:
+            warnings.append(f"No product list of this line's code readers has the field '{key}'.")
+        elif root == "input" and key not in inputs:
+            warnings.append(f"No input of this line has the value name '{key}'.")
+    return {"ok": True, "names": sorted(formula.names), "warnings": warnings}
+
+
 @router.post("/{line_id}/start", summary="Run one line without touching the others (Level 2+ Supervisor)")
 async def start_line(line_id: str, user: User = Depends(require_supervisor)) -> Dict[str, Any]:
     return await set_line_running(line_id, True, user)
@@ -469,6 +791,9 @@ async def clone_line(line_id: str, body: Optional[Dict[str, Any]] = None, user: 
         card = copy.deepcopy(card)
         card["id"] = f"{card.get('id') or 'card'}-{uuid.uuid4().hex[:6]}"
         card.pop("camera_id", None)  # cameras are not copied, so camera choices cannot be either
+        # Nor are the PLC signal cards, so the copy cannot wait for one to confirm it.
+        card.pop("confirm_input_id", None)
+        card.pop("confirm_timeout_ms", None)
         cards.append(card)
     send_cards = []
     for card in source.get("send_actions", []):
@@ -493,4 +818,79 @@ async def clone_line(line_id: str, body: Optional[Dict[str, Any]] = None, user: 
     _audit(user, "CLONE_LINE", f"Copied line '{source['name']}' into '{line['name']}'", line["id"])
     await apply_line(line["id"])
     return await _view(line["id"], with_logic=True)
+
+
+# ── Saved line setups ─────────────────────────────────────────────────────────
+
+def _line_or_404(line_id: str) -> Dict[str, Any]:
+    line = _svc().get_line(line_id, with_logic=False)
+    if line is None:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found")
+    return line
+
+
+@router.get("/{line_id}/setups", summary="The line's saved setups, newest first, without their contents")
+async def list_line_setups(line_id: str, user: User = Depends(require_operator)) -> List[Dict[str, Any]]:
+    from app.services import line_setups
+
+    _line_or_404(line_id)
+    return line_setups.list_setups(line_id)
+
+
+@router.post("/{line_id}/setups", status_code=201,
+             summary="Save the line's setup, its connections and its cameras' settings under a name (Level 2+ Supervisor)")
+async def save_line_setup(line_id: str, body: Dict[str, Any], user: User = Depends(require_supervisor),
+                          db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
+    """``{"name": "Product A"}``: the line as it is saved now, never a page's unsaved changes."""
+    from app.services import line_setups
+
+    _line_or_404(line_id)
+    try:
+        saved = await line_setups.snapshot(db, line_id, body.get("name"), user.username)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Production line '{line_id}' not found") from exc
+    _audit(user, "SAVE_LINE_SETUP", f"Saved setup '{saved['name']}' of line '{saved['line_name']}'", line_id)
+    return saved
+
+
+@router.delete("/{line_id}/setups/{setup_id}", summary="Delete a saved setup of the line (Level 2+ Supervisor)")
+async def delete_line_setup(line_id: str, setup_id: str, user: User = Depends(require_supervisor)) -> Dict[str, Any]:
+    from app.services import line_setups
+
+    line = _line_or_404(line_id)
+    try:
+        deleted = line_setups.delete(line_id, setup_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Saved setup not found") from exc
+    _audit(user, "DELETE_LINE_SETUP", f"Deleted setup '{deleted['name']}' of line '{line['name']}'", line_id)
+    return deleted
+
+
+@router.post("/{line_id}/setups/{setup_id}/load",
+             summary="Load a saved setup back onto the stopped line (Level 2+ Supervisor)")
+async def load_line_setup(line_id: str, setup_id: str, user: User = Depends(require_supervisor),
+                          db: AsyncSession = Depends(get_db)) -> Dict[str, Any]:
+    """Connections the save uses that no longer exist are added back; a camera now on another line, or
+    gone, is left out with a warning. Answers ``{"loaded": true, "name", "warnings", "line"}``."""
+    from app.services import line_setups
+
+    _line_or_404(line_id)
+    try:
+        line_setups.read(line_id, setup_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Saved setup not found") from exc
+    try:
+        result = await line_setups.load(db, line_id, setup_id, user,
+                                        lambda lid, body, who: _update_line(lid, body, who, replace=True))
+    except line_setups.LoadRefused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    details = f"Loaded setup '{result['name']}' onto line '{result['line'].get('name') or line_id}'"
+    if result["warnings"]:
+        details += f" ({'; '.join(result['warnings'])})"
+    _audit(user, "LOAD_LINE_SETUP", details, line_id)
+    return result
 

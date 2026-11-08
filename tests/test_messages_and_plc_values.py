@@ -505,7 +505,8 @@ def test_text_cards_through_the_api(client, admin_headers, raw_listeners):
 
 def _text_cards_through_the_api(client, admin_headers, api, channel_id, listener):
     placeholders = client.get(f"{api}/fields", headers=admin_headers).json()["placeholders"]
-    assert [p["name"] for p in placeholders] == list(TEMPLATE_FIELDS) and all(p["label"] for p in placeholders)
+    assert [p["name"] for p in placeholders] == [*TEMPLATE_FIELDS, "product.name", "product.code", "product.list"]
+    assert all(p["label"] for p in placeholders)
 
     card = {"id": "send_text_1", "name": "To printer", "endpoint_id": channel_id, "trigger": "cross_line",
             "condition": "any", "format": "text", "template": "{result};{nope}"}

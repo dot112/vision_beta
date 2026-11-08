@@ -154,6 +154,44 @@ def test_stalled_camera_raises_alarm_and_recovers(runtime):
     assert alarm_manager.get(HealthAlarmCode.CAMERA_STALLED, "camera:cam1") is None
 
 
+def test_a_camera_waiting_for_a_trigger_is_not_stalled(runtime):
+    # A triggered camera can be silent for hours: that is not a fault.
+    service, clock, _ = runtime
+    cam = FakeCamera()
+    cam.trigger_mode = "hardware"
+    app_state.cameras["cam1"] = cam
+    service.check_cameras()
+    clock.now += 3600
+
+    result = service.check_cameras()
+    assert result["status"] == "ok" and result["cameras"][0]["waiting_for_trigger"] is True
+    assert alarm_manager.get(HealthAlarmCode.CAMERA_STALLED, "camera:cam1") is None
+    # It delivers no frames, so it is not one of the cameras inference is expected on.
+    assert service.flowing_cameras(result) == []
+
+    cam.frame_id += 1
+    result = service.check_cameras()
+    assert result["cameras"][0]["waiting_for_trigger"] is False and service.flowing_cameras(result) == ["cam1"]
+
+
+def test_a_triggered_camera_that_stops_answering_is_a_fault(runtime):
+    service, clock, _ = runtime
+    cam = FakeCamera()
+    cam.trigger_mode = "software"
+    cam.reconnecting = True
+    cam.last_error = "Industrial camera 'Line cam' (A1) is not answering; reconnecting"
+    app_state.cameras["cam1"] = cam
+
+    result = service.check_cameras()
+    assert result["status"] == "down" and "not answering" in result["cameras"][0]["error"]
+    alarm = alarm_manager.get(HealthAlarmCode.CAMERA_STALLED, "camera:cam1")
+    assert alarm is not None and "not answering" in alarm.message
+
+    cam.reconnecting = False
+    assert service.check_cameras()["status"] == "ok"
+    assert alarm_manager.get(HealthAlarmCode.CAMERA_STALLED, "camera:cam1") is None
+
+
 def test_disconnected_camera_raises_alarm(runtime):
     service, _, _ = runtime
     app_state.cameras["cam1"] = FakeCamera(connected=False)
@@ -250,6 +288,36 @@ def test_a_camera_whose_own_model_is_missing_is_not_reported_as_stalled_inferenc
     assert report["components"]["inference"]["model"] == "another camera's model"
     assert alarm_manager.get(HealthAlarmCode.INFERENCE_STALLED, "inference") is None
     assert alarm_manager.get(HealthAlarmCode.INFERENCE_MODEL_NOT_LOADED, "inference") is None
+
+
+def test_a_camera_that_infers_only_on_a_trigger_is_not_stalled_inference(runtime):
+    """One picture per trigger, taken by the system: its model runs only when a trigger comes."""
+    service, clock, _ = runtime
+    from app.services import line_service
+    line_service.line_manager.primary().cameras[0]["count_mode"] = "trigger"
+    app_state.cameras["cam1"] = cam = FakeCamera()
+    for _ in range(int(hs.settings.HEALTH_INFERENCE_STALE_SECONDS) + 2):
+        clock.now += 1
+        cam.frame_id += 30
+        report = service.snapshot()
+    assert alarm_manager.get(HealthAlarmCode.INFERENCE_STALLED, "inference") is None
+    assert report["components"]["inference"]["status"] == "idle"
+
+
+def test_the_frame_rate_is_checked_only_on_a_line_with_a_camera_that_infers_continuously(runtime):
+    service, clock, _ = runtime
+    from app.services import line_service
+    primary = line_service.line_manager.primary()
+    primary.min_fps = 5.0
+    app_state.cameras["cam1"] = FakeCamera()
+    clock.now += 20
+    service.check_lines()
+    source = f"line:{primary.id}"
+    assert alarm_manager.get(HealthAlarmCode.LINE_FPS_LOW, source) is not None      # a tracking camera: checked
+    primary.cameras[0]["count_mode"] = "trigger"
+    rows = service.check_lines()["lines"]
+    assert alarm_manager.get(HealthAlarmCode.LINE_FPS_LOW, source) is None          # only on demand: not checked
+    assert rows[0]["status"] == "ok"
 
 
 def test_stopped_runner_raises_alarm(runtime, monkeypatch):

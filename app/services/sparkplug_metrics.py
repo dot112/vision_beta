@@ -73,6 +73,8 @@ def line_metrics(view: Dict[str, Any]) -> List[Metric]:
     metrics = [
         Metric(RUNNING, DataType.Boolean, bool(view.get("enabled"))),
         Metric("Line/Name", DataType.String, str(view.get("name") or "")),
+        # The batch (work order) number; empty while the line has none.
+        Metric("Line/Batch", DataType.String, str(view.get("batch") or "")),
         Metric("Counts/Inspected", DataType.Int64, int(view.get("total_inspected") or 0)),
         Metric("Counts/Good", DataType.Int64, int(view.get("good_count") or 0)),
         Metric("Counts/Rejected", DataType.Int64, int(view.get("rejected_count") or 0)),

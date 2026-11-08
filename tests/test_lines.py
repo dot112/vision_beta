@@ -397,7 +397,7 @@ def test_sync_pairer():
 def test_sync_on_a_line_sends_one_event_per_product(lines, monkeypatch):
     _products(monkeypatch, {"SKU-1": "Widget"})
 
-    line = _add_line("Packing 3", [{"camera_id": "vis"}, {"camera_id": "qr", "role": "qr", "product_list_id": "list-1"}],
+    line = _add_line("Packing 3", [{"camera_id": "vis"}, {"camera_id": "qr", "role": "qr", "product_list_id": "list-1", "qr_trigger": "signal"}],
                      sync={"enabled": True, "window_ms": 80}, enabled=True)
     runtime = lines.get(line["id"])
     counter = runtime.counter
@@ -461,7 +461,8 @@ def test_qr_reader_counts_a_code_once_until_it_leaves_view(lines, monkeypatch):
     _add_line("QR only", [{"camera_id": "qr", "role": "qr", "qr_hold_ms": 1000}])
     seen = []
     runtime = lines.route("qr")[0]
-    monkeypatch.setattr(runtime, "on_qr_read", lambda cam, code, fmt, t=None: seen.append((code, t)))
+    # A camera that reads Continuously only shows its codes (show_read), each once until it leaves view.
+    monkeypatch.setattr(runtime, "show_read", lambda cam, code, fmt: seen.append(code))
     worker = _QRReaderWorker("qr")
     try:
         frames = {"on": BarcodeDecodeResponse(total_found=1, codes=[BarcodeItem(code_type="QR_CODE", data="SKU-1")],
@@ -479,8 +480,7 @@ def test_qr_reader_counts_a_code_once_until_it_leaves_view(lines, monkeypatch):
         worker.process(None, now=3.1)
     finally:
         worker.stop()
-    assert [code for code, _ in seen] == ["SKU-1", "SKU-1"]
-    assert [t for _, t in seen] == [0.0, 3.1]
+    assert seen == ["SKU-1", "SKU-1"]
 
 
 # ── Flows and metrics ─────────────────────────────────────────────────────────
@@ -553,14 +553,14 @@ def test_a_vision_camera_can_read_codes_too():
 def test_one_camera_counts_and_pairs_the_codes_it_reads(lines, monkeypatch):
     _products(monkeypatch, {"SKU-1": "Widget"})
 
-    line = _add_line("Single camera", [{"camera_id": "vis", "read_codes": True, "product_list_id": "list-1"}],
+    line = _add_line("Single camera", [{"camera_id": "vis", "read_codes": True, "product_list_id": "list-1", "qr_trigger": "signal"}],
                      sync={"enabled": True, "window_ms": 80}, enabled=True)
     runtime = lines.get(line["id"])
     assert runtime.reads_codes("vis") and runtime.has_code_reader and runtime.sync_enabled
-    assert runtime.capture_triggers == {}  # reads continuously
+    assert runtime.capture_triggers == {}  # reads when an input asks, not on a wire line
     row = lines.summary(runtime)
     assert row["has_qr"] is True and row["cameras"][0]["read_codes"] is True
-    assert row["cameras"][0]["qr_trigger"] == "continuous"
+    assert row["cameras"][0]["qr_trigger"] == "signal"   # one that reads Continuously only shows its codes
 
     crossings = []
     monkeypatch.setattr(runtime.counter, "dispatch_event", lambda payload, plc_event, is_defect: crossings.append(payload))
@@ -596,7 +596,7 @@ def test_codes_from_a_vision_camera_reach_its_line_but_not_its_frame_rate(lines,
     line = _add_line("Codes", [{"camera_id": "vis", "read_codes": True}], enabled=True)
     runtime = lines.get(line["id"])
     reads, frames, captures = [], [], []
-    monkeypatch.setattr(runtime, "on_qr_read", lambda cam, code, fmt, t=None, **kw: reads.append((cam, code)))
+    monkeypatch.setattr(runtime, "show_read", lambda cam, code, fmt: reads.append((cam, code)))
     monkeypatch.setattr(runtime, "record_frame", lambda cam, now=None: frames.append(cam))
     monkeypatch.setattr(runtime, "on_qr_capture", lambda cam, record, jpeg: captures.append(record["status"]))
     worker = _QRReaderWorker("vis")

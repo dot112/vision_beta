@@ -129,7 +129,7 @@ def test_version_8_keeps_the_name_rule_on_every_existing_vision_camera():
         ]},
     ]}
     before = copy.deepcopy(state)
-    assert upgrade_state(state) is True and state["schema_version"] == SCHEMA_VERSION == 8
+    assert upgrade_state(state) is True and state["schema_version"] == SCHEMA_VERSION == 9
     assert state["lines"][0]["cameras"][0]["name_based_defects"] is True
     assert "name_based_defects" not in state["lines"][0]["cameras"][1]
     assert state["lines"][1]["cameras"][0]["name_based_defects"] is False  # an explicit choice is kept
@@ -137,6 +137,8 @@ def test_version_8_keeps_the_name_rule_on_every_existing_vision_camera():
     # Every line also counts from the upgrade on (product records, Section 4).
     for line in state["lines"]:
         assert line.pop("counts_reset_at")
+    # Version 9: the continuous reader now only shows its codes, and is flagged for the user.
+    assert state["lines"][0]["cameras"][1].pop("qr_trigger_review") is True
     assert state["lines"] == before["lines"]
 
 

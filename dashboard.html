@@ -4,9 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="dark light">
-    <title>Zagel Vision — Line control</title>
+    <title>Universalz Vision — Line control</title>
+    <link rel="icon" type="image/png" href="/assets/universalz_mark.png">
     <link rel="preload" href="/assets/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
-    <link rel="stylesheet" href="/assets/dashboard.css?v=3.1.1">
+    <link rel="stylesheet" href="/assets/dashboard.css?v=3.13.1">
     <script>
         // Apply the saved theme before the first paint (no dark-to-light flash).
         try { document.documentElement.setAttribute("data-theme", localStorage.getItem("theme") === "light" ? "light" : "dark"); } catch (_) {}
@@ -63,7 +64,7 @@
             <!-- Protocol Selector -->
             <div class="comm-proto-selector">
                 <button type="button" class="proto-btn active" id="protoBtnPlc" onclick="selectCommProto('plc')">
-                    <span>PLC Controller</span>
+                    <span>Controller</span>
                 </button>
                 <button type="button" class="proto-btn" id="protoBtnTcp" onclick="selectCommProto('tcp')">
                     <span>TCP Socket</span>
@@ -72,7 +73,7 @@
                     <span>MQTT Broker</span>
                 </button>
                 <button type="button" class="proto-btn" id="protoBtnIpcam" onclick="selectCommProto('ipcam')">
-                    <span>IP Camera</span>
+                    <span>Network camera</span>
                 </button>
                 <button type="button" class="proto-btn" id="protoBtnWebhook" onclick="selectCommProto('webhook')">
                     <span>API / Webhook</span>
@@ -99,7 +100,7 @@
                 <div class="cam-settings-section">TCP Socket Parameters</div>
                 <div class="cam-settings-row">
                     <div class="form-group" style="margin:0"><label class="form-label" for="tcpModeInput">Connection Mode</label>
-                        <select id="tcpModeInput" class="form-input" onchange="updateTcpPanel()">
+                        <select id="tcpModeInput" class="form-input" onchange="updateTcpPanel()" data-help="Whether this server connects to the device, or the device connects to this server.">
                             <option value="client">Client: connect to the device</option>
                             <option value="server">Server: devices connect to this server</option>
                         </select></div>
@@ -122,7 +123,7 @@
                 </div>
                 <div class="cam-settings-row" style="margin-top:10px">
                     <div class="form-group" style="margin:0"><label class="form-label" for="tcpDelimiterInput">End of each message (delimiter)</label>
-                        <select id="tcpDelimiterInput" class="form-input" onchange="updateTcpPanel()">
+                        <select id="tcpDelimiterInput" class="form-input" onchange="updateTcpPanel()" data-help="The characters that end each message, so the device knows where one message stops.">
                             <option value="\n">\n (newline, LF)</option>
                             <option value="\r\n">\r\n (Windows, CRLF)</option>
                             <option value="\0">\0 (null byte)</option>
@@ -148,7 +149,7 @@
                     <div class="form-group" style="margin:0"><label class="form-label">Client ID</label>
                         <input type="text" id="mqttClientIdInput" class="form-input" placeholder="Auto-generated if empty" /></div>
                     <div class="form-group" style="margin:0"><label class="form-label">Protocol Version</label>
-                        <select id="mqttProtocolVersionInput" class="form-input">
+                        <select id="mqttProtocolVersionInput" class="form-input" data-help="The MQTT version the broker speaks; 3.1.1 works with almost every broker.">
                             <option value="3.1.1" selected>MQTT v3.1.1 (Standard)</option>
                             <option value="5.0">MQTT v5.0 (Advanced)</option>
                         </select></div>
@@ -185,7 +186,7 @@
                     <div class="form-group">
                         <label class="form-label">CA Certificate (Server Verification)</label>
                         <div class="cert-upload-box">
-                            <select id="mqttCaCertInput" class="form-input" style="flex:1">
+                            <select id="mqttCaCertInput" class="form-input" style="flex:1" data-help="The CA certificate that checks the broker's certificate; Browse uploads one.">
                                 <option value="">-- None / Select uploaded CA certificate --</option>
                             </select>
                             <label class="btn-action btn-outline" style="cursor:pointer;white-space:nowrap;margin:0;font-size:11px;padding:7px 10px;display:flex;align-items:center;gap:4px" title="Upload new CA certificate">
@@ -197,7 +198,7 @@
                     <div class="form-group">
                         <label class="form-label">Client Certificate (mTLS)</label>
                         <div class="cert-upload-box">
-                            <select id="mqttClientCertInput" class="form-input" style="flex:1">
+                            <select id="mqttClientCertInput" class="form-input" style="flex:1" data-help="The certificate this server shows a broker that asks for one (mutual TLS); Browse uploads one.">
                                 <option value="">-- None / Select uploaded client certificate --</option>
                             </select>
                             <label class="btn-action btn-outline" style="cursor:pointer;white-space:nowrap;margin:0;font-size:11px;padding:7px 10px;display:flex;align-items:center;gap:4px" title="Upload new client certificate">
@@ -209,7 +210,7 @@
                     <div class="form-group">
                         <label class="form-label">Client Private Key (mTLS)</label>
                         <div class="cert-upload-box">
-                            <select id="mqttClientKeyInput" class="form-input" style="flex:1">
+                            <select id="mqttClientKeyInput" class="form-input" style="flex:1" data-help="The private key that belongs to the client certificate; Browse uploads one.">
                                 <option value="">-- None / Select uploaded private key --</option>
                             </select>
                             <label class="btn-action btn-outline" style="cursor:pointer;white-space:nowrap;margin:0;font-size:11px;padding:7px 10px;display:flex;align-items:center;gap:4px" title="Upload new private key">
@@ -225,7 +226,7 @@
                 <div class="form-group" style="font-size:11px;color:var(--text-muted);padding:0 2px">The topic is set on each send card (Line setup, Send results), so one broker can take several topics.</div>
                 <div class="cam-settings-row">
                     <div class="form-group" style="margin:0"><label class="form-label">QoS Level</label>
-                        <select id="mqttQosInput" class="form-input">
+                        <select id="mqttQosInput" class="form-input" data-help="How sure the delivery of each message is: 0 is fastest, 1 at least once, 2 exactly once.">
                             <option value="0">0 (At most once - Fastest)</option>
                             <option value="1" selected>1 (At least once - Reliable)</option>
                             <option value="2">2 (Exactly once)</option>
@@ -251,7 +252,7 @@
                         </div>
                         <div class="cam-settings-row">
                             <div class="form-group" style="margin:0"><label class="form-label">QoS</label>
-                                <select id="mqttBirthQosInput" class="form-input"><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option></select>
+                                <select id="mqttBirthQosInput" class="form-input" data-help="The delivery level of the birth message, sent when the server connects."><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option></select>
                             </div>
                             <div class="form-group" style="margin:0;display:flex;align-items:center;justify-content:space-between;padding-top:16px">
                                 <label class="form-label" style="margin:0">Retain</label>
@@ -275,7 +276,7 @@
                         </div>
                         <div class="cam-settings-row">
                             <div class="form-group" style="margin:0"><label class="form-label">QoS</label>
-                                <select id="mqttCloseQosInput" class="form-input"><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option></select>
+                                <select id="mqttCloseQosInput" class="form-input" data-help="The delivery level of the close message, sent when the server shuts down cleanly."><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option></select>
                             </div>
                             <div class="form-group" style="margin:0;display:flex;align-items:center;justify-content:space-between;padding-top:16px">
                                 <label class="form-label" style="margin:0">Retain</label>
@@ -299,7 +300,7 @@
                         </div>
                         <div class="cam-settings-row">
                             <div class="form-group" style="margin:0"><label class="form-label">QoS</label>
-                                <select id="mqttWillQosInput" class="form-input"><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option></select>
+                                <select id="mqttWillQosInput" class="form-input" data-help="The delivery level of the last-will message, which the broker sends if the server drops off."><option value="0">0</option><option value="1" selected>1</option><option value="2">2</option></select>
                             </div>
                             <div class="form-group" style="margin:0;display:flex;align-items:center;justify-content:space-between;padding-top:16px">
                                 <label class="form-label" style="margin:0">Retain</label>
@@ -340,33 +341,62 @@
             
             <!-- 3. IP Camera Panel -->
             <div id="commPanelIpcam" class="comm-proto-panel" style="display:none">
-                <div class="cam-settings-section">IP Camera Stream Details</div>
+                <div class="cam-settings-section">Network camera</div>
                 <div class="form-group">
-                    <label class="form-label">RTSP / HTTP Stream URL *</label>
-                    <input type="text" id="ipcamSourceInput" class="form-input" placeholder="rtsp://admin:pass@192.168.1.100:554/stream1 or http://ip:8080/video" />
-                    <div style="font-size:11px;color:var(--text-muted);margin-top:4px">
-                        <span>Supports RTSP H.264/H.265, MJPEG over HTTP.</span>
+                    <label class="form-label" for="ipcamKindInput">Camera type</label>
+                    <select id="ipcamKindInput" class="form-input" onchange="syncIpcamKind()" data-help="An IP camera with a stream address, or an industrial camera found by its serial number.">
+                        <option value="ip">IP camera (RTSP or HTTP stream)</option>
+                        <option value="gige">GigE Vision (industrial camera)</option>
+                    </select>
+                </div>
+
+                <!-- An IP camera: its stream address -->
+                <div id="ipcamIpFields">
+                    <div class="form-group">
+                        <label class="form-label" for="ipcamSourceInput">Stream URL *</label>
+                        <input type="text" id="ipcamSourceInput" class="form-input" placeholder="rtsp://192.168.1.100:554/stream1 or http://192.168.1.100:8080/video" />
+                        <div style="font-size:11px;color:var(--text-muted);margin-top:4px">RTSP (H.264 / H.265), an MJPEG stream over HTTP, or a snapshot URL.</div>
+                    </div>
+                    <div class="cam-settings-row">
+                        <div class="form-group" style="margin:0"><label class="form-label" for="ipcamUserInput">User name</label>
+                            <input type="text" id="ipcamUserInput" class="form-input" autocomplete="off" placeholder="None" /></div>
+                        <div class="form-group" style="margin:0"><label class="form-label" for="ipcamPassInput">Password</label>
+                            <input type="password" id="ipcamPassInput" class="form-input" autocomplete="new-password" placeholder="None" /></div>
+                    </div>
+                    <div id="ipcamLoginNote" style="font-size:11px;color:var(--text-muted);margin:4px 0 12px">Only for a camera that asks for a sign-in. They are saved inside the stream URL.</div>
+                    <div class="cam-settings-row">
+                        <div class="form-group" style="margin:0"><label class="form-label" for="ipcamTransportInput">RTSP transport</label>
+                            <select id="ipcamTransportInput" class="form-input" data-help="How the RTSP stream travels: TCP is reliable, UDP has the lowest delay.">
+                                <option value="tcp">TCP (reliable)</option>
+                                <option value="udp">UDP (lowest delay)</option>
+                                <option value="http">RTSP over HTTP (tunnel)</option>
+                            </select></div>
+                        <div class="form-group" style="margin:0"><label class="form-label" for="ipcamResolutionInput">Picture size</label>
+                            <select id="ipcamResolutionInput" class="form-input" data-help="The stream's own picture size, or a size the server scales each picture to.">
+                                <option value="native" selected>The stream's own size</option>
+                                <option value="640x480">640 × 480</option>
+                                <option value="1280x720">1280 × 720</option>
+                                <option value="1920x1080">1920 × 1080</option>
+                            </select></div>
+                    </div>
+                    <div class="cam-settings-row">
+                        <div class="form-group" style="margin:0"><label class="form-label" for="ipcamBufferInput">Buffer size (frames)</label>
+                            <input type="number" id="ipcamBufferInput" class="form-input" value="1" min="1" max="16" /></div>
+                        <div style="font-size:11px;color:var(--text-muted);align-self:end;padding-bottom:8px">Transport does not apply to an HTTP stream. A picture size scales the picture in the server.</div>
                     </div>
                 </div>
-                <div class="cam-settings-row">
-                    <div class="form-group" style="margin:0"><label class="form-label">Transport Protocol</label>
-                        <select id="ipcamTransportInput" class="form-input">
-                            <option value="tcp">TCP (Reliable / Low Packet Loss)</option>
-                            <option value="udp">UDP (Ultra-Low Latency)</option>
-                            <option value="http">HTTP / Multipart</option>
-                        </select></div>
-                    <div class="form-group" style="margin:0"><label class="form-label">Target Resolution</label>
-                        <select id="ipcamResolutionInput" class="form-input">
-                            <option value="640x480">640 × 480 (VGA - Fast)</option>
-                            <option value="1280x720">1280 × 720 (720p HD)</option>
-                            <option value="1920x1080">1920 × 1080 (1080p FHD)</option>
-                            <option value="native">Native Stream Resolution</option>
-                        </select></div>
-                </div>
-                <div class="cam-settings-row">
-                    <div class="form-group" style="margin:0"><label class="form-label">Buffer Size (Frames)</label>
-                        <input type="number" id="ipcamBufferInput" class="form-input" value="1" min="1" max="10" /></div>
-                    <div></div>
+
+                <!-- A GigE Vision camera: its serial number -->
+                <div id="ipcamGigeFields" style="display:none">
+                    <div class="form-group">
+                        <label class="form-label" for="ipcamSerialInput">Serial number *</label>
+                        <div style="display:flex;gap:8px">
+                            <input type="text" id="ipcamSerialInput" class="form-input" maxlength="128" placeholder="Press Scan, or type the camera's serial number" style="flex:1" />
+                            <button type="button" id="ipcamScanBtn" class="btn-action btn-outline" onclick="scanGigeCameras()" style="white-space:nowrap">Scan</button>
+                        </div>
+                        <div id="ipcamScanResult" style="margin-top:8px"></div>
+                    </div>
+                    <div style="font-size:11px;color:var(--text-muted)">A GigE Vision or USB3 Vision camera is found by its serial number, whatever its network address. Its trigger, exposure and gain are set on the camera's card: Line setup, the camera, <b>Image</b>. Needs the optional GenICam install and the camera maker's SDK on the server.</div>
                 </div>
             </div>
 
@@ -400,11 +430,11 @@
 
             <!-- 5. PLC Controller Panel -->
             <div id="commPanelPlc" class="comm-proto-panel" style="display:none">
-                <div class="cam-settings-section">Industrial PLC Connection &amp; Protocol Parameters</div>
+                <div class="cam-settings-section">Controller connection and protocol</div>
                 
                 <div class="cam-settings-row">
                     <div class="form-group" style="margin:0">
-                        <label class="form-label">PLC Protocol *</label>
+                        <label class="form-label">Controller protocol *</label>
                         <select id="plcProtocolTypeInput" class="form-input" onchange="onPlcProtocolTypeChange(this.value)">
                             <option value="modbus_tcp">Modbus TCP (Universal / Port 502)</option>
                             <option value="modbus_rtu">Modbus RTU (RS-485 Serial / RTU over TCP)</option>
@@ -416,10 +446,10 @@
                         </select>
                     </div>
                     <div class="form-group" style="margin:0">
-                        <label class="form-label">PLC IP Address</label>
+                        <label class="form-label">Controller IP address</label>
                         <div style="display:flex;gap:7px;align-items:stretch">
                             <input type="text" id="plcHostInput" class="form-input" placeholder="192.168.1.10" value="192.168.1.10" style="flex:1;min-width:0" />
-                            <button type="button" id="plcOpcuaScanBtn" class="btn-action btn-outline" onclick="openOpcuaScanModal()" style="display:none;white-space:nowrap;padding:7px 10px" title="Find OPC UA servers on a private subnet">Scan UA</button>
+                            <button type="button" id="plcOpcuaScanBtn" class="btn-action btn-outline" onclick="openOpcuaScanModal()" style="display:none;white-space:nowrap;padding:7px 10px" data-help="Opens a search for OPC UA servers on a private network, to pick one.">Scan UA</button>
                         </div>
                     </div>
                 </div>
@@ -448,14 +478,14 @@
                         </div>
                         <div class="form-group" style="margin:0">
                             <label class="form-label">Address Zero-Base</label>
-                            <select id="plcModbusZeroBase" class="form-input">
+                            <select id="plcModbusZeroBase" class="form-input" data-help="Whether the addresses you type start at 0 (PLC native) or at 1 (Modbus 40001 style).">
                                 <option value="0">0-based (PLC Native Addressing)</option>
                                 <option value="1">1-based (Standard Modbus 40001)</option>
                             </select>
                         </div>
                         <div class="form-group" style="margin:0">
                             <label class="form-label">32-bit Word Order (DINT / REAL)</label>
-                            <select id="plcModbusWordOrder" class="form-input">
+                            <select id="plcModbusWordOrder" class="form-input" data-help="Which half comes first in a 32-bit number (DINT or REAL); it must match the PLC.">
                                 <option value="high_first">High word first (ABCD)</option>
                                 <option value="low_first">Low word first (CDAB)</option>
                             </select>
@@ -468,7 +498,7 @@
                     <div class="cam-settings-row">
                         <div class="form-group" style="margin:0">
                             <label class="form-label">Link Type</label>
-                            <select id="plcRtuTransport" class="form-input" onchange="onPlcRtuTransportChange(this.value)">
+                            <select id="plcRtuTransport" class="form-input" onchange="onPlcRtuTransportChange(this.value)" data-help="A serial port of this computer, or a serial gateway reached over TCP.">
                                 <option value="serial">Serial Port (RS-485 / RS-232)</option>
                                 <option value="tcp">RTU over TCP (Serial Gateway)</option>
                             </select>
@@ -515,7 +545,7 @@
                         </div>
                         <div class="form-group" style="margin:0">
                             <label class="form-label">32-bit Word Order (DINT / REAL)</label>
-                            <select id="plcRtuWordOrder" class="form-input">
+                            <select id="plcRtuWordOrder" class="form-input" data-help="Which half comes first in a 32-bit number (DINT or REAL); it must match the PLC.">
                                 <option value="high_first">High word first (ABCD)</option>
                                 <option value="low_first">Low word first (CDAB)</option>
                             </select>
@@ -528,7 +558,7 @@
                     <div class="cam-settings-row">
                         <div class="form-group" style="margin:0">
                             <label class="form-label">S7 PLC Family</label>
-                            <select id="plcS7Model" class="form-input" onchange="onPlcS7ModelChange(this.value)">
+                            <select id="plcS7Model" class="form-input" onchange="onPlcS7ModelChange(this.value)" data-help="The Siemens PLC family; choosing one fills in its usual rack and slot.">
                                 <option value="s7-1200">S7-1200 (Rack 0, Slot 1)</option>
                                 <option value="s7-1500">S7-1500 (Rack 0, Slot 1)</option>
                                 <option value="s7-300">S7-300 (Rack 0, Slot 2)</option>
@@ -570,12 +600,46 @@
                         </div>
                         <div class="form-group" style="margin:0">
                             <label class="form-label">Security Policy</label>
-                            <select id="plcOpcuaSecurity" class="form-input">
+                            <select id="plcOpcuaSecurity" class="form-input" onchange="syncOpcuaCertFields()" data-help="Whether messages to the OPC UA server are signed or encrypted; both need a client certificate and key.">
                                 <option value="None">None (No channel security)</option>
                                 <option value="Basic256Sha256_Sign">Basic256Sha256 (Sign — requires client certificate/key configuration)</option>
                                 <option value="Basic256Sha256_SignAndEncrypt">Basic256Sha256 (Sign &amp; Encrypt — requires client certificate/key configuration)</option>
                             </select>
                         </div>
+                    </div>
+                    <!-- A secured channel signs its messages with a client certificate and its private key -->
+                    <div id="plcOpcuaCertFields" style="display:none;margin-top:12px">
+                        <div class="form-group">
+                            <label class="form-label" for="plcOpcuaCertInput">Client certificate *</label>
+                            <div class="cert-upload-box">
+                                <select id="plcOpcuaCertInput" class="form-input" style="flex:1" data-help="The client certificate of a secured OPC UA connection; Upload adds one."><option value="">-- Choose an uploaded certificate --</option></select>
+                                <label class="btn-action btn-outline" style="cursor:pointer;white-space:nowrap;margin:0;font-size:11px;padding:7px 10px" title="Upload a client certificate (PEM or DER)">
+                                    <span>Upload</span>
+                                    <input type="file" accept=".pem,.der,.crt,.cer,*/*" style="display:none" onchange="handleOpcuaCertUpload(event, 'client_cert', 'plcOpcuaCertInput')" />
+                                </label>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="plcOpcuaKeyInput">Private key *</label>
+                            <div class="cert-upload-box">
+                                <select id="plcOpcuaKeyInput" class="form-input" style="flex:1" data-help="The private key that belongs to the client certificate; Upload adds one."><option value="">-- Choose an uploaded private key --</option></select>
+                                <label class="btn-action btn-outline" style="cursor:pointer;white-space:nowrap;margin:0;font-size:11px;padding:7px 10px" title="Upload the certificate's private key (PEM or DER, without a password)">
+                                    <span>Upload</span>
+                                    <input type="file" accept=".pem,.der,.key,*/*" style="display:none" onchange="handleOpcuaCertUpload(event, 'private_key', 'plcOpcuaKeyInput')" />
+                                </label>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="plcOpcuaServerCertInput">Server certificate (optional)</label>
+                            <div class="cert-upload-box">
+                                <select id="plcOpcuaServerCertInput" class="form-input" style="flex:1" data-help="The server's certificate, to accept only that server; None trusts the server's own."><option value="">-- None: trust the server's certificate --</option></select>
+                                <label class="btn-action btn-outline" style="cursor:pointer;white-space:nowrap;margin:0;font-size:11px;padding:7px 10px" title="Upload the server's certificate to accept only that server">
+                                    <span>Upload</span>
+                                    <input type="file" accept=".pem,.der,.crt,.cer,*/*" style="display:none" onchange="handleOpcuaCertUpload(event, 'server_cert', 'plcOpcuaServerCertInput')" />
+                                </label>
+                            </div>
+                        </div>
+                        <div id="opcuaCertMsg" style="font-size:11px;color:var(--text-muted)">The private key must belong to the certificate and have no password. The key stays on the server and is never shown again. The server (PLC) must trust the client certificate.</div>
                     </div>
                 </div>
 
@@ -617,8 +681,8 @@
         <div class="comm-modal-footer">
             <button type="button" class="btn-action btn-outline" onclick="closeCommModal()">Cancel</button>
             <div class="comm-modal-footer-actions">
-                <button type="button" class="btn-action btn-red" id="commBtnDelete" style="display:none" onclick="deleteCurrentCommEndpoint()">Delete</button>
-                <button type="button" class="btn-action btn-blue" onclick="saveCommEndpoint()">Save connection</button>
+                <button data-lock type="button" class="btn-action btn-red" id="commBtnDelete" style="display:none" onclick="deleteCurrentCommEndpoint()">Delete</button>
+                <button data-lock type="button" class="btn-action btn-blue" id="commSaveBtn" onclick="saveCommEndpoint()">Save connection</button>
             </div>
         </div>
     </div>
@@ -647,7 +711,7 @@
         </div>
         <div id="opcuaScanStatus" role="status" aria-live="polite" style="font-size:12px;color:var(--text-muted);margin:2px 0 10px">Scan results will appear here.</div>
         <div id="opcuaScanResults" style="overflow-y:auto;min-height:100px;display:flex;flex-direction:column;gap:9px;padding:1px 4px 4px 1px"></div>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:10px">OPC UA None / Mode 1 endpoints with anonymous login can be selected. Secure endpoints need client certificates; username-only endpoints and discovery-only servers cannot be used as PLC channels.</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:10px">OPC UA None / Mode 1 endpoints with anonymous login can be selected. Secure endpoints need client certificates; username-only endpoints and discovery-only servers cannot be used as controllers.</div>
     </div>
 </div>
 
@@ -685,7 +749,7 @@
         <div class="comm-modal-header">
             <div>
                 <div style="font-size:15px;font-weight:700;color:var(--text-color);display:flex;align-items:center;gap:8px">
-                    <span id="plcModalActionTitle">PLC Action Configuration</span>
+                    <span id="plcModalActionTitle">Output action</span>
                 </div>
                 <div style="font-size:12.5px;color:var(--text-muted);margin-top:2px">Configure trigger logic, protocol addressing, execution timing, and hardware interlocks</div>
             </div>
@@ -706,11 +770,37 @@
     </div>
 </div>
 
+<!-- ── PLC signal settings (assets/plc_signals.js) ───────────────────────── -->
+<div class="modal-backdrop" id="plcSignalSettingsModal">
+    <div class="modal-card action-trigger-modal-panel">
+        <div class="comm-modal-header">
+            <div>
+                <div style="font-size:15px;font-weight:700;color:var(--text-color);display:flex;align-items:center;gap:8px">
+                    <span id="plcSignalModalTitle">Input</span>
+                </div>
+                <div style="font-size:12.5px;color:var(--text-muted);margin-top:2px">Which PLC address is read, how often, and what the line does with it</div>
+            </div>
+        </div>
+
+        <div id="plcSignalModalBody" class="comm-modal-body" style="display:flex;flex-direction:column;gap:16px">
+            <!-- Filled in for the signal that is being edited -->
+        </div>
+
+        <div class="comm-modal-footer">
+            <button type="button" class="btn-action btn-outline" onclick="PlcSignals.closeDialog()">Cancel</button>
+            <div class="comm-modal-footer-actions">
+                <button type="button" class="btn-action btn-blue" onclick="PlcSignals.saveDialog()">OK</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div id="loginScreen">
     <div class="login-card">
         <div class="login-brand">
-            <img src="/assets/zajel_logo.png" alt="" onerror="this.style.display='none'">
-            <div class="login-title">Zagel Vision</div>
+            <img class="brand-logo brand-on-dark" src="/assets/universalz_logo_dark.png" width="930" height="116" alt="Universalz">
+            <img class="brand-logo brand-on-light" src="/assets/universalz_logo.png" width="930" height="116" alt="Universalz">
+            <div class="login-tagline">Universal OT · IT platform</div>
             <div class="login-subtitle">Sign in to line control</div>
         </div>
         <label class="sr-only" for="loginUser">Username</label>
@@ -741,10 +831,10 @@
     <aside class="sidebar" id="appSidebar" aria-label="Main menu">
         <div class="sidebar-header">
             <div class="pro-brand">
-                <img class="pro-brand-logo" src="/assets/zajel_logo_small.png" width="54" height="32" alt="Zajel" onerror="this.style.display='none'">
                 <div>
-                    <div class="pro-brand-name">Zagel Vision</div>
-                    <div class="pro-brand-sub">Line control</div>
+                    <img class="pro-brand-logo brand-on-dark" src="/assets/universalz_logo_dark.png" width="930" height="116" alt="Universalz">
+                    <img class="pro-brand-logo brand-on-light" src="/assets/universalz_logo.png" width="930" height="116" alt="Universalz">
+                    <div class="pro-brand-sub">Vision · line control</div>
                 </div>
             </div>
             <button class="btn-sidebar-collapse" onclick="toggleSidebar()" title="Hide menu" aria-label="Hide menu">
@@ -777,6 +867,9 @@
             <li class="menu-item" onclick="switchTab('tabLogs')">
                 <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span><span>Audit log</span>
             </li>
+            <li class="menu-item" id="dataMenuTab" onclick="switchTab('tabData')">
+                <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span><span>Data and backups</span>
+            </li>
             <li class="menu-item" onclick="switchTab('tabAccount')">
                 <span class="menu-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span><span>My account</span>
             </li>
@@ -807,8 +900,24 @@
                     <span class="pro-status-cell chip" title="Link between this screen and the vision server"><span class="pro-lamp" id="proLampServer"></span><span class="pro-status-val" id="proServerText">Connecting</span></span>
                     <span class="pro-status-cell optional"><span class="pro-status-val num" id="proClock">--:--:--</span></span>
                 </div>
+                <div class="user-menu usage-menu" id="usageMenu">
+                    <button type="button" class="usage-ring usage-none" data-usage="cpu" onclick="toggleMenu('usageMenu', event)" aria-haspopup="true" aria-expanded="false" title="CPU usage: open the details">
+                        <span class="usage-ring-dial"><svg viewBox="0 0 30 30" aria-hidden="true"><circle class="usage-ring-bg" cx="15" cy="15" r="13"/><circle class="usage-ring-fg" cx="15" cy="15" r="13" stroke-dasharray="0 82"/></svg><span class="usage-ring-val">—</span></span>
+                        <span class="usage-ring-label">CPU</span>
+                    </button>
+                    <button type="button" class="usage-ring usage-none" data-usage="gpu" onclick="toggleMenu('usageMenu', event)" aria-haspopup="true" aria-expanded="false" title="GPU usage: open the details">
+                        <span class="usage-ring-dial"><svg viewBox="0 0 30 30" aria-hidden="true"><circle class="usage-ring-bg" cx="15" cy="15" r="13"/><circle class="usage-ring-fg" cx="15" cy="15" r="13" stroke-dasharray="0 82"/></svg><span class="usage-ring-val">—</span></span>
+                        <span class="usage-ring-label">GPU</span>
+                    </button>
+                    <div class="user-menu-panel usage-panel" id="usagePanel" role="dialog" aria-label="System usage"></div>
+                </div>
+                <button type="button" class="pro-status-cell chip config-lock-chip" id="configLockChip" onclick="ConfigLock.openDialog()" aria-haspopup="dialog" hidden>
+                    <svg class="lock-closed" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+                    <svg class="lock-open" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.6-1.7"/></svg>
+                    <span class="pro-status-val" id="configLockText">Unlocked</span>
+                </button>
                 <div class="user-menu" id="userMenu">
-                    <button type="button" class="user-profile-badge" onclick="toggleMenu('userMenu', event)" aria-haspopup="menu" aria-expanded="false" title="Account">
+                    <button type="button" class="user-profile-badge" title="Account" onclick="toggleMenu('userMenu', event)" aria-haspopup="menu" aria-expanded="false">
                         <span class="user-avatar" id="barAvatar">A</span>
                         <span class="user-label-full"><b id="barUsername">admin</b><span id="barClearance">Level 3 · Admin</span></span>
                     </button>
@@ -823,6 +932,11 @@
 
 
         <div class="content-body">
+<div class="config-lock-banner" id="configLockBanner" role="status">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+    <span id="configLockBannerText"></span>
+    <button type="button" class="btn-action btn-outline btn-sm" id="configLockBannerUnlock" onclick="ConfigLock.openDialog()">Unlock</button>
+</div>
 
 <!-- ════════ TAB 1 — LINE DASHBOARD ══════════════════════════════════════ -->
 <div id="tabDashboard" class="tab-page active">
@@ -831,6 +945,13 @@
         <div class="line-status-state">
             <span class="line-status-dot" aria-hidden="true"></span>
             <span class="line-status-word" id="lineStateWord">Loading</span>
+        </div>
+        <!-- The line's batch (work order) number: shown to everyone, set by a Supervisor -->
+        <div class="line-batch" id="lineBatch" hidden>
+            <label for="lineBatchInput">Batch</label>
+            <b id="lineBatchText"></b>
+            <input type="text" id="lineBatchInput" class="form-input" maxlength="64" placeholder="None" autocomplete="off" onkeydown="if(event.key==='Enter')setLineBatch()" hidden />
+            <button type="button" class="btn-action btn-sm btn-outline" id="lineBatchSet" onclick="setLineBatch()" hidden data-help="Sets the batch number; the products counted from now on carry it.">Set</button>
         </div>
         <div class="line-status-meta" id="lineStatusMeta"></div>
         <div class="line-status-actions">
@@ -884,13 +1005,6 @@
                     <span id="feedCamName">Live camera</span>
                     <span class="live-dot" id="feedLiveDot">Offline</span>
                 </span>
-                <div class="card-actions">
-                    <div class="seg" role="group" aria-label="Video view">
-                        <button type="button" id="feedModeAI" class="on" aria-pressed="true" onclick="setFeedMode(true)" title="Video with detections and count lines drawn on it">AI view</button>
-                        <button type="button" id="feedModeRaw" aria-pressed="false" onclick="setFeedMode(false)" title="The camera picture as it arrives">Raw</button>
-                    </div>
-                    <span id="feedModeLabel" class="sr-only">AI view</span>
-                </div>
             </div>
             <div class="video-box" id="videoBox">
                 <button class="video-floating-btn" id="videoFloatBtn" onclick="toggleVideoFullscreen()" title="Full screen video" aria-label="Full screen video">
@@ -906,7 +1020,14 @@
                     <div class="no-video-title">No video</div>
                     <div class="no-video-note" id="noVideoNote">Connect a camera to this line to see it here.</div>
                 </div>
+                <!-- A camera in trigger mode has no live picture: this panel says so, then shows each picture taken (assets/production_lines.js). -->
+                <div class="trig-view" id="trigView" hidden>
+                    <img class="video-img" id="trigViewImg" alt="The picture taken for the last trigger" hidden />
+                    <div class="trig-view-text" id="trigViewText">Waiting for trigger</div>
+                    <div class="pl-feed-caption" id="trigViewCaption" hidden></div>
+                </div>
             </div>
+            <div class="trig-counters" id="trigCounters" hidden></div>
         </div>
 
         <!-- What the line rejected and passed -->
@@ -962,15 +1083,15 @@
             <div class="card-actions">
                 <span id="sendActionSaveState" class="feed-meta">Loading saved cards…</span>
                 <div class="seg" role="group" aria-label="Show send cards as">
-                    <button type="button" id="sendViewCards" class="on" aria-pressed="true" onclick="setSendActionsView('cards')" title="Show as cards">
+                    <button type="button" id="sendViewCards" title="Show as cards" class="on" aria-pressed="true" onclick="setSendActionsView('cards')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Cards
                     </button>
-                    <button type="button" id="sendViewList" aria-pressed="false" onclick="setSendActionsView('list')" title="Show as a list">
+                    <button type="button" id="sendViewList" title="Show as a list" aria-pressed="false" onclick="setSendActionsView('list')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>List
                     </button>
                 </div>
-                <button type="button" class="btn-action btn-outline restricted-l2" onclick="addSendActionCard()">Add card</button>
-                <button type="button" class="btn-action btn-blue restricted-l2" onclick="applySendActionCards()">Apply</button>
+                <button data-lock type="button" class="btn-action btn-outline restricted-l2" onclick="addSendActionCard()">Add card</button>
+                <button data-lock type="button" class="btn-action btn-blue restricted-l2" onclick="applySendActionCards()" data-help="Saves the send cards of this line and puts them to work.">Apply</button>
             </div>
         </div>
         <div id="sendActionCardsContainer" class="plc-actions-grid">
@@ -982,25 +1103,51 @@
     <div class="card-panel">
         <div class="card-panel-header">
             <div>
-                <span class="card-panel-title">PLC actions</span>
+                <span class="card-panel-title">Output actions</span>
                 <div class="card-panel-sub">Drive reject gates, tower lights, coils and registers from inspection events.</div>
             </div>
             <div class="card-actions">
                 <span id="plcActionSaveState" class="feed-meta">Loading saved actions…</span>
-                <div class="seg" role="group" aria-label="Show PLC actions as">
-                    <button type="button" id="plcViewCards" class="on" aria-pressed="true" onclick="setPlcActionsView('cards')" title="Show as cards">
+                <div class="seg" role="group" aria-label="Show output actions as">
+                    <button type="button" id="plcViewCards" title="Show as cards" class="on" aria-pressed="true" onclick="setPlcActionsView('cards')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Cards
                     </button>
-                    <button type="button" id="plcViewList" aria-pressed="false" onclick="setPlcActionsView('list')" title="Show as a list">
+                    <button type="button" id="plcViewList" title="Show as a list" aria-pressed="false" onclick="setPlcActionsView('list')">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>List
                     </button>
                 </div>
-                <button type="button" class="btn-action btn-outline restricted-l2" onclick="addPlcActionCard()">Add action</button>
-                <button type="button" class="btn-action btn-blue restricted-l2" onclick="applyPlcActionCards()">Apply to PLC</button>
+                <button data-lock type="button" class="btn-action btn-outline restricted-l2" onclick="addPlcActionCard()">Add action</button>
+                <button data-lock type="button" class="btn-action btn-blue restricted-l2" onclick="applyPlcActionCards()" data-help="Saves the output actions of this line and puts them to work.">Apply</button>
             </div>
         </div>
         <div id="plcActionCardsContainer" class="plc-actions-grid">
             <!-- Dynamically populated PLC Action cards -->
+        </div>
+    </div>
+
+    <!-- Step 5: PLC signals (inputs), filled by assets/plc_signals.js -->
+    <div class="card-panel" id="plcSignalsCard">
+        <div class="card-panel-header">
+            <div>
+                <span class="card-panel-title">Inputs</span>
+                <div class="card-panel-sub">Let the PLC start and stop the line, count products, take pictures, set the batch and confirm rejects.</div>
+            </div>
+            <div class="card-actions">
+                <span id="plcSignalSaveState" class="feed-meta">Loading saved signals…</span>
+                <div class="seg" role="group" aria-label="Show inputs as">
+                    <button type="button" id="plcSignalViewCards" title="Show as cards" class="on" aria-pressed="true" onclick="PlcSignals.setView('cards')">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>Cards
+                    </button>
+                    <button type="button" id="plcSignalViewList" title="Show as a list" aria-pressed="false" onclick="PlcSignals.setView('list')">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>List
+                    </button>
+                </div>
+                <button data-lock type="button" class="btn-action btn-outline restricted-l2" onclick="PlcSignals.add()">Add input</button>
+                <button data-lock type="button" class="btn-action btn-blue restricted-l2" onclick="PlcSignals.apply()" data-help="Saves the inputs of this line and starts reading them.">Apply</button>
+            </div>
+        </div>
+        <div id="plcSignalCardsContainer" class="plc-actions-grid">
+            <!-- Filled in with the line's signal cards -->
         </div>
     </div>
 </div>
@@ -1034,7 +1181,7 @@
         <div class="switch-row" style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border-color)">
             <div>
                 <label for="camAutoConnectToggle">Connect cameras when the server starts</label>
-                <div class="form-hint">Connects the cameras of every production line that is running. A camera that belongs to no line is connected by hand.</div>
+                <div class="form-hint">Connects the cameras of every production line that is running. A camera whose Connect switch is on (its card under Line setup) is always connected.</div>
             </div>
             <label class="switch" title="Connect cameras when the server starts">
                 <input type="checkbox" id="camAutoConnectToggle" onchange="toggleCameraAutoConnect(this.checked)" />
@@ -1053,7 +1200,7 @@
                 <div class="card-panel-sub">A model is active while a camera runs it. Pick the model for each vision camera under Line setup; several models can run at the same time.</div>
             </div>
             <div class="card-actions">
-                <button class="btn-action btn-blue restricted-l2" onclick="openModelUploadModal()">Upload model</button>
+                <button data-lock class="btn-action btn-blue restricted-l2" onclick="openModelUploadModal()">Upload model</button>
             </div>
         </div>
         <div class="seg" role="group" aria-label="Model type" style="margin-bottom:14px">
@@ -1106,7 +1253,7 @@
         <div id="upModelError" style="display:none;color:var(--danger-color);font-size:13px;margin-bottom:12px;padding:8px 12px;background:var(--danger-tint);border-radius:6px"></div>
         <div class="modal-actions">
             <button class="btn-action btn-outline" onclick="closeModelUploadModal()">Cancel</button>
-            <button class="btn-action btn-blue" onclick="submitModelUpload()"><span id="upModelBtnText">Upload and register</span></button>
+            <button data-lock class="btn-action btn-blue" onclick="submitModelUpload()"><span id="upModelBtnText">Upload and register</span></button>
         </div>
     </div>
 </div>
@@ -1120,7 +1267,7 @@
         </div>
         <div class="modal-actions">
             <button class="btn-action btn-outline" onclick="closeModelDeleteModal()">Cancel</button>
-            <button class="btn-action btn-red" onclick="confirmModelDelete()">Delete model</button>
+            <button data-lock class="btn-action btn-red" onclick="confirmModelDelete()">Delete model</button>
         </div>
     </div>
 </div>
@@ -1131,17 +1278,17 @@
         <div class="card-panel-header">
             <div>
                 <span class="card-panel-title">Connections</span>
-                <div class="card-panel-sub">PLCs, MQTT brokers, TCP sockets, network cameras and webhooks the server talks to.</div>
+                <div class="card-panel-sub">Controllers (PLCs), MQTT brokers, TCP sockets, network cameras and webhooks the server talks to.</div>
             </div>
             <div class="card-actions">
-                <button class="btn-action btn-blue restricted-l2" onclick="openAddCommModal()">Add connection</button>
+                <button data-lock class="btn-action btn-blue restricted-l2" onclick="openAddCommModal()">Add connection</button>
             </div>
         </div>
 
         <!-- Protocol Filter Pills -->
         <div class="comm-filter-bar" role="group" aria-label="Show">
             <button class="filter-pill active" onclick="filterCommsGrid('all', this)">All</button>
-            <button class="filter-pill" onclick="filterCommsGrid('plc', this)">PLC</button>
+            <button class="filter-pill" onclick="filterCommsGrid('plc', this)">Controllers</button>
             <button class="filter-pill" onclick="filterCommsGrid('tcp', this)">TCP</button>
             <button class="filter-pill" onclick="filterCommsGrid('mqtt', this)">MQTT</button>
             <button class="filter-pill" onclick="filterCommsGrid('ipcam', this)">Network cameras</button>
@@ -1162,7 +1309,7 @@
         <div class="card-panel-header">
             <div>
                 <span class="card-panel-title">Audit log</span>
-                <div class="card-panel-sub">Who changed what on this server, newest first.</div>
+                <div class="card-panel-sub">Who changed what on this server</div>
             </div>
             <div class="card-actions">
                 <button class="btn-action btn-outline" onclick="loadAuditLogs()">Refresh</button>
@@ -1175,6 +1322,11 @@
             </table>
         </div>
     </div>
+</div>
+
+<!-- ════════ DATA AND BACKUPS (Level 3 Admin only) ═══════════════════════ -->
+<div id="tabData" class="tab-page">
+    <div id="dataBackupsPage"><div class="card-panel"><div class="empty-state">Loading…</div></div></div>
 </div>
 
 <!-- ════════ TAB 7 — USERS & API KEYS (Level 3 Admin only) ═══════════════ -->
@@ -1201,7 +1353,7 @@
             <div class="form-group"><label class="form-label" for="newFullName">Full name</label><input type="text" id="newFullName" class="form-input" placeholder="e.g. Sara Haddad" autocomplete="off" /></div>
             <div class="form-group"><label class="form-label" for="newPassword">Password</label><input type="password" id="newPassword" class="form-input" autocomplete="new-password" /><div class="form-hint">At least 6 characters.</div></div>
             <div class="form-group"><label class="form-label" for="newRole">Access level</label>
-                <select id="newRole" class="form-input">
+                <select id="newRole" class="form-input" data-help="What the new user may do: an Operator only watches, a Supervisor also sets up and runs lines.">
                     <option value="operator">Level 1 · Operator (view only)</option>
                     <option value="supervisor">Level 2 · Supervisor (setup and control)</option>
                 </select></div>
@@ -1218,7 +1370,7 @@
         </div>
         <div class="cam-settings-row triple">
             <div class="form-group"><label class="form-label" for="apiKeyNameInput">Key name</label><input type="text" id="apiKeyNameInput" class="form-input" maxlength="100" placeholder="e.g. Line 1 MES reader" /></div>
-            <div class="form-group"><label class="form-label" for="apiKeyOwnerSelect">Owner account</label><select id="apiKeyOwnerSelect" class="form-input"><option value="">Loading accounts...</option></select></div>
+            <div class="form-group"><label class="form-label" for="apiKeyOwnerSelect">Owner account</label><select id="apiKeyOwnerSelect" class="form-input" data-help="The account the key belongs to; the key never gets more access than this account."><option value="">Loading accounts...</option></select></div>
             <div class="form-group"><label class="form-label" for="apiKeyExpirySelect">Expires after</label><select id="apiKeyExpirySelect" class="form-input"><option value="30">30 days</option><option value="90" selected>90 days</option><option value="180">180 days</option><option value="365">365 days</option></select></div>
         </div>
         <div class="form-group" style="margin-top:8px">
@@ -1294,6 +1446,35 @@
             <div class="form-group"><label class="form-label" for="pwdConfirm">Confirm new password</label><input type="password" id="pwdConfirm" class="form-input" autocomplete="new-password" /></div>
             <button class="btn-action btn-blue" style="margin-top:4px" onclick="changeMyPassword()">Update password</button>
         </div>
+
+        <!-- Configuration lock code (Admin) -->
+        <div class="card-panel" id="configLockCodePanel" hidden>
+            <div class="card-panel-header"><div>
+                <span class="card-panel-title">Configuration lock code</span>
+                <div class="card-panel-sub">A Level 2 user unlocks the configuration with this code. Without a code, only an Admin can unlock.</div>
+            </div></div>
+            <div class="form-group"><span class="form-label">Lock code</span><span id="lockCodeState" class="state-text">No code</span></div>
+            <div class="form-group"><label class="form-label" for="lockCodeNew">New lock code</label><input type="password" id="lockCodeNew" class="form-input" autocomplete="new-password" /><div class="form-hint">At least 6 characters.</div></div>
+            <div class="form-group"><label class="form-label" for="lockCodeConfirm">Confirm lock code</label><input type="password" id="lockCodeConfirm" class="form-input" autocomplete="new-password" /></div>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">
+                <button type="button" class="btn-action btn-blue" onclick="ConfigLock.saveCode()">Save code</button>
+                <button type="button" class="btn-action btn-outline" id="lockCodeRemove" onclick="ConfigLock.removeCode()">Remove code</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Configuration lock: lock, or unlock (Admin, or Level 2 with the lock code) -->
+<div class="modal-backdrop" id="configLockDialog" role="dialog" aria-modal="true" aria-labelledby="configLockTitle" onclick="if(event.target===this)ConfigLock.closeDialog()">
+    <div class="modal-card" style="width:440px;text-align:left">
+        <div class="modal-title" id="configLockTitle">Configuration lock</div>
+        <div class="modal-message" id="configLockState"></div>
+        <div class="form-group" id="configLockCodeRow" hidden><label class="form-label" for="configLockCode">Lock code</label><input type="password" id="configLockCode" class="form-input" autocomplete="off" /></div>
+        <div class="config-lock-error" id="configLockError" role="alert"></div>
+        <div class="modal-actions">
+            <button type="button" class="btn-action btn-outline" onclick="ConfigLock.closeDialog()">Close</button>
+            <button type="button" class="btn-action btn-blue" id="configLockAction" onclick="ConfigLock.act()">Lock</button>
+        </div>
     </div>
 </div>
 
@@ -1313,9 +1494,12 @@ window.fetch = (input, options = {}) => {
         if (token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
         options = { ...options, headers };
     }
-    return _nativeFetch(input, options);
+    // 423: the configuration was locked meanwhile (assets/config_lock.js).
+    return _nativeFetch(input, options).then((res) => {
+        if (res.status === 423 && requestUrl.startsWith("/api/v1/") && window.ConfigLock) window.ConfigLock.onLockedAnswer();
+        return res;
+    });
 };
-let isAIFeed            = true;
 let activeCamId         = "aa988383-9852-4983-900b-ee7777f083d4";
 let latestCountersData  = {};
 let modalConfirmCb      = null;
@@ -1333,8 +1517,8 @@ function notifyFlutterAuthState(loggedIn) {
         const msg = JSON.stringify({
             event: loggedIn ? "AUTH_LOGIN" : "AUTH_LOGOUT",
             isLoggedIn: loggedIn,
-            username: localStorage.getItem("username") || "",
-            level: parseInt(localStorage.getItem("clearance_level") || "1")
+            username: sessionStorage.getItem("username") || "",
+            level: parseInt(sessionStorage.getItem("clearance_level") || "1")
         });
         if (window.VisionMobileBridge) {
             window.VisionMobileBridge.postMessage(msg);
@@ -1480,32 +1664,7 @@ window.addEventListener("DOMContentLoaded", () => {
     } catch (_) {}
 
     // Check if user already has an active session (preserves session on page refresh)
-    const existingToken = sessionStorage.getItem("access_token");
-    if (existingToken) {
-        currentAuthToken = existingToken;
-        const loginScreen = document.getElementById("loginScreen");
-        if (loginScreen) loginScreen.style.display = "none";
-        updateUserUI();
-        notifyFlutterAuthState(true);
-        initDashboard();
-        // Silently verify session validity in background
-        fetch("/api/v1/auth/me", {
-            headers: { Authorization: `Bearer ${existingToken}` }
-        }).then(res => {
-            if (res.ok) {
-                res.json().then(d => {
-                    ["username","clearance_level","role","full_name"].forEach(k => {
-                        if (d[k] !== undefined) localStorage.setItem(k, d[k] || "");
-                    });
-                    updateUserUI();
-                });
-            } else if (res.status === 401) {
-                handleLogout();
-            }
-        }).catch(() => {});
-    } else {
-        showLoginScreen();
-    }
+    resumeSession();
 
     startStatsPolling();
 });
@@ -1629,6 +1788,8 @@ function initCustomSelects() {
         function toggleMenu(e) {
             e.stopPropagation();
             const isOpen = wrap.classList.contains('is-open');
+            // A disabled select (no access, or the configuration is locked) does not open.
+            if (select.disabled && !isOpen) return;
             document.querySelectorAll('.custom-select-wrap.is-open').forEach(w => {
                 if (w !== wrap) {
                     w.classList.remove('is-open');
@@ -1868,6 +2029,49 @@ function showLoginScreen() {
     if (pInput) pInput.value = "";
 }
 
+// The signed-in user is kept per tab with its token: two tabs of one browser can be signed in
+// to two accounts. Older pages kept the user in localStorage, which every tab shares; those
+// copies are dropped.
+const USER_KEYS = ["username", "clearance_level", "role", "full_name"];
+
+function storeUser(d) {
+    USER_KEYS.forEach(k => {
+        if (d[k] !== undefined) sessionStorage.setItem(k, d[k] || "");
+        localStorage.removeItem(k);
+    });
+}
+
+// After a reload: show the pages for this tab's sign-in and silently check it still holds.
+// A tab signed in by an older page has only its token here: it waits for the server's answer
+// instead of drawing the pages at no level or another tab's.
+function resumeSession() {
+    const existingToken = sessionStorage.getItem("access_token");
+    if (!existingToken) return showLoginScreen();
+    currentAuthToken = existingToken;
+    const loginScreen = document.getElementById("loginScreen");
+    if (loginScreen) loginScreen.style.display = "none";
+    let shown = false;
+    const show = () => {
+        updateUserUI();
+        if (shown) return;
+        shown = true;
+        notifyFlutterAuthState(true);
+        initDashboard();
+    };
+    if (sessionStorage.getItem("clearance_level") !== null) show();
+    fetch("/api/v1/auth/me", {
+        headers: { Authorization: `Bearer ${existingToken}` }
+    }).then(res => {
+        if (res.ok) {
+            res.json().then(d => { storeUser(d); show(); });
+        } else if (res.status === 401) {
+            handleLogout();
+        } else {
+            show();
+        }
+    }).catch(show);
+}
+
 async function handleLogin(force = false) {
     const u = document.getElementById("loginUser").value.trim();
     const p = document.getElementById("loginPass").value;
@@ -1878,7 +2082,8 @@ async function handleLogin(force = false) {
         });
         if (res.ok) {
             const d = await res.json();
-            ["access_token","username","clearance_level","role","full_name"].forEach(k => (k === "access_token" ? sessionStorage : localStorage).setItem(k, d[k]||""));
+            sessionStorage.setItem("access_token", d.access_token || "");
+            storeUser(d);
             currentAuthToken = d.access_token;
 
             document.getElementById("loginScreen").style.display = "none";
@@ -1908,21 +2113,21 @@ async function handleLogout() {
     if (currentAuthToken) {
         try { await fetch("/api/v1/auth/logout", {method:"POST", headers:{Authorization:`Bearer ${currentAuthToken}`}}); } catch {}
     }
-    ["access_token", "username", "clearance_level", "role", "full_name"].forEach(k => (k === "access_token" ? sessionStorage : localStorage).removeItem(k));
+    ["access_token", ...USER_KEYS].forEach(k => sessionStorage.removeItem(k));
     currentAuthToken = "";
     notifyFlutterAuthState(false);
     showLoginScreen();
 }
 
 const ROLE_NAMES = { operator: "Operator", supervisor: "Supervisor", admin: "Admin" };
-const clearanceLevel = () => parseInt(localStorage.getItem("clearance_level") || "1", 10) || 1;
+const clearanceLevel = () => parseInt(sessionStorage.getItem("clearance_level") || "1", 10) || 1;
 const canConfigure = () => clearanceLevel() >= 2;
 
 function updateUserUI() {
-    const u   = localStorage.getItem("username") || "user";
+    const u   = sessionStorage.getItem("username") || "user";
     const lvl = clearanceLevel();
-    const r   = localStorage.getItem("role") || "operator";
-    const fn  = localStorage.getItem("full_name") || u;
+    const r   = sessionStorage.getItem("role") || "operator";
+    const fn  = sessionStorage.getItem("full_name") || u;
     const roleName = ROLE_NAMES[r] || (r.charAt(0).toUpperCase() + r.slice(1));
     const levelText = `Level ${lvl} · ${roleName}`;
 
@@ -1932,6 +2137,7 @@ function updateUserUI() {
 
     // Users & API keys is for Level 3 only
     document.getElementById("adminMenuTab").style.display = lvl === 3 ? "" : "none";
+    document.getElementById("dataMenuTab").style.display = lvl === 3 ? "" : "none";
 
     // Account tab details
     document.getElementById("accountUsername").innerText = u;
@@ -1967,6 +2173,7 @@ const TAB_TITLES = {
     tabModels: "AI models",
     tabComms: "Connections",
     tabLogs: "Audit log",
+    tabData: "Data and backups",
     tabUsers: "Users & API keys",
     tabAccount: "My account"
 };
@@ -1988,7 +2195,7 @@ function switchTab(id) {
 
     document.body.dataset.tab = id;
     document.getElementById("pageTitle").innerText = TAB_TITLES[id] || "Line dashboard";
-    document.title = `${TAB_TITLES[id] || "Line dashboard"} · Zagel Vision`;
+    document.title = `${TAB_TITLES[id] || "Line dashboard"} · Universalz Vision`;
     closeMenus();
     document.querySelector(".main-content")?.scrollTo(0, 0);
     setTimeout(initCustomSelects, 50);
@@ -2020,6 +2227,7 @@ function switchTab(id) {
     if (id === "tabModels")        loadModels();
     if (id === "tabComms")         { loadServerSettings(); loadCommsEndpoints(); }
     if (id === "tabLogs")          loadAuditLogs();
+    if (id === "tabData" && window.DataBackups) DataBackups.load();
     if (id === "tabActionTrigger") populateActionCommsDropdowns();
 }
 
@@ -2051,6 +2259,8 @@ function startStatsPolling() {
 
 function initDashboard() {
     startStatsPolling();
+    if (window.ConfigLock) ConfigLock.refresh();
+    if (window.SystemUsage) SystemUsage.start();
     loadServerSettings();
     loadCommsEndpoints();
     loadPlcActionCards();
@@ -2338,6 +2548,7 @@ async function pollServerChanges() {
             return;
         }
         const d = await res.json();
+        if (d.config_lock && window.ConfigLock) ConfigLock.apply(d.config_lock);
 
         // Detect server restart -> logout all accounts and reset all sessions
         if (d.boot_id) {
@@ -2353,7 +2564,7 @@ async function pollServerChanges() {
 
         if (d.version > lastKnownStateVer || d.has_changes) {
             if (lastKnownStateVer > 0 && d.recent_events?.length) {
-                const currentU = localStorage.getItem("username") || "";
+                const currentU = sessionStorage.getItem("username") || "";
                 const ev = d.recent_events[d.recent_events.length - 1];
                 const isSelf = (ev.username === currentU);
                 const author = isSelf ? "You" : `${ev.username} (${ev.role || "User"})`;
@@ -2497,12 +2708,12 @@ function renderCommsGrid() {
         : allCommsEndpoints.filter(e => (e.protocol || "").toLowerCase() === currentFilterProto.toLowerCase());
 
     if (!filtered.length) {
-        const kind = { plc: "PLC", tcp: "TCP", mqtt: "MQTT", ipcam: "network camera", webhook: "webhook" }[currentFilterProto];
+        const kind = { plc: "controller", tcp: "TCP", mqtt: "MQTT", ipcam: "network camera", webhook: "webhook" }[currentFilterProto];
         grid.innerHTML = `
             <div class="empty-state" style="grid-column:1/-1">
                 <b>${kind ? `No ${kind} connections yet` : "No connections yet"}</b>
                 <p>Add a PLC, MQTT broker, TCP socket, network camera or webhook for the server to talk to.</p>
-                <button class="btn-action btn-blue restricted-l2" onclick="openAddCommModal('${currentFilterProto === "all" ? "tcp" : currentFilterProto}')">Add connection</button>
+                <button data-lock class="btn-action btn-blue restricted-l2" onclick="openAddCommModal('${currentFilterProto === "all" ? "tcp" : currentFilterProto}')">Add connection</button>
             </div>
         `;
         applyRoleRestrictions(grid);
@@ -2528,8 +2739,8 @@ function renderCommsGrid() {
             iconSvg = COMM_PROTO_ICONS.mqtt;
         } else if (proto === "ipcam") {
             badgeClass = "badge-ipcam";
-            badgeLabel = "IP Camera";
-            detailText = ep.source || "rtsp://...";
+            badgeLabel = ep.camera_kind === "gige" ? "GigE Vision" : "IP camera";
+            detailText = ep.camera_kind === "gige" ? `Serial ${ep.source || "?"}` : (ep.source || "rtsp://...");
             iconSvg = COMM_PROTO_ICONS.ipcam;
         } else if (proto === "webhook") {
             badgeClass = "badge-webhook";
@@ -2547,7 +2758,7 @@ function renderCommsGrid() {
                 fins: "Omron FINS"
             };
             badgeClass = "badge-plc";
-            badgeLabel = plcNames[ep.plc_protocol] || "PLC Controller";
+            badgeLabel = plcNames[ep.plc_protocol] || "Controller";
             detailText = `${ep.host || "192.168.1.10"}:${ep.port || 502}`;
             if (ep.plc_protocol === "s7") detailText += ` [Rack:${ep.s7_rack ?? 0} Slot:${ep.s7_slot ?? 1}]`;
             else if (ep.plc_protocol === "modbus_tcp") detailText += ` [Unit:${ep.modbus_unit_id ?? 1}]`;
@@ -2596,9 +2807,9 @@ function renderCommsGrid() {
                         ${proto === "mqtt" && ep.sparkplug_enabled ? `<span class="badge badge-outline" title="${escapeHtml(sparkplugStateText(ep) || "Sparkplug B is switched on for this channel")}">${escapeHtml(sparkplugStateText(ep) || "Sparkplug B")}</span>` : ""}
                     </div>
                     <div class="row-actions">
-                        <button class="btn-action btn-sm btn-outline restricted-l2" onclick="testEndpointById(this.closest('[data-ep-id]').dataset.epId, event)" title="Try the connection now">Test</button>
+                        <button class="btn-action btn-sm btn-outline restricted-l2" onclick="testEndpointById(this.closest('[data-ep-id]').dataset.epId, event)">Test</button>
                         <button class="btn-action btn-sm btn-outline restricted-l2" onclick="openEditCommModal(this.closest('[data-ep-id]').dataset.epId)">Edit</button>
-                        <button class="btn-action btn-sm btn-red restricted-l2" onclick="deleteCommEndpointById(this.closest('[data-ep-id]').dataset.epId, event)" aria-label="Delete ${escapeHtml(ep.name || "connection")}">Delete</button>
+                        <button data-lock class="btn-action btn-sm btn-red restricted-l2" onclick="deleteCommEndpointById(this.closest('[data-ep-id]').dataset.epId, event)" aria-label="Delete ${escapeHtml(ep.name || "connection")}">Delete</button>
                     </div>
                 </div>
             </div>
@@ -2946,10 +3157,7 @@ function openAddCommModal(protocol = "tcp") {
     setMqttSparkplugFields();
     toggleMqttTlsFields();
 
-    document.getElementById("ipcamSourceInput").value = "";
-    document.getElementById("ipcamTransportInput").value = "tcp";
-    document.getElementById("ipcamResolutionInput").value = "640x480";
-    document.getElementById("ipcamBufferInput").value = "1";
+    fillIpcamFields(null);
 
     document.getElementById("webhookUrlInput").value = "";
     document.getElementById("webhookMethodInput").value = "POST";
@@ -2983,6 +3191,8 @@ function openAddCommModal(protocol = "tcp") {
         document.getElementById("plcEipPath").value = "1,0";
         document.getElementById("plcOpcuaPath").value = "";
         document.getElementById("plcOpcuaSecurity").value = "None";
+        loadOpcuaCertDropdowns({ cert: "", key: "", server: "" });
+        syncOpcuaCertFields();
         document.getElementById("plcMelsecNetwork").value = "0";
         document.getElementById("plcMelsecStation").value = "255";
         document.getElementById("plcFinsNetwork").value = "0";
@@ -3058,10 +3268,7 @@ function openEditCommModal(endpointId) {
         setMqttSparkplugFields(ep);
         toggleMqttTlsFields();
     } else if (proto === "ipcam") {
-        document.getElementById("ipcamSourceInput").value = ep.source || "";
-        document.getElementById("ipcamTransportInput").value = ep.transport || "tcp";
-        document.getElementById("ipcamResolutionInput").value = ep.resolution || "640x480";
-        document.getElementById("ipcamBufferInput").value = ep.buffer_size || 1;
+        fillIpcamFields(ep);
     } else if (proto === "webhook") {
         document.getElementById("webhookUrlInput").value = ep.url || "";
         document.getElementById("webhookMethodInput").value = ep.method || "POST";
@@ -3096,6 +3303,8 @@ function openEditCommModal(endpointId) {
             document.getElementById("plcEipPath").value = ep.eip_path || "1,0";
             document.getElementById("plcOpcuaPath").value = ep.opcua_path || "";
             document.getElementById("plcOpcuaSecurity").value = ep.opcua_security || "None";
+            loadOpcuaCertDropdowns({ cert: opcuaFileName(ep.opcua_cert_path), key: opcuaFileName(ep.opcua_key_path), server: opcuaFileName(ep.opcua_server_cert_path) });
+            syncOpcuaCertFields();
             document.getElementById("plcMelsecNetwork").value = ep.melsec_network ?? 0;
             document.getElementById("plcMelsecStation").value = ep.melsec_station ?? 255;
             document.getElementById("plcFinsNetwork").value = ep.fins_network ?? 0;
@@ -3118,6 +3327,147 @@ function closeCommModal(event) {
 function isCommDialogOpen() {
     return Boolean(document.getElementById("commModalOverlay")?.classList.contains("active"));
 }
+
+// ─── Network camera: IP camera or GigE Vision ─────────────────────────────
+function syncIpcamKind() {
+    const gige = document.getElementById("ipcamKindInput").value === "gige";
+    document.getElementById("ipcamIpFields").style.display = gige ? "none" : "block";
+    document.getElementById("ipcamGigeFields").style.display = gige ? "block" : "none";
+}
+
+// The dialog's fields for a network camera. ``ep``: the saved channel, or null for a new one.
+function fillIpcamFields(ep) {
+    const kind = ep && ep.camera_kind === "gige" ? "gige" : "ip";
+    document.getElementById("ipcamKindInput").value = kind;
+    document.getElementById("ipcamSourceInput").value = kind === "ip" && ep ? (ep.source || "") : "";
+    document.getElementById("ipcamSerialInput").value = kind === "gige" && ep ? (ep.source || "") : "";
+    document.getElementById("ipcamUserInput").value = "";
+    document.getElementById("ipcamPassInput").value = "";
+    document.getElementById("ipcamScanResult").innerHTML = "";
+    // A saved address shows its sign-in as ***:***; leave the two fields empty to keep it.
+    const hasLogin = kind === "ip" && ep && /:\/\/[^/@]+@/.test(ep.source || "");
+    document.getElementById("ipcamUserInput").placeholder = hasLogin ? "Saved (leave empty to keep)" : "None";
+    document.getElementById("ipcamPassInput").placeholder = hasLogin ? "Saved (leave empty to keep)" : "None";
+    setSelectValueWithFallback(document.getElementById("ipcamTransportInput"), (ep && ep.transport) || "tcp");
+    setSelectValueWithFallback(document.getElementById("ipcamResolutionInput"), (ep && ep.resolution) || "native");
+    document.getElementById("ipcamBufferInput").value = (ep && ep.buffer_size) || 1;
+    syncIpcamKind();
+    // What the camera really runs with: its own card (Line setup) may have changed these since.
+    if (kind === "ip" && ep && ep.id) {
+        fetch(`/api/v1/cameras/${encodeURIComponent(ep.id)}`, { headers: { Authorization: `Bearer ${currentAuthToken}` } })
+            .then((res) => (res.ok ? res.json() : null))
+            .then((cam) => {
+                const editing = document.getElementById("commInputName");
+                if (!cam || !cam.settings || !editing || editingCommEndpointId !== ep.id) return;
+                const s = cam.settings;
+                if (s.transport) setSelectValueWithFallback(document.getElementById("ipcamTransportInput"), s.transport);
+                if (s.buffer_size) document.getElementById("ipcamBufferInput").value = s.buffer_size;
+                setSelectValueWithFallback(document.getElementById("ipcamResolutionInput"), s.width && s.height ? `${s.width}x${s.height}` : "native");
+            })
+            .catch(() => {});
+    }
+}
+
+// The stream URL with the user name and password from their two fields, when they are filled.
+function ipcamSourceWithLogin(source) {
+    const user = document.getElementById("ipcamUserInput").value.trim();
+    const pass = document.getElementById("ipcamPassInput").value;
+    if (!user && !pass) return source;
+    const match = source.match(/^([a-z][a-z0-9+.-]*:\/\/)(?:[^/@]*@)?(.*)$/i);
+    if (!match) return source;
+    const login = encodeURIComponent(user) + (pass ? `:${encodeURIComponent(pass)}` : "");
+    return `${match[1]}${login}@${match[2]}`;
+}
+
+async function scanGigeCameras() {
+    const button = document.getElementById("ipcamScanBtn");
+    const box = document.getElementById("ipcamScanResult");
+    button.disabled = true;
+    box.innerHTML = `<div style="font-size:12px;color:var(--text-muted)">Looking for cameras on the network and the USB3 ports…</div>`;
+    try {
+        const res = await fetch("/api/v1/cameras/discover/gige", { headers: { Authorization: `Bearer ${currentAuthToken}` } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        const editing = editingCommEndpointId;
+        const own = editing ? (allCommsEndpoints.find((e) => e.id === editing) || {}).source : "";
+        box.innerHTML = data.length ? data.map((c) => {
+            // Taken by another network camera. A camera in the camera list without one is free:
+            // the new channel takes it over (its settings and line places stay).
+            const taken = Boolean(c.channel) && c.serial !== own;
+            return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:6px">
+                <span style="min-width:0;overflow-wrap:anywhere;font-size:13px"><b>${escapeHtml(c.model || "Camera")}</b> · ${escapeHtml(c.serial)}${c.interface ? ` · ${escapeHtml(c.interface)}` : ""}${c.vendor ? ` · ${escapeHtml(c.vendor)}` : ""}</span>
+                <button type="button" class="btn-action btn-sm btn-outline" data-serial="${escapeHtml(c.serial)}" data-model="${escapeHtml(c.model || "")}" onclick="pickGigeCamera(this)" ${taken ? `disabled title="Already the network camera '${escapeHtml(c.channel)}'"` : ""}>${taken ? `In use: ${escapeHtml(c.channel)}` : "Use this camera"}</button>
+            </div>`;
+        }).join("") : `<div style="font-size:12px;color:var(--text-muted)">No camera was found. Is it powered, on the same network as the server, and not open in another program?</div>`;
+    } catch (e) {
+        box.innerHTML = `<div style="font-size:12px;color:var(--danger-color)">${escapeHtml(e.message || "The scan failed")}</div>`;
+    }
+    button.disabled = false;
+}
+
+function pickGigeCamera(button) {
+    document.getElementById("ipcamSerialInput").value = button.dataset.serial;
+    const name = document.getElementById("commInputName");
+    if (name && !name.value.trim()) name.value = `${button.dataset.model || "Camera"} ${button.dataset.serial}`.trim();
+}
+
+// ─── OPC UA: the client certificate, its private key, the server certificate ───
+function syncOpcuaCertFields() {
+    const security = document.getElementById("plcOpcuaSecurity");
+    const box = document.getElementById("plcOpcuaCertFields");
+    if (security && box) box.style.display = security.value === "None" ? "none" : "block";
+}
+
+// Fill the three lists with the uploaded files and choose what the channel uses.
+async function loadOpcuaCertDropdowns(chosen) {
+    let files = { certificates: [], private_keys: [] };
+    try {
+        const res = await fetch("/api/v1/plc/opcua/certs", { headers: { Authorization: `Bearer ${currentAuthToken}` } });
+        if (res.ok) files = await res.json();
+    } catch (_) { /* the lists stay empty */ }
+    const fill = (id, names, none, value) => {
+        const select = document.getElementById(id);
+        if (!select) return;
+        const want = value !== undefined ? value : select.value;
+        const all = want && !names.includes(want) ? [...names, want] : names;
+        select.innerHTML = `<option value="">${none}</option>` + all.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join("");
+        select.value = want || "";
+        if (select._refreshCustomSelect) select._refreshCustomSelect();
+    };
+    const c = chosen || {};
+    fill("plcOpcuaCertInput", files.certificates || [], "-- Choose an uploaded certificate --", c.cert);
+    fill("plcOpcuaKeyInput", files.private_keys || [], "-- Choose an uploaded private key --", c.key);
+    fill("plcOpcuaServerCertInput", files.certificates || [], "-- None: trust the server's certificate --", c.server);
+}
+
+async function handleOpcuaCertUpload(event, kind, targetId) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    const msg = document.getElementById("opcuaCertMsg");
+    const say = (text, color) => { if (msg) { msg.innerText = text; msg.style.color = color; } };
+    say(`Uploading ${file.name}…`, "var(--text-muted)");
+    const form = new FormData();
+    form.append("file", file);
+    form.append("kind", kind);
+    try {
+        const res = await fetch("/api/v1/plc/opcua/certs/upload", { method: "POST", headers: { Authorization: `Bearer ${currentAuthToken}` }, body: form });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        const keep = (id) => document.getElementById(id).value;
+        await loadOpcuaCertDropdowns({
+            cert: targetId === "plcOpcuaCertInput" ? data.filename : keep("plcOpcuaCertInput"),
+            key: targetId === "plcOpcuaKeyInput" ? data.filename : keep("plcOpcuaKeyInput"),
+            server: targetId === "plcOpcuaServerCertInput" ? data.filename : keep("plcOpcuaServerCertInput"),
+        });
+        say(data.subject ? `Uploaded ${data.filename}: ${data.subject}, valid until ${String(data.expires || "").slice(0, 10)}.` : `Uploaded ${data.filename}.`, "var(--success-color)");
+    } catch (e) {
+        say(`${file.name}: ${e.message || "the upload failed"}`, "var(--danger-color)");
+    }
+}
+
+// The file name at the end of a path saved on the server.
+function opcuaFileName(path) { return String(path || "").split(/[\\/]/).pop(); }
 
 async function handleCertFileUpload(event, targetInputId="mqttCaCertInput") {
     const file = event.target.files?.[0];
@@ -3165,7 +3515,12 @@ async function handleCertFileUpload(event, targetInputId="mqttCaCertInput") {
     }
 }
 
+// A second click while a save is on its way would add the channel twice (a GigE camera then
+// appeared twice, 2026-10-14): the button is off until the answer comes.
+let _commSaving = false;
+
 async function saveCommEndpoint() {
+    if (_commSaving) return;
     const name = document.getElementById("commInputName").value.trim();
     if (!name) {
         return showModal("Name Required", "Please provide a name for this communication channel.");
@@ -3240,12 +3595,19 @@ async function saveCommEndpoint() {
             return showModal("Sparkplug IDs Required", "Enter a Group ID and an Edge node ID without / + #.");
         }
     } else if (proto === "ipcam") {
-        const source = document.getElementById("ipcamSourceInput").value.trim();
-        if (!source) return showModal("Source Required", "Please enter a valid RTSP or HTTP stream URL.");
-        payload.source = source;
-        payload.transport = document.getElementById("ipcamTransportInput").value;
-        payload.resolution = document.getElementById("ipcamResolutionInput").value;
-        payload.buffer_size = parseInt(document.getElementById("ipcamBufferInput").value) || 1;
+        payload.camera_kind = document.getElementById("ipcamKindInput").value;
+        if (payload.camera_kind === "gige") {
+            const serial = document.getElementById("ipcamSerialInput").value.trim();
+            if (!serial) return showModal("Serial number required", "Press Scan and choose the camera, or type its serial number.");
+            payload.source = serial;
+        } else {
+            const source = document.getElementById("ipcamSourceInput").value.trim();
+            if (!source) return showModal("Stream URL required", "Enter the camera's RTSP or HTTP stream URL.");
+            payload.source = ipcamSourceWithLogin(source);
+            payload.transport = document.getElementById("ipcamTransportInput").value;
+            payload.resolution = document.getElementById("ipcamResolutionInput").value;
+            payload.buffer_size = parseInt(document.getElementById("ipcamBufferInput").value) || 1;
+        }
     } else if (proto === "webhook") {
         const url = document.getElementById("webhookUrlInput").value.trim();
         if (!url) return showModal("URL Required", "Please enter a valid HTTP/HTTPS Webhook endpoint URL.");
@@ -3262,7 +3624,7 @@ async function saveCommEndpoint() {
         if (rtuSerial && !document.getElementById("plcRtuSerialPort").value.trim()) {
             return showModal("Serial Port Required", "Please enter the serial port the RS-485 adapter is on, for example COM3 or /dev/ttyUSB0.");
         }
-        if (!host && !rtuSerial) return showModal("PLC Host Required", "Please enter a valid IP address or hostname for the PLC.");
+        if (!host && !rtuSerial) return showModal("Controller host required", "Please enter a valid IP address or hostname for the controller.");
         payload.host = rtuSerial ? "" : host;
         payload.port = port;
         payload.plc_protocol = plcProtocol;
@@ -3289,6 +3651,14 @@ async function saveCommEndpoint() {
         payload.eip_path = document.getElementById("plcEipPath").value.trim() || "1,0";
         payload.opcua_path = document.getElementById("plcOpcuaPath").value.trim() || "";
         payload.opcua_security = document.getElementById("plcOpcuaSecurity").value;
+        if (payload.opcua_security !== "None") {
+            payload.opcua_cert_file = document.getElementById("plcOpcuaCertInput").value;
+            payload.opcua_key_file = document.getElementById("plcOpcuaKeyInput").value;
+            payload.opcua_server_cert_file = document.getElementById("plcOpcuaServerCertInput").value;
+            if (!payload.opcua_cert_file || !payload.opcua_key_file) {
+                return showModal("Certificate required", "This Security Policy needs a client certificate and its private key. Upload and choose both, or set the policy to None.");
+            }
+        }
         payload.melsec_network = parseInt(document.getElementById("plcMelsecNetwork").value) || 0;
         payload.melsec_station = parseInt(document.getElementById("plcMelsecStation").value) || 255;
         payload.fins_network = parseInt(document.getElementById("plcFinsNetwork").value) || 0;
@@ -3296,6 +3666,9 @@ async function saveCommEndpoint() {
         payload.fins_unit = parseInt(document.getElementById("plcFinsUnit").value) || 0;
     }
 
+    const saveButton = document.getElementById("commSaveBtn");
+    _commSaving = true;
+    if (saveButton) saveButton.disabled = true;
     try {
         const isEdit = Boolean(editingCommEndpointId);
         const url = isEdit ? `/api/v1/system/endpoints/${editingCommEndpointId}` : "/api/v1/system/endpoints";
@@ -3325,6 +3698,9 @@ async function saveCommEndpoint() {
         }
     } catch {
         showModal("Network Error", "Could not connect to API server to save channel.");
+    } finally {
+        _commSaving = false;
+        if (saveButton) saveButton.disabled = false;
     }
 }
 
@@ -3470,7 +3846,16 @@ const CARD_TRIGGERS = [
     { id: "qr_no_read",     label: "No code read",               summary: "No code read" },
     { id: "line_state",     label: "Line started / stopped",     summary: "Line started / stopped" },
     { id: "alarm",          label: "Alarm raised / cleared",     summary: "Alarm" },
+    { id: "input",          label: "Input changed",              summary: "Input changed" },
+    // A sorting verification camera saw a product in the other outfeed / in its own (Camera 3).
+    { id: "sorting_mismatch", label: "Sorting mismatch",         summary: "Sorting mismatch" },
+    { id: "sorting_verified", label: "Sorting verified",         summary: "Sorting verified" },
+    // The result handshake went wrong: no result in time (set to fault), no acknowledge, a skipped acknowledge.
+    { id: "handshake_fault",  label: "Handshake fault",          summary: "Handshake fault" },
+    // Send cards only: a message every N ms (the value box), while the line runs or always.
+    { id: "timer",          label: "Timer (every N ms)",         summary: "Timer", sendOnly: true },
 ];
+const TIMER_MIN_MS = 100, TIMER_MAX_MS = 86400000;
 const CARD_CONDITIONS = {
     cross_line: [
         ["reject", "Rejected product (final result)"],
@@ -3501,7 +3886,66 @@ const CARD_CONDITIONS = {
         ["cleared", "Cleared: all chosen alarms are off"],
         ["toggled", "Raised or cleared"],
     ],
+    timer: [
+        ["while_running", "While the line runs"],
+        ["always", "Always (continuous), also when the line is stopped"],
+    ],
+    input: [
+        ["on", "On: off to on"],
+        ["off", "Off: on to off"],
+        ["change", "Any change"],
+    ],
+    sorting_mismatch: [["any", "Each product seen in the wrong outfeed"]],
+    sorting_verified: [["any", "Each product seen in the right outfeed"]],
+    handshake_fault: [["any", "Each fault (no result in time, no acknowledge, a skipped acknowledge)"]],
 };
+// Triggers that fire only on their own line event: no value box, no class, a camera only for sorting.
+const OWN_EVENT_KINDS = ["sorting_mismatch", "sorting_verified", "handshake_fault"];
+
+// The line's inputs (Inputs step of Line setup), for the trigger "Input changed".
+function cardInputChoices() {
+    return window.PlcSignals && PlcSignals.inputChoices ? PlcSignals.inputChoices() : [];
+}
+function cardInputPickerHtml(card, onchange) {
+    const inputs = cardInputChoices();
+    const current = card.input_id || "";
+    let options = `<option value="" ${current ? "" : "selected"}>Choose an input</option>`
+        + inputs.map(i => `<option value="${escapeHtml(i.id)}" ${i.id === current ? "selected" : ""}>${escapeHtml(i.name)}</option>`).join("");
+    if (current && !inputs.some(i => i.id === current)) options += `<option value="${escapeHtml(current)}" selected>(input not found)</option>`;
+    return `<div class="form-group" style="margin:0">
+        <label class="form-label" style="font-size:11.5px;font-weight:600">Input:</label>
+        <select class="form-input" onchange="${onchange}">${options}</select>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:3px">${inputs.length ? "Fires on each change of this input that the condition names, whatever the input's own action does. The first value read after a start is not a change." : "This line has no inputs yet: add one under Inputs (the action Only fires cards is for an input that only does this)."}</div>
+    </div>`;
+}
+
+// Only when: the value names a card's rules can use (the line's product fields and input values).
+function cardRuleChoices(card) {
+    if (!window.CardValues) return [];
+    const choices = CardValues.valueChoices({ fields: cardFieldChoices(), inputs: cardValueInputs(),
+        texts: CardValues.textChoices(window.ProductionLines ? ProductionLines.lineCameras() : []),
+        matches: CardValues.matchChoices(window.ProductionLines ? ProductionLines.lineCameras() : []) });
+    if (cardTriggerKind(card.trigger) === "input") {
+        choices.push({ name: "input.value", label: "New value of the input" }, { name: "input.previous", label: "Old value of the input" });
+    }
+    return choices;
+}
+function cardOnlyWhenHtml(card, handler) {
+    if (!window.CardValues) return "";
+    return `<div class="form-group" style="margin:0">
+        ${CardValues.onlyWhenHtml(card.only_when, cardRuleChoices(card), handler)}
+        <div style="font-size:10px;color:var(--text-muted);margin-top:4px">Checked after the trigger and condition, with the values of that moment: for example only when <code>product.lane = 3</code>. A rule whose value is missing does not pass (except <b>is empty</b>).</div>
+    </div>`;
+}
+function plcOnlyWhenEdit(element, action) {
+    const cardId = document.getElementById("plcModalBodyContainer").dataset.cardId;
+    updatePlcCardProp(cardId, "only_when", CardValues.applyEdit(element.closest("[data-ow]"), element, action, "result"));
+    if (CardValues.needsRedraw(element, action)) refreshPlcModalBody(cardId);
+    renderPlcActionCards();
+}
+function sendOnlyWhenEdit(element, action) {
+    setSendDraft("only_when", CardValues.applyEdit(element.closest("[data-ow]"), element, action, "result"), CardValues.needsRedraw(element, action));
+}
 
 function cardTriggerKind(trigger) {
     if (trigger === "good_counter" || trigger === "reject_counter") return "counter";
@@ -3509,8 +3953,10 @@ function cardTriggerKind(trigger) {
     return CARD_CONDITIONS[trigger] ? trigger : "cross_line";
 }
 
-function cardTriggerOptionsHtml(card) {
-    return CARD_TRIGGERS.map(t => `<option value="${t.id}" ${card.trigger === t.id ? "selected" : ""}>${escapeHtml(t.label)}</option>`).join("");
+// forSend: a send card's list, which also has the triggers only send cards offer (the timer).
+function cardTriggerOptionsHtml(card, forSend = false) {
+    return CARD_TRIGGERS.filter(t => forSend || !t.sendOnly)
+        .map(t => `<option value="${t.id}" ${card.trigger === t.id ? "selected" : ""}>${escapeHtml(t.label)}</option>`).join("");
 }
 
 function cardConditionOptionsHtml(card) {
@@ -3526,9 +3972,11 @@ function applyCardTriggerDefaults(card, trigger) {
     card.condition = CARD_CONDITIONS[kind][0][0];
     if (kind === "counter") card.set_value = card.set_value || "100";
     else if (kind === "class") card.set_value = card.set_value || "defect";
+    else if (kind === "timer") card.set_value = "1000";
     else card.set_value = "";
-    if (kind === "line_state" || kind === "alarm") card.camera_id = "";
+    if (kind === "line_state" || kind === "alarm" || kind === "timer" || kind === "input" || kind === "handshake_fault") card.camera_id = "";
     if (kind === "alarm") card.alarm_codes = card.alarm_codes || [];
+    if (kind === "input" && !card.input_id) card.input_id = (cardInputChoices()[0] || {}).id || "";
 }
 
 // Whether the "value / class" box applies, and what it asks for.
@@ -3537,6 +3985,7 @@ function cardSetValueInfo(card) {
     if (kind === "counter") return { used: true, number: true, placeholder: card.condition === "counter_modulo" ? "Interval N (e.g. 10 or 50 products)" : "Target count (e.g. 100)" };
     if (kind === "class") return { used: true, number: false, placeholder: "Class name (e.g. defect, bottle, cap)" };
     if (kind === "cross_line" && card.condition === "class") return { used: true, number: false, placeholder: "Class name crossing the line" };
+    if (kind === "timer") return { used: true, number: true, unit: "ms", min: TIMER_MIN_MS, max: TIMER_MAX_MS, placeholder: "Interval in ms (e.g. 1000)" };
     return { used: false, number: false, placeholder: kind === "line_state" ? "Not used for a line start or stop" : "Not used for this trigger" };
 }
 
@@ -3560,6 +4009,8 @@ function cardTriggerSummary(c) {
         condSummary = (c.camera_id ? "Selected camera" : "Any code reader") + (c.condition === "unpaired" ? ", unpaired codes" : "");
     } else if (kind === "line_state") {
         condSummary = { on: "On (line starts)", off: "Off (line stops)", toggled: "Toggled (starts or stops)" }[c.condition] || "On (line starts)";
+    } else if (kind === "timer") {
+        condSummary = `Every ${c.set_value || "1000"} ms · ${c.condition === "always" ? "always" : "while the line runs"}`;
     } else if (kind === "alarm") {
         if (!_alarmCatalog) loadAlarmCatalog();
         triggerSummary = { raised: "Alarm raised", cleared: "All alarms cleared", toggled: "Alarm raised or cleared" }[c.condition] || "Alarm raised";
@@ -3567,13 +4018,27 @@ function cardTriggerSummary(c) {
         const names = codes.includes("*") ? ["Any alarm"] : codes.map(alarmLabel);
         condSummary = !names.length ? "(choose alarms)" : names.length > 1 ? `${names[0]} +${names.length - 1} more` : names[0];
         condFull = names.join(", ");
+    } else if (OWN_EVENT_KINDS.includes(kind)) {
+        condSummary = kind === "handshake_fault" ? "The line's result handshake"
+            : (c.camera_id ? "Selected outfeed camera" : "Any outfeed camera");
+    } else if (kind === "input") {
+        const input = cardInputChoices().find(i => i.id === c.input_id);
+        condSummary = `${input ? input.name : "(choose an input)"}: ${{ on: "off to on", off: "on to off", change: "any change" }[c.condition] || "off to on"}`;
+    }
+    const onlyWhen = window.CardValues ? CardValues.onlyWhenText(c.only_when) : "";
+    if (onlyWhen) {
+        condFull = `${condFull || condSummary}, ${onlyWhen}`;
+        condSummary = `${condSummary}, ${onlyWhen}`;
     }
     return { triggerSummary, condSummary, condFull: condFull || condSummary };
 }
 
 function cardCameraOptionsHtml(card) {
     const kind = cardTriggerKind(card.trigger);
-    const none = kind === "line_state" ? "Not used for a line start or stop" : kind === "alarm" ? "Not used for alarms" : "Counting camera / any code reader of this line";
+    const none = kind === "line_state" ? "Not used for a line start or stop" : kind === "alarm" ? "Not used for alarms"
+        : kind === "timer" ? "Not used for a timer" : kind === "handshake_fault" ? "Not used for a handshake fault"
+        : kind === "sorting_mismatch" || kind === "sorting_verified" ? "Any outfeed camera of this line"
+        : "Counting camera / any code reader of this line";
     const cams = (window.ProductionLines && window.ProductionLines.lineCameras()) || [];
     return `<option value="" ${!card.camera_id ? "selected" : ""}>${none}</option>` + cams.map(cam =>
         `<option value="${escapeHtml(cam.camera_id)}" ${card.camera_id === cam.camera_id ? "selected" : ""}>${escapeHtml(cam.name)} (${cam.role === "qr" ? "QR / barcode reader" : cam.read_codes ? "Vision + QR / barcode" : "Vision"})</option>`).join("");
@@ -3588,6 +4053,8 @@ let _sendActionPendingChanges = false;
 let _sendActionAppliedSignature = null;
 let _sendActionApplyInFlight = false;
 let _sendActionEditingDraft = null;
+// The draft in the settings window is a card Add made: OK places it, Cancel drops it.
+let _sendActionDraftIsNew = false;
 let _sendActionLoadFailed = false;
 const SEND_PROTOCOLS = ["mqtt", "tcp", "webhook"];
 const SEND_RUNTIME_FIELDS = ["sent_count", "last_sent_at", "last_result"];
@@ -3596,7 +4063,7 @@ const SEND_RUNTIME_FIELDS = ["sent_count", "last_sent_at", "last_result"];
 let _sendMessageFields = [
     ["event", "Event name"], ["timestamp", "Time"], ["line", "Line (id and name)"], ["line_state", "Line state (started / stopped)"],
     ["camera_id", "Camera"], ["track_id", "Product track number"], ["class_name", "Class"], ["result", "Result (PASSED / REJECTED)"],
-    ["is_defect", "Rejected (true / false)"], ["reject_reason", "Reject reason (vision class, code not in list, code in reject list, no code, joined camera saw nothing)"],
+    ["is_defect", "Rejected (true / false)"], ["reject_reason", "Reject reason (vision class, code not in list, code in reject list, no code, joined camera saw nothing, nothing detected, product check, no result in time, no picture, text does not fit, no text, text reader error, pattern not found, pattern mismatch, pattern defect, pattern check error)"],
     ["stations", "Joined cameras (what each saw of the product)"],
     ["reject_camera_id", "Camera that rejected the product (a line with joined cameras)"],
     ["confidence", "Confidence"], ["bbox", "Box in the picture"], ["smooth_center", "Position"], ["velocity", "Speed"],
@@ -3714,6 +4181,11 @@ async function applySendActionCards() {
         showToast(`'${badText.name}': ${sendTemplateProblem(badText.template)}`, "warning");
         return false;
     }
+    const badTimer = _sendActionCards.find(c => c.trigger === "timer" && !sendTimerOk(c.set_value));
+    if (badTimer) {
+        showToast(`'${badTimer.name}': the timer's interval must be a whole number from ${TIMER_MIN_MS} to ${TIMER_MAX_MS.toLocaleString("en")} ms.`, "warning");
+        return false;
+    }
     _sendActionApplyInFlight = true;
     updateSendActionSaveState();
     const snapshot = _sendActionCards.map(card => Object.fromEntries(Object.entries(card).filter(([key]) => !SEND_RUNTIME_FIELDS.includes(key))));
@@ -3741,6 +4213,12 @@ async function applySendActionCards() {
     }
 }
 
+// A timer's interval: whole ms in the range the server accepts.
+function sendTimerOk(value) {
+    const text = String(value ?? "").trim();
+    return /^\d+$/.test(text) && Number(text) >= TIMER_MIN_MS && Number(text) <= TIMER_MAX_MS;
+}
+
 function addSendActionCard() {
     const first = sendChannels()[0];
     const card = {
@@ -3756,10 +4234,8 @@ function addSendActionCard() {
         format: "json",
         template: "",
     };
-    _sendActionCards.push(card);
-    markSendActionsChanged();
-    renderSendActionCards();
-    openSendActionSettingsModal(card.id);
+    // Placed when its settings are OK'd; Cancel adds nothing.
+    openSendActionSettingsModal(card.id, card);
 }
 
 function deleteSendActionCard(cardId) {
@@ -3845,7 +4321,7 @@ function renderSendActionCards() {
             <div class="empty-state">
                 <b>No send cards yet</b>
                 <p>A card sends a message to another system when something happens on the line, for example every rejected product to an MES over TCP. Set up the channels under Connections first.</p>
-                <button type="button" class="btn-action btn-blue restricted-l2" onclick="addSendActionCard()">Add card</button>
+                <button data-lock type="button" class="btn-action btn-blue restricted-l2" onclick="addSendActionCard()">Add card</button>
             </div>`;
         applyRoleRestrictions(container);
         return;
@@ -3871,8 +4347,8 @@ function renderSendActionCards() {
                     <td data-label="Sent" class="num">Sent: ${s.sent}</td>
                     <td class="col-actions"><div class="row-actions">
                         <button type="button" class="btn-action btn-sm btn-outline" onclick="openSendActionSettingsModal(this.closest('[data-send-id]').dataset.sendId)">Settings</button>
-                        <button type="button" class="btn-action btn-sm btn-outline restricted-l2" onclick="testSendActionCard(this.closest('[data-send-id]').dataset.sendId)" title="Send this message once now, with example values">Test</button>
-                        <button type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deleteSendActionCard(this.closest('[data-send-id]').dataset.sendId)" title="Delete this card" aria-label="Delete this card">✕</button>
+                        <button type="button" class="btn-action btn-sm btn-outline restricted-l2" onclick="testSendActionCard(this.closest('[data-send-id]').dataset.sendId)">Test</button>
+                        <button data-lock type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deleteSendActionCard(this.closest('[data-send-id]').dataset.sendId)" title="Delete this card" aria-label="Delete this card">✕</button>
                     </div></td>
                 </tr>`;
         }).join("");
@@ -3895,7 +4371,7 @@ function renderSendActionCards() {
                         <b class="plc-card-name" title="${escapeHtml(c.name || "Send card")}">${escapeHtml(c.name || "Send card")}</b>
                         <div class="row-actions">
                             ${switchHtml(c)}
-                            <button type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deleteSendActionCard(this.closest('[data-send-id]').dataset.sendId)" title="Delete this card" aria-label="Delete this card">✕</button>
+                            <button data-lock type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deleteSendActionCard(this.closest('[data-send-id]').dataset.sendId)" title="Delete this card" aria-label="Delete this card">✕</button>
                         </div>
                     </div>
                     <div class="plc-target">
@@ -3915,8 +4391,8 @@ function renderSendActionCards() {
                     </div>
                 </div>
                 <div class="plc-card-actions">
-                    <button type="button" class="btn-action btn-sm btn-outline" onclick="openSendActionSettingsModal(this.closest('[data-send-id]').dataset.sendId)" title="Channel, trigger and message contents">Settings</button>
-                    <button type="button" class="btn-action btn-sm btn-outline restricted-l2" onclick="testSendActionCard(this.closest('[data-send-id]').dataset.sendId)" title="Send this message once now, with example values">Test message</button>
+                    <button type="button" class="btn-action btn-sm btn-outline" onclick="openSendActionSettingsModal(this.closest('[data-send-id]').dataset.sendId)">Settings</button>
+                    <button type="button" class="btn-action btn-sm btn-outline restricted-l2" onclick="testSendActionCard(this.closest('[data-send-id]').dataset.sendId)">Test message</button>
                 </div>
             </div>`;
     }).join("");
@@ -3924,9 +4400,10 @@ function renderSendActionCards() {
 }
 
 /* ─── Send card settings window ──────────────────────────────────────────── */
-function openSendActionSettingsModal(cardId) {
-    const card = _sendActionCards.find(c => c.id === cardId);
+function openSendActionSettingsModal(cardId, newCard = null) {
+    const card = newCard || _sendActionCards.find(c => c.id === cardId);
     if (!card) return;
+    _sendActionDraftIsNew = Boolean(newCard);
     _sendActionEditingDraft = JSON.parse(JSON.stringify(card));
     loadSendMessageFields();
     refreshSendModalBody();
@@ -3936,12 +4413,13 @@ function openSendActionSettingsModal(cardId) {
 function closeSendActionSettingsModal() {
     document.getElementById("sendActionSettingsModal")?.classList.remove("active");
     _sendActionEditingDraft = null;
+    _sendActionDraftIsNew = false;
 }
 
 function saveSendActionFromModal() {
     const draft = _sendActionEditingDraft;
     const index = draft ? _sendActionCards.findIndex(card => card.id === draft.id) : -1;
-    if (index >= 0) {
+    if (index >= 0 || (draft && _sendActionDraftIsNew)) {
         if (!String(draft.name || "").trim()) draft.name = "Send card";
         if (draft.enabled !== false && sendCardIsMqtt(draft) && sendTopicProblem(draft.topic)) {
             updateSendTopicHint();
@@ -3953,7 +4431,8 @@ function saveSendActionFromModal() {
             document.getElementById("sendTemplateInput")?.focus();
             return;
         }
-        _sendActionCards[index] = draft;
+        if (_sendActionDraftIsNew) _sendActionCards.push(draft);
+        else _sendActionCards[index] = draft;
         markSendActionsChanged();
     }
     closeSendActionSettingsModal();
@@ -3988,7 +4467,9 @@ function setSendFormat(format) {
     if (draft.format === "text" && !String(draft.template || "").trim()) {
         const kind = cardTriggerKind(draft.trigger);
         draft.template = kind === "line_state" ? "{line_name};{line_state}"
+            : kind === "timer" ? "{line_name};{line_state};{good_count};{rejected_count}"
             : kind === "alarm" ? "{alarm_code};{alarm_message}"
+            : OWN_EVENT_KINDS.includes(kind) ? "{event};{sequence};{code}"
                 : kind === "qr" ? "{code};{code_status};{product_name}"
                     : "{result_code};{class_name};{good_count};{rejected_count}";
     }
@@ -4031,7 +4512,8 @@ function renderSendTemplate(template, values = {}) {
         else if (token in SEND_TEMPLATE_ESCAPES) text += SEND_TEMPLATE_ESCAPES[token];
         else if (m[1] !== undefined) {
             const name = m[1].trim().toLowerCase();
-            if (!known.has(name)) { problem = problem || (name ? `{${m[1]}} is not a placeholder` : "{} names no placeholder"); continue; }
+            // {text.<field>}: a text reader's field; {match.score}, {match.<check>.score / .defect}: a pattern check's.
+            if (!known.has(name) && !/^text\.[a-z][a-z0-9_]{0,31}$/.test(name) && !/^match\.(score|[a-z][a-z0-9_]{0,31}\.(score|defect))$/.test(name)) { problem = problem || (name ? `{${m[1]}} is not a placeholder` : "{} names no placeholder"); continue; }
             const value = values[name];
             text += value === null || value === undefined ? "" : String(value);
         } else problem = problem || `A single '${token}' must be written '${token}${token}'`;
@@ -4096,15 +4578,21 @@ function toggleSendAlarmCode(cardId, code, checked) {
 function sendSampleMessage(card) {
     const kind = cardTriggerKind(card.trigger);
     const now = new Date().toISOString();
-    const line = { line_id: window.ProductionLines?.lineId || "line-1", line_name: window.ProductionLines?.lineName() || "Line 1", line_state: "started" };
+    const line = { line_id: window.ProductionLines?.lineId || "line-1", line_name: window.ProductionLines?.lineName() || "Line 1", line_state: "started", batch: "B-1001" };
     const totals = { counts: { bottle: 142, defect: 3 }, metrics: { total_inspected: 145, good_count: 142, rejected_count: 3, products_per_minute: 45.2, defect_ppm: 20689.66, yield_percentage: 97.93 } };
     if (kind === "line_state") {
         const running = card.condition !== "off";
         return { event: running ? "LINE_STARTED" : "LINE_STOPPED", timestamp: now, ...line, line_state: running ? "started" : "stopped", ...totals };
     }
+    if (kind === "timer") return { event: "TIMER", timestamp: now, ...line, ...totals };
     if (kind === "alarm") {
         const raised = card.condition !== "cleared";
         return { event: raised ? "ALARM_RAISED" : "ALARM_CLEARED", timestamp: now, ...line, alarm_code: "camera.disconnected", alarm_message: "Camera 'Line camera' lost its connection", alarm_severity: "critical", alarm_source: "camera:example", alarm_raised: raised, ...totals };
+    }
+    if (kind === "handshake_fault") return { event: "HANDSHAKE_FAULT", timestamp: now, ...line, fault: "inspection_timeout", sequence: 4 };
+    if (kind === "sorting_mismatch" || kind === "sorting_verified") {
+        const wrong = kind === "sorting_mismatch";
+        return { event: wrong ? "SORTING_MISMATCH" : "SORTING_VERIFIED", timestamp: now, ...line, camera_id: "example-camera", camera_name: "Outfeed camera", code: "P-100;B-2026-07", format: "QR_CODE", sequence: 4, expected_lane: "rejected", seen_lane: wrong ? "accepted" : "rejected", product_result: "REJECTED" };
     }
     if (kind === "qr") {
         const noRead = card.trigger === "qr_no_read";
@@ -4155,6 +4643,7 @@ function refreshSendModalBody() {
 
     const kind = cardTriggerKind(card.trigger);
     const isAlarm = kind === "alarm";
+    const isInput = kind === "input";
     const setValue = cardSetValueInfo(card);
     const channels = sendChannels();
     const isMqtt = sendCardIsMqtt(card);
@@ -4205,38 +4694,46 @@ function refreshSendModalBody() {
         </div>` : ""}
 
         <!-- 3. When: the same trigger and condition as a PLC action -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="card-pair">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11.5px;font-weight:600">Trigger:</label>
-                <select class="form-input" onchange="onSendModalTriggerChange(this.value)">${cardTriggerOptionsHtml(card)}</select>
+                <select class="form-input" onchange="onSendModalTriggerChange(this.value)" data-help="The event that sends this message.">${cardTriggerOptionsHtml(card, true)}</select>
             </div>
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11.5px;font-weight:600">Condition:</label>
-                <select class="form-input" onchange="setSendDraft('condition', this.value)">${cardConditionOptionsHtml(card)}</select>
+                <select class="form-input" onchange="setSendDraft('condition', this.value)" data-help="Which results send the message, for example only rejected products.">${cardConditionOptionsHtml(card)}</select>
             </div>
         </div>
-        <div style="font-size:10px;color:var(--text-muted);margin-top:-8px">Good and rejected mean the product's final result: the vision camera's and, where a camera checks codes, the code's. The message goes out as soon as that result is known.</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:-8px">${kind === "timer"
+            ? "The line's state and totals are sent every interval: the first message one interval after the line starts (or, for Always, after Apply)."
+            : "Good and rejected mean the product's final result: the vision camera's and, where a camera checks codes, the code's. The message goes out as soon as that result is known."}</div>
 
         ${isAlarm ? `
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600">Alarms that send this message:</label>
             <div class="plc-alarm-picker">${plcAlarmPickerHtml(card, "toggleSendAlarmCode")}</div>
             ${(card.alarm_codes || []).length ? "" : `<div class="plc-alarm-warn">Pick at least one alarm. This card never sends without one.</div>`}
-        </div>` : `
+        </div>` : isInput ? cardInputPickerHtml(card, "setSendDraft('input_id', this.value, false)") : `
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600">Value / class:</label>
-            <input type="${setValue.number ? "number" : "text"}" class="form-input" value="${escapeHtml(card.set_value || "")}" ${setValue.used ? "" : 'disabled style="opacity:0.4;cursor:not-allowed"'} placeholder="${escapeHtml(setValue.placeholder)}" oninput="setSendDraft('set_value', this.value, false)" />
+            <div class="send-value-row">
+                <input type="${setValue.number ? "number" : "text"}" class="form-input" value="${escapeHtml(card.set_value || "")}" ${setValue.used ? "" : 'disabled style="opacity:0.4;cursor:not-allowed"'} ${setValue.min ? `min="${setValue.min}" max="${setValue.max}" step="1"` : ""} placeholder="${escapeHtml(setValue.placeholder)}" oninput="setSendDraft('set_value', this.value, false)" />
+                ${setValue.unit ? `<span class="send-value-unit">${escapeHtml(setValue.unit)}</span>` : ""}
+            </div>
+            ${setValue.min ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px">${setValue.min} to ${setValue.max.toLocaleString("en")} ms (24 hours).</div>` : ""}
         </div>`}
 
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600">Camera:</label>
-            <select class="form-input" ${kind === "line_state" || isAlarm ? "disabled" : ""} onchange="setSendDraft('camera_id', this.value, false)">${cardCameraOptionsHtml(card)}</select>
+            <select class="form-input" ${kind === "line_state" || isAlarm || kind === "timer" || isInput ? "disabled" : ""} onchange="setSendDraft('camera_id', this.value, false)" data-help="Which camera's events send this message.">${cardCameraOptionsHtml(card)}</select>
         </div>
+
+        ${cardOnlyWhenHtml(card, "sendOnlyWhenEdit")}
 
         <!-- 4. What the message contains: JSON fields, or text from a template -->
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600" for="sendFormatInput">Message format:</label>
-            <select id="sendFormatInput" class="form-input" onchange="setSendFormat(this.value)">
+            <select id="sendFormatInput" class="form-input" onchange="setSendFormat(this.value)" data-help="JSON with the fields you tick, or your own text with the values filled in.">
                 <option value="json" ${isText ? "" : "selected"}>JSON: the fields picked below</option>
                 <option value="text" ${isText ? "selected" : ""}>Text: your own template, e.g. for a printer or an older PLC</option>
             </select>
@@ -4319,8 +4816,8 @@ const PLC_PROTOCOL_TARGETS = {
     opcua: {
         label: "OPC UA",
         types: [
-            { id: "opcua_node_bool", name: "Node ID / Path (Boolean)", defaultAddr: "ns=2;s=Line1.Rejector", placeholder: "e.g. ns=2;s=Line1.Rejector" },
-            { id: "opcua_node_val", name: "Node ID / Path (Int / Float)", defaultAddr: "ns=2;s=Line1.GoodCount", placeholder: "e.g. ns=2;s=Line1.GoodCount" }
+            { id: "opcua_node_bool", name: "Tag name or NodeId (Boolean)", defaultAddr: "Rejector", placeholder: "e.g. Tag_1 or DB1.Rejector" },
+            { id: "opcua_node_val", name: "Tag name or NodeId (Int / Float)", defaultAddr: "GoodCount", placeholder: "e.g. GoodCount or DB1.GoodCount" }
         ]
     },
     melsec: {
@@ -4362,9 +4859,13 @@ function getProtocolDefForEndpoint(endpointId) {
 }
 
 let _plcActionPendingChanges = false;
+// What the server last did with each card (its status and result), by card id.
+let _plcActionRuntime = {};
 let _plcActionAppliedSignature = null;
 let _plcActionApplyInFlight = false;
 let _plcActionEditingDraft = null;
+// The draft in the settings window is a card Add made: OK places and saves it, Cancel drops it.
+let _plcActionDraftIsNew = false;
 
 function getEditablePlcActionCard(cardId) {
     if (_activeEditingPlcCardId === cardId && _plcActionEditingDraft?.id === cardId) {
@@ -4402,14 +4903,14 @@ function updatePlcActionSaveState() {
 async function loadPlcActionCards() {
     let stored = null;
     try { stored = localStorage.getItem("plc_action_trigger_cards"); }
-    catch (e) { console.warn("Could not read PLC action cards from browser storage", e); }
+    catch (e) { console.warn("Could not read output actions from browser storage", e); }
     let localCards = null;
     if (stored !== null) {
         try {
             const parsed = JSON.parse(stored);
             if (Array.isArray(parsed)) localCards = parsed;
         } catch (e) {
-            console.warn("Stored PLC action cards are invalid; loading saved server cards", e);
+            console.warn("Stored output actions are invalid; loading saved server cards", e);
         }
     }
 
@@ -4427,14 +4928,15 @@ async function loadPlcActionCards() {
         if (res.ok) {
             const result = await res.json();
             if (Array.isArray(result)) {
+                setPlcActionRuntime(result);
                 serverCards = result.map(({ runtime_status, last_result, last_fired_at, ...card }) => card);
                 _plcActionAppliedSignature = plcActionSignature(serverCards);
             }
         } else {
-            console.warn(`Could not load PLC action cards from server (HTTP ${res.status})`);
+            console.warn(`Could not load output actions from server (HTTP ${res.status})`);
         }
     } catch (e) {
-        console.warn("Could not load PLC action cards from server", e);
+        console.warn("Could not load output actions from server", e);
     }
 
     if (serverCards !== null) {
@@ -4471,10 +4973,44 @@ async function loadPlcActionCards() {
     renderPlcActionCards();
 }
 
+function setPlcActionRuntime(cards) {
+    _plcActionRuntime = Object.fromEntries(cards.map(c => [c.id, { status: c.runtime_status, result: c.last_result || {} }]));
+}
+
+// A card with a confirmation signal: whether the PLC confirmed its last fire.
+function plcConfirmTagHtml(card) {
+    const live = _plcActionRuntime[card.id] || {};
+    const title = escapeHtml((live.result || {}).message || "");
+    if (live.status === "skipped") return `<span class="tag neutral" title="${title}">Skipped</span>`;
+    if (!card.confirm_input_id) return "";
+    if (live.status === "confirmed") return `<span class="tag ok" title="${title}">Confirmed</span>`;
+    if (live.status === "not_confirmed") return `<span class="tag bad" title="${title}">Not confirmed</span>`;
+    return `<span class="tag neutral" title="After each fire, this action waits for its confirmation signal">Waits for a signal</span>`;
+}
+
+// While Line setup is open, the cards that wait for a confirmation follow the server.
+async function refreshPlcActionRuntime() {
+    if (document.hidden || !currentAuthToken || !document.getElementById("tabActionTrigger")?.classList.contains("active")) return;
+    if (!_plcActionCards.some(c => c.confirm_input_id || PLC_OPTIONAL_SOURCES.includes(c.value_source))) return;
+    try {
+        const lineId = window.ProductionLines ? ProductionLines.lineId : "";
+        const res = await fetch(`/api/v1/plc/actions${lineId ? `?line_id=${encodeURIComponent(lineId)}` : ""}`, { cache: "no-store" });
+        if (!res.ok) return;
+        const cards = await res.json();
+        if (!Array.isArray(cards)) return;
+        setPlcActionRuntime(cards);
+        _plcActionCards.forEach(c => {
+            const tag = document.getElementById(`plcCardConfirm_${c.id}`);
+            if (tag) tag.innerHTML = plcConfirmTagHtml(c);
+        });
+    } catch (_) { /* the next tick tries again */ }
+}
+setInterval(refreshPlcActionRuntime, 2000);
+
 async function applyPlcActionCards() {
     if (_plcActionApplyInFlight) return false;
     if (!currentAuthToken) {
-        showToast("Sign in with a supervisor account to apply PLC action settings.", "warning");
+        showToast("Sign in with a supervisor account to apply output action settings.", "warning");
         return false;
     }
     _plcActionApplyInFlight = true;
@@ -4496,13 +5032,13 @@ async function applyPlcActionCards() {
         _plcActionPendingChanges = signature !== plcActionSignature(_plcActionCards);
         showToast(
             _plcActionPendingChanges
-                ? "PLC actions applied; newer edits are still unsaved."
-                : "PLC action settings applied to the server.",
+                ? "Output actions applied; newer edits are still unsaved."
+                : "Output action settings applied to the server.",
             "success"
         );
         return true;
     } catch (e) {
-        showToast(`PLC action settings were not applied: ${e?.message || e}`, "warning");
+        showToast(`Output action settings were not applied: ${e?.message || e}`, "warning");
         return false;
     } finally {
         _plcActionApplyInFlight = false;
@@ -4515,7 +5051,7 @@ function savePlcActionCards(markDirty = true) {
     try {
         localStorage.setItem("plc_action_trigger_cards", JSON.stringify(_plcActionCards));
     } catch (e) {
-        console.warn("Could not save PLC action cards:", e);
+        console.warn("Could not save output actions:", e);
     }
     if (markDirty) {
         _plcActionPendingChanges = _plcActionAppliedSignature === null
@@ -4552,9 +5088,8 @@ function addPlcActionCard() {
         fired_count: 0,
         last_fired: null
     };
-    _plcActionCards.push(newCard);
-    savePlcActionCards();
-    renderPlcActionCards();
+    // Placed (and saved) when its settings are OK'd; Cancel adds nothing.
+    openPlcActionSettingsModal(newCard.id, newCard);
 }
 
 function deletePlcActionCard(cardId) {
@@ -4582,6 +5117,15 @@ async function testPlcActionCard(cardId) {
         renderPlcActionCards();
     }
 
+    // A card that writes a value of the item's product is tested with the product of a code.
+    let code;
+    if (PLC_OPTIONAL_SOURCES.includes(card.value_source) && String(card.operation || "").toLowerCase() === "write") {
+        code = window.prompt("Test with the product of which code? Leave it empty to test with no product (the action then skips, or writes its default).", card._testCode || "");
+        if (code === null) return;
+        code = code.trim();
+        card._testCode = code;
+    }
+
     // Immediate visual feedback
     const cardEl = document.getElementById(`plcCard_${cardId}`);
     if (cardEl) {
@@ -4596,17 +5140,22 @@ async function testPlcActionCard(cardId) {
         const headers = { "Content-Type": "application/json" };
         if (currentAuthToken) headers["Authorization"] = `Bearer ${currentAuthToken}`;
 
-        const res = await fetch(`/api/v1/plc/actions/${cardId}/test`, {
+        const lineId = window.ProductionLines ? ProductionLines.lineId : "";
+        const res = await fetch(`/api/v1/plc/actions/${encodeURIComponent(cardId)}/test${lineId ? `?line_id=${encodeURIComponent(lineId)}` : ""}`, {
             method: "POST",
             headers: headers,
-            body: JSON.stringify({ confirm: true, card: card })
+            body: JSON.stringify({ confirm: true, card: card, code: code || undefined })
         });
         const data = await res.json();
-        if (res.ok && data.success) {
+        // Tested with a code: what it holds by its list's code format.
+        const held = code && res.ok ? ` (product ID ${data.product_id || "none"}, batch ${data.batch || "none"})` : "";
+        if (res.ok && data.status === "skipped") {
+            if (stEl) stEl.innerText = `Test: ${data.message}${held}`;
+        } else if (res.ok && data.success) {
             card.fired_count = (card.fired_count || 0) + 1;
             card.last_fired = new Date().toLocaleTimeString();
             savePlcActionCards();
-            if (stEl) stEl.innerText = `Test OK: ${card.last_fired}`;
+            if (stEl) stEl.innerText = `Test OK: ${card.last_fired}${held}`;
             const cntEl = document.getElementById(`plcCardCount_${cardId}`);
             if (cntEl) cntEl.innerText = `Fired: ${card.fired_count}`;
         } else {
@@ -4614,7 +5163,7 @@ async function testPlcActionCard(cardId) {
             if (stEl) stEl.innerText = `Test Failed: ${msg}`;
         }
     } catch (err) {
-        const msg = err?.message || "Could not contact the PLC action API";
+        const msg = err?.message || "Could not contact the output action API";
         if (stEl) stEl.innerText = `Test Failed: ${msg}`;
     }
 }
@@ -4686,18 +5235,21 @@ function plcAlarmPickerHtml(card, toggleFn = "togglePlcAlarmCode") {
         .map(code => ({ code, label: code, group: "Other", severity: "", scope: "", description: "" }));
     const groups = {};
     [..._alarmCatalog, ...extra].forEach(a => (groups[a.group || "Other"] = groups[a.group || "Other"] || []).push(a));
+    // The id goes in a data attribute, never into the handler's code: escaping
+    // does not protect a quoted string inside onchange="..." (the browser
+    // decodes &#39; back to ' before it runs the handler).
     const cid = escapeHtml(card.id);
     const item = a => `
         <label class="plc-alarm-item" title="${escapeHtml(a.description || "")}">
             <input type="checkbox" value="${escapeHtml(a.code)}" ${any || picked.has(a.code) ? "checked" : ""} ${any ? "disabled" : ""}
-                onchange="${toggleFn}('${cid}', this.value, this.checked)" />
+                data-card-id="${cid}" onchange="${toggleFn}(this.dataset.cardId, this.value, this.checked)" />
             <span class="plc-alarm-name">${escapeHtml(a.label)}</span>
             ${a.severity ? `<span class="plc-alarm-sev sev-${escapeHtml(a.severity)}">${a.severity === "critical" ? "Critical" : "Warning"}</span>` : ""}
             ${a.scope ? `<span class="plc-alarm-scope">${a.scope === "line" ? "This line" : "All lines"}</span>` : ""}
         </label>`;
     return `
         <label class="plc-alarm-item plc-alarm-any">
-            <input type="checkbox" ${any ? "checked" : ""} onchange="${toggleFn}('${cid}', '*', this.checked)" />
+            <input type="checkbox" ${any ? "checked" : ""} data-card-id="${cid}" onchange="${toggleFn}(this.dataset.cardId, '*', this.checked)" />
             <span class="plc-alarm-name">Any alarm</span>
             <span class="plc-alarm-scope">Every alarm below, and alarms added later</span>
         </label>
@@ -4720,7 +5272,14 @@ const PLC_VALUE_SOURCES = [
     { id: "class_index", label: "Class number", short: "class number" },
     { id: "reject_reason_code", label: "Reject reason code", short: "reject reason" },
     { id: "batch", label: "Batch number (a number only)", short: "batch number" },
+    { id: "product_field", label: "A field of the item's product", short: "product field" },
+    { id: "code", label: "The code read (text: OPC UA only)", short: "code" },
+    { id: "product_name", label: "The product's name (text: OPC UA only)", short: "product name" },
+    { id: "input", label: "The value of an input", short: "input value" },
+    { id: "formula", label: "A formula", short: "formula" },
 ];
+// Sources whose value can be missing (an unknown code, an empty field): the card skips the write or writes a default.
+const PLC_OPTIONAL_SOURCES = ["product_field", "code", "product_name", "input", "formula"];
 const PLC_VALUE_SOURCE_HINTS = {
     fixed: "",
     result_code: "1 for a good product, 2 for a rejected one.",
@@ -4728,9 +5287,135 @@ const PLC_VALUE_SOURCE_HINTS = {
     reject_count: "The line's reject count, with this product.",
     total_count: "Good + rejected, with this product.",
     class_index: "The product's class as a number: its place in the camera's \"Products to count\" list followed by \"Defects to reject\", from 1. 0 when it is in neither.",
-    reject_reason_code: "0 not rejected, 1 vision class, 2 code not in the list, 3 code in the reject list, 4 no code read, 5 a joined camera gave no result, 9 other.",
+    reject_reason_code: "0 not rejected, 1 vision class, 2 code not in the list, 3 code in the reject list, 4 no code read, 5 a joined camera gave no result, 6 nothing detected (a camera in trigger mode), 7 a product check, 8 no result in time (inspection timeout), 9 other, 10 no picture (a trigger got no picture), 11 text does not fit its format, 12 no text, 13 text reader error, 14 pattern not found, 15 pattern mismatch, 16 pattern defect, 17 pattern check error.",
     batch: "The line's batch number. It must be a number; until a batch is set, the action fails and says why.",
+    product_field: "A field of the product whose code was read (Products page, Fields). Yes / no is written as 1 / 0; a text field only to an OPC UA String tag.",
+    code: "The code read on the item, as text. Only an OPC UA controller takes text (a String tag).",
+    product_name: "The name of the product whose code was read, as text. Only an OPC UA controller takes text (a String tag).",
+    input: "The last value an input of this line read. Give the input a value name in its dialog.",
+    formula: "Worked out from the item's values when the action fires. Press Check to see that it is right.",
 };
+
+// The product lists (GET /products/lists), for the field picker; read again each time the dialog opens.
+let _cardProductLists = null;
+async function loadCardProductLists() {
+    try {
+        const headers = currentAuthToken ? { "Authorization": `Bearer ${currentAuthToken}` } : {};
+        const res = await fetch("/api/v1/products/lists", { headers, cache: "no-store" });
+        if (res.ok) _cardProductLists = (await res.json()).lists || [];
+    } catch (_) { /* the picker then shows no fields */ }
+}
+function cardFieldChoices() {
+    const cameras = window.ProductionLines ? ProductionLines.lineCameras() : [];
+    return window.CardValues ? CardValues.fieldChoices(cameras, _cardProductLists || []) : [];
+}
+function cardValueInputs() {
+    return window.PlcSignals && PlcSignals.valueInputs ? PlcSignals.valueInputs() : [];
+}
+const PLC_CARD_ID = "document.getElementById('plcModalBodyContainer').dataset.cardId";
+
+function plcFieldPickerHtml(card) {
+    const fields = cardFieldChoices();
+    const current = card.value_field || "";
+    let options = `<option value="" ${current ? "" : "selected"}>Choose a field</option>`
+        + fields.map(f => `<option value="${escapeHtml(f.key)}" ${f.key === current ? "selected" : ""}>${escapeHtml(f.label)} (product.${escapeHtml(f.key)}, ${escapeHtml(f.list)})</option>`).join("");
+    if (current && !fields.some(f => f.key === current)) {
+        options += `<option value="${escapeHtml(current)}" selected>product.${escapeHtml(current)} (in no list of this line)</option>`;
+    }
+    return `<div class="form-group" style="margin:0">
+        <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcValueFieldInput">Product field:</label>
+        <select id="plcValueFieldInput" class="form-input" onchange="updatePlcCardProp(${PLC_CARD_ID}, 'value_field', this.value); refreshPlcModalBody(${PLC_CARD_ID}); renderPlcActionCards()">${options}</select>
+        ${fields.length ? "" : `<div style="font-size:10px;color:var(--text-muted);margin-top:3px">The product lists of this line's code readers have no fields yet. Add them on the Products page with Fields.</div>`}
+    </div>`;
+}
+
+function plcInputPickerHtml(card) {
+    const inputs = cardValueInputs();
+    const current = card.value_input || "";
+    let options = `<option value="" ${current ? "" : "selected"}>Choose an input</option>`
+        + inputs.map(i => `<option value="${escapeHtml(i.value_name)}" ${i.value_name === current ? "selected" : ""}>${escapeHtml(i.name)} (input.${escapeHtml(i.value_name)})</option>`).join("");
+    if (current && !inputs.some(i => i.value_name === current)) {
+        options += `<option value="${escapeHtml(current)}" selected>input.${escapeHtml(current)} (no input has this name)</option>`;
+    }
+    return `<div class="form-group" style="margin:0">
+        <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcValueInputInput">Input:</label>
+        <select id="plcValueInputInput" class="form-input" onchange="updatePlcCardProp(${PLC_CARD_ID}, 'value_input', this.value); renderPlcActionCards()">${options}</select>
+        ${inputs.length ? "" : `<div style="font-size:10px;color:var(--text-muted);margin-top:3px">No input of this line has a value name yet. Give one in the input's dialog (Inputs).</div>`}
+    </div>`;
+}
+
+function plcFormulaHtml(card) {
+    const examples = (window.CardValues ? CardValues.FORMULA_EXAMPLES : [])
+        .map(([formula, what]) => `<code>${escapeHtml(formula)}</code> ${escapeHtml(what)}`).join("; ");
+    return `<div class="form-group" style="margin:0;grid-column:1/-1">
+        <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcFormulaInput">Formula:</label>
+        <div style="display:flex;gap:8px">
+            <input type="text" id="plcFormulaInput" class="form-input" maxlength="200" value="${escapeHtml(card.formula || "")}" placeholder='if(result == "good", product.lane, 9)' oninput="updatePlcCardProp(${PLC_CARD_ID}, 'formula', this.value); renderPlcActionCards()" />
+            <button type="button" class="btn-action btn-outline" onclick="checkPlcFormula()" data-help="Checks the formula and lists the values it uses.">Check</button>
+        </div>
+        <div id="plcFormulaCheck" class="plc-formula-check"></div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:4px">Values: result, class, confidence, code, code_status, the counts, batch, product.&lt;field&gt;, input.&lt;value name&gt;. Text in double quotes. Functions: if(), round(), min(), max(), abs(), int(), text(). Examples: ${examples}.</div>
+    </div>`;
+}
+
+async function checkPlcFormula() {
+    const out = document.getElementById("plcFormulaCheck");
+    const input = document.getElementById("plcFormulaInput");
+    const lineId = window.ProductionLines ? ProductionLines.lineId : null;
+    if (!out || !input || !lineId) return;
+    out.className = "plc-formula-check";
+    out.textContent = "Checking…";
+    try {
+        const headers = { "Content-Type": "application/json" };
+        if (currentAuthToken) headers["Authorization"] = `Bearer ${currentAuthToken}`;
+        const res = await fetch(`/api/v1/lines/${encodeURIComponent(lineId)}/formula/check`, { method: "POST", headers, body: JSON.stringify({ formula: input.value }) });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+        if (data.ok) {
+            out.className = `plc-formula-check ${data.warnings.length ? "warn" : "ok"}`;
+            out.textContent = data.warnings.length ? `Correct, but: ${data.warnings.join(" ")}`
+                : `Correct. It uses: ${data.names.length ? data.names.join(", ") : "no values"}.`;
+        } else {
+            out.className = "plc-formula-check bad";
+            out.textContent = data.error;
+        }
+    } catch (e) {
+        out.className = "plc-formula-check bad";
+        out.textContent = `Could not check the formula: ${e.message}`;
+    }
+}
+
+// A default value typed in the box: a number when it reads as one, else text.
+function plcDefaultValue(text) {
+    const value = String(text || "").trim();
+    return /^[+-]?(\d+(\.\d*)?|\.\d+)$/.test(value) ? Number(value) : value;
+}
+function setPlcIfMissing(value) {
+    const cardId = document.getElementById("plcModalBodyContainer").dataset.cardId;
+    const card = getEditablePlcActionCard(cardId);
+    if (!card) return;
+    card.if_missing = value;
+    if (value === "default" && (card.default_value === undefined || card.default_value === "")) card.default_value = 0;
+    refreshPlcModalBody(cardId);
+    renderPlcActionCards();
+}
+function plcIfMissingHtml(card) {
+    const mode = card.if_missing === "default" ? "default" : "skip";
+    return `<div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px;margin-top:12px">
+        <div class="form-group" style="margin:0">
+            <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcIfMissingInput">If there is no value:</label>
+            <select id="plcIfMissingInput" class="form-input" onchange="setPlcIfMissing(this.value)" data-help="What happens when there is no value: skip the write, or write a value you choose.">
+                <option value="skip" ${mode === "skip" ? "selected" : ""}>Skip the write</option>
+                <option value="default" ${mode === "default" ? "selected" : ""}>Write this value</option>
+            </select>
+        </div>
+        ${mode === "default" ? `<div class="form-group" style="margin:0">
+            <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcDefaultValueInput">Value to write instead:</label>
+            <input type="text" id="plcDefaultValueInput" class="form-input" maxlength="256" value="${escapeHtml(String(card.default_value ?? 0))}" oninput="updatePlcCardProp(${PLC_CARD_ID}, 'default_value', plcDefaultValue(this.value))" />
+        </div>` : ""}
+    </div>
+    <div style="font-size:10px;color:var(--text-muted);margin-top:4px">No value: an unknown code, an empty field, an input not read yet, or a formula that cannot be worked out. A skipped write shows on the card as <b>Skipped</b> and raises no alarm.</div>`;
+}
 
 function plcCardSummary(c, plcEndpoints) {
     const targetEp = plcEndpoints.find(e => e.id === c.plc_endpoint_id);
@@ -4748,7 +5433,8 @@ function plcCardSummary(c, plcEndpoints) {
     if (opName === "PULSE") actionSummary = `PULSE ${c.duration_ms ?? 150}ms`;
     else if (opName === "WRITE") {
         const source = PLC_VALUE_SOURCES.find(v => v.id === (c.value_source || "fixed"));
-        actionSummary = source && source.id !== "fixed" ? `WRITE ${source.short}` : `WRITE ${c.write_value ?? 1}`;
+        const writes = window.CardValues ? CardValues.valueSourceText(c) : null;
+        actionSummary = writes ? `WRITE ${writes}` : source && source.id !== "fixed" ? `WRITE ${source.short}` : `WRITE ${c.write_value ?? 1}`;
         if (String(c.strobe_address || "").trim()) actionSummary += ` + strobe ${String(c.strobe_address).trim()}`;
     }
     if (c.delay_ms && c.delay_ms > 0) actionSummary += ` (Delay ${c.delay_ms}ms)`;
@@ -4782,9 +5468,9 @@ function renderPlcActionCards() {
     if (!_plcActionCards.length) {
         container.innerHTML = `
             <div class="empty-state">
-                <b>No PLC actions yet</b>
+                <b>No output actions yet</b>
                 <p>An action writes to a PLC address when something happens on the line, for example a reject pulse when a defect crosses count line B.</p>
-                <button type="button" class="btn-action btn-blue restricted-l2" onclick="addPlcActionCard()">Add action</button>
+                <button data-lock type="button" class="btn-action btn-blue restricted-l2" onclick="addPlcActionCard()">Add action</button>
             </div>
         `;
         applyRoleRestrictions(container);
@@ -4805,22 +5491,22 @@ function renderPlcActionCards() {
                             <span class="slider"></span>
                         </label>
                     </td>
-                    <td data-label="Action"><b>${escapeHtml(c.name || 'PLC action')}</b><span class="cell-sub" id="plcCardStatus_${id}">${c.last_fired ? `Last: ${escapeHtml(c.last_fired)}` : 'Ready'}</span></td>
-                    <td data-label="PLC"><span class="cell-ellipsis" style="display:inline-block;max-width:180px;vertical-align:middle" title="${escapeHtml(targetEpName)}">${escapeHtml(targetEpName)}</span> <span class="badge ${badgeClass}">${escapeHtml(protoTitle)}</span></td>
+                    <td data-label="Action"><b>${escapeHtml(c.name || 'Output action')}</b><span class="cell-sub" id="plcCardStatus_${id}">${c.last_fired ? `Last: ${escapeHtml(c.last_fired)}` : 'Ready'}</span><span id="plcCardConfirm_${id}">${plcConfirmTagHtml(c)}</span></td>
+                    <td data-label="Controller"><span class="cell-ellipsis" style="display:inline-block;max-width:180px;vertical-align:middle" title="${escapeHtml(targetEpName)}">${escapeHtml(targetEpName)}</span> <span class="badge ${badgeClass}">${escapeHtml(protoTitle)}</span></td>
                     <td data-label="When">${escapeHtml(triggerSummary)}<span class="cell-sub">${escapeHtml(condFull)}</span></td>
                     <td data-label="Address" class="cell-mono">${escapeHtml(c.target_address || 'Q0.0')}</td>
                     <td data-label="Output" style="color:var(--primary-color);font-weight:600">${escapeHtml(actionSummary)}</td>
                     <td data-label="Fired" class="num" id="plcCardCount_${id}">Fired: ${Number(c.fired_count) || 0}</td>
                     <td class="col-actions"><div class="row-actions">
                         <button type="button" class="btn-action btn-sm btn-outline" onclick="openPlcActionSettingsModal(this.closest('[data-action-id]').dataset.actionId)">Settings</button>
-                        <button type="button" class="btn-action btn-sm btn-outline" onclick="testPlcActionCard(this.closest('[data-action-id]').dataset.actionId)" title="Fire this output once now">Test</button>
-                        <button type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deletePlcActionCard(this.closest('[data-action-id]').dataset.actionId)" title="Delete this action" aria-label="Delete this action">✕</button>
+                        <button type="button" class="btn-action btn-sm btn-outline" onclick="testPlcActionCard(this.closest('[data-action-id]').dataset.actionId)">Test</button>
+                        <button data-lock type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deletePlcActionCard(this.closest('[data-action-id]').dataset.actionId)" title="Delete this action" aria-label="Delete this action">✕</button>
                     </div></td>
                 </tr>`;
         }).join("");
         container.innerHTML = `
             <div class="table-responsive"><table class="table-compact table-mobile-cards plc-list-table">
-                <thead><tr><th class="col-switch">On</th><th>Action</th><th>PLC</th><th>When</th><th>Address</th><th>Output</th><th>Fired</th><th class="col-actions"><span class="sr-only">Actions</span></th></tr></thead>
+                <thead><tr><th class="col-switch">On</th><th>Action</th><th>Controller</th><th>When</th><th>Address</th><th>Output</th><th>Fired</th><th class="col-actions"><span class="sr-only">Actions</span></th></tr></thead>
                 <tbody>${rows}</tbody>
             </table></div>`;
         if (typeof updateUserUI === "function") updateUserUI();
@@ -4834,13 +5520,13 @@ function renderPlcActionCards() {
             <div class="dispatch-card plc-action-card${c.enabled === false ? " is-off" : ""}" id="plcCard_${escapeHtml(c.id)}" data-action-id="${escapeHtml(c.id)}">
                 <div>
                     <div class="plc-card-head">
-                        <b class="plc-card-name" title="${escapeHtml(c.name || 'PLC action')}">${escapeHtml(c.name || 'PLC action')}</b>
+                        <b class="plc-card-name" title="${escapeHtml(c.name || 'Output action')}">${escapeHtml(c.name || 'Output action')}</b>
                         <div class="row-actions">
                             <label class="switch" title="${c.enabled !== false ? "On: fires on its trigger" : "Off: never fires"}">
                                 <input type="checkbox" aria-label="Action on" ${c.enabled !== false ? 'checked' : ''} onchange="updatePlcCardProp(this.closest('[data-action-id]').dataset.actionId, 'enabled', this.checked); renderPlcActionCards()" />
                                 <span class="slider"></span>
                             </label>
-                            <button type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deletePlcActionCard(this.closest('[data-action-id]').dataset.actionId)" title="Delete this action" aria-label="Delete this action">✕</button>
+                            <button data-lock type="button" class="btn-action btn-sm btn-icon btn-red restricted-l2" onclick="deletePlcActionCard(this.closest('[data-action-id]').dataset.actionId)" title="Delete this action" aria-label="Delete this action">✕</button>
                         </div>
                     </div>
 
@@ -4859,13 +5545,14 @@ function renderPlcActionCards() {
 
                     <div class="plc-card-meta">
                         <span id="plcCardStatus_${escapeHtml(c.id)}">${c.last_fired ? `Last: ${escapeHtml(c.last_fired)}` : 'Ready'}</span>
+                        <span id="plcCardConfirm_${escapeHtml(c.id)}">${plcConfirmTagHtml(c)}</span>
                         <span id="plcCardCount_${escapeHtml(c.id)}">Fired: ${Number(c.fired_count) || 0}</span>
                     </div>
                 </div>
 
                 <div class="plc-card-actions">
-                    <button type="button" class="btn-action btn-sm btn-outline" onclick="openPlcActionSettingsModal(this.closest('[data-action-id]').dataset.actionId)" title="Trigger, PLC address and timing">Settings</button>
-                    <button type="button" class="btn-action btn-sm btn-outline" onclick="testPlcActionCard(this.closest('[data-action-id]').dataset.actionId)" title="Fire this output once now">Test output</button>
+                    <button type="button" class="btn-action btn-sm btn-outline" onclick="openPlcActionSettingsModal(this.closest('[data-action-id]').dataset.actionId)">Settings</button>
+                    <button type="button" class="btn-action btn-sm btn-outline" onclick="testPlcActionCard(this.closest('[data-action-id]').dataset.actionId)">Test output</button>
                 </div>
             </div>
         `;
@@ -4875,14 +5562,25 @@ function renderPlcActionCards() {
 }
 
 /* ─── Floating Settings Modal Engine ─────────────────────────────────────── */
-function openPlcActionSettingsModal(cardId) {
-    const card = _plcActionCards.find(c => c.id === cardId);
+function openPlcActionSettingsModal(cardId, newCard = null) {
+    const card = newCard || _plcActionCards.find(c => c.id === cardId);
     if (!card) return;
+    _plcActionDraftIsNew = Boolean(newCard);
     _activeEditingPlcCardId = cardId;
     _plcActionEditingDraft = JSON.parse(JSON.stringify(card));
+    // The lists' fields can have changed since the dialog was last open. Only the field picker
+    // shows them: the dialog is drawn again only for a card that writes a product field.
+    loadCardProductLists().then(() => {
+        const draft = getEditablePlcActionCard(cardId);
+        const usesFields = draft && (draft.value_source === "product_field" || ((draft.only_when || {}).rules || []).length);
+        if (_activeEditingPlcCardId === cardId && usesFields
+            && document.getElementById("plcActionSettingsModal")?.classList.contains("active")) {
+            refreshPlcModalBody(cardId);
+        }
+    });
 
     const titleEl = document.getElementById("plcModalActionTitle");
-    if (titleEl) titleEl.innerText = card.name || "PLC Action Configuration";
+    if (titleEl) titleEl.innerText = card.name || "Output action";
 
     refreshPlcModalBody(cardId);
 
@@ -4895,6 +5593,7 @@ function closePlcActionSettingsModal() {
     if (modal) modal.classList.remove("active");
     _activeEditingPlcCardId = null;
     _plcActionEditingDraft = null;
+    _plcActionDraftIsNew = false;
     renderPlcActionCards();
 }
 
@@ -4904,11 +5603,12 @@ function savePlcActionFromModal() {
         return;
     }
     const cardIndex = _plcActionCards.findIndex(card => card.id === _activeEditingPlcCardId);
-    if (cardIndex < 0) {
+    if (cardIndex < 0 && !_plcActionDraftIsNew) {
         closePlcActionSettingsModal();
         return;
     }
-    _plcActionCards[cardIndex] = _plcActionEditingDraft;
+    if (_plcActionDraftIsNew) _plcActionCards.push(_plcActionEditingDraft);
+    else _plcActionCards[cardIndex] = _plcActionEditingDraft;
     savePlcActionCards();
     closePlcActionSettingsModal();
 }
@@ -4928,6 +5628,7 @@ function refreshPlcModalBody(cardId) {
     const triggerKind = cardTriggerKind(card.trigger);
     const isLineState = triggerKind === "line_state";
     const isAlarm = triggerKind === "alarm";
+    const isInput = triggerKind === "input";
     const setValue = cardSetValueInfo(card);
 
     // Target Types
@@ -4939,7 +5640,7 @@ function refreshPlcModalBody(cardId) {
     const activeTarget = supportedTypes.find(t => t.id === card.target_type) || supportedTypes[0] || { placeholder: "Target Address / Tag" };
     const curTargetPlaceholder = activeTarget.placeholder || "Target Address / Tag";
     const targetAddressHelp = protoDef.label === "OPC UA"
-        ? '<div style="font-size:10px;color:var(--text-muted);margin-top:3px">Enter the full NodeId, not only the displayed tag name. Example: <code>ns=2;s=Line1.Rejector</code>.</div>'
+        ? '<div style="font-size:10px;color:var(--text-muted);margin-top:3px">Type the tag name as the PLC shows it, for example <code>Tag_1</code> or <code>DB1.Speed</code>. The server finds its full NodeId and shows it in the Test result. A full NodeId also works.</div>'
         : "";
 
     // Channel selector options with stock "None / No Channel Selected" option
@@ -4956,6 +5657,15 @@ function refreshPlcModalBody(cardId) {
     if (curOp === "off") curOp = "reset";
     if (curOp === "write_value") curOp = "write";
     const valueSource = PLC_VALUE_SOURCES.some(v => v.id === card.value_source) ? card.value_source : "fixed";
+
+    // Confirmation: a PLC signal of this line with the action "Confirm a PLC action".
+    const confirmSignals = window.PlcSignals ? PlcSignals.confirmSignals() : [];
+    const confirmId = card.confirm_input_id || "";
+    let confirmOptions = `<option value="" ${confirmId ? '' : 'selected'}>None</option>`
+        + confirmSignals.map(s => `<option value="${escapeHtml(s.id)}" ${s.id === confirmId ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join("");
+    if (confirmId && !confirmSignals.some(s => s.id === confirmId)) {
+        confirmOptions += `<option value="${escapeHtml(confirmId)}" selected>(signal not found)</option>`;
+    }
 
     container.dataset.cardId = card.id;
     container.innerHTML = `
@@ -4986,16 +5696,16 @@ function refreshPlcModalBody(cardId) {
         </div>
 
         <!-- 3. Trigger & Condition (2 cols) -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="card-pair">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11.5px;font-weight:600">Trigger:</label>
-                <select class="form-input" onchange="onPlcModalTriggerChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)">
+                <select class="form-input" onchange="onPlcModalTriggerChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)" data-help="The event that fires this action.">
                     ${cardTriggerOptionsHtml(card)}
                 </select>
             </div>
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11.5px;font-weight:600">Condition:</label>
-                <select class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'condition', this.value); refreshPlcModalBody(document.getElementById('plcModalBodyContainer').dataset.cardId); renderPlcActionCards()">
+                <select class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'condition', this.value); refreshPlcModalBody(document.getElementById('plcModalBodyContainer').dataset.cardId); renderPlcActionCards()" data-help="Which results fire the action, for example only rejected products.">
                     ${cardConditionOptionsHtml(card)}
                 </select>
             </div>
@@ -5011,7 +5721,7 @@ function refreshPlcModalBody(cardId) {
                 For a lamp, use two actions: SET on <b>Raised</b> and RESET on <b>Cleared</b>. Cleared waits until none of the chosen alarms is on.
                 <b>This line</b> alarms fire only this line's actions; <b>All lines</b> alarms fire every line's.
             </div>
-        </div>` : `
+        </div>` : isInput ? cardInputPickerHtml(card, `updatePlcCardProp(${PLC_CARD_ID}, 'input_id', this.value); renderPlcActionCards()`) : `
         <!-- 4. Set Value / Class -->
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600">Set Value / Class:</label>
@@ -5021,17 +5731,20 @@ function refreshPlcModalBody(cardId) {
         <!-- 4b. Camera of the production line that fires this card -->
         <div class="form-group" style="margin:0">
             <label class="form-label" style="font-size:11.5px;font-weight:600">Camera:</label>
-            <select class="form-input" ${isLineState ? 'disabled title="A line starts and stops as a whole"' : isAlarm ? 'disabled title="The alarms above decide"' : ''} onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'camera_id', this.value); renderPlcActionCards()">
+            <select class="form-input" ${isLineState ? 'disabled title="A line starts and stops as a whole"' : isAlarm ? 'disabled title="The alarms above decide"' : isInput ? 'disabled title="The input above decides"' : ''} onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'camera_id', this.value); renderPlcActionCards()" data-help="Which camera's events fire this action, for example the line's second vision camera.">
                 ${cardCameraOptionsHtml(card)}
             </select>
-            ${isLineState || isAlarm ? '' : `<div style="font-size:10px;color:var(--text-muted);margin-top:3px">Pick a camera to fire only on its events, e.g. a line's second vision camera.</div>`}
+            ${isLineState || isAlarm || isInput ? '' : `<div style="font-size:10px;color:var(--text-muted);margin-top:3px">Pick a camera to fire only on its events, e.g. a line's second vision camera.</div>`}
         </div>
 
+        <!-- 4c. Only when: rules on the event's values -->
+        ${cardOnlyWhenHtml(card, "plcOnlyWhenEdit")}
+
         <!-- 5. Target Type & Address (Protocol-Aware, 2 cols) -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="card-pair">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11.5px;font-weight:600">Target Type (${escapeHtml(protoDef.label)}):</label>
-                <select class="form-input" onchange="onPlcModalTargetTypeChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)">
+                <select class="form-input" onchange="onPlcModalTargetTypeChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)" data-help="The kind of PLC memory written, such as a coil, a register or a tag.">
                     ${targetTypeOptions}
                 </select>
             </div>
@@ -5043,10 +5756,10 @@ function refreshPlcModalBody(cardId) {
         </div>
 
         <!-- 6. Operation & Pulse Duration (2 cols) -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="card-pair">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11.5px;font-weight:600">Operation:</label>
-                <select class="form-input" onchange="onPlcModalOperationChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)">
+                <select class="form-input" onchange="onPlcModalOperationChange(document.getElementById('plcModalBodyContainer').dataset.cardId, this.value)" data-help="What is done at the address: a pulse, set on, reset off, write a number or toggle.">
                     <option value="pulse" ${curOp === 'pulse' ? 'selected' : ''}>PULSE (Momentary Pulse)</option>
                     <option value="set" ${curOp === 'set' ? 'selected' : ''}>SET (Turn ON / 1)</option>
                     <option value="reset" ${curOp === 'reset' ? 'selected' : ''}>RESET (Turn OFF / 0)</option>
@@ -5067,7 +5780,7 @@ function refreshPlcModalBody(cardId) {
             <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px">
                 <div class="form-group" style="margin:0">
                     <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcValueSourceInput">Value:</label>
-                    <select id="plcValueSourceInput" class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'value_source', this.value); refreshPlcModalBody(document.getElementById('plcModalBodyContainer').dataset.cardId); renderPlcActionCards()">
+                    <select id="plcValueSourceInput" class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'value_source', this.value); refreshPlcModalBody(document.getElementById('plcModalBodyContainer').dataset.cardId); renderPlcActionCards()" data-help="Where the written value comes from: a fixed number, a count, the result, a product field, an input or a formula.">
                         ${PLC_VALUE_SOURCES.map(v => `<option value="${v.id}" ${valueSource === v.id ? 'selected' : ''}>${escapeHtml(v.label)}</option>`).join("")}
                     </select>
                 </div>
@@ -5076,8 +5789,13 @@ function refreshPlcModalBody(cardId) {
                     <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcWriteValueInput">Number to write:</label>
                     <input type="number" id="plcWriteValueInput" class="form-input" value="${escapeHtml(card.write_value ?? 1)}" oninput="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'write_value', parseFloat(this.value)||0); renderPlcActionCards()" />
                 </div>` : ''}
+                ${valueSource === 'product_field' ? plcFieldPickerHtml(card) : ''}
+                ${valueSource === 'input' ? plcInputPickerHtml(card) : ''}
+                ${valueSource === 'formula' ? plcFormulaHtml(card) : ''}
             </div>
-            ${PLC_VALUE_SOURCE_HINTS[valueSource] ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px">${escapeHtml(PLC_VALUE_SOURCE_HINTS[valueSource])} The value is taken when the action fires; the Test button writes example values (a rejected product, counts of 1, class 1).</div>` : ''}
+            ${PLC_VALUE_SOURCE_HINTS[valueSource] ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px">${escapeHtml(PLC_VALUE_SOURCE_HINTS[valueSource])} The value is taken when the action fires; the Test button writes example values (a rejected product, counts of 1, class 1, batch 1)${PLC_OPTIONAL_SOURCES.includes(valueSource) ? ", and asks for a product code to test with" : ""}.</div>` : ''}
+            ${window.CardValues && CardValues.writesText(card, cardFieldChoices()) && protoDef.label !== "OPC UA" ? `<div class="plc-text-warn">This action writes text, and only an OPC UA controller takes text (a String tag). Choose an OPC UA channel, or a value that is a number.</div>` : ''}
+            ${PLC_OPTIONAL_SOURCES.includes(valueSource) ? plcIfMissingHtml(card) : ''}
             <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px;margin-top:12px">
                 <div class="form-group" style="margin:0">
                     <label class="form-label" style="font-size:11.5px;font-weight:600" for="plcStrobeInput">Then pulse strobe address:</label>
@@ -5092,7 +5810,7 @@ function refreshPlcModalBody(cardId) {
         </div>` : ''}
 
         <!-- 8. Industrial Timing: Conveyor Travel Delay & Re-arm Lockout -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="card-pair">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11px;font-weight:600" title="Physical transit time from inspection line to rejector actuator">Conveyor Travel Delay (ms):</label>
                 <input type="number" class="form-input" value="${escapeHtml(card.delay_ms ?? 450)}" min="0" max="60000" step="50" oninput="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'delay_ms', parseInt(this.value)||0); renderPlcActionCards()" />
@@ -5106,15 +5824,37 @@ function refreshPlcModalBody(cardId) {
         </div>
 
         <!-- 9. Execution Policy -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="card-pair">
             <div class="form-group" style="margin:0">
                 <label class="form-label" style="font-size:11px;font-weight:600">Execution Policy:</label>
-                <select class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'exec_policy', this.value); renderPlcActionCards()">
+                <select class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'exec_policy', this.value); renderPlcActionCards()" data-help="Fire once for each tracked product, or on every video frame that matches.">
                     <option value="once_per_event" ${card.exec_policy !== 'every_frame' ? 'selected' : ''}>Once per Tracked Event (Unique ID)</option>
                     <option value="every_frame" ${card.exec_policy === 'every_frame' ? 'selected' : ''}>Every Matching Frame</option>
                 </select>
             </div>
             <div></div>
+        </div>
+
+        <!-- 10. Confirmation: a PLC signal that says the action really happened -->
+        <div>
+            <div class="card-pair">
+                <div class="form-group" style="margin:0">
+                    <label class="form-label" style="font-size:11px;font-weight:600" for="plcConfirmSignalInput">Confirmation signal:</label>
+                    <select id="plcConfirmSignalInput" class="form-input" onchange="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'confirm_input_id', this.value); refreshPlcModalBody(document.getElementById('plcModalBodyContainer').dataset.cardId); renderPlcActionCards()" data-help="An input that tells the action really happened, such as a sensor at the reject bin.">
+                        ${confirmOptions}
+                    </select>
+                </div>
+                ${confirmId ? `
+                <div class="form-group" style="margin:0">
+                    <label class="form-label" style="font-size:11px;font-weight:600" for="plcConfirmTimeoutInput">Confirm within (ms):</label>
+                    <input type="number" id="plcConfirmTimeoutInput" class="form-input" min="50" max="10000" step="50" value="${escapeHtml(card.confirm_timeout_ms ?? 1000)}" oninput="updatePlcCardProp(document.getElementById('plcModalBodyContainer').dataset.cardId, 'confirm_timeout_ms', Math.min(10000, Math.max(50, parseInt(this.value) || 1000)))" />
+                </div>` : '<div></div>'}
+            </div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:4px">${confirmId
+                ? "After the action is sent, the line waits this long (50 to 10000 ms) for the signal. If it does not come, the action shows <b>Not confirmed</b> and a critical alarm stays on until a later fire is confirmed. Fires that wait at the same time are confirmed in the order they were sent. The Test button does not wait for the signal."
+                : (confirmSignals.length
+                    ? "Pick an input that tells the action really happened, for example a sensor that sees the rejected product leave the belt."
+                    : "To check that the action really happened, add a signal with the action <b>Confirm an output action</b> under Inputs, then pick it here.")}</div>
         </div>
     `;
 }
@@ -5377,12 +6117,6 @@ function selectCamById(id) {
     document.querySelectorAll(".cam-row").forEach(r => {
         r.classList.toggle("selected", r.dataset.id === id);
     });
-
-    // Enable the action buttons; Delete stays off for Level 1 operators.
-    ["camBtnConnect", "camBtnDisconnect", "camBtnSettings", "camBtnDelete"].forEach(bid => {
-        const btn = document.getElementById(bid);
-        if (btn) btn.disabled = btn.classList.contains("restricted-l2") && !canConfigure();
-    });
 }
 
 function clearCamSelection() {
@@ -5393,22 +6127,6 @@ function clearCamSelection() {
     document.querySelectorAll(".cam-row").forEach(r => {
         r.classList.remove("selected");
     });
-    ["camBtnConnect", "camBtnDisconnect", "camBtnSettings", "camBtnDelete"].forEach(bid => {
-        const btn = document.getElementById(bid);
-        if (btn) btn.disabled = true;
-    });
-}
-
-async function camBarAction(action) {
-    if (!selectedCamId) {
-        showToast("Please tap a camera to select it first", "info");
-        return;
-    }
-    const id = selectedCamId, name = selectedCamName;
-    if (action === "connect")    await connectCam(id);
-    if (action === "disconnect") await disconnectCam(id);
-    if (action === "settings")   openCamSettings(id, name, selectedCamType, selectedCamSettings);
-    if (action === "delete")     await deleteCam(id, name);
 }
 
 async function probeHardwareCameras() {
@@ -5455,33 +6173,6 @@ async function scanHardwareCameras(triggerBtn) {
     }
 }
 
-async function connectCam(id) {
-    activeCamId = id;
-    try {
-        const res = await fetch(`/api/v1/cameras/${id}/connect`, { method: "POST" });
-        if (res.ok) {
-            await loadCameras();
-            reloadStream();
-            document.getElementById("noVideoOverlay").classList.remove("active");
-        } else {
-            const e = await res.json();
-            showModal("Camera Connect Failed", e.detail || "Could not open stream.");
-            await loadCameras();
-        }
-    } catch { 
-        showModal("Network Error", "Could not reach camera service");
-        await loadCameras();
-    }
-}
-
-async function disconnectCam(id) {
-    try {
-        await fetch(`/api/v1/cameras/${id}/disconnect`, { method: "POST" });
-        loadCameras();
-        reloadStream();
-    } catch {}
-}
-
 async function deleteCam(id, name) {
     showModal("Delete Camera", `Permanently remove camera '${name}' from server?`, true, async () => {
         try {
@@ -5514,7 +6205,9 @@ let _camSettingsCam = null;
 function openCamSettings(id, name, type, settings) {
     _camSettingsCam = { id, name, type };
     document.getElementById("camSettingsCamName").textContent = name;
-    const form = CameraSettingsForm.render(document.getElementById("camSettingsForm"), { id, type, settings: settings || {} }, ["image", "video"]);
+    const listed = (_allCamsData || []).find((c) => c.id === id);
+    const form = CameraSettingsForm.render(document.getElementById("camSettingsForm"),
+        { id, type, settings: settings || {}, line_trigger_mode: listed ? listed.line_trigger_mode : null }, ["image", "video"]);
     form.loadPicture(() => Boolean(_camSettingsCam && _camSettingsCam.id === id));
     document.getElementById("camSettingsOverlay").classList.add("active");
     setTimeout(initCustomSelects, 30);
@@ -5629,7 +6322,7 @@ function renderModelsTable() {
             : `<span class="type-chip det">Detection</span>`;
 
         const actionHtml = `<div class="row-actions">
-            <button type="button" class="btn-action btn-sm btn-red restricted-l2" onclick="event.stopPropagation();selectModelById(this.closest('tr').dataset.id);deleteSelectedModel()" aria-label="Delete ${escapeHtml(m.name)}"${usedBy.length ? ` title="In use: pick another model for its cameras under Line setup first"` : ""}>Delete</button>
+            <button data-lock type="button" class="btn-action btn-sm btn-red restricted-l2" onclick="event.stopPropagation();selectModelById(this.closest('tr').dataset.id);deleteSelectedModel()" aria-label="Delete ${escapeHtml(m.name)}"${usedBy.length ? ` title="In use: pick another model for its cameras under Line setup first"` : ""}>Delete</button>
         </div>`;
 
         return `<tr class="model-row${isSelected ? ' selected' : ''}" onclick="selectModelById(this.dataset.id)" data-id="${escapeHtml(m.id)}">
@@ -5877,7 +6570,7 @@ async function loadAuditLogs() {
 
 /* ─── User Management (Admin L3) ─────────────────────────────────────────── */
 async function loadUsers() {
-    if (parseInt(localStorage.getItem("clearance_level")||"1") < 3) return;
+    if (clearanceLevel() < 3) return;
     try {
         const res = await fetch("/api/v1/auth/users", { headers: { Authorization: `Bearer ${currentAuthToken}` } });
         if (!res.ok) return;
@@ -5922,7 +6615,7 @@ const selectedApiKeyIds = new Set();
 
 async function loadApiKeys() {
     const tbody = document.getElementById("apiKeyTableBody");
-    if (!tbody || parseInt(localStorage.getItem("clearance_level")||"1") < 3) return;
+    if (!tbody || clearanceLevel() < 3) return;
     try {
         const res = await fetch("/api/v1/auth/api-keys", { headers: { Authorization: `Bearer ${currentAuthToken}` } });
         if (!res.ok) return;
@@ -6087,7 +6780,8 @@ function revokeApiKey(apiKeyId, name) {
 async function provisionUser() {
     const u = document.getElementById("newUsername").value.trim();
     const p = document.getElementById("newPassword").value.trim();
-    if (!u || !p) return showModal("Missing Details", "Enter username and password (min 6 chars)");
+    if (!u || !p) return showModal("Missing Details", "Enter a username and a password (at least 6 characters).");
+    if (p.length < 6) return showModal("Weak Password", "The password must be at least 6 characters.");
     try {
         const res = await fetch("/api/v1/auth/users", {
             method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${currentAuthToken}` },
@@ -6273,21 +6967,6 @@ async function _readAuthenticatedMjpeg(url, generation, controller) {
     }
 }
 
-// AI view (detections and count lines drawn by the server) or the raw camera picture.
-function setFeedMode(ai) {
-    const changed = isAIFeed !== Boolean(ai);
-    isAIFeed = Boolean(ai);
-    [["feedModeAI", true], ["feedModeRaw", false]].forEach(([id, value]) => {
-        const btn = document.getElementById(id);
-        if (!btn) return;
-        btn.classList.toggle("on", value === isAIFeed);
-        btn.setAttribute("aria-pressed", String(value === isAIFeed));
-    });
-    setText("feedModeLabel", isAIFeed ? "AI view" : "Raw");
-    if (changed) reloadStream();
-}
-function toggleFeedMode() { setFeedMode(!isAIFeed); }
-
 /* ─── Line Dashboard: the line's state, from assets/production_lines.js ──── */
 const LINE_STATE_VIEW = {
     running:   { word: "Running",             state: "running" },
@@ -6327,8 +7006,11 @@ function renderLineStatus(detail) {
     if (st.state === "idle") meta.push(`<span>None of this line's cameras is connected yet.</span>`);
     const offline = cams.filter(c => !c.connected).map(c => escapeHtml(lineCamName(c)));
     if (st.state === "fault" && offline.length) meta.push(`<span class="bad">Not connected: <b class="bad">${offline.join(", ")}</b></span>`);
-    meta.push(`<span>Model <b>${escapeHtml(st.model_name || "none")}</b></span>`);
-    if (st.state === "running" || st.state === "fault") {
+    // A line that runs without a camera gets its products from a PLC product sensor.
+    const sensorOnly = st.state === "running" && !cams.length;
+    if (sensorOnly) meta.push(`<span>Products come from a <b>PLC product sensor</b>. This line has no camera.</span>`);
+    else meta.push(`<span>Model <b>${escapeHtml(st.model_name || "none")}</b></span>`);
+    if (!sensorOnly && (st.state === "running" || st.state === "fault")) {
         const fps = Number(st.processed_fps || 0);
         const min = Number(st.min_fps || 0);
         const slow = min > 0 && fps < min;
@@ -6341,6 +7023,7 @@ function renderLineStatus(detail) {
 
     _lineStoppedForPill = st.state === "stopped";
     renderAlarmPill(Number(st.active_alarms || 0));
+    renderLineBatch(detail);
 
     const runBtn = document.getElementById("lineRunBtn");
     if (runBtn) {
@@ -6363,6 +7046,59 @@ function renderLineStatus(detail) {
         ? "No camera is assigned to this line. Assign one under Line setup."
         : (!cam.connected ? `${lineCamName(cam)} is not connected.` : "Waiting for the first picture…"));
 }
+
+/* ─── Line Dashboard: the line's batch (work order) number ───────────────── */
+// Everyone sees the batch; a Supervisor sets it here. A PLC signal can set it too,
+// so the field follows the server unless it is being typed in.
+const _lineBatch = { lineId: null, shown: null };
+
+function renderLineBatch(detail) {
+    const box = document.getElementById("lineBatch");
+    const input = document.getElementById("lineBatchInput");
+    const text = document.getElementById("lineBatchText");
+    if (!box || !input || !text) return;
+    const batch = String(detail.batch ?? (detail.status || {}).batch ?? "");
+    const editable = canConfigure();
+    box.hidden = false;
+    text.hidden = editable;
+    input.hidden = !editable;
+    document.getElementById("lineBatchSet").hidden = !editable;
+    text.textContent = batch || "none";
+    const otherLine = _lineBatch.lineId !== detail.id;
+    if (otherLine || (batch !== _lineBatch.shown && document.activeElement !== input)) {
+        input.value = batch;
+        _lineBatch.lineId = detail.id;
+        _lineBatch.shown = batch;
+    }
+}
+
+async function setLineBatch() {
+    const pl = window.ProductionLines;
+    const input = document.getElementById("lineBatchInput");
+    const button = document.getElementById("lineBatchSet");
+    if (!pl || !input || !canConfigure()) return;
+    button.disabled = true;
+    try {
+        const res = await fetch(`/api/v1/lines/${encodeURIComponent(pl.lineId)}/batch`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ batch: input.value.trim() })
+        });
+        let body = {};
+        try { body = await res.json(); } catch {}
+        if (!res.ok) throw new Error(typeof body.detail === "string" ? body.detail : `HTTP ${res.status}`);
+        input.value = body.batch;
+        _lineBatch.shown = body.batch;
+        input.blur();
+        showToast(body.batch ? `Batch set to ${body.batch}. Products counted from now on carry it.` : "Batch cleared.", "success");
+        pl.refreshDetail().catch(() => {});
+    } catch (e) {
+        showToast(`The batch was not set: ${e?.message || e}`, "warning");
+    } finally {
+        button.disabled = false;
+    }
+}
+
 window.addEventListener("pl:detail", (e) => {
     renderLineStatus(e.detail);
     if (_alarmPanel.lineId !== alarmPanelLineId()) refreshAlarmPanel();
@@ -6587,7 +7323,7 @@ function toggleLineRunning() {
         if (typeof window.checkActiveStream === "function") window.checkActiveStream();
     };
     if (d.enabled) {
-        showModal(`Stop ${d.name}?`, "Counting, sent results and PLC actions for this line stop until you start it again.", true,
+        showModal(`Stop ${d.name}?`, "Counting, sent results and output actions for this line stop until you start it again.", true,
             async () => { await pl.lineAction("stop"); after(); }, { confirmText: "Stop line", danger: true });
     } else {
         pl.lineAction("start").then(after);
@@ -6609,9 +7345,7 @@ function reloadStream() {
     _streamPaused = false;
     const bp  = _getStreamBandwidthParams();
     const cameraId = encodeURIComponent(activeCamId);
-    const url = isAIFeed
-        ? `/api/v1/vision/stream/camera/${cameraId}?${bp}&t=${Date.now()}`
-        : `/api/v1/cameras/${cameraId}/stream?${bp}&t=${Date.now()}`;
+    const url = `/api/v1/vision/stream/camera/${cameraId}?${bp}&t=${Date.now()}`;
     const controller = new AbortController();
     _liveStreamController = controller;
     _readAuthenticatedMjpeg(url, _liveStreamGeneration, controller);
@@ -6726,10 +7460,21 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
     setInterval(tick, 1000);
 })();
 </script>
-<script src="/assets/camera_settings.js?v=2.3.0"></script>
-<script src="/assets/production_lines.js?v=2.3.0"></script>
+<script src="/assets/help_tips.js?v=3.4.0"></script>
+<script src="/assets/card_values.js?v=3.6.0"></script>
+<script src="/assets/camera_settings.js?v=3.8.0"></script>
+<script src="/assets/plc_signals.js?v=3.6.0"></script>
+<script src="/assets/product_fields.js?v=3.5.0"></script>
+<script src="/assets/text_reader.js?v=1.0.1"></script>
+<script src="/assets/camera_pages.js?v=1.0.1"></script>
+<script src="/assets/pattern_check.js?v=1.0.4"></script>
+<script src="/assets/line_setups.js?v=1.0.1"></script>
+<script src="/assets/production_lines.js?v=3.18.1"></script>
+<script src="/assets/config_lock.js?v=1.0.0"></script>
+<script src="/assets/system_usage.js?v=1.0.0"></script>
+<script src="/assets/data_backups.js?v=1.0.0"></script>
 <script>
-/* ─── Cameras: Connect / Disconnect / Settings / Delete on every row ────────
+/* ─── Cameras: Settings / Delete on every row (Connect is on the Line setup camera card) ─
    Runs after assets/production_lines.js has added its Line and Role columns. */
 (function () {
     function addCameraRowActions() {
@@ -6748,11 +7493,9 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
             if (extra[1]) extra[1].dataset.label = "Role";
             const cam = (_allCamsData || []).find(c => c.id === row.dataset.id);
             if (!cam) return;
-            const connected = Boolean(cam.is_active);
             row.insertAdjacentHTML("beforeend", `<td class="col-actions"><div class="row-actions">
-                <button type="button" class="btn-action btn-sm ${connected ? "btn-outline" : "btn-blue"}" data-act="${connected ? "disconnect" : "connect"}">${connected ? "Disconnect" : "Connect"}</button>
                 <button type="button" class="btn-action btn-sm btn-outline" data-act="settings">Settings</button>
-                <button type="button" class="btn-action btn-sm btn-red restricted-l2" data-act="delete" aria-label="Delete ${escapeHtml(cam.name)}">Delete</button>
+                <button data-lock type="button" class="btn-action btn-sm btn-red restricted-l2" data-act="delete" aria-label="Delete ${escapeHtml(cam.name)}">Delete</button>
             </div></td>`);
         });
         table.querySelectorAll("tbody button[data-act]").forEach(btn => {
@@ -6763,9 +7506,7 @@ fetch("/api/v1/discovery").then(r => (r.ok ? r.json() : null)).then(d => {
                 const id = btn.closest("tr").dataset.id;
                 const cam = (_allCamsData || []).find(c => c.id === id);
                 if (!cam) return;
-                if (btn.dataset.act === "connect") connectCam(id);
-                else if (btn.dataset.act === "disconnect") disconnectCam(id);
-                else if (btn.dataset.act === "settings") openCamSettings(id, cam.name, cam.type, cam.settings || {});
+                if (btn.dataset.act === "settings") openCamSettings(id, cam.name, cam.type, cam.settings || {});
                 else if (btn.dataset.act === "delete") deleteCam(id, cam.name);
             });
         });

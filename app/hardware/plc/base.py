@@ -3,12 +3,16 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import asyncio
-from typing import Tuple
+from typing import Any, Tuple, Union
 
 from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# What read() can be asked to return. "auto" takes the type from the address:
+# its suffix (":DINT", ":REAL"), or what the protocol says the address holds.
+READ_DATA_TYPES = ("auto", "bool", "int16", "uint16", "int32", "real", "string")
 
 
 class PLCDriver(ABC):
@@ -20,6 +24,9 @@ class PLCDriver(ABC):
     interface — it never touches protocol-specific details.
     """
 
+    # Whether WRITE takes text as well as numbers (an OPC UA String node).
+    writes_text = False
+
     def __init__(self, endpoint: dict):
         self._ep = endpoint
         self.is_connected: bool = False
@@ -27,7 +34,10 @@ class PLCDriver(ABC):
         # Throwaway drivers used for "test connection" must not raise or clear
         # the production alarm for the endpoint; the factory turns this off.
         self.report_alarms: bool = True
+        # One request at a time on the connection. A pulse frees it between its
+        # ON and OFF writes (_pulse_wait), so an input can read what the pulse does.
         self._operation_lock = asyncio.Lock()
+        self._lock_holder: "asyncio.Task[Any] | None" = None
 
     @property
     def endpoint_id(self) -> str:
@@ -124,9 +134,42 @@ class PLCDriver(ABC):
     @abstractmethod
     async def pulse(self, address: str, duration_ms: int) -> Tuple[bool, str]:
         """
-        Set target to ON, wait duration_ms, then set to OFF.
+        Set target to ON, wait duration_ms (with _pulse_wait), then set to OFF.
         Returns (success, message) after the full pulse completes.
         """
+
+    async def _pulse_wait(self, duration_ms: int) -> None:
+        """The wait between a pulse's ON and OFF writes.
+
+        Inside execute_operation() the connection is freed for the wait: other
+        requests, such as an input reading what the pulse switches on, are not
+        held up for the whole pulse. A PLC program that copies the output to an
+        input would otherwise be read only before and after the pulse.
+        """
+        seconds = max(0, duration_ms) / 1000.0
+        task = asyncio.current_task()
+        if task is None or self._lock_holder is not task:
+            await asyncio.sleep(seconds)
+            return
+        self._lock_holder = None
+        self._operation_lock.release()
+        try:
+            await asyncio.sleep(seconds)
+        finally:
+            await self._take_lock_back(task)
+
+    async def _take_lock_back(self, task: "asyncio.Task[Any]") -> None:
+        """Take the operation lock again for ``task``, even through a cancel: its caller releases it."""
+        taking = asyncio.ensure_future(self._operation_lock.acquire())
+        cancelled = False
+        while not taking.done():
+            try:
+                await asyncio.shield(taking)
+            except asyncio.CancelledError:
+                cancelled = True
+        self._lock_holder = task
+        if cancelled:
+            raise asyncio.CancelledError()
 
     @abstractmethod
     async def write(self, address: str, value: float) -> Tuple[bool, str]:
@@ -136,30 +179,68 @@ class PLCDriver(ABC):
         """Invert a readable/writable BOOL. Drivers opt in when their protocol supports it."""
         return False, f"TOGGLE is not supported by {type(self).__name__}"
 
+    # ── Reading ───────────────────────────────────────────────────────────────
+
+    async def read(self, address: str, data_type: str = "auto") -> Tuple[bool, Any, str]:
+        """
+        Read one value from the PLC. Returns (success, value, message): the
+        value is a bool for a bit, an int, a float for a REAL or text for a
+        string, and None when the read failed.
+
+        Runs under the same lock as execute_operation(): one request at a time.
+        A read can come while a pulse waits between its ON and OFF writes, and
+        then sees what the pulse switched on.
+        """
+        wanted = str(data_type or "auto").strip().lower()
+        if wanted not in READ_DATA_TYPES:
+            return False, None, f"Unknown data type '{data_type}'; use one of: {', '.join(READ_DATA_TYPES)}"
+        async with self._operation_lock:
+            self._lock_holder = asyncio.current_task()
+            try:
+                return await self._read(str(address or "").strip(), wanted)
+            except ValueError as exc:
+                # A bad address or a type the address cannot hold: the link is fine.
+                return False, None, str(exc)
+            finally:
+                self._lock_holder = None
+
+    async def _read(self, address: str, data_type: str) -> Tuple[bool, Any, str]:
+        """One read, already under the lock. Drivers whose protocol can be read implement this."""
+        return False, None, f"Reading is not supported by {type(self).__name__}"
+
     # ── Convenience ───────────────────────────────────────────────────────────
 
     async def execute_operation(
         self,
         operation: str,
         address: str,
-        write_value: float = 0.0,
+        write_value: Union[float, str] = 0.0,
         pulse_duration_ms: int = 150,
     ) -> Tuple[bool, str]:
         """
         Dispatch a named operation string (SET/RESET/PULSE/TOGGLE/WRITE) to the
         correct method.  Called by PLCDispatcherService.
+
+        Text can only be written by a driver whose ``writes_text`` is true;
+        every other driver refuses it with ValueError, before anything is sent.
         """
+        if str(operation).upper() == "WRITE" and isinstance(write_value, str) and not self.writes_text:
+            raise ValueError("This controller type writes numbers only")
         async with self._operation_lock:
-            op = operation.upper()
-            if op == "SET":
-                return await self.set(address)
-            elif op == "RESET":
-                return await self.reset(address)
-            elif op == "PULSE":
-                return await self.pulse(address, pulse_duration_ms)
-            elif op == "TOGGLE":
-                return await self.toggle(address)
-            elif op == "WRITE":
-                return await self.write(address, write_value)
-            else:
-                return False, f"Unknown PLC operation: '{operation}'"
+            self._lock_holder = asyncio.current_task()
+            try:
+                op = operation.upper()
+                if op == "SET":
+                    return await self.set(address)
+                elif op == "RESET":
+                    return await self.reset(address)
+                elif op == "PULSE":
+                    return await self.pulse(address, pulse_duration_ms)
+                elif op == "TOGGLE":
+                    return await self.toggle(address)
+                elif op == "WRITE":
+                    return await self.write(address, write_value)
+                else:
+                    return False, f"Unknown PLC operation: '{operation}'"
+            finally:
+                self._lock_holder = None

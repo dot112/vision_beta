@@ -1,12 +1,19 @@
 /*
  * A camera's image and video settings as a form that renders into any container:
- * resolution and FPS, rotation and flips, the ROI (with drag-to-draw on the
- * whole picture), the USB image controls or the IP transport and buffer, and
- * the stream's maximum width and JPEG quality.
+ * resolution and FPS, rotation and flips, the ROI (drawn by dragging on the whole
+ * picture, then moved, resized by its corners and removed by its x), the USB image
+ * controls or the IP transport and buffer, an industrial camera's trigger, exposure,
+ * gain and strobe output, and the stream's maximum width and JPEG quality.
  *
  * Used by the camera cards on Line setup (assets/production_lines.js) and by
  * the Settings dialog on the Cameras page for a camera that belongs to no line.
  * read() gives exactly the body of PATCH /api/v1/cameras/{id} {settings: ...}.
+ *
+ * An industrial camera whose line card sets its Trigger (the camera list says
+ * line_trigger_mode: "off", "hardware" or "software") shows it read-only, and
+ * read() leaves it out: the server refuses a change of it on the camera.
+ * A camera card on Line setup follows its own form instead (lockTrigger): it locks
+ * and frees the Trigger as the card's Count mode and Picture taken by change.
  */
 (function () {
     "use strict";
@@ -19,6 +26,172 @@
         return `<div class="form-group" style="margin:0"><label class="form-label">${label}</label>${input.replace("<input", `<input data-cs="${name}"`).replace("<select", `<select data-cs="${name}"`)}</div>`;
     }
 
+    // An industrial camera (GigE Vision, USB3 Vision): how each picture is taken, and its exposure.
+    const TRIGGER_NOTES = {
+        off: "The camera sends pictures all the time, like a network camera.",
+        hardware: "Wire the sensor or the PLC output to the camera's own input: the signal to the input pin, the signal's 0 V to the camera's I/O ground (check the voltage range in the camera's manual). The camera takes one picture per edge. With Count mode \"One picture per trigger\" every picture is one product, and with Read codes \"When an input asks\" every picture is read once. No input is needed.",
+        software: "No extra wire. The server sends the camera its trigger command when an input with the action \"Take a picture\", a wire-line crossing (Read codes) or the API asks. It is late by the PLC's read time and the network, so it suits parts that stand still.",
+    };
+
+    const TRIGGER_LABELS = { off: "Off: runs freely", hardware: "Hardware: the camera's own input", software: "Software: the server triggers it" };
+    const LOCKED_NOTE = "Set on the line's camera card (Line setup)";
+    const triggerOptions = (values, current) => values.map((value) => `<option value="${value}" ${current === value ? "selected" : ""}>${TRIGGER_LABELS[value]}</option>`).join("");
+
+    function industrialHtml(cam) {
+        const s = cam.settings || {};
+        // The line's camera card sets the Trigger: shown as it sets it, with nothing else to choose.
+        const locked = Object.keys(TRIGGER_LABELS).includes(cam.line_trigger_mode) ? cam.line_trigger_mode : null;
+        // The camera's own mode: what comes back when the card lets go of the Trigger (see lockTrigger).
+        const own = ["hardware", "software"].includes(s.trigger_mode) ? s.trigger_mode : "off";
+        const mode = locked || own;
+        const edge = s.trigger_edge === "falling" ? "falling" : "rising";
+        const opt = (value, label, current) => `<option value="${value}" ${current === value ? "selected" : ""}>${label}</option>`;
+        const lists = `cs-lines-${esc(cam.id)}`;
+        return `
+        <div class="cam-settings-section">Trigger (industrial camera)</div>
+        ${field("trigger_mode", "Trigger", `<select class="form-input${locked ? " cs-locked" : ""}" ${locked ? "disabled" : ""} data-lock="${locked || ""}" data-free="${own}" data-help="How the camera takes pictures: freely, on its own input wire, or when the server triggers it.">${triggerOptions(locked ? [locked] : Object.keys(TRIGGER_LABELS), mode)}</select>`)}
+        <div class="form-hint cs-trigger-locked" style="margin:6px 0 0;font-weight:600" ${locked ? "" : "hidden"}>${locked ? LOCKED_NOTE : ""}</div>
+        <div class="form-hint cs-trigger-note" style="margin:6px 0 10px"></div>
+        <div class="cam-settings-row cs-hardware-only">
+            ${field("trigger_line", "Trigger input", `<input type="text" class="form-input" maxlength="32" placeholder="Line0" list="${lists}-in" value="${esc(s.trigger_line || "")}">`)}
+            ${field("trigger_edge", "Edge", `<select class="form-input" data-help="Which edge of the trigger signal takes a picture.">${opt("rising", "Rising", edge)}${opt("falling", "Falling", edge)}</select>`)}
+        </div>
+        <div class="cam-settings-row cs-triggered-only">
+            ${field("trigger_delay_us", "Trigger delay (µs)", `<input type="number" class="form-input" min="0" max="10000000" placeholder="0" value="${esc(s.trigger_delay_us || "")}">`)}
+            <div class="form-hint" style="align-self:end;padding-bottom:8px">From the trigger to the exposure.</div>
+        </div>
+        <div class="cam-settings-row">
+            ${field("exposure_us", "Exposure (µs)", `<input type="number" class="form-input" min="10" max="10000000" placeholder="the camera's own" value="${esc(s.exposure_us ?? "")}">`)}
+            ${field("gain_db", "Gain (dB)", `<input type="number" class="form-input" min="0" max="48" step="0.1" placeholder="the camera's own" value="${esc(s.gain_db ?? "")}">`)}
+        </div>
+        <div class="cam-settings-row">
+            ${field("strobe_line", "Strobe output", `<input type="text" class="form-input" maxlength="32" placeholder="none" list="${lists}-out" value="${esc(s.strobe_line || "")}">`)}
+            <div class="form-hint" style="align-self:end;padding-bottom:8px">A camera line that is on while the sensor is exposed, for a light. Empty = none.</div>
+        </div>
+        <div class="cam-settings-row">
+            ${field("stream_driver", "Stream driver", `<input type="text" class="form-input" maxlength="32" placeholder="the maker's default" list="${lists}-drv" value="${esc(s.stream_driver || "")}">`)}
+            <div class="form-hint" style="align-self:end;padding-bottom:8px">How the pictures reach the server. Empty = the camera maker's default. A camera simulated on this computer needs <b>SocketDriver</b> with pylon (its filter driver never sees it).</div>
+        </div>
+        <datalist id="${lists}-in"></datalist><datalist id="${lists}-out"></datalist><datalist id="${lists}-drv"></datalist>
+        <div class="form-hint cs-camera-state" style="margin:4px 0 10px">Connect the camera to see its inputs and its last picture.</div>
+        <div class="cs-trigger-test" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px" hidden>
+            <button type="button" class="btn-action btn-sm btn-outline restricted-l2 cs-trigger-btn" data-help="Takes one test picture by software trigger now; nothing is counted.">Software trigger</button>
+            <span class="form-hint cs-trigger-result" style="margin:0">One test picture now; nothing is counted.</span>
+        </div>
+        <div class="pl-warn cs-camera-problems" style="margin:0 0 12px" hidden></div>`;
+    }
+
+    function syncIndustrial(root) {
+        const select = get(root, "trigger_mode");
+        if (!select) return;
+        const mode = select.value;
+        root.querySelector(".cs-trigger-note").textContent = TRIGGER_NOTES[mode] || "";
+        root.querySelector(".cs-hardware-only").hidden = mode !== "hardware";
+        root.querySelector(".cs-triggered-only").hidden = mode === "off";
+    }
+
+    /**
+     * Show the Trigger read-only as ``mode`` ("off", "hardware" or "software") with ``note``, or editable again
+     * when ``mode`` is empty. A line's camera card calls this as its own form changes (Count mode, Picture taken
+     * by), so the Trigger always shows what a save of the card would set. What the camera had before the lock
+     * comes back, with any change made by hand, when the lock ends. A locked Trigger is not read() back.
+     */
+    function lockTrigger(root, mode, note) {
+        const select = get(root, "trigger_mode");
+        if (!select) return;
+        const locked = Object.keys(TRIGGER_LABELS).includes(mode) ? mode : null;
+        if ((select.dataset.lock || "") !== (locked || "")) {
+            if (locked && !select.disabled) select.dataset.free = select.value;
+            const shown = locked || select.dataset.free || "off";
+            select.innerHTML = triggerOptions(locked ? [locked] : Object.keys(TRIGGER_LABELS), shown);
+            select.value = shown;
+            select.disabled = Boolean(locked);
+            select.classList.toggle("cs-locked", Boolean(locked));
+            select.dataset.lock = locked || "";
+            if (typeof select._refreshCustomSelect === "function") select._refreshCustomSelect();
+        }
+        const noteBox = root.querySelector(".cs-trigger-locked");
+        if (noteBox) {
+            noteBox.hidden = !locked;
+            noteBox.textContent = locked ? (note || LOCKED_NOTE) : "";
+        }
+        syncIndustrial(root);
+    }
+
+    // What the connected camera says of itself: its inputs, its last picture, the settings it refused.
+    async function loadIndustrial(root, cameraId) {
+        const state = root.querySelector(".cs-camera-state");
+        if (!state) return;
+        let p = null;
+        try {
+            const res = await fetch(`/api/v1/cameras/${encodeURIComponent(cameraId)}/status`, { cache: "no-store" });
+            if (res.ok) p = (await res.json()).properties || null;
+        } catch (_) { /* shown as not connected */ }
+        if (!root.isConnected) return;
+        const problems = root.querySelector(".cs-camera-problems");
+        if (!p || !p.connected) {
+            state.textContent = "Connect the camera to see its inputs and its last picture.";
+            problems.hidden = true;
+            const test = root.querySelector(".cs-trigger-test");
+            if (test) test.hidden = true;
+            return;
+        }
+        const fill = (suffix, names) => {
+            const list = root.querySelector(`datalist[id$="${suffix}"]`);
+            if (list) list.innerHTML = (names || []).map((n) => `<option value="${esc(n)}"></option>`).join("");
+        };
+        fill("-in", p.trigger_inputs);
+        fill("-out", p.lines);
+        fill("-drv", p.stream_drivers);
+        const test = root.querySelector(".cs-trigger-test");
+        if (test) test.hidden = p.trigger_mode !== "software";
+        const label = { off: "Off (runs freely)", hardware: "Hardware", software: "Software" }[p.trigger_mode] || p.trigger_mode;
+        const last = p.last_picture_at
+            ? `last picture at ${new Date(p.last_picture_at * 1000).toLocaleTimeString()} (${p.pictures} so far)`
+            : (p.trigger_mode === "off" ? "no picture yet" : "waiting for a trigger");
+        const lost = p.dropped_frames ? ` · ${p.dropped_frames} picture(s) lost in a burst` : "";
+        const inputs = (p.trigger_inputs || []).length ? ` · inputs: ${p.trigger_inputs.join(", ")}` : "";
+        state.textContent = `${[p.vendor, p.model].filter(Boolean).join(" ") || "Camera"}${p.interface ? ` (${p.interface})` : ""} · trigger now: ${label} · ${last}${lost}${inputs}`;
+        const said = [...(p.setting_problems || []), ...(p.picture_error ? [p.picture_error] : [])];
+        problems.hidden = !said.length;
+        problems.innerHTML = said.length ? `The camera did not take every setting:<br>${said.map((t) => `• ${esc(t)}`).join("<br>")}` : "";
+    }
+
+    // One picture by software trigger, to see that the camera answers (POST /cameras/{id}/trigger).
+    async function testTrigger(root, cameraId) {
+        const button = root.querySelector(".cs-trigger-btn");
+        const said = root.querySelector(".cs-trigger-result");
+        button.disabled = true;
+        said.textContent = "Triggering…";
+        try {
+            const res = await fetch(`/api/v1/cameras/${encodeURIComponent(cameraId)}/trigger`, { method: "POST" });
+            const data = await res.json().catch(() => ({}));
+            said.textContent = res.ok ? `Picture #${data.frame_id} came in ${Math.round(data.waited_ms)} ms.`
+                : (data.detail || `The trigger failed (HTTP ${res.status}).`);
+        } catch (_) {
+            said.textContent = "The server did not answer.";
+        }
+        button.disabled = false;
+        loadIndustrial(root, cameraId);
+    }
+
+    function bindIndustrial(root, cameraId) {
+        if (!get(root, "trigger_mode")) return;
+        const triggerButton = root.querySelector(".cs-trigger-btn");
+        if (triggerButton) triggerButton.addEventListener("click", () => testTrigger(root, cameraId));
+        get(root, "trigger_mode").addEventListener("change", (e) => {
+            // A mode chosen by hand is the one that comes back when a card's lock on the Trigger ends.
+            if (!e.target.disabled) e.target.dataset.free = e.target.value;
+            syncIndustrial(root);
+        });
+        syncIndustrial(root);
+        loadIndustrial(root, cameraId);
+        const timer = setInterval(() => {
+            if (!root.isConnected) { clearInterval(timer); return; }
+            if (!document.hidden && root.offsetParent !== null) loadIndustrial(root, cameraId);
+        }, 3000);
+    }
+
     // The image part: what the camera captures and what goes to the model.
     function imageHtml(cam) {
         const s = cam.settings || {};
@@ -26,8 +199,10 @@
         const rotOption = (value, label) => `<option value="${value}" ${rotation === value ? "selected" : ""}>${label}</option>`;
         const usb = cam.type === "usb";
         const ip = cam.type === "ip";
-        return `
+        const industrial = cam.type === "gige";
+        return `${industrial ? industrialHtml(cam) : ""}
         <div class="cam-settings-section">Resolution</div>
+        ${industrial ? `<div class="form-hint" style="margin:-4px 0 10px">Empty = the camera's own size. A size here scales the picture in the server; FPS does not apply to this camera.</div>` : ""}
         <div class="cam-settings-row triple">
             ${field("width", "Width (px)", `<input type="number" class="form-input" placeholder="640" min="80" max="3840" value="${esc(s.width || "")}">`)}
             ${field("height", "Height (px)", `<input type="number" class="form-input" placeholder="480" min="60" max="2160" value="${esc(s.height || "")}">`)}
@@ -46,7 +221,7 @@
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
             <span class="form-label" style="margin:0">Enable ROI</span>
             <label class="switch"><input type="checkbox" data-cs="roi_enabled" ${s.roi_enabled ? "checked" : ""}><span class="slider"></span></label>
-            <button type="button" class="btn-action btn-sm btn-outline cs-roi-reset" style="margin-left:auto">Whole picture</button>
+            <button data-lock type="button" class="btn-action btn-sm btn-outline cs-roi-reset" style="margin-left:auto">Whole picture</button>
         </div>
         <div class="cs-roi-fields">
             <div class="cam-settings-row">
@@ -59,7 +234,7 @@
             </div>
             <div class="roi-preview cs-roi-preview">
                 <img class="cs-roi-img" alt="" hidden>
-                <div class="roi-box cs-roi-box" style="left:0;top:0;width:100%;height:100%"></div>
+                <div class="roi-box cs-roi-box" style="left:0;top:0;width:100%;height:100%"><span class="roi-handle roi-nw" data-roi="nw"></span><span class="roi-handle roi-ne" data-roi="ne"></span><span class="roi-handle roi-sw" data-roi="sw"></span><span class="roi-handle roi-se" data-roi="se"></span><button data-lock type="button" class="roi-del restricted-l2" title="Remove the ROI" aria-label="Remove the ROI">&times;</button></div>
                 <span class="roi-preview-note cs-roi-note">Crop preview</span>
             </div>
         </div>
@@ -80,7 +255,7 @@
         ${ip ? `
         <div class="cam-settings-section">IP stream</div>
         <div class="cam-settings-row">
-            ${field("transport", "Transport protocol", `<select class="form-input"><option value="tcp" ${(s.transport || "tcp") === "tcp" ? "selected" : ""}>TCP (reliable)</option><option value="udp" ${s.transport === "udp" ? "selected" : ""}>UDP (low latency)</option></select>`)}
+            ${field("transport", "Transport protocol", `<select class="form-input" data-help="How the IP stream travels: TCP is reliable, UDP has the lowest delay."><option value="tcp" ${(s.transport || "tcp") === "tcp" ? "selected" : ""}>TCP (reliable)</option><option value="udp" ${s.transport === "udp" ? "selected" : ""}>UDP (low latency)</option></select>`)}
             ${field("buffer_size", "Buffer size", `<input type="number" class="form-input" min="1" max="10" value="${esc(s.buffer_size || 1)}">`)}
         </div>` : ""}`;
     }
@@ -126,35 +301,87 @@
         updateROI(root);
     }
 
-    // Drag on the picture to draw the ROI (mouse, pen or touch).
+    const MIN_ROI = 3;    // percent of the picture: the smallest box a corner leaves
+
+    // The ROI after a drag from ``from`` to ``to`` (percent of the whole picture): "draw" a new box between the
+    // two points, "move" the box (it keeps its size and stays in the picture), or resize it by a corner ("nw",
+    // "ne", "sw", "se"), the opposite corner staying where it is.
+    function roiDrag(mode, box, from, to) {
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        if (mode === "draw") {
+            return { x: Math.min(from.x, to.x), y: Math.min(from.y, to.y), w: Math.max(Math.abs(dx), 1), h: Math.max(Math.abs(dy), 1) };
+        }
+        if (mode === "move") {
+            return { x: clamp(box.x + dx, 0, 100 - box.w), y: clamp(box.y + dy, 0, 100 - box.h), w: box.w, h: box.h };
+        }
+        let left = box.x;
+        let top = box.y;
+        let right = box.x + box.w;
+        let bottom = box.y + box.h;
+        if (mode.includes("w")) left = clamp(left + dx, 0, right - MIN_ROI);
+        if (mode.includes("e")) right = clamp(right + dx, left + MIN_ROI, 100);
+        if (mode.includes("n")) top = clamp(top + dy, 0, bottom - MIN_ROI);
+        if (mode.includes("s")) bottom = clamp(bottom + dy, top + MIN_ROI, 100);
+        return { x: left, y: top, w: right - left, h: bottom - top };
+    }
+
+    // The box can be changed when its fields can: not while the configuration is locked (the fields are
+    // disabled) or for a user below Level 2 (the x, restricted-l2, is disabled).
+    function roiEditable(root) {
+        const x = get(root, "roi_x");
+        const del = root.querySelector(".roi-del");
+        return Boolean(x && !x.disabled && !(del && del.disabled));
+    }
+
+    // The x: no ROI, the whole picture is used.
+    function removeROI(root) {
+        if (!roiEditable(root)) return;
+        get(root, "roi_enabled").checked = false;
+        setROI(root, 0, 0, 100, 100);
+        root.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    // On the picture (mouse, pen or touch): drag to draw the ROI, inside it to move it, a corner to resize it.
     function bindROI(root) {
         const area = root.querySelector(".cs-roi-preview");
         if (!area) return;
-        let start = null;
+        let drag = null;
         const at = (e) => {
             const r = area.getBoundingClientRect();
             return { x: clamp((e.clientX - r.left) / r.width * 100, 0, 100), y: clamp((e.clientY - r.top) / r.height * 100, 0, 100) };
         };
         area.addEventListener("pointerdown", (e) => {
-            start = at(e);
+            if (e.target.closest(".roi-del") || !roiEditable(root)) return;
+            const box = roiValues(root);
+            const shown = get(root, "roi_enabled").checked && (box.w < 99 || box.h < 99);
+            const handle = e.target.closest(".roi-handle");
+            // A box over the whole picture is drawn again rather than moved.
+            const mode = handle ? handle.dataset.roi : shown && e.target.closest(".cs-roi-box") ? "move" : "draw";
+            drag = { mode, box, from: at(e) };
             area.setPointerCapture(e.pointerId);
             get(root, "roi_enabled").checked = true;
             e.preventDefault();
         });
         area.addEventListener("pointermove", (e) => {
-            if (!start) return;
-            const p = at(e);
-            setROI(root, Math.min(start.x, p.x), Math.min(start.y, p.y), Math.max(Math.abs(p.x - start.x), 1), Math.max(Math.abs(p.y - start.y), 1));
+            if (!drag) return;
+            const r = roiDrag(drag.mode, drag.box, drag.from, at(e));
+            setROI(root, r.x, r.y, r.w, r.h);
         });
         const end = () => {
-            if (!start) return;
-            start = null;
+            if (!drag) return;
+            const drawn = drag.mode === "draw";
+            drag = null;
             const { w, h } = roiValues(root);
-            if (w < 3 || h < 3) setROI(root, 0, 0, 100, 100);  // a click, not a drag
+            if (drawn && (w < 3 || h < 3)) setROI(root, 0, 0, 100, 100);  // a click, not a drag
             root.dispatchEvent(new Event("change", { bubbles: true }));
         };
         area.addEventListener("pointerup", end);
         area.addEventListener("pointercancel", end);
+        root.querySelector(".roi-del")?.addEventListener("click", (e) => {
+            e.stopPropagation();
+            removeROI(root);
+        });
         root.querySelector(".cs-roi-reset")?.addEventListener("click", () => {
             setROI(root, 0, 0, 100, 100);
             root.dispatchEvent(new Event("change", { bubbles: true }));
@@ -197,7 +424,7 @@
      */
     function render(container, cam, parts = ["image", "video"]) {
         container.innerHTML = parts.map((part) => (part === "image" ? imageHtml(cam) : videoHtml(cam, parts.length > 1))).join("");
-        if (parts.includes("image")) bindROI(container);
+        if (parts.includes("image")) { bindROI(container); bindIndustrial(container, cam.id); }
         return { loadPicture: (stillWanted) => loadPicture(container, cam.id, stillWanted) };
     }
 
@@ -234,6 +461,22 @@
                 });
             }
         }
+        if (type === "gige" && get(root, "trigger_mode")) {
+            const text = (name) => String(value(name) ?? "").trim();
+            // An empty number is sent as "": the camera then keeps its own exposure or gain.
+            const number = (name) => (text(name) === "" ? "" : Number(text(name)));
+            Object.assign(settings, {
+                // A mode a line card sets is shown read-only and not sent: the server refuses a different one.
+                ...(get(root, "trigger_mode").disabled ? {} : { trigger_mode: value("trigger_mode") }),
+                trigger_line: text("trigger_line"),
+                trigger_edge: value("trigger_edge"),
+                trigger_delay_us: number("trigger_delay_us") || 0,
+                exposure_us: number("exposure_us"),
+                gain_db: number("gain_db"),
+                strobe_line: text("strobe_line"),
+                stream_driver: text("stream_driver"),
+            });
+        }
         if (get(root, "stream_max_width")) {
             settings.stream_jpeg_quality = parseInt(value("stream_jpeg_quality"), 10) || 65;
             settings.stream_max_width = parseInt(value("stream_max_width"), 10) || 640;
@@ -242,5 +485,5 @@
         return settings;
     }
 
-    window.CameraSettingsForm = { render, read };
+    window.CameraSettingsForm = { render, read, lockTrigger, roiDrag, removeROI };
 })();

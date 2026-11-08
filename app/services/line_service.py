@@ -15,8 +15,10 @@ from __future__ import annotations
 import asyncio
 import collections
 import copy
+import functools
 import threading
 import time
+import weakref
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
@@ -24,23 +26,69 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from app.services.counting_service import CountingService, counting_service
 from app.services.line_config import (
     CODE_REASONS,
+    DEFAULT_PICTURE_WAIT_MS,
+    DEFAULT_QR_HOLD_MS,
     DEFAULT_SYNC_WINDOW_MS,
     PRIMARY_LINE_ID,
+    REASON_INSPECTION_TIMEOUT,
+    REASON_PRODUCT_CHECK,
+    REASON_SORTING_MISMATCH,
+    REASON_VISION,
+    camera_model_id,
     camera_station,
     code_checks,
+    is_pattern_check,
+    is_text_reader,
     code_verdict,
     join_settings,
     joined_cameras,
+    picture_per_trigger,
+    picture_source,
     product_result,
+    product_reader,
+    product_sensors,
     reads_codes,
+    sorting_lane,
 )
+from app.services.trigger_pairing import PicturePairer
+
+# Sorting verification remembers the line's last products that had a code.
+SORTING_MEMORY = 200
+# What each camera in trigger mode counts (trigger_view, count_trigger).
+TRIGGER_COUNTERS = ("triggers", "pictures", "results", "missing", "late", "extra")
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 _FPS_WINDOW_SECONDS = 5.0
+# The latest text reads a line keeps, and how long a field's text is remembered for the hold time.
+TEXT_READS_KEPT = 50
+# The latest triggered pattern checks a line keeps.
+PATTERN_CHECKS_KEPT = 50
+TEXT_SEEN_FORGET_S = 60.0
 # What a camera without a loaded model reports as its model.
 NO_MODEL_NAME = "No model"
+
+# Camera trigger with a trigger notice (LineRuntime.trigger_notice / trigger_picture).
+# The clocks of the notices and pictures (a test runs them on a clock of its own): they are paired
+# on the monotonic clock; a product's time is on the wall clock.
+_now = time.monotonic
+_wall = time.time
+# What waits is expired this long after its window ("Wait for the picture") is over.
+PAIRING_MARGIN_S = 0.01
+# A paired picture the model is still busy for is offered to it again this often.
+PAIR_RETRY_S = 0.02
+# Each waiting picture holds a whole frame (about 6 MB at 1080p): at most this many wait for a notice,
+# and at most this many paired pictures wait for the model, per camera.
+MAX_WAITING_PICTURES = 32
+MAX_QUEUED_PAIRS = 64
+# Pictures in a row that no notice claimed before camera.picture_unpaired is raised.
+UNPAIRED_ALARM_AFTER = 3
+
+
+def pairing_time(wall: float) -> float:
+    """A camera driver's wall-clock picture time (``arrived``) on the clock notices and pictures are paired on."""
+    return _now() - (_wall() - wall)
 
 
 # ── Sync pairing ──────────────────────────────────────────────────────────────
@@ -83,13 +131,23 @@ class SyncPairer:
         except Exception:
             return None
 
+    @staticmethod
+    def _comparable(key: Any, other: Any) -> bool:
+        """Both sides name their product, the same way. Keys of two kinds, ``(kind, value)`` with
+        different kinds (a request number and a track), do not decide: the time does."""
+        if key is None or other is None:
+            return False
+        if isinstance(key, tuple) and isinstance(other, tuple) and key[:1] != other[:1]:
+            return False
+        return True
+
     def _pick(self, queue: Deque[_Pending], t: float, key: Any, key_fn: Optional[Callable[[Any], Any]]) -> Optional[_Pending]:
         first = None
         for pending in queue:
             if abs(t - pending.t) > self.window:
                 continue
             other = self._key(key_fn, pending.item)
-            if key is not None and other is not None:
+            if self._comparable(key, other):
                 if other == key:
                     return pending
                 continue  # another product
@@ -330,10 +388,65 @@ class ProductAssembly:
                     stats[key] = 0
 
 
+@dataclass
+class CodeActor:
+    """Who the audit log names for a batch a code set: the camera (as PLCActor names a PLC channel)."""
+    username: str                # "camera:<camera name>"
+    role: str = "CAMERA"
+    clearance_level: int = 2
+
+
 def _camera_name(camera_id: Optional[str]) -> Optional[str]:
     from app.state.application_state import app_state
 
     return getattr(app_state.cameras.get(camera_id or ""), "name", None)
+
+
+def _carton(sequence: Any) -> str:
+    """How a message names a product: by its sequence number when it has one."""
+    return f"sequence {sequence}" if sequence is not None else "the product (no sequence)"
+
+
+def _pair_key(item: Dict[str, Any]) -> Any:
+    """Which product a crossing or a read belongs to, for Sync: the result handshake's request
+    both carry (one "Take a picture" request), else the track a wire line capture carries."""
+    if item.get("request_id") is not None:
+        return ("request", item["request_id"])
+    return ("track", item["track_id"]) if item.get("track_id") is not None else None
+
+
+class _LoopTimer:
+    """``loop.call_later`` that can be started and cancelled from any thread."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, delay: float, fn: Callable[[], None]) -> None:
+        self._fn = fn
+        self._cancelled = False
+        self._handle: Optional[asyncio.TimerHandle] = None
+
+        def start() -> None:
+            if not self._cancelled:
+                self._handle = loop.call_later(max(0.0, delay), self._fire)
+
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            start()
+        else:
+            loop.call_soon_threadsafe(start)
+
+    def _fire(self) -> None:
+        if not self._cancelled:
+            try:
+                self._fn()
+            except Exception:
+                logger.exception("A line timer failed")
+
+    def cancel(self) -> None:
+        self._cancelled = True
+        if self._handle is not None:
+            self._handle.cancel()
 
 
 # ── One line ──────────────────────────────────────────────────────────────────
@@ -353,20 +466,70 @@ class LineRuntime:
         self.sync_enabled = False
         # Cameras whose codes decide good or reject: {camera_id: {"action", "no_read"}}.
         self.code_checks: Dict[str, Dict[str, str]] = {}
+        # The line's product checks that are switched on: reject a product whose rules pass.
+        self.product_checks: List[Dict[str, Any]] = []
         # A crossing is the counter's record of a product that crossed the count
         # line and is not counted yet; a triggered capture's read carries the
-        # track of the product that triggered it.
-        self.pairer = SyncPairer(
-            DEFAULT_SYNC_WINDOW_MS / 1000.0,
-            crossing_key=lambda crossing: crossing.get("track_id"),
-            read_key=lambda read: read.get("track_id"),
-        )
+        # track of the product that triggered it, or the result handshake's request.
+        self.pairer = SyncPairer(DEFAULT_SYNC_WINDOW_MS / 1000.0, crossing_key=_pair_key, read_key=_pair_key)
         # QR readers that take one picture per product: {camera_id: (wire line, delay s)}
         self.capture_triggers: Dict[str, Tuple[int, float]] = {}
+        # Code readers that take one picture each time a PLC signal asks.
+        self.signal_readers: set = set()
+        # The line's PLC signal cards. With a product sensor among them the line gets its
+        # products from the PLC, not from a vision camera.
+        self.plc_inputs: List[Dict[str, Any]] = []
+        self.has_product_sensor = False
+        self._sensor_seq = 0
+        # Cameras in trigger mode: the track number of the next triggered product, and one
+        # trigger at a time per camera (trigger_inspection).
+        self._trigger_seq = 0
+        self._trigger_seq_lock = threading.Lock()
+        self._trigger_locks: Dict[str, asyncio.Lock] = {}
+        # Per camera in trigger mode: its latest capture and that capture's JPEG (None when no picture
+        # came), and its counters. A capture id goes up by one with each capture of the line.
+        self._trigger_captures: Dict[str, Dict[str, Any]] = {}
+        self._trigger_jpegs: Dict[str, Optional[bytes]] = {}
+        self._trigger_capture_seq = 0
+        self._trigger_counters: Dict[str, Dict[str, int]] = {}
+        # Cameras that take their own pictures with a trigger notice: (pairer, its window in s) each while
+        # the line runs; the paired pictures waiting for the model, as (picture, the notice's context, the
+        # picture's wall-clock time); the timer that offers them again; and per camera the pictures in a
+        # row no notice claimed, counted from the latest paired picture's time.
+        self._pairers: Dict[str, Tuple[PicturePairer, float]] = {}
+        self._pair_queues: Dict[str, Deque[Tuple[Any, Dict[str, Any], float]]] = {}
+        self._pair_retry: Dict[str, Any] = {}
+        self._unpaired: Dict[str, int] = {}
+        self._last_paired_at: Dict[str, float] = {}
+        # Per camera, the edges (pairing-clock times) of its notice inputs that are still being read
+        # (notice_edge): nothing that could pair with them is expired meanwhile.
+        self._held: Dict[str, List[float]] = {}
+        self._pair_lock = threading.RLock()
+        # The line's batch (work order) number, "" for none.
+        self.batch = ""
+        # The input whose value is each carton's sequence number (None: the line has none).
+        self.sequence_input_id: Optional[str] = None
+        # Capture request -> result -> the PLC's acknowledge (switched off unless the line sets it).
+        from app.services.handshake import Handshake
+        self.handshake = Handshake(schedule=self._schedule_timer, on_result_timeout=self._handshake_result_timeout,
+                                   on_ack_timeout=self._handshake_ack_timeout)
+        # Batches from codes that the line refused (said once each).
+        self._batch_errors: set = set()
         self.last_capture: Optional[Dict[str, Any]] = None
         self._capture_jpeg: Optional[bytes] = None
         self._capture_seq = 0
         self.qr_recent: Deque[Dict[str, Any]] = collections.deque(maxlen=100)
+        # Text readers: the latest reads (shown_only for a continuous reader), and when each field's
+        # text was last seen ({(camera_id, field, text): monotonic time}) for the hold time.
+        self.text_recent: Deque[Dict[str, Any]] = collections.deque(maxlen=TEXT_READS_KEPT)
+        self._text_seen: Dict[Tuple[str, str, str], float] = {}
+        # Pattern checks: the latest triggered checks, with their products' results.
+        self.pattern_recent: Deque[Dict[str, Any]] = collections.deque(maxlen=PATTERN_CHECKS_KEPT)
+        # Sorting verification: {camera_id: "accepted" / "rejected"}, the last products that had a
+        # code ({"code", "sequence", "result", "at", "verified"}), and what the cameras found.
+        self.sorting_lanes: Dict[str, str] = {}
+        self._sorting_memory: Deque[Dict[str, Any]] = collections.deque(maxlen=SORTING_MEMORY)
+        self._sorting_stats = {"verified": 0, "mismatches": 0, "unmatched": 0}
         self.qr_stats = {"codes_read": 0, "known": 0, "unknown": 0, "no_reads": 0, "unpaired": 0, "code_rejects": 0}
         # Products waiting for the vision cameras that join the counting camera's result.
         self.assembly = ProductAssembly()
@@ -381,10 +544,17 @@ class LineRuntime:
         from app.services.settings_persistence_service import counting_config_from_dict
 
         self.name = line.get("name") or self.id
+        started = bool(line.get("enabled", True)) and not self.enabled
         self.enabled = bool(line.get("enabled", True))
         self.min_fps = float(line.get("min_fps") or 0.0)
         self.yield_target = float(line.get("yield_target") or 0.0)
         self.cameras = copy.deepcopy(line.get("cameras") or [])
+        if started:
+            # A code picture from before the stop is not shown as a new read.
+            from app.services.ocr_service import OcrReaderPipeline
+            from app.services.qr_service import QRReaderPipeline
+            QRReaderPipeline.clear_corners(c["camera_id"] for c in self.cameras)
+            OcrReaderPipeline.clear_corners(c["camera_id"] for c in self.cameras)
         self.counter.line_id = self.id
         self.counter.line_name = self.name
 
@@ -393,7 +563,8 @@ class LineRuntime:
         counting = self.camera_entry(self.counting_camera_id) if self.counting_camera_id else None
         self._set_config(self.counter, counting_config_from_dict(trigger or {}, counting))
 
-        aux_ids = {c["camera_id"] for c in self.cameras if c.get("role") == "vision" and not c.get("counting")}
+        # The stations: vision cameras that do not count, and text readers on One picture per trigger.
+        aux_ids = {c["camera_id"] for c in self.cameras if camera_station(c)}
         for cid in list(self.aux_counters):
             if cid not in aux_ids:
                 self.aux_counters.pop(cid)
@@ -420,10 +591,25 @@ class LineRuntime:
         for cid, aux in self.aux_counters.items():
             aux.event_sink = self._joined_sink(cid) if self.assembly.station(cid) else None
 
+        self.plc_inputs = copy.deepcopy(line.get("plc_inputs") or [])
+        self.has_product_sensor = bool(product_sensors(line))
+        self.set_batch(str(line.get("batch") or ""))
+        self.sequence_input_id = line.get("sequence_input_id") or None
+        self.handshake.configure(line.get("handshake"))
+        # Each product's one event passes the line first when the line adds to it or waits for it.
+        self.sorting_lanes = {c["camera_id"]: sorting_lane(c) for c in self.cameras if sorting_lane(c)}
+        self.counter.product_hook = self._product_finished \
+            if self.sequence_input_id or self.handshake.enabled or self.sorting_lanes else None
+        # A product whose capture request already got its one result (a timeout) is not counted again.
+        self.counter.product_gate = self._admit_product if self.handshake.enabled else None
+
         self.code_checks = code_checks(self.cameras)
+        self.product_checks = [c for c in copy.deepcopy(line.get("product_checks") or []) if c.get("enabled", True)]
         sync = line.get("sync") or {}
         was_on = self.sync_enabled
-        self.sync_enabled = bool(sync.get("enabled")) and self.has_role("vision") and self.has_code_reader
+        # Sync pairs each product with its code: the products come from a vision camera or a PLC sensor.
+        self.sync_enabled = bool(sync.get("enabled")) and self.has_code_reader \
+            and (self.has_role("vision") or self.has_product_sensor)
         self.pairer.window = int(sync.get("window_ms") or DEFAULT_SYNC_WINDOW_MS) / 1000.0
         self.counter.event_sink = self._on_crossing if self.sync_enabled or self.assembly.stations else None
         if was_on and not self.sync_enabled:
@@ -435,6 +621,23 @@ class LineRuntime:
             if reads_codes(c) and c.get("qr_trigger") in ("line1", "line2")
         }
         self.counter.line_crossing_sink = self._on_wire_crossing if self.capture_triggers else None
+        self.signal_readers = {
+            c["camera_id"] for c in self.cameras if reads_codes(c) and c.get("qr_trigger") == "signal"
+        }
+        self._configure_pairing()
+
+    def set_batch(self, batch: str) -> None:
+        """The line's batch number from now on, for its own products and its own stations'."""
+        self.batch = batch or ""
+        self.counter.batch = self.batch
+        for aux in self.aux_counters.values():
+            aux.batch = self.batch
+
+    def _with_batch(self, payload: Dict[str, Any], plc_event: Dict[str, Any]) -> None:
+        """Add the batch to a code event's message and PLC event, while the line has one."""
+        if self.batch:
+            payload["batch"] = self.batch
+            plc_event["batch"] = self.batch
 
     def _set_config(self, counter: CountingService, config: Any) -> None:
         """Give a counter its saved settings, when they changed since they were last given.
@@ -447,8 +650,8 @@ class LineRuntime:
             counter.update_config(config)
 
     def qr_triggered(self, camera_id: str) -> bool:
-        """True when this QR reader decodes one picture per product instead of every frame."""
-        return camera_id in self.capture_triggers
+        """True when this QR reader decodes one picture per product (or per PLC signal) instead of every frame."""
+        return camera_id in self.capture_triggers or camera_id in self.signal_readers
 
     def has_role(self, role: str) -> bool:
         return any(c.get("role") == role for c in self.cameras)
@@ -456,7 +659,7 @@ class LineRuntime:
     @property
     def has_code_reader(self) -> bool:
         """A QR reader or a vision camera with Read codes on."""
-        return any(reads_codes(c) for c in self.cameras)
+        return any(product_reader(c) for c in self.cameras)
 
     def reads_codes(self, camera_id: str) -> bool:
         entry = self.camera_entry(camera_id)
@@ -477,9 +680,10 @@ class LineRuntime:
         return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
     def model_id_for(self, camera_id: Optional[str]) -> Optional[str]:
-        """The model a vision camera of this line runs (None: it has none, or it is not one)."""
+        """The YOLO model a camera of this line runs: a vision camera's, or the one a text reader finds its
+        fields with (None: it has none)."""
         entry = self.camera_entry(camera_id) if camera_id else None
-        return entry.get("model_id") if entry and entry.get("role") == "vision" else None
+        return camera_model_id(entry) if entry else None
 
     def counter_for(self, camera_id: Optional[str]) -> CountingService:
         if camera_id and camera_id in self.aux_counters:
@@ -489,6 +693,21 @@ class LineRuntime:
     @property
     def counting_camera_id(self) -> Optional[str]:
         return next((c["camera_id"] for c in self.cameras if c.get("role") == "vision" and c.get("counting")), None)
+
+    def infers_on_demand(self, camera_id: str) -> bool:
+        """True for a vision camera on One picture per trigger whose picture the system takes: its model
+        runs only on the picture a trigger takes, not on every frame (trigger_inspection)."""
+        entry = self.camera_entry(camera_id)
+        if not entry or not picture_per_trigger(entry):
+            return False
+        from app.state.application_state import app_state
+        return picture_source(entry, getattr(app_state.cameras.get(camera_id), "trigger_mode", "off")) == "system"
+
+    def has_continuous_camera(self) -> bool:
+        """Whether a camera of the line goes through its model or code reader frame after frame, so its
+        frame rate means something. A line without cameras of its own counts as one (Line 1 takes the
+        cameras no line has)."""
+        return not self.cameras or any(not self.infers_on_demand(c["camera_id"]) for c in self.cameras)
 
     # ── Frame rate ────────────────────────────────────────────────────────────
 
@@ -513,13 +732,16 @@ class LineRuntime:
         return round(len(recent) / span, 1)
 
     def processed_fps(self) -> float:
-        """Frames per second the line's counting camera (or its busiest camera) gets through."""
+        """Frames per second the line's counting camera (or its busiest camera) gets through.
+
+        A camera whose model runs only on a trigger's picture is left out: it gets through as many
+        pictures as triggers come, which is no frame rate."""
         cid = self.counting_camera_id
-        if cid:
+        if cid and not self.infers_on_demand(cid):
             return self.fps(cid)
         with self._lock:
             ids = list(self._frames)
-        return max((self.fps(i) for i in ids), default=0.0)
+        return max((self.fps(i) for i in ids if not self.infers_on_demand(i)), default=0.0)
 
     # ── State ─────────────────────────────────────────────────────────────────
 
@@ -530,13 +752,16 @@ class LineRuntime:
         'no_camera' no camera is assigned (and none feeds Line 1 by default);
         'idle'      none of its cameras is connected yet;
         'fault'     a camera lost its link, or only some of its cameras are connected;
-        'running'   every camera is connected.
+        'running'   every camera is connected, or the line has no camera and
+                    gets its products from a PLC product sensor that is switched on.
         """
         if not self.enabled:
             return "stopped"
         ids = [c["camera_id"] for c in self.cameras] or fallback_cameras
         if not ids:
-            return "no_camera"
+            sensor = any(card.get("action") == "product_sensor" and card.get("enabled", True) is True
+                         for card in self.plc_inputs)
+            return "running" if sensor else "no_camera"
         present = [i for i in ids if i in cameras]
         connected = [i for i in present if getattr(cameras.get(i), "is_connected", False)]
         if len(connected) < len(present):
@@ -568,28 +793,61 @@ class LineRuntime:
     # ── QR reads ──────────────────────────────────────────────────────────────
 
     def on_qr_read(self, camera_id: str, code: str, code_format: str, t: Optional[float] = None,
-                   track_id: Optional[int] = None) -> Dict[str, Any]:
-        """Called by a QR reader's thread for each new read. Returns the read record."""
-        from app.services.product_service import product_catalog
+                   track_id: Optional[int] = None, sequence: Optional[Any] = None,
+                   request_id: Optional[int] = None) -> Dict[str, Any]:
+        """Called by a QR reader's thread for each new read of a triggered picture. Returns the read record.
 
-        list_id = self.product_list_id(camera_id)
-        product = product_catalog.lookup(code, list_id)
-        read = {
-            "code": code,
-            "format": code_format,
-            "known": product is not None,
-            "product_name": product.get("name") if product else None,
-            "product_list_id": list_id,
-            "camera_id": camera_id,
-            "t": time.monotonic() if t is None else t,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "track_id": track_id,
-        }
+        ``sequence`` / ``request_id``: what the "Take a picture" input that asked for the picture carries."""
+        read = self._make_read(camera_id, code, code_format, t=t, track_id=track_id)
+        if camera_id in self.sorting_lanes:
+            # A sorting verification camera: the read checks a product's outfeed, nothing else.
+            self._run_on_loop(self._verify_sorting, read)
+            return read
+        for key, value in (("sequence", sequence), ("request_id", request_id)):
+            if value is not None:
+                read[key] = value
         with self._lock:
             self.qr_stats["codes_read"] += 1
             self.qr_stats["known" if read["known"] else "unknown"] += 1
         self._run_on_loop(self._handle_read, read)
         return read
+
+    def show_read(self, camera_id: str, code: str, code_format: str) -> Dict[str, Any]:
+        """A code a camera read Continuously: it is only shown (the line's recent reads), nothing else.
+
+        The exception: a sorting verification camera verifies Continuously too (it reports, it never decides)."""
+        read = self._make_read(camera_id, code, code_format)
+        if camera_id in self.sorting_lanes:
+            self._run_on_loop(self._verify_sorting, read)
+            return read
+        self._remember(read, "known" if read["known"] else "unknown", paired=None, shown_only=True)
+        return read
+
+    def _make_read(self, camera_id: str, code: str, code_format: str, t: Optional[float] = None,
+                   track_id: Optional[int] = None) -> Dict[str, Any]:
+        """One read: the code, and what it says by its list's code format: the product it stands
+        for, its product ID and batch, and why it does not fit (``code_problem``)."""
+        from app.services.product_service import product_catalog
+
+        list_id = self.product_list_id(camera_id)
+        found = product_catalog.match(code, list_id)
+        product = found.product
+        return {
+            "code": code,
+            "format": code_format,
+            "known": product is not None,
+            "product_name": product.get("name") if product else None,
+            "product_list_id": list_id,
+            # The product the code stands for, with its values (None for an unknown code).
+            "product": product_catalog.product_info(product, list_id) if product else None,
+            "camera_id": camera_id,
+            "t": time.monotonic() if t is None else t,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "track_id": track_id,
+            "product_id": found.product_id,
+            "code_batch": found.batch,
+            "code_problem": found.problem,
+        }
 
     # ── Captures on a wire line crossing ──────────────────────────────────────
 
@@ -607,22 +865,17 @@ class LineRuntime:
                 )
 
     def on_qr_capture(self, camera_id: str, capture: Dict[str, Any], jpeg: Optional[bytes]) -> Dict[str, Any]:
-        """A QR reader took its picture (QR reader thread). Keeps it for the dashboard and reports its codes.
-
-        A test capture (capture["test"]) is only kept for viewing: it sends no
-        read, no-read or PLC event.
-        """
+        """A QR reader took its picture (QR reader thread). Keeps it for the dashboard and reports its codes."""
         with self._lock:
             self._capture_seq += 1
             capture = {**capture, "id": self._capture_seq}
             self.last_capture = capture
             self._capture_jpeg = jpeg
-        if capture.get("test"):
-            return capture
         if capture.get("codes"):
             for code in self._deciding_first(camera_id, capture["codes"]):
-                self.on_qr_read(camera_id, code["code"], code["format"], t=capture.get("t"), track_id=capture.get("track_id"))
-        elif not self.sync_enabled:
+                self.on_qr_read(camera_id, code["code"], code["format"], t=capture.get("t"), track_id=capture.get("track_id"),
+                                sequence=capture.get("sequence"), request_id=capture.get("request_id"))
+        elif not self.sync_enabled and camera_id not in self.sorting_lanes:
             # With Sync on, the product's crossing goes out as a no-read when
             # no code pairs with it; without Sync, say so here.
             self._run_on_loop(self._emit_no_read, camera_id, capture)
@@ -644,6 +897,358 @@ class LineRuntime:
         with self._lock:
             return (dict(self.last_capture) if self.last_capture else None), self._capture_jpeg
 
+    # ── Trigger cameras: the latest picture and the counters ─────────────────
+
+    def remember_trigger_capture(self, camera_id: str, answer: Dict[str, Any], jpeg: Optional[bytes]) -> int:
+        """Keep the latest capture of a camera in trigger mode; returns its id (it goes up with each capture).
+
+        ``answer``: ``status`` ("inspected", "nothing" or "no_picture"), ``class_name``, ``result``,
+        ``reject_reason`` and ``trigger_no``. ``jpeg``: the picture with its boxes, None when no
+        picture came. A new capture replaces the camera's last one.
+        """
+        with self._lock:
+            self._trigger_capture_seq += 1
+            capture_id = self._trigger_capture_seq
+            self._trigger_captures[camera_id] = {
+                "id": capture_id,
+                "at": datetime.now(timezone.utc).isoformat(),
+                "class_name": answer.get("class_name"),
+                "result": answer.get("result"),
+                "reason": answer.get("reject_reason"),
+                "trigger_no": answer.get("trigger_no"),
+                "has_picture": jpeg is not None,
+            }
+            self._trigger_jpegs[camera_id] = jpeg
+        return capture_id
+
+    def trigger_capture(self, camera_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[bytes]]:
+        """The camera's latest capture and its JPEG; (None, None) before its first."""
+        with self._lock:
+            capture = self._trigger_captures.get(camera_id)
+            return (dict(capture) if capture else None), self._trigger_jpegs.get(camera_id)
+
+    def count_trigger(self, camera_id: str, key: str, n: int = 1) -> None:
+        """Add ``n`` to one of a trigger camera's counters (one of TRIGGER_COUNTERS)."""
+        if key not in TRIGGER_COUNTERS:
+            raise ValueError(f"'{key}' is not a trigger counter; use one of {', '.join(TRIGGER_COUNTERS)}")
+        with self._lock:
+            counters = self._trigger_counters.setdefault(camera_id, dict.fromkeys(TRIGGER_COUNTERS, 0))
+            counters[key] += n
+
+    def trigger_view(self) -> List[Dict[str, Any]]:
+        """One row per vision camera in count mode trigger, in card order, for the line's status.
+
+        ``{camera_id, picture_source, notice_trigger, capture, counters}``. The notice is the number of
+        the trigger that tells the server a camera took a picture; it is only used when the camera takes
+        the picture itself, so it is None for a picture from the system.
+        """
+        from app.services.trigger_inspection import trigger_cameras
+        from app.state.application_state import app_state
+
+        wanted = set(trigger_cameras(self))
+        rows = []
+        for cam in self.cameras:
+            camera_id = cam["camera_id"]
+            if camera_id not in wanted:
+                continue
+            source = picture_source(cam, getattr(app_state.cameras.get(camera_id), "trigger_mode", "off"))
+            with self._lock:
+                capture = self._trigger_captures.get(camera_id)
+                counters = self._trigger_counters.get(camera_id) or {}
+                rows.append({
+                    "camera_id": camera_id,
+                    "picture_source": source,
+                    "notice_trigger": cam.get("notice_trigger") if source == "camera" else None,
+                    "capture": dict(capture) if capture else None,
+                    "counters": {key: counters.get(key, 0) for key in TRIGGER_COUNTERS},
+                })
+        return rows
+
+    # ── Camera trigger with a trigger notice ──────────────────────────────────
+    # The camera takes each picture on its own input; the "Take a picture" input with the card's notice
+    # number tells the server one is coming. A notice and a picture at most Wait for the picture (W) apart,
+    # in either order, are one product (trigger_pairing). The notices come on the event loop, the pictures
+    # from the camera runner, the model's results on the camera's inference thread.
+
+    def _configure_pairing(self) -> None:
+        """One pairer per vision camera on One picture per trigger whose card names a trigger notice and does
+        not say the system takes its picture, with the card's Wait for the picture; none while the line is
+        stopped. A camera whose window did not change keeps what waits for it; one whose window changed
+        while the line runs answers what waited (_change_window). On a stop, or for a camera that has no
+        notice any more, whatever waited is dropped and nothing is made of it."""
+        wanted: Dict[str, float] = {}
+        if self.enabled:
+            for cam in self.cameras:
+                if picture_per_trigger(cam) \
+                        and cam.get("notice_trigger") is not None and cam.get("picture_source") != "system":
+                    wanted[cam["camera_id"]] = int(cam.get("picture_wait_ms") or DEFAULT_PICTURE_WAIT_MS) / 1000.0
+        for camera_id in self._paired_cameras():
+            pairing, window = self._pairers.get(camera_id), wanted.get(camera_id)
+            if pairing is None or window is None:
+                self._drop_pairing(camera_id)
+            elif pairing[1] != window:
+                self._change_window(camera_id, pairing, window)
+        for camera_id, window in wanted.items():
+            if camera_id not in self._pairers:
+                self._pairers[camera_id] = (PicturePairer(window), window)
+
+    def _change_window(self, camera_id: str, old: Tuple[PicturePairer, float], window: float) -> None:
+        """Wait for the picture changed while the line runs. The camera pairs with the new window from now
+        on; what waited under the old one gets its answer now: each waiting notice is a "no picture"
+        reject with its context and time, and each waiting picture is dropped and counted extra. The
+        pairs waiting for the model do not depend on the window: they go on."""
+        from app.services.trigger_inspection import no_picture_product
+
+        self._pairers[camera_id] = (PicturePairer(window), window)
+        left = old[0].expire(float("inf"))
+        for notice in left.missing:
+            no_picture_product(self, camera_id, f"its Wait for the picture changed from {round(old[1] * 1000)} ms "
+                                                "before the picture came", **notice.context)
+        dropped = len(left.late) + len(left.extra)
+        if dropped:
+            self.count_trigger(camera_id, "extra", dropped)
+
+    def _drop_pairing(self, camera_id: str) -> None:
+        """Forget the notices and pictures that wait for a camera, and its pairs waiting for the model."""
+        pairing = self._pairers.pop(camera_id, None)
+        if pairing is not None:
+            pairing[0].clear()
+        with self._pair_lock:
+            self._pair_queues.pop(camera_id, None)
+            retry = self._pair_retry.pop(camera_id, None)
+            self._unpaired.pop(camera_id, None)
+            self._last_paired_at.pop(camera_id, None)
+            self._held.pop(camera_id, None)
+        if retry is not None:
+            retry.cancel()
+
+    def stop_pairing(self) -> None:
+        """Forget everything that waits for a notice or for the model (the line is gone)."""
+        for camera_id in self._paired_cameras():
+            self._drop_pairing(camera_id)
+
+    def _paired_cameras(self) -> set:
+        """The cameras with a pairer or with pairs waiting for the model."""
+        with self._pair_lock:
+            return set(self._pairers) | set(self._pair_queues)
+
+    def has_notice(self, camera_id: str) -> bool:
+        """True for a camera of the running line that takes its own pictures (Picture taken by: Camera trigger)
+        and has a trigger notice: each of its pictures waits for a notice, and only a paired one is inspected."""
+        if camera_id not in self._pairers:
+            return False
+        from app.state.application_state import app_state
+
+        entry = self.camera_entry(camera_id) or {}
+        return picture_source(entry, getattr(app_state.cameras.get(camera_id), "trigger_mode", "off")) == "camera"
+
+    def notice_edge(self, trigger_no: Optional[int]) -> Tuple[float, float]:
+        """A "Take a picture" input with this trigger number saw its edge now. Returns the time, on the
+        pairing clock and the wall clock: the notice's time (trigger_notice ``seen_at`` / ``seen_wall``).
+
+        The input reads its product sequence (and opens its handshake request) before its notices are
+        given. Meanwhile the cameras whose notice it is expire nothing that could still pair with it,
+        so a picture taken at the edge waits for the notice however long the read takes. Each camera's
+        hold ends with its notice, or with notice_edge_done.
+        """
+        seen = (_now(), _wall())
+        if trigger_no is not None:
+            with self._pair_lock:
+                for cam in self.cameras:
+                    if cam["camera_id"] in self._pairers and cam.get("notice_trigger") == trigger_no:
+                        self._held.setdefault(cam["camera_id"], []).append(seen[0])
+        return seen
+
+    def notice_edge_done(self, seen: Tuple[float, float]) -> None:
+        """The input whose edge was seen at ``seen`` is done: its cameras' holds that are left end
+        (it gave no notice: a duplicate request, a refusal, an error)."""
+        for camera_id in self._release_edge(seen[0]):
+            pairing = self._pairers.get(camera_id)
+            if pairing is not None:
+                self._expire_later(camera_id, pairing[1])
+
+    def _release_edge(self, at: float, camera_id: Optional[str] = None) -> List[str]:
+        """End the hold of one edge, for one camera or all; returns the cameras it held."""
+        released = []
+        with self._pair_lock:
+            for held_id in [camera_id] if camera_id is not None else list(self._held):
+                held = self._held.get(held_id)
+                if held and at in held:
+                    held.remove(at)
+                    if not held:
+                        del self._held[held_id]
+                    released.append(held_id)
+        return released
+
+    def trigger_notice(self, camera_id: str, trigger_no: int, context: Dict[str, Any]) -> None:
+        """The "Take a picture" input that is this camera's trigger notice fired: one picture is coming.
+
+        ``context``: what the input carries (``sequence``, ``request_id``), and ``seen_at`` / ``seen_wall``,
+        when its edge was seen (notice_edge; now when left out). The notice has that time and keeps
+        ``{"trigger_no", "sequence", "request_id", "at"}`` (``at``: the wall-clock time), the arguments of
+        no_picture_product. A waiting picture at most Wait for the picture from it takes it at once; else
+        it waits for its picture until that long after its time (_expire_pairing). The paired picture
+        goes to the model, and its product keeps the context. Counts ``triggers``. Ends the camera's
+        hold for this edge. Raises ValueError for a camera without a notice on this line, or a stopped line.
+        """
+        pairing = self._pairers.get(camera_id)
+        if pairing is None or not self.enabled:
+            raise ValueError(f"Camera '{camera_id}' has no trigger notice on running line '{self.name}'")
+        pairer, window = pairing
+        self.count_trigger(camera_id, "triggers")
+        seen_at = context.get("seen_at")
+        at = _now() if seen_at is None else seen_at
+        wall = _wall() if context.get("seen_wall") is None else context["seen_wall"]
+        notice_context = {"trigger_no": trigger_no, "sequence": context.get("sequence"),
+                          "request_id": context.get("request_id"), "at": wall}
+        pair = pairer.add_notice(at, notice_context)
+        released = seen_at is not None and bool(self._release_edge(seen_at, camera_id))
+        if pair is not None:
+            self._paired(camera_id, *pair)
+        if pair is None or released:
+            self._expire_later(camera_id, window)       # what the hold kept goes now in its turn
+
+    def trigger_picture(self, camera_id: str, frame: Any, frame_id: int, arrived: float) -> None:
+        """A picture the camera took itself, handed over by the camera runner in the order taken.
+
+        ``arrived``: when it arrived, on the pairing clock (pairing_time of the driver's time). Counts
+        ``pictures``. A waiting notice it fits takes it and it goes to the model; else it waits for a
+        notice up to Wait for the picture, and then counts late or extra (_expire_pairing). When
+        MAX_WAITING_PICTURES wait already, it is extra at once: each one holds a whole frame.
+        """
+        pairing = self._pairers.get(camera_id)
+        if pairing is None or not self.enabled:
+            return
+        pairer, window = pairing
+        self.count_trigger(camera_id, "pictures")
+        if pairer.waiting()[1] >= MAX_WAITING_PICTURES:
+            self._expire_pairing(camera_id)
+            if pairer.waiting()[1] >= MAX_WAITING_PICTURES:
+                self.count_trigger(camera_id, "extra")
+                self._note_unpaired(camera_id, [arrived])
+                return
+        pair = pairer.add_picture(arrived, frame, frame_id)
+        if pair is not None:
+            self._paired(camera_id, *pair)
+        else:
+            self._expire_later(camera_id, window)
+
+    def _expire_later(self, camera_id: str, window: float) -> None:
+        """Expire what waits for this camera once its window is over, on a line timer: a camera that is not
+        connected (the runner skips it) still gets its answers. Without the line's loop, what is overdue
+        goes now."""
+        if self._schedule_timer(window + PAIRING_MARGIN_S, lambda: self._expire_pairing(camera_id)) is None:
+            self._expire_pairing(camera_id)
+
+    def _expire_pairing(self, camera_id: str) -> None:
+        """What waited longer than Wait for the picture: each notice without its picture is a "no picture"
+        reject with the notice's context; each picture without a notice counts late or extra, and is
+        not inspected. While a notice input of the camera is still being read (notice_edge), what could
+        pair with its edge is kept: this runs as if it were the moment of that edge."""
+        from app.services.trigger_inspection import no_picture_product
+
+        pairing = self._pairers.get(camera_id)
+        if pairing is None or not self.enabled:
+            return
+        pairer, window = pairing
+        now = _now()
+        with self._pair_lock:
+            held = self._held.get(camera_id)
+            if held:
+                now = min(now, min(held))
+        expired = pairer.expire(now)
+        for notice in expired.missing:
+            no_picture_product(self, camera_id, f"no picture within {round(window * 1000)} ms of the notice",
+                               **notice.context)
+        if expired.late:
+            self.count_trigger(camera_id, "late", len(expired.late))
+        if expired.extra:
+            self.count_trigger(camera_id, "extra", len(expired.extra))
+        if expired.late or expired.extra:
+            self._note_unpaired(camera_id, [picture.at for picture in expired.late + expired.extra])
+
+    def _note_unpaired(self, camera_id: str, times: List[float]) -> None:
+        """Pictures no notice claimed, by their times. UNPAIRED_ALARM_AFTER in a row (taken after the latest
+        paired picture) raise camera.picture_unpaired; the next paired picture clears it (_paired)."""
+        from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
+        from app.state.application_state import app_state
+
+        with self._pair_lock:
+            last = self._last_paired_at.get(camera_id)
+            streak = self._unpaired.get(camera_id, 0) + sum(1 for t in times if last is None or t > last)
+            self._unpaired[camera_id] = streak
+        if streak < UNPAIRED_ALARM_AFTER:
+            return
+        name = getattr(app_state.cameras.get(camera_id), "name", None) or camera_id
+        alarm_manager.raise_alarm(
+            AlarmCode.CAMERA_PICTURE_UNPAIRED, f"camera:{camera_id}",
+            f"Camera '{name}' on line '{self.name}' took {streak} pictures in a row that no trigger notice "
+            "claimed (late or extra); they were not inspected",
+            AlarmSeverity.WARNING, {"line_id": self.id, "camera_id": camera_id, "unpaired": streak},
+        )
+
+    def _paired(self, camera_id: str, notice: Any, picture: Any) -> None:
+        """A notice and a picture belong together: the picture waits for the camera's model with the notice's
+        context (drain_pairs), and the run of unpaired pictures ends. When MAX_QUEUED_PAIRS wait already,
+        the oldest gets its answer now: a "no picture" reject."""
+        from app.events.alarm_events import AlarmCode, alarm_manager
+        from app.services.trigger_inspection import no_picture_product
+
+        arrived = _wall() - (_now() - picture.at)      # the picture's time on the wall clock: its product's time
+        with self._pair_lock:
+            self._unpaired[camera_id] = 0
+            self._last_paired_at[camera_id] = max(picture.at, self._last_paired_at.get(camera_id, picture.at))
+            queue = self._pair_queues.setdefault(camera_id, collections.deque())
+            dropped = queue.popleft() if len(queue) >= MAX_QUEUED_PAIRS else None
+            queue.append((picture, notice.context, arrived))
+        alarm_manager.clear_alarm(AlarmCode.CAMERA_PICTURE_UNPAIRED, f"camera:{camera_id}",
+                                  "a picture was paired with its trigger notice")
+        if dropped is not None:
+            no_picture_product(self, camera_id, f"the model fell behind: more than {MAX_QUEUED_PAIRS} pictures "
+                                                "waited for it", **dropped[1])
+        self.drain_pairs(camera_id)
+
+    def drain_pairs(self, camera_id: str) -> None:
+        """Give the camera's oldest paired picture to its model when the model is free, with its notice's context.
+
+        Called when a pair is made, by the camera runner on each pass (_push_triggered), and by a line timer
+        while pairs wait, so pairs do not wait for a camera that disconnected. One at a time, in order."""
+        from app.services.vision_service import _hardware_result, picture_worker
+
+        with self._pair_lock:
+            queue = self._pair_queues.get(camera_id)
+            if not queue:
+                return
+            picture, context, arrived = queue[0]
+            worker = picture_worker(camera_id, (self.camera_entry(camera_id) or {}).get("role", "vision"))
+            if worker.submit_frame_if_idle(picture.frame, picture.frame_id, conf_thresh=self.confidence_for(camera_id),
+                                           copy=False, arrived_at=arrived,
+                                           on_result=functools.partial(_hardware_result, camera_id, context=context),
+                                           on_failure=functools.partial(self._pair_failed, camera_id, context)):
+                queue.popleft()
+            waiting = bool(queue)
+        if waiting:
+            self._retry_pairs_later(camera_id)
+
+    def _pair_failed(self, camera_id: str, context: Dict[str, Any], frame_id: int, why: str) -> None:
+        """The camera's model could not inspect a paired picture (no model, or it raised): its notice still
+        gets its one answer, a "no picture" reject with the notice's context."""
+        from app.services.trigger_inspection import no_picture_product
+
+        if not self.enabled:
+            return      # the line was stopped while the model ran
+        no_picture_product(self, camera_id, f"the model could not inspect the picture: {why}", **context)
+
+    def _retry_pairs_later(self, camera_id: str) -> None:
+        with self._pair_lock:
+            if self._pair_retry.get(camera_id) is None:
+                self._pair_retry[camera_id] = self._schedule_timer(PAIR_RETRY_S, lambda: self._retry_pairs(camera_id))
+
+    def _retry_pairs(self, camera_id: str) -> None:
+        with self._pair_lock:
+            self._pair_retry.pop(camera_id, None)
+        self.drain_pairs(camera_id)
+
     def _record(self, payload: Dict[str, Any], kind: str, counted: bool, **extra: Any) -> None:
         """Keep one product or code read in the product records (not for a counter that sends nothing)."""
         if self.counter.dispatch_telemetry:
@@ -653,7 +1258,8 @@ class LineRuntime:
     def _emit_no_read(self, camera_id: str, capture: Dict[str, Any]) -> None:
         with self._lock:
             self.qr_stats["no_reads"] += 1
-        self._remember(None, "no_read", paired=None, class_name=capture.get("class_name"), camera_id=camera_id)
+        self._remember(None, "no_read", paired=None, class_name=capture.get("class_name"), camera_id=camera_id,
+                       sequence=capture.get("sequence"))
         self._qr_seq += 1
         payload = {
             "event": "QR_CODE_NO_READ",
@@ -680,18 +1286,56 @@ class LineRuntime:
             "qr_paired": None,
             "timestamp": time.time(),
         }
+        self._with_batch(payload, plc_event)
+        if capture.get("sequence") is not None:
+            payload["sequence"] = plc_event["sequence"] = capture["sequence"]
         self._record(payload, "code", counted=False, product_list_id=self.product_list_id(camera_id))
         self._publish(("qr_code",), payload, plc_event)
 
     def _handle_read(self, read: Dict[str, Any]) -> None:
+        self._batch_from_code(read)
         if self.sync_enabled:
             self._process(self.pairer.add_read(read["t"], read))
             self._schedule_expiry()
         elif read["camera_id"] in self.code_checks and not self.has_role("vision"):
             # No vision camera on the line: the code alone decides, and each read is one product.
+            # (A line with a PLC product sensor never comes here: a camera that checks codes
+            # switches its Sync on, so its reads are paired above.)
             self._emit_code_product(read)
         else:
             self._emit_qr(read, paired=None)
+
+    def _batch_from_code(self, read: Dict[str, Any]) -> None:
+        """A camera set to it makes a listed product's batch the line's batch (written to the audit log).
+
+        Only a triggered read comes here: a code read Continuously is only shown.
+        """
+        batch = read.get("code_batch")
+        entry = self.camera_entry(read["camera_id"]) or {}
+        if not entry.get("code_sets_batch") or not read.get("product") or not batch or batch == self.batch:
+            return
+        from app.routes.v1.lines import set_line_batch
+
+        try:
+            set_line_batch(self.id, batch, CodeActor(f"camera:{_camera_name(read['camera_id']) or read['camera_id']}"))
+        except Exception as exc:
+            # The carton keeps its own batch; the line keeps its batch. Said once per batch.
+            if batch not in self._batch_errors:
+                self._batch_errors.add(batch)
+                logger.warning("Line %s: the batch %r of a code could not become the line's batch: %s", self.id, batch, exc)
+
+    def sensor_product(self) -> None:
+        """A PLC sensor saw one product (a line without a vision camera). Called on the event loop.
+
+        It is counted, recorded and sent like a product a camera saw cross its
+        count line; with Sync on it waits for its code first. Its track number
+        is the line's own count of sensor products, so every product has its
+        own event id, also after the counters were reset.
+        """
+        if not self.enabled:
+            return
+        self._sensor_seq += 1
+        self.counter.emit_crossing(self.counter.make_crossing("product", track_id=self._sensor_seq))
 
     def _on_crossing(self, crossing: Dict[str, Any]) -> None:
         """Counter event sink while Sync is on (called from an inference thread).
@@ -786,14 +1430,31 @@ class LineRuntime:
         found none); None without Sync. ``product``: what its joined cameras
         saw, on a line that has them.
         """
+        # The request this product answers: the vision camera's (it made the product), else its code's.
+        if kind == "paired":
+            for key in ("sequence", "request_id"):
+                if crossing.get(key) is None and read.get(key) is not None:
+                    crossing[key] = read[key]
+        if self.handshake.enabled and not self._admit_product(crossing):
+            return
+        sequence = self._product_sequence(crossing)
         # One result per product: the vision camera's, the joined cameras' and,
-        # where a camera checks codes, the paired code's (or the missing code's).
+        # where a camera checks codes, the paired code's (or the missing code's);
+        # last, the line's product checks on the product of a known code.
+        check = self._failed_check(read, crossing) if kind == "paired" else None
         reject, reason, reject_camera = product_result(
             bool(crossing["is_defect"]), read if kind == "paired" else None, self.code_checks,
             product.results() if product else None, product.missing() if product else None,
-            crossing.get("camera_id"),
+            crossing.get("camera_id"), product_check=check,
         )
-        result = self._result(reject) if self.code_checks else None
+        check = check if reason == REASON_PRODUCT_CHECK else None
+        if reason == REASON_VISION:
+            # What that camera's own picture said, when it said more than "a defect class"
+            # (a triggered picture in which nothing was found).
+            seen = crossing if reject_camera == crossing.get("camera_id") else \
+                (product.seen.get(reject_camera) if product else None)
+            reason = (seen or {}).get("reject_reason") or reason
+        result = self._result(reject) if self.code_checks or self.product_checks else None
         fields: Dict[str, Any] = {}
         plc_fields: Dict[str, Any] = {}
         if kind == "paired":
@@ -806,21 +1467,38 @@ class LineRuntime:
                 "qr_paired": True,
             }
             self._remember(read, status, paired=True, class_name=crossing.get("class_name"),
-                           result=result, reason=reason)
+                           result=result, reason=reason, product_check=check, sequence=sequence)
         elif kind == "no_read":
             status = "no_read"
             fields = {"qr_code": None, "qr_format": None, "qr_status": "no_read", "product_name": None, "qr_paired": False}
             with self._lock:
                 self.qr_stats["no_reads"] += 1
             self._remember(None, "no_read", paired=False, class_name=crossing.get("class_name"),
-                           camera_id=crossing.get("camera_id"), result=result, reason=reason)
+                           camera_id=crossing.get("camera_id"), result=result, reason=reason, sequence=sequence)
         if kind is not None:
             plc_fields = {"qr_code": fields["qr_code"], "qr_status": status, "qr_paired": fields["qr_paired"]}
+        if kind == "paired" and read.get("product"):
+            fields["product"] = plc_fields["product"] = read["product"]
+        if kind == "paired":
+            # The carton's product ID, and its batch in place of the line's (applied after it).
+            code_fields, code_plc_fields = self._code_fields(read)
+            fields.update(code_fields)
+            plc_fields.update(code_plc_fields)
+        if check:
+            fields["product_check"] = plc_fields["product_check"] = check
         if reject and reason in CODE_REASONS:
             with self._lock:
                 self.qr_stats["code_rejects"] += 1
         if product is not None:
             fields["stations"] = self._station_rows(product)
+            text, text_status = self._joined_text(product)
+            if text is not None:
+                fields["text"] = plc_fields["text"] = text
+                fields["text_status"] = plc_fields["text_status"] = text_status
+            match, match_status = self._joined_match(product)
+            if match is not None:
+                fields["match"] = plc_fields["match"] = match
+                fields["match_status"] = plc_fields["match_status"] = match_status
             fields["reject_camera_id"] = reject_camera
             plc_fields["reject_camera_id"] = reject_camera
             # A card that names a joined camera fires for the products it takes part in.
@@ -837,6 +1515,305 @@ class LineRuntime:
             # the crossing, where the product was.
             delay_from_crossing=bool(self.code_checks) or product is not None,
         )
+
+    def _sequence_now(self) -> Any:
+        """The last value the line's sequence input read; None without one, or while it cannot be read."""
+        if not self.sequence_input_id:
+            return None
+        from app.services.plc_input_service import PLCInputService
+        return PLCInputService.value_of(self.id, self.sequence_input_id)
+
+    def _product_sequence(self, item: Dict[str, Any]) -> Any:
+        """A product's (or a code-only product's read's) sequence number, kept in ``item``.
+
+        The one its "Take a picture" request carried; a product made without one (a moving line)
+        takes the sequence input's value of this moment."""
+        if item.get("sequence") is None:
+            now = self._sequence_now()
+            if now is not None:
+                item["sequence"] = now
+        return item.get("sequence")
+
+    def _product_finished(self, crossing: Dict[str, Any], payload: Dict[str, Any], plc_event: Dict[str, Any]) -> None:
+        """The line's counter hook: each product's one event, before it is recorded and sent."""
+        sequence = self._product_sequence(crossing)
+        if sequence is not None:
+            payload["sequence"] = plc_event["sequence"] = sequence
+        self._handshake_result(crossing, plc_event.get("result"))
+        self._sorting_note(plc_event.get("qr_code"), sequence, plc_event.get("result"))
+
+    # ── Sorting verification ──────────────────────────────────────────────────
+
+    def _sorting_note(self, code: Optional[str], sequence: Any, result: Optional[str]) -> None:
+        """Remember a product that had a code, for the line's sorting verification cameras."""
+        if not self.sorting_lanes or not code or result not in ("good", "reject"):
+            return
+        with self._lock:
+            self._sorting_memory.append({"code": code, "sequence": sequence, "result": result,
+                                         "at": time.time(), "verified": None})
+
+    def sorting_counts(self) -> Dict[str, int]:
+        with self._lock:
+            return dict(self._sorting_stats)
+
+    def _verify_sorting(self, read: Dict[str, Any]) -> None:
+        """A sorting verification camera read a code at its outfeed (on the loop).
+
+        The oldest product with that code that is not verified yet (cartons leave in the order
+        they were inspected) should be in this outfeed: accepted for a good product, rejected for
+        a reject. A mismatch raises an alarm, fires the "Sorting mismatch" cards and is recorded.
+        """
+        from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
+
+        lane = self.sorting_lanes.get(read["camera_id"])
+        if lane is None:
+            return
+        with self._lock:
+            entry = next((e for e in self._sorting_memory if e["code"] == read["code"] and e["verified"] is None), None)
+            if entry is not None:
+                entry["verified"] = lane
+                expected = "accepted" if entry["result"] == "good" else "rejected"
+                outcome = "verified" if expected == lane else "mismatch"
+                self._sorting_stats["verified" if outcome == "verified" else "mismatches"] += 1
+            else:
+                expected, outcome = None, "unmatched"
+                self._sorting_stats["unmatched"] += 1
+        sequence = entry["sequence"] if entry is not None else None
+        self._remember(read, "known" if read["known"] else "unknown", paired=None, sequence=sequence,
+                       verification={"sorting_lane": lane, "verification": outcome, "expected_lane": expected})
+        payload: Dict[str, Any] = {
+            "event": {"verified": "SORTING_VERIFIED", "mismatch": "SORTING_MISMATCH"}.get(outcome, "SORTING_UNMATCHED"),
+            "timestamp": read["timestamp"],
+            "line_id": self.id,
+            "line_name": self.name,
+            "camera_id": read["camera_id"],
+            "code": read["code"],
+            "format": read["format"],
+            "seen_lane": lane,
+        }
+        if outcome == "unmatched":
+            logger.info("Line '%s': the %s outfeed camera read %r, which no product waiting for its "
+                        "verification has", self.name, lane, read["code"])
+            self._publish_bus(("sorting",), payload)
+            return
+        payload["expected_lane"] = expected
+        payload["product_result"] = "PASSED" if entry["result"] == "good" else "REJECTED"
+        if sequence is not None:
+            payload["sequence"] = sequence
+        plc_event: Dict[str, Any] = {
+            "event_type": "sorting_verified" if outcome == "verified" else "sorting_mismatch",
+            "event_id": f"sorting_{self.id}_{time.time_ns()}",
+            "line_id": self.id,
+            "camera_id": read["camera_id"],
+            "qr_code": read["code"],
+            "expected_lane": expected,
+            "seen_lane": lane,
+            "timestamp": time.time(),
+        }
+        if sequence is not None:
+            plc_event["sequence"] = sequence
+        if outcome == "mismatch":
+            logger.warning("Line '%s': %s (code %r, %s) is in the %s outfeed, expected the %s outfeed",
+                           self.name, _carton(sequence), read["code"], entry["result"], lane, expected)
+            alarm_manager.raise_alarm(
+                AlarmCode.LINE_SORTING_MISMATCH, self._alarm_source("sorting"),
+                f"Line '{self.name}': {_carton(sequence)} (code {read['code']}) "
+                f"is in the {lane} outfeed; its result sends it to the {expected} outfeed.",
+                AlarmSeverity.CRITICAL,
+                {"line_id": self.id, "camera_id": read["camera_id"], "code": read["code"], "sequence": sequence,
+                 "expected_lane": expected, "seen_lane": lane},
+            )
+            self._record(payload, "verification", counted=False, result="reject",
+                         reject_reason=REASON_SORTING_MISMATCH, product_list_id=read.get("product_list_id"))
+        self._publish(("sorting",), payload, plc_event)
+
+    def _publish_bus(self, topics: Tuple[str, ...], payload: Dict[str, Any]) -> None:
+        """An event for the event bus only (dashboards, flows): no output action or send card fires."""
+        loop = self._loop()
+        if loop is None:
+            return
+        try:
+            from app.events.event_bus import event_bus
+            for topic in topics:
+                asyncio.run_coroutine_threadsafe(event_bus.publish(topic, payload), loop)
+        except Exception as exc:
+            logger.debug("Event bus error on line %s: %s", self.id, exc)
+
+    # ── Result handshake ──────────────────────────────────────────────────────
+
+    def _schedule_timer(self, delay: float, fn: Callable[[], None]) -> Optional[_LoopTimer]:
+        loop = self._loop()
+        return _LoopTimer(loop, delay, fn) if loop is not None else None
+
+    def _alarm_source(self, what: str) -> str:
+        return f"line:{self.id}:{what}"
+
+    def capture_request(self, input_id: Optional[str], sequence: Any) -> Optional[Dict[str, Any]]:
+        """A "Take a picture" input fired with this sequence: its request in the line's result handshake.
+
+        None when the handshake is off or this is not its capture input. ``action`` "duplicate":
+        the sequence is still in the handshake, so no picture is taken. A capture that skipped the
+        ack, or came before the last result, is reported as a fault and goes ahead.
+        """
+        if not input_id or input_id != self.handshake.capture_input_id:
+            return None
+        answer = self.handshake.capture(sequence)
+        if answer is None:
+            return None
+        if answer["action"] == "duplicate":
+            logger.warning("Line '%s': the PLC asked again for sequence %s, which is still in the result handshake; "
+                           "ignored (no picture)", self.name, sequence)
+        elif answer["fault"]:
+            self._handshake_fault(answer["fault"], sequence)
+        return answer
+
+    def on_input_change(self, input_id: Optional[str], old: Any, new: Any, edge: str = "rising") -> None:
+        """An accepted change of one of the line's inputs (the PLC input service, on the loop).
+
+        The acknowledge input's own edge decides what acknowledges: Off to on (the default), or
+        On to off for a PLC that drops its capture request as the acknowledge."""
+        from app.services.plc_input_service import edge_matches
+
+        if not input_id or input_id != self.handshake.ack_input_id or not edge_matches(edge or "rising", old, new):
+            return
+        from app.events.alarm_events import AlarmCode, alarm_manager
+
+        # The PLC acknowledged: a sorting fault it was shown is acknowledged with it.
+        alarm_manager.clear_alarm(AlarmCode.LINE_SORTING_MISMATCH, self._alarm_source("sorting"), "the PLC acknowledged")
+        if self.handshake.ack() == "done":
+            for code in (AlarmCode.LINE_ACK_TIMEOUT, AlarmCode.LINE_HANDSHAKE_FAULT):
+                alarm_manager.clear_alarm(code, self._alarm_source("handshake"), "the PLC acknowledged the result")
+            return
+        logger.warning("Line '%s': the PLC acknowledged with no result waiting for its acknowledge (handshake %s); "
+                       "ignored", self.name, self.handshake.state)
+
+    def _admit_product(self, item: Dict[str, Any]) -> bool:
+        """False for a product whose capture request timed out: the timeout gave its one result."""
+        if item.get("handshake_timeout") or not self.handshake.is_closed(item.get("request_id")):
+            return True
+        self.handshake.note_late()
+        logger.warning("Line '%s': the result for sequence %s came after its result timeout; the timeout's result "
+                       "stands and this one is not counted", self.name, item.get("sequence"))
+        return False
+
+    def _handshake_result(self, item: Dict[str, Any], result: Optional[str]) -> None:
+        """A product's one result went out: the handshake waits for the PLC's acknowledge now."""
+        if not self.handshake.enabled or result not in ("good", "reject"):
+            return
+        timeout = bool(item.get("handshake_timeout"))
+        if self.handshake.result(item.get("request_id"), result, timeout=timeout) and not timeout:
+            from app.events.alarm_events import AlarmCode, alarm_manager
+            alarm_manager.clear_alarm(AlarmCode.LINE_INSPECTION_TIMEOUT, self._alarm_source("handshake"),
+                                      "a result came in time")
+
+    def _handshake_result_timeout(self, request: Any, policy: str) -> None:
+        """No result in time for a capture request (handshake timer, on the loop): a reject, or a fault."""
+        from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
+
+        timeout_ms = self.handshake.settings.get("result_timeout_ms")
+        if policy == "fault":
+            alarm_manager.raise_alarm(
+                AlarmCode.LINE_INSPECTION_TIMEOUT, self._alarm_source("handshake"),
+                f"Line '{self.name}': no inspection result for {_carton(request.sequence)} within {timeout_ms} ms.",
+                AlarmSeverity.CRITICAL, {"line_id": self.id, "sequence": request.sequence},
+            )
+            self._publish_handshake_fault("inspection_timeout", request.sequence)
+            return
+        logger.warning("Line '%s': no inspection result for %s within %s ms; it is rejected",
+                       self.name, _carton(request.sequence), timeout_ms)
+        with self._trigger_seq_lock:
+            self._trigger_seq += 1
+            track_id = self._trigger_seq
+        crossing = self.counter.make_crossing("inspection timeout", True, track_id=track_id,
+                                              camera_id=self.counting_camera_id)
+        crossing.update({"reject_reason": REASON_INSPECTION_TIMEOUT, "request_id": request.id, "handshake_timeout": True})
+        if request.sequence is not None:
+            crossing["sequence"] = request.sequence
+        self._remember(None, "no_result", paired=None, class_name=crossing["class_name"], result="reject",
+                       reason=REASON_INSPECTION_TIMEOUT, sequence=request.sequence)
+        self.counter.finish_crossing(crossing, reject=True, reason=REASON_INSPECTION_TIMEOUT)
+
+    def _handshake_ack_timeout(self, request: Any) -> None:
+        from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
+
+        alarm_manager.raise_alarm(
+            AlarmCode.LINE_ACK_TIMEOUT, self._alarm_source("handshake"),
+            f"Line '{self.name}': the PLC did not acknowledge the result of {_carton(request.sequence)} within "
+            f"{self.handshake.settings.get('ack_timeout_ms')} ms.",
+            AlarmSeverity.WARNING, {"line_id": self.id, "sequence": request.sequence},
+        )
+        self._publish_handshake_fault("ack_timeout", request.sequence)
+
+    def _handshake_fault(self, fault: str, sequence: Any) -> None:
+        """The PLC asked for a picture out of step: an alarm and the "Handshake fault" cards."""
+        from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
+
+        what = ("before it acknowledged the last result" if fault == "skipped_ack"
+                else "before the last request had its result")
+        alarm_manager.raise_alarm(
+            AlarmCode.LINE_HANDSHAKE_FAULT, self._alarm_source("handshake"),
+            f"Line '{self.name}': the PLC asked for a picture ({_carton(sequence)}) {what}.",
+            AlarmSeverity.WARNING, {"line_id": self.id, "sequence": sequence, "fault": fault},
+        )
+        self._publish_handshake_fault(fault, sequence)
+
+    def _publish_handshake_fault(self, fault: str, sequence: Any) -> None:
+        """The event the "Handshake fault" output actions and send cards fire on."""
+        payload: Dict[str, Any] = {
+            "event": "HANDSHAKE_FAULT",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "line_id": self.id,
+            "line_name": self.name,
+            "fault": fault,
+        }
+        plc_event: Dict[str, Any] = {
+            "event_type": "handshake_fault",
+            "event_id": f"handshake_{self.id}_{time.time_ns()}",
+            "line_id": self.id,
+            "fault": fault,
+            "timestamp": time.time(),
+        }
+        if sequence is not None:
+            payload["sequence"] = plc_event["sequence"] = sequence
+        self._publish(("handshake",), payload, plc_event)
+
+    def _joined_text(self, product: _Product) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+        """What the joined text readers read of a product: their texts merged in card order, and the first
+        status that is not "good" ("none" for a reader that saw nothing of it); (None, None) without one."""
+        readers = [st for st in product.stations if is_text_reader(self.camera_entry(st.camera_id) or {})]
+        if not readers:
+            return None, None
+        text: Dict[str, str] = {}
+        status = "good"
+        for station in readers:
+            seen = product.seen.get(station.camera_id) or {}
+            text.update(seen.get("text") or {})
+            if status == "good":
+                status = seen.get("text_status") or "none"
+        return text, status
+
+    def _joined_match(self, product: _Product) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """What the joined pattern checks found of a product: their checks merged in card order (a name seen
+        already is kept from the first), the first camera's score, and the first status that is not "good"
+        ("error" for a pattern check that saw nothing of it); (None, None) without one."""
+        checkers = [st for st in product.stations if is_pattern_check(self.camera_entry(st.camera_id) or {})]
+        if not checkers:
+            return None, None
+        checks: Dict[str, Any] = {}
+        score = None
+        status = "good"
+        for station in checkers:
+            seen = (product.seen.get(station.camera_id) or {}).get("match") or {}
+            for name, check in (seen.get("checks") or {}).items():
+                checks.setdefault(name, check)
+            if score is None:
+                score = seen.get("score")
+            if status == "good":
+                status = (product.seen.get(station.camera_id) or {}).get("match_status") or "error"
+        match: Dict[str, Any] = {"status": status, "checks": checks}
+        if score is not None:
+            match["score"] = score
+        return match, status
 
     @staticmethod
     def _station_rows(product: _Product) -> List[Dict[str, Any]]:
@@ -859,9 +1836,55 @@ class LineRuntime:
     def _result(reject: bool) -> str:
         return "reject" if reject else "good"
 
+    def _failed_check(self, read: Optional[Dict[str, Any]], crossing: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """The name of the first product check whose rules pass for this item, or None.
+
+        Only an item whose code is known has a product to check. The rules see what
+        is known before the result: the class and confidence the camera saw, the code,
+        the product's values, the inputs, the counts before this product, the batch.
+        """
+        if not self.product_checks or not read or not read.get("known") or not read.get("product"):
+            return None
+        try:
+            return self._run_checks(read, crossing)
+        except Exception:
+            # The product is still counted, on its other results: a check that cannot run rejects nothing.
+            logger.exception("Line %s: the product checks could not run", self.id)
+            return None
+
+    def _run_checks(self, read: Dict[str, Any], crossing: Optional[Dict[str, Any]]) -> Optional[str]:
+        from app.services import event_values
+        from app.services.rules import rules_pass
+
+        event: Dict[str, Any] = {
+            "event_type": "product_check",
+            "line_id": self.id,
+            "camera_id": (crossing or {}).get("camera_id") or read.get("camera_id"),
+            "qr_code": read.get("code"),
+            "qr_status": "known",
+            "product": read["product"],
+        }
+        # The carton's own product ID and batch (the line's batch stays for a carton without one).
+        event.update(self._code_fields(read)[1])
+        sequence = (crossing or {}).get("sequence")
+        sequence = read.get("sequence") if sequence is None else sequence
+        if sequence is not None:
+            event["sequence"] = sequence
+        if crossing:
+            event["class_name"] = crossing.get("class_name")
+            if crossing.get("confidence") is not None:
+                event["confidence"] = round(float(crossing["confidence"]), 4)
+        values = event_values.values_for(event)
+        for check in self.product_checks:
+            if check.get("only_when") and rules_pass(check["only_when"], values):
+                return check.get("name") or check.get("id")
+        return None
+
     def _remember(self, read: Optional[Dict[str, Any]], status: str, paired: Optional[bool],
                   class_name: Optional[str] = None, camera_id: Optional[str] = None,
-                  result: Optional[str] = None, reason: Optional[str] = None) -> None:
+                  result: Optional[str] = None, reason: Optional[str] = None,
+                  product_check: Optional[str] = None, shown_only: bool = False,
+                  sequence: Optional[Any] = None, verification: Optional[Dict[str, Any]] = None) -> None:
         entry = {
             "timestamp": read["timestamp"] if read else datetime.now(timezone.utc).isoformat(),
             "code": read["code"] if read else None,
@@ -876,6 +1899,21 @@ class LineRuntime:
             "result": result,
             "reject_reason": reason,
         }
+        if product_check:
+            entry["product_check"] = product_check
+        if read and read.get("product_id") is not None:
+            entry["product_id"] = read["product_id"]
+        if read and read.get("code_batch"):
+            entry["batch"] = read["code_batch"]
+        sequence = (read or {}).get("sequence") if sequence is None else sequence
+        if sequence is not None:
+            entry["sequence"] = sequence
+        if shown_only:
+            # A camera that reads Continuously: the code went nowhere but this list.
+            entry["shown_only"] = True
+        if verification:
+            # A sorting verification read: the outfeed it saw, what was expected, what it found.
+            entry.update(verification)
         with self._lock:
             self.qr_recent.appendleft(entry)
 
@@ -905,7 +1943,37 @@ class LineRuntime:
             "qr_paired": paired,
             "timestamp": time.time(),
         }
+        if read.get("product"):
+            payload["product"] = plc_event["product"] = read["product"]
+        self._with_batch(payload, plc_event)
+        code_fields, code_plc_fields = self._code_fields(read)
+        payload.update(code_fields)
+        plc_event.update(code_plc_fields)
+        if read.get("sequence") is not None:
+            payload["sequence"] = plc_event["sequence"] = read["sequence"]
         return payload, plc_event
+
+    @staticmethod
+    def _code_fields(read: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """What a code says of its carton, for its message and its PLC event: the product ID, the
+        carton's own batch (it replaces the line's for this carton), and, in the message, why the
+        code does not fit its list's format. Applied after the line's batch.
+
+        The PLC event always has the product ID (rules and writes use it); a message only where it
+        is not the whole code, so a list that reads whole codes sends the messages it sent.
+        """
+        fields: Dict[str, Any] = {}
+        plc_fields: Dict[str, Any] = {}
+        product_id = read.get("product_id")
+        if product_id is not None:
+            plc_fields["product_id"] = product_id
+            if product_id != str(read.get("code") or "").strip():
+                fields["product_id"] = product_id
+        if read.get("code_batch"):
+            fields["batch"] = plc_fields["batch"] = read["code_batch"]
+        if read.get("code_problem"):
+            fields["code_problem"] = read["code_problem"]
+        return fields, plc_fields
 
     def _publish(self, topics: Tuple[str, ...], payload: Dict[str, Any], plc_event: Dict[str, Any]) -> None:
         """Send one code event to the event bus, the line's PLC cards and its send cards."""
@@ -931,10 +1999,16 @@ class LineRuntime:
     def _emit_code_product(self, read: Dict[str, Any]) -> None:
         """A code read on a line without a vision camera, by a camera that checks codes:
         the read is one product, good or reject, counted like any other product."""
+        if self.handshake.enabled and not self._admit_product(read):
+            return
+        self._product_sequence(read)
         reason = code_verdict(self.code_checks[read["camera_id"]]["action"], read["known"])
+        check = self._failed_check(read) if reason is None else None
+        if check:
+            reason = REASON_PRODUCT_CHECK
         reject = reason is not None
         status = "known" if read["known"] else "unknown"
-        self._remember(read, status, paired=None, result=self._result(reject), reason=reason)
+        self._remember(read, status, paired=None, result=self._result(reject), reason=reason, product_check=check)
         if reject:
             with self._lock:
                 self.qr_stats["code_rejects"] += 1
@@ -950,6 +2024,8 @@ class LineRuntime:
         })
         # One event for the product: it fires the good / reject and counter cards
         # like a product seen by a vision camera, and the code cards as a read does.
+        if check:
+            payload["product_check"] = plc_event["product_check"] = check
         plc_event.update({
             "event_type": "code_product",
             "result": self._result(reject),
@@ -961,6 +2037,8 @@ class LineRuntime:
             "delay_from_crossing": True,
         })
         # The product's class in the records is the name its count is kept under.
+        self._handshake_result(read, self._result(reject))
+        self._sorting_note(read["code"], read.get("sequence"), self._result(reject))
         self._record(payload, "product", counted=True, class_name=class_name, track_id=read.get("track_id"),
                      product_list_id=read.get("product_list_id"))
         self._publish(("qr_code", "reading"), payload, plc_event)
@@ -969,15 +2047,90 @@ class LineRuntime:
         with self._lock:
             return list(self.qr_recent)[:limit]
 
+    @staticmethod
+    def _text_entry(camera_id: str, result: Any, shown_only: bool,
+                    answer: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        answer = answer or {}
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "camera_id": camera_id,
+            "fields": [{"name": f.name, "text": f.text, "fits": f.fits} for f in result.fields],
+            "status": result.status,
+            "result": answer.get("result"),
+            "reason": answer.get("reject_reason"),
+            "track_id": answer.get("track_id"),
+            "shown_only": shown_only,
+        }
+
+    def show_text_read(self, camera_id: str, result: Any, now: Optional[float] = None) -> bool:
+        """A continuous text reader's read: only shown (the latest text reads). Listed when a field's text
+        is new or was last seen more than the camera's hold time ago; a read with no text is not listed.
+        Returns True when listed."""
+        now = time.monotonic() if now is None else now
+        entry = self.camera_entry(camera_id) or {}
+        hold = int(entry.get("qr_hold_ms") or DEFAULT_QR_HOLD_MS) / 1000.0
+        texts = [(camera_id, f.name, f.text) for f in result.fields if f.text is not None]
+        if not texts:
+            return False
+        with self._lock:
+            fresh = any(now - self._text_seen.get(key, float("-inf")) > hold for key in texts)
+            for key in texts:
+                self._text_seen[key] = now
+            for key in [k for k, t in self._text_seen.items() if now - t > max(hold, TEXT_SEEN_FORGET_S)]:
+                del self._text_seen[key]
+            if fresh:
+                self.text_recent.appendleft(self._text_entry(camera_id, result, shown_only=True))
+        return fresh
+
+    def remember_text_read(self, camera_id: str, result: Any, answer: Optional[Dict[str, Any]] = None) -> None:
+        """A triggered text reader's read, with its product's result, reason and number."""
+        with self._lock:
+            self.text_recent.appendleft(self._text_entry(camera_id, result, False, answer))
+
+    def recent_text_reads(self, limit: int = TEXT_READS_KEPT) -> List[Dict[str, Any]]:
+        with self._lock:
+            return [dict(entry) for entry in list(self.text_recent)[:limit]]
+
+    def remember_pattern_check(self, camera_id: str, result: Any, answer: Dict[str, Any]) -> None:
+        """A triggered pattern check's result, with its product's result, reason and number."""
+        entry = {
+            "timestamp": time.time(),
+            "camera_id": camera_id,
+            "score": result.checks[0].score if result.checks else None,
+            "checks": [{"name": c.name, "score": c.score, "defect_px": c.defect_px, "fits": c.fits} for c in result.checks],
+            "status": result.status,
+            "error": result.error,
+            "result": answer.get("result"),
+            "reason": answer.get("reject_reason"),
+            "track_id": answer.get("track_id"),
+        }
+        with self._lock:
+            self.pattern_recent.appendleft(entry)
+
+    def recent_pattern_checks(self, limit: int = PATTERN_CHECKS_KEPT) -> List[Dict[str, Any]]:
+        with self._lock:
+            return [dict(entry) for entry in list(self.pattern_recent)[:limit]]
+
     def reset(self) -> None:
         self.counter.reset_counts()
         for aux in self.aux_counters.values():
             aux.reset_counts()
         self.assembly.reset_stats()
+        self.handshake.reset_counts()
         with self._lock:
             for key in self.qr_stats:
                 self.qr_stats[key] = 0
             self.qr_recent.clear()
+            self.text_recent.clear()
+            self.pattern_recent.clear()
+            # The products waiting for their sorting verification are forgotten too.
+            self._sorting_memory.clear()
+            for key in self._sorting_stats:
+                self._sorting_stats[key] = 0
+            # The trigger cameras' counts start again; their latest picture stays.
+            self._trigger_counters.clear()
+        from app.events.alarm_events import AlarmCode, alarm_manager
+        alarm_manager.clear_alarm(AlarmCode.LINE_SORTING_MISMATCH, self._alarm_source("sorting"), "the counters were reset")
 
 
 # ── All lines ─────────────────────────────────────────────────────────────────
@@ -999,6 +2152,21 @@ def pick_default_camera(cameras: List[Any], owned: Any, selected_id: Optional[st
     )
 
 
+def _warm_up(engine: Any, name: str) -> None:
+    """One run of a model on a black picture of its input size (LineManager._warm_on_demand_engines).
+
+    A failure is only logged: the model's first trigger then waits for its first run."""
+    import numpy as np
+
+    try:
+        width, height = getattr(engine, "input_size", None) or (640, 640)
+        engine.predict_mat(np.zeros((int(height), int(width), 3), np.uint8))
+        logger.info("Vision model '%s' warmed up for the cameras that run it only on a trigger", name)
+    except Exception as exc:
+        logger.warning("Vision model '%s' could not be warmed up; its first trigger may wait for it: %s: %s",
+                       name, type(exc).__name__, exc)
+
+
 class LineManager:
     def __init__(self) -> None:
         self._lines: Dict[str, LineRuntime] = {}
@@ -1015,6 +2183,9 @@ class LineManager:
         # A model a detect call named that no camera runs: (model_id, entry).
         # One at a time, so calls cannot fill the GPU with models.
         self._api_model: Optional[Tuple[str, Dict[str, Any]]] = None
+        # The engines warmed up for the cameras that infer only on a trigger, and the warm-ups running.
+        self._warmed: "weakref.WeakSet[Any]" = weakref.WeakSet()
+        self._warm_tasks: set = set()
 
     # ── Configuration ─────────────────────────────────────────────────────────
 
@@ -1041,11 +2212,53 @@ class LineManager:
             for gone in set(self._lines) - set(seen):
                 runtime = self._lines.pop(gone)
                 runtime.counter.event_sink = None
+                runtime.handshake.stop()
+                runtime.stop_pairing()
             if PRIMARY_LINE_ID not in self._lines:
                 self._lines[PRIMARY_LINE_ID] = LineRuntime(PRIMARY_LINE_ID, "Line 1", counting_service)
                 seen.insert(0, PRIMARY_LINE_ID)
             self._order = seen
             self._camera_map = camera_map
+        self._report_show_only_alarms()
+
+    def _report_show_only_alarms(self) -> None:
+        """line.codes_show_only for each running line with a camera the version 9 upgrade flagged.
+
+        Such a camera reads codes Continuously, which now only shows them. The
+        alarm says what the line does until the user chooses when it reads codes.
+        """
+        from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
+
+        live = set()
+        for runtime in self.all():
+            flagged = [(i, cam) for i, cam in enumerate(runtime.cameras) if cam.get("qr_trigger_review") is True]
+            if not runtime.enabled or not flagged:
+                continue
+            source = f"line:{runtime.id}"
+            live.add(source)
+            names = " and ".join(f"Camera {i + 1}" for i, _ in flagged)
+            has_source = runtime.has_role("vision") or any(
+                card.get("action") == "product_sensor" and card.get("enabled", True) is True for card in runtime.plc_inputs
+            )
+            checked = [runtime.code_checks[cam["camera_id"]] for _, cam in flagged if cam["camera_id"] in runtime.code_checks]
+            if not has_source and checked:
+                effect = "Until then the line counts nothing: no picture is read."
+            elif runtime.sync_enabled and any(check["no_read"] == "reject" for check in checked):
+                effect = "Until then every product is rejected: no code is read (When no code is read: reject)."
+            elif runtime.sync_enabled and checked:
+                effect = "Until then products pass without a code (When no code is read: ignore)."
+            else:
+                effect = "Until then their codes are only shown."
+            alarm_manager.raise_alarm(
+                AlarmCode.LINE_CODES_SHOW_ONLY, source,
+                f"Line '{runtime.name}': {names} only show their codes since the settings upgrade (Read codes "
+                f"'Continuously'). {effect} Choose when they read codes on Line setup.",
+                AlarmSeverity.WARNING,
+                {"line_id": runtime.id, "camera_ids": [cam["camera_id"] for _, cam in flagged]},
+            )
+        for alarm in alarm_manager.active("line:"):
+            if alarm.code == AlarmCode.LINE_CODES_SHOW_ONLY and alarm.source not in live:
+                alarm_manager.clear_alarm(alarm.code, alarm.source, "no camera of the line only shows codes, or it stopped")
 
     def primary(self) -> LineRuntime:
         with self._lock:
@@ -1082,6 +2295,13 @@ class LineManager:
             if not primary.cameras:
                 return primary, "vision"
             return None
+
+    def holds_camera(self, camera_id: str) -> bool:
+        """A running line has the camera on one of its cards: the line keeps it connected."""
+        with self._lock:
+            owner = self._camera_map.get(camera_id)
+            runtime = self._lines.get(owner[0]) if owner is not None else None
+            return bool(runtime is not None and runtime.enabled)
 
     def fallback_cameras(self, cameras: Dict[str, Any]) -> List[str]:
         """Connected cameras that feed Line 1 because no line claims them."""
@@ -1219,18 +2439,14 @@ class LineManager:
             return None, f"{type(exc).__name__}: {exc}"
 
     async def refresh_models(self) -> Dict[str, str]:
-        """Load every model a vision camera runs (one copy each) and drop the ones no camera runs.
+        """Load every model a camera runs (one copy each): a vision camera's, and a text reader's for its YOLO
+        fields. Drop the ones no camera runs.
 
         Returns {model_id: problem} for the models that could not be loaded.
         Nothing is detected on their cameras: each such camera of a running
         line raises an alarm, and so does a vision camera without a model.
         """
-        wanted = {
-            cam["model_id"]
-            for runtime in self.all()
-            for cam in runtime.cameras
-            if cam.get("role") == "vision" and cam.get("model_id")
-        }
+        wanted = {model_id for runtime in self.all() for cam in runtime.cameras if (model_id := camera_model_id(cam))}
         problems: Dict[str, str] = {}
         for model_id in wanted - set(self._engines):
             if self._api_model is not None and self._api_model[0] == model_id:
@@ -1248,7 +2464,27 @@ class LineManager:
             self._release(self._engines.pop(model_id, None))
         self._model_problems = problems
         self._report_model_alarms()
+        self._warm_on_demand_engines()
         return problems
+
+    def _warm_on_demand_engines(self) -> None:
+        """Run each model a camera of a running line infers on demand once, now, off the event loop.
+
+        Such a camera's model gets no frame until a trigger comes, and a model's first run (on a GPU
+        above all) can take seconds: the first trigger would wait for it. Each engine is warmed once,
+        when it was loaded or its camera's line started (this runs after every refresh_models).
+        """
+        for runtime in self.all():
+            if not runtime.enabled:
+                continue
+            for cam in runtime.cameras:
+                entry = self._engines.get(camera_model_id(cam))
+                if entry is None or entry["engine"] in self._warmed or not runtime.infers_on_demand(cam["camera_id"]):
+                    continue
+                self._warmed.add(entry["engine"])
+                task = asyncio.get_running_loop().create_task(asyncio.to_thread(_warm_up, entry["engine"], entry["name"]))
+                self._warm_tasks.add(task)
+                task.add_done_callback(self._warm_tasks.discard)
 
     def _report_model_alarms(self) -> None:
         """One alarm for each vision camera of a running line that has no model it can run."""
@@ -1318,9 +2554,10 @@ class LineManager:
         self._model_names.pop(model_id, None)
 
     def inferring(self, camera_id: str) -> Optional[bool]:
-        """None: no running line runs a model on this camera. Else whether its model is loaded."""
+        """None: no running line runs a model on this camera frame after frame (a camera whose model
+        runs only on a trigger's picture neither). Else whether its model is loaded."""
         routed = self.route(camera_id)
-        if routed is None or routed[1] != "vision" or not routed[0].enabled:
+        if routed is None or routed[1] != "vision" or not routed[0].enabled or routed[0].infers_on_demand(camera_id):
             return None
         return self.model_for_camera(camera_id) in self._engines
 
@@ -1351,6 +2588,7 @@ class LineManager:
         return results
 
     async def disconnect_line(self, line_id: str) -> None:
+        """A stopped line's cameras are disconnected, except those whose Connect switch is on."""
         from app.db.session import AsyncSessionLocal
         from app.services.camera_service import CameraService
 
@@ -1358,6 +2596,8 @@ class LineManager:
         if runtime is None:
             return
         for cam in runtime.cameras:
+            if CameraService.kept(cam["camera_id"]):
+                continue
             async with AsyncSessionLocal() as db:
                 await CameraService.disconnect_camera(db, cam["camera_id"])
 
@@ -1367,9 +2607,10 @@ class LineManager:
         await self.connect_on_startup()
 
     async def connect_on_startup(self) -> None:
-        """Connect the cameras of every running line, when the Cameras page switch
-        "Connect cameras when the server starts" is on.
+        """Connect the cameras whose Connect switch is on, always, then the cameras of every
+        running line when the Cameras page switch "Connect cameras when the server starts" is on.
 
+        A camera that does not connect is retried in the background.
         This is the only place cameras are connected at startup. A camera that
         belongs to no line is left alone, with one exception: while Line 1 has
         no camera assigned it is fed by the last active camera, so that one is
@@ -1377,6 +2618,7 @@ class LineManager:
         """
         from app.services.settings_persistence_service import SettingsPersistenceService
 
+        await self._connect_kept_cameras()
         if not SettingsPersistenceService.camera_auto_connect():
             return
         for runtime in self.all():
@@ -1389,6 +2631,29 @@ class LineManager:
                     await self._connect_last_active_camera()
             except Exception:
                 logger.exception("Could not connect the cameras of line '%s'", runtime.name)
+
+    async def _connect_kept_cameras(self) -> None:
+        """Connect every camera whose Connect switch is on; one that does not connect is retried."""
+        from app.db.session import AsyncSessionLocal
+        from app.services.camera_service import CameraReconnector, CameraService
+        from app.services.settings_persistence_service import SettingsPersistenceService
+        from app.state.application_state import app_state
+
+        for camera_id in SettingsPersistenceService.kept_cameras():
+            if getattr(app_state.cameras.get(camera_id), "is_connected", False):
+                continue
+            try:
+                async with AsyncSessionLocal() as db:
+                    ok, err = await CameraService.connect_camera(db, camera_id)
+            except Exception as exc:
+                ok, err = False, str(exc)
+            if ok:
+                continue
+            if err == "Camera not found in database":
+                SettingsPersistenceService.set_camera_kept(camera_id, False)
+                continue
+            logger.warning("Camera %s (kept connected) did not connect, retrying in the background: %s", camera_id, err)
+            CameraReconnector.want(camera_id)
 
     async def _connect_last_active_camera(self) -> None:
         """Line 1 without cameras: connect the camera that feeds it by default.
@@ -1452,6 +2717,9 @@ class LineManager:
                 row["model_error"] = model_state["error"]
                 row["expected_classes"] = list(cam.get("expected_classes") or [])
                 row["defect_classes"] = list(cam.get("defect_classes") or [])
+            if row["role"] in ("ocr", "match") and cam.get("count_mode") == "trigger":
+                row["count_mode"] = "trigger"
+            if row["role"] in ("vision", "ocr", "match"):
                 station = camera_station(cam)
                 aux = runtime.aux_counters.get(cam["camera_id"])
                 if station:
@@ -1477,6 +2745,8 @@ class LineManager:
                 row["product_list_id"] = cam.get("product_list_id")
                 row["qr_action"] = cam.get("qr_action", "report")
                 row["qr_no_read"] = cam.get("qr_no_read", "ignore")
+                if sorting_lane(cam):
+                    row["sorting_lane"] = sorting_lane(cam)
             camera_rows.append(row)
         alarms = [a for a in alarm_manager.active() if (a.details or {}).get("line_id") == runtime.id]
         with runtime._lock:
@@ -1502,10 +2772,17 @@ class LineManager:
             "processed_fps": runtime.processed_fps(),
             "min_fps": runtime.min_fps,
             "yield_target": runtime.yield_target,
-            "has_qr": runtime.has_code_reader,
+            "batch": runtime.batch or None,
+            "has_qr": any(reads_codes(c) for c in runtime.cameras),
             "qr": qr_stats,
             "last_capture_id": last_capture_id,
             "active_alarms": len(alarms),
+            # The result handshake, when the line has it switched on.
+            "handshake": runtime.handshake.view() if runtime.handshake.enabled else None,
+            # Sorting verification at the outfeeds, when a camera of the line verifies one.
+            "sorting": runtime.sorting_counts() if runtime.sorting_lanes else None,
+            # Per vision camera in trigger mode: where its picture comes from, its latest capture and counters.
+            "trigger_cameras": runtime.trigger_view(),
         }
 
     def overview(self) -> List[Dict[str, Any]]:

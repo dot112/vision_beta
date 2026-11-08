@@ -11,10 +11,11 @@ Runtime engine that:
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple, Union
 
 # When a card fires is decided in card_triggers, the same for PLC cards and
 # send cards. The names below are what this module called them before that.
@@ -32,11 +33,35 @@ from app.services.card_triggers import (  # noqa: F401  (re-exported)
     normalize_trigger,
     trigger_matches as _eval_condition,
 )
-from app.services.line_config import OTHER_REJECT_REASON_CODE, PRIMARY_LINE_ID, REJECT_REASON_CODES
-from app.services.plc_failsafe_service import PLCFailsafeService
+from app.services.line_config import OTHER_REJECT_REASON_CODE, PRIMARY_LINE_ID, REJECT_REASON_CODES, reads_codes
+from app.services.plc_failsafe_service import PLCFailsafeService, confirm_timeout_ms
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+class MissingValue(ValueError):
+    """The event has no value for what a card writes (an unknown code, an empty field, a formula that gives none)."""
+
+
+# The value sources whose missing value is skipped or replaced by the card's default value.
+_OPTIONAL_SOURCES = ("product_field", "code", "product_name", "input", "formula")
+
+
+def _written(value: Any, name: str) -> Union[float, str]:
+    """A value as it is written: a number as a float (yes / no as 1 / 0), text as text."""
+    from app.services.formula import MISSING
+
+    if value is MISSING or value is None:
+        raise MissingValue(f"no value for {name}")
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if number != number or number in (float("inf"), float("-inf")):
+            raise MissingValue(f"no value for {name}")
+        return number
+    return str(value)
 
 
 # ── Card Runtime State ────────────────────────────────────────────────────────
@@ -44,7 +69,7 @@ logger = get_logger(__name__)
 @dataclass
 class _CardState:
     card_id: str
-    status: str = "idle"                # idle|queued|executing|sent|failed|timeout
+    status: str = "idle"                # idle|queued|executing|sent|confirmed|not_confirmed|failed|timeout
     last_fired_at: float = 0.0          # epoch seconds
     # Insertion-ordered so the oldest IDs are evicted first (a set would drop an arbitrary one,
     # possibly the event just fired, and let once_per_event fire it twice).
@@ -103,6 +128,10 @@ class PLCDispatcherService:
     _line_tasks: Dict[str, Set[asyncio.Task]] = {}  # the same tasks, per line
     # Per line, so a busy line cannot crowd out the others.
     _max_dispatch_tasks = 256
+    # Reject confirmation: per card id, the fires whose output was sent and that wait
+    # for the card's confirmation signal, oldest first. A fire is done with True
+    # (the signal came) or False (the card was deleted or switched off meanwhile).
+    _confirm_waiters: Dict[str, Deque["asyncio.Future[bool]"]] = {}
 
     # ── Initialisation ────────────────────────────────────────────────────────
 
@@ -177,6 +206,10 @@ class PLCDispatcherService:
         from app.events.alarm_events import alarm_manager
         for cid in (before | {c.get("id") for c in fresh}) - live:
             if cid:
+                # Nothing waits for its confirmation any more either.
+                for waiter in cls._confirm_waiters.pop(cid, ()):
+                    if not waiter.done():
+                        waiter.set_result(False)
                 alarm_manager.clear_source(f"plc_card:{cid}", "action deleted or switched off")
         for card in cls._cards:
             cid = card.get("id", "")
@@ -223,7 +256,13 @@ class PLCDispatcherService:
             if not cid:
                 continue
             # ── Does the card fire for this event? (shared with send cards) ────
-            if not card_fires(card, event):
+            try:
+                fires = card_fires(card, event)
+            except Exception as exc:
+                # A card whose rules cannot be checked does not fire; the other cards still do.
+                logger.warning("PLCDispatcher: card '%s' could not be checked: %s: %s", card.get("name", cid), type(exc).__name__, exc)
+                continue
+            if not fires:
                 continue
             card_line = _card_line(card)
 
@@ -266,6 +305,35 @@ class PLCDispatcherService:
             task.add_done_callback(line_tasks.discard)
 
     @classmethod
+    def confirm_signal(cls, line_id: str, input_id: str) -> int:
+        """A confirmation signal of a line showed its edge: the oldest waiting fire of every
+        card of that line that names the signal is confirmed. Returns how many fires that was.
+        Called on the event loop (by the PLC signal poller)."""
+        confirmed = 0
+        for card in cls._cards:
+            if _card_line(card) != line_id or str(card.get("confirm_input_id") or "").strip() != input_id:
+                continue
+            waiters = cls._confirm_waiters.get(card.get("id", ""))
+            while waiters:
+                waiter = waiters.popleft()
+                if not waiter.done():
+                    waiter.set_result(True)
+                    confirmed += 1
+                    break
+        return confirmed
+
+    @classmethod
+    def _drop_waiter(cls, card_id: str, waiter: "asyncio.Future[bool]") -> None:
+        waiters = cls._confirm_waiters.get(card_id)
+        if waiters is not None:
+            try:
+                waiters.remove(waiter)
+            except ValueError:
+                pass
+            if not waiters:
+                cls._confirm_waiters.pop(card_id, None)
+
+    @classmethod
     def watch_alarms(cls) -> None:
         """Run "Alarm" cards when an alarm is raised or cleared. Safe to call more than once."""
         from app.events.event_bus import event_bus
@@ -294,27 +362,75 @@ class PLCDispatcherService:
         await cls.evaluate(event)
 
     @classmethod
-    async def dispatch_manual(cls, card: dict) -> Dict[str, Any]:
+    async def dispatch_manual(cls, card: dict, code: Optional[str] = None) -> Dict[str, Any]:
         """
         Manually fire a card's PLC action (test button).
         Returns the execution result dict synchronously.
 
         A card that writes a value of the product writes example values:
-        a rejected product, counts of 1, class number 1.
+        a rejected product, counts of 1, class number 1, batch 1. With ``code``
+        the example product is that code's product, from the lists of the
+        line's code readers.
         """
         cid = card.get("id", "")
         state = cls._states.setdefault(cid, _CardState(card_id=cid))
         event = {"event_id": f"manual_{int(time.time())}", "manual": True, "result": "reject", "reject_reason": "vision_class",
-                 "good_count": 1, "reject_count": 1, "total_count": 1, "class_index": 1}
+                 "good_count": 1, "reject_count": 1, "total_count": 1, "class_index": 1, "batch": "1",
+                 "line_id": _card_line(card)}
+        if code:
+            product, found = cls._product_for_code(card, str(code))
+            event.update({"qr_code": str(code), "qr_status": "known" if product else "unknown"})
+            if product:
+                event["product"] = product
+            # What the code holds by its list's code format: the product ID, and the carton's batch.
+            if found is not None and found.product_id is not None:
+                event["product_id"] = found.product_id
+            if found is not None and found.batch:
+                event["batch"] = found.batch
         await cls._dispatch(card, state, event=event)
-        return {**state.last_result, "status": state.status}
+        answer = {**state.last_result, "status": state.status}
+        if code:
+            # What the code holds by its list's code format, for the dialog to show.
+            answer["product_id"] = found.product_id if found is not None else None
+            answer["batch"] = found.batch if found is not None else None
+        return answer
 
     @staticmethod
-    def write_value(card: dict, event: dict) -> float:
-        """What a card writes for an event (its value_source). Raises ValueError when the event has no such value."""
+    def _product_for_code(card: dict, code: str) -> Tuple[Optional[Dict[str, Any]], Any]:
+        """(product, match): the product a code stands for in the first list of the card's line's code
+        readers that has it, and what the code holds by that list's format (product.CodeMatch). Without
+        a product: (None, the first reader's match), or (None, None) when the line reads no codes."""
+        from app.services.line_service import line_manager
+        from app.services.product_service import product_catalog
+
+        runtime = line_manager.get(_card_line(card))
+        first = None
+        for camera in getattr(runtime, "cameras", None) or []:
+            if reads_codes(camera):
+                found = product_catalog.match(code, camera.get("product_list_id"))
+                if found.product is not None:
+                    return product_catalog.product_info(found.product, camera.get("product_list_id")), found
+                first = first or found
+        return None, first
+
+    @staticmethod
+    def write_value(card: dict, event: dict) -> Union[float, str]:
+        """What a card writes for an event (its value_source). Raises ValueError when the event has no such value;
+        MissingValue for a source whose missing value the card skips or replaces (if_missing)."""
         source = str(card.get("value_source") or "fixed").strip().lower()
         if source == "fixed":
             return float(card.get("write_value", 0.0) or 0.0)
+        if source in _OPTIONAL_SOURCES:
+            from app.services.event_values import values_for
+            from app.services.formula import MISSING, parse
+
+            values = values_for(event)
+            if source == "formula":
+                return _written(parse(str(card.get("formula") or "")).evaluate(values), "the formula")
+            name = {"product_field": f"product.{card.get('value_field')}", "code": "code",
+                    "product_name": "product.name", "input": f"input.{card.get('value_input')}"}[source]
+            shown = {"code": "the code", "product.name": "the product name"}.get(name, name)
+            return _written(values.get(name, MISSING), shown)
         result = str(event.get("result") or "").lower()
         if source == "result_code":
             if result not in ("good", "reject"):
@@ -343,6 +459,10 @@ class PLCDispatcherService:
             return float(REJECT_REASON_CODES.get(event.get("reject_reason"), OTHER_REJECT_REASON_CODE))
         if source == "batch":
             batch = event.get("batch")
+            if batch in (None, ""):
+                # An event that is not a product (a line start, an alarm): the line's batch now.
+                from app.services.line_service import line_manager
+                batch = getattr(line_manager.get(_card_line(card)), "batch", "")
             if batch in (None, ""):
                 raise ValueError("the line has no batch number to write")
             try:
@@ -473,6 +593,19 @@ class PLCDispatcherService:
         # The value is worked out now, after the travel delay: what the event says at the moment of the write.
         try:
             write_val = cls.write_value(card, event) if operation == "WRITE" else 0.0
+        except MissingValue as missing:
+            # No value (an unknown code, an empty field): the card's default value, or nothing is written.
+            default = card.get("default_value")
+            if str(card.get("if_missing") or "skip").strip().lower() == "default" and isinstance(default, (int, float, str)) \
+                    and not isinstance(default, bool):
+                write_val = default if isinstance(default, str) else float(default)
+            else:
+                state.status = "skipped"
+                state.last_result = {"success": False, "skipped": True, "message": f"Skipped: {missing}",
+                                     "endpoint": endpoint.get("name", ep_id)}
+                logger.info("PLCDispatcher: card '%s' skipped: %s", card.get("name", cid), missing)
+                cls._notify_status_change()
+                return
         except ValueError as value_err:
             state.status = "failed"
             state.last_result = {"success": False, "message": f"Nothing was written: {value_err}", "endpoint": endpoint.get("name", ep_id)}
@@ -491,6 +624,15 @@ class PLCDispatcherService:
             return
 
         state.status = "executing"
+
+        # ── Reject confirmation ───────────────────────────────────────────────
+        # The fire is put in line for its confirmation signal before the output is
+        # sent: a PLC that confirms during the pulse is not missed. The Test button
+        # does not wait: commissioning must not raise the alarm.
+        waiter: Optional["asyncio.Future[bool]"] = None
+        if str(card.get("confirm_input_id") or "").strip() and not event.get("manual"):
+            waiter = asyncio.get_running_loop().create_future()
+            cls._confirm_waiters.setdefault(cid, collections.deque()).append(waiter)
 
         # ── Execute with retry ────────────────────────────────────────────────
         # TOGGLE is non-idempotent: if the PLC applied it but its reply was lost,
@@ -606,6 +748,50 @@ class PLCDispatcherService:
         )
         cls._report_alarm(card, endpoint, state.status, msg)
         cls._notify_status_change()
+        if waiter is not None:
+            if ok:
+                await cls._await_confirmation(card, state, waiter, endpoint)
+            else:
+                # Nothing was sent, so nothing can confirm it.
+                cls._drop_waiter(cid, waiter)
+
+    @classmethod
+    async def _await_confirmation(cls, card: dict, state: _CardState, waiter: "asyncio.Future[bool]",
+                                  endpoint: dict) -> None:
+        """Wait for the card's confirmation signal, from the moment its output (and its strobe) was sent."""
+        from app.events.alarm_events import AlarmCode, AlarmSeverity, alarm_manager
+
+        cid = card.get("id", "")
+        name = card.get("name") or cid
+        wait_ms = confirm_timeout_ms(card)
+        try:
+            confirmed: Optional[bool] = await asyncio.wait_for(asyncio.shield(waiter), timeout=wait_ms / 1000.0)
+        except asyncio.TimeoutError:
+            confirmed = None
+        finally:
+            cls._drop_waiter(cid, waiter)
+        if confirmed is False:
+            return          # the card was deleted or switched off while it waited
+        source = f"plc_card:{cid}"
+        sent = str(state.last_result.get("message") or "")
+        if confirmed:
+            state.status = "confirmed"
+            state.last_result = {**state.last_result, "confirmed": True, "message": f"{sent}; confirmed by the PLC"}
+            alarm_manager.clear_alarm(AlarmCode.PLC_ACTION_NOT_CONFIRMED, source, "action confirmed")
+            logger.info("PLCDispatcher: card '%s' → confirmed", name)
+        else:
+            state.status = "not_confirmed"
+            state.last_result = {**state.last_result, "confirmed": False,
+                                 "message": f"{sent}; not confirmed by the PLC within {wait_ms} ms"}
+            alarm_manager.raise_alarm(
+                AlarmCode.PLC_ACTION_NOT_CONFIRMED, source,
+                f"Output action '{name}' was sent, but its confirmation input did not come within {wait_ms} ms",
+                AlarmSeverity.CRITICAL,
+                {"card_id": cid, "line_id": _card_line(card), "endpoint_id": endpoint.get("id"),
+                 "input_id": card.get("confirm_input_id")},
+            )
+            logger.warning("PLCDispatcher: card '%s' → not confirmed within %d ms", name, wait_ms)
+        cls._notify_status_change()
 
     @staticmethod
     def _report_alarm(card: dict, endpoint: dict, status: str, msg: str) -> None:
@@ -625,13 +811,13 @@ class PLCDispatcherService:
             # Actuation state is unknown: the reject gate may or may not have fired.
             alarm_manager.raise_alarm(
                 AlarmCode.PLC_ACTION_TIMEOUT, source,
-                f"PLC action '{name}' timed out; actuation state is unknown: {msg}",
+                f"Output action '{name}' timed out; actuation state is unknown: {msg}",
                 AlarmSeverity.CRITICAL, details,
             )
         elif status == "failed":
             alarm_manager.raise_alarm(
                 AlarmCode.PLC_ACTION_FAILED, source,
-                f"PLC action '{name}' failed: {msg}",
+                f"Output action '{name}' failed: {msg}",
                 AlarmSeverity.CRITICAL, details,
             )
         else:

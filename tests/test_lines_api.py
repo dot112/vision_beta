@@ -40,7 +40,7 @@ def test_existing_endpoints_answer_for_line1_when_no_line_is_named(client, admin
 
 
 def test_line_crud_start_stop_and_clone(client, admin_headers, new_line, vision_model):
-    line = new_line("Packing 2", cameras=[{"camera_id": "cam-api-1", "model_id": vision_model}, {"camera_id": "cam-api-2", "role": "qr"}],
+    line = new_line("Packing 2", cameras=[{"camera_id": "cam-api-1", "model_id": vision_model}, {"camera_id": "cam-api-2", "role": "qr", "qr_trigger": "signal"}],
                     sync={"enabled": True, "window_ms": 300})
     assert line["enabled"] is False and line["status"]["state"] == "stopped"
     assert line["sync"] == {"enabled": True, "window_ms": 300}
@@ -225,9 +225,20 @@ def test_dashboard_loads_its_stylesheet_font_and_logo(client):
     assert css.headers["cache-control"] == "no-cache"
     font = client.get("/assets/fonts/inter-latin.woff2")
     assert font.status_code == 200 and font.headers["content-type"] == "font/woff2"
-    assert 'src="/assets/zajel_logo_small.png"' in page.text
-    logo = client.get("/assets/zajel_logo_small.png")
-    assert logo.status_code == 200 and logo.headers["content-type"] == "image/png"
+    # The Universalz logo for each theme, and its Z mark as the page icon.
+    for asset in ("universalz_logo.png", "universalz_logo_dark.png", "universalz_mark.png"):
+        assert f'"/assets/{asset}"' in page.text, asset
+        logo = client.get(f"/assets/{asset}")
+        assert logo.status_code == 200 and logo.headers["content-type"] == "image/png", asset
+    icon = client.get("/favicon.ico")
+    assert icon.status_code == 200 and icon.headers["content-type"] == "image/png"
+
+
+@pytest.mark.parametrize("path", ["/dashboard", "/terms-of-use"])
+def test_the_pages_carry_the_universalz_brand_and_not_the_old_one(client, path):
+    page = client.get(path).text
+    assert "Universalz" in page
+    assert "Zagel Vision" not in page and "zajel" not in page.lower()
 
 
 def test_line_dashboard_has_the_alarms_panel(client):
@@ -236,3 +247,97 @@ def test_line_dashboard_has_the_alarms_panel(client):
     # It asks for this line's alarms plus the ones every line shares, and acknowledges through the API.
     assert "include_all_lines=true" in page
     assert "/acknowledge" in page
+
+
+def test_dashboard_loads_the_plc_signals_script(client):
+    page = client.get("/dashboard")
+    assert page.status_code == 200
+    assert 'id="plcSignalCardsContainer"' in page.text and 'id="plcSignalSettingsModal"' in page.text
+    # Before production_lines.js, which loads the signals of the line it selects.
+    assert page.text.index('<script src="/assets/plc_signals.js') < page.text.index('<script src="/assets/production_lines.js')
+    script = client.get("/assets/plc_signals.js")
+    assert script.status_code == 200 and "window.PlcSignals" in script.text
+    assert script.headers["cache-control"] == "no-cache"
+    assert "PlcSignals.load" in client.get("/assets/production_lines.js").text
+
+
+def test_dashboard_offers_every_choice_the_server_takes(client):
+    """The dashboard's lists are typed by hand: a choice the server takes must be in them."""
+    from app.services import line_config
+
+    signals = client.get("/assets/plc_signals.js").text
+    for value in (*line_config.PLC_INPUT_ACTIONS, *line_config.PLC_INPUT_DATA_TYPES,
+                  *line_config.PLC_INPUT_EDGES, *line_config.PLC_INPUT_ALARM_SEVERITIES):
+        assert f'"{value}"' in signals, value
+    low, high = line_config.PLC_INPUT_POLL_LIMITS_MS
+    assert f'min="{low}" max="{high}"' in signals
+    low, high = line_config.PLC_INPUT_DEBOUNCE_LIMITS_MS
+    assert f'min="{low}" max="{high}"' in signals
+    cards = client.get("/assets/production_lines.js").text
+    for value in (*line_config.COUNT_MODES, *line_config.NO_PRODUCT, *line_config.QR_TRIGGERS):
+        assert f'"{value}"' in cards, value
+    assert 'data-f="count_mode"' in cards and 'data-f="no_product"' in cards
+    assert f"{line_config.REASON_NOTHING_DETECTED}:" in cards
+
+
+def test_dashboard_examples_and_limits_match_the_server(client):
+    from app.services import line_config
+    from app.services.send_dispatcher_service import sample_payload
+
+    page = client.get("/dashboard").text
+    assert f'batch: "{sample_payload({})["batch"]}"' in page
+    code = line_config.REJECT_REASON_CODES[line_config.REASON_NOTHING_DETECTED]
+    assert f"{code} nothing detected" in page
+    # A PLC action's confirmation signal and how long it waits for it.
+    assert "PlcSignals.confirmSignals()" in page and "'confirm_input_id'" in page
+    low, high = line_config.CONFIRM_TIMEOUT_LIMITS_MS
+    assert f'id="plcConfirmTimeoutInput" class="form-input" min="{low}" max="{high}"' in page
+    assert f"confirm_timeout_ms ?? {line_config.DEFAULT_CONFIRM_TIMEOUT_MS}" in page
+    # The batch field of the Line dashboard.
+    assert 'id="lineBatchInput"' in page and f'maxlength="{line_config.BATCH_MAX_LENGTH}"' in page
+    assert "/batch`" in page
+
+
+def test_dashboard_offers_the_industrial_camera_settings(client):
+    """The camera form's lists and limits are typed by hand: they must be the server's."""
+    import re
+
+    from app.hardware.camera import gige_camera
+
+    form = client.get("/assets/camera_settings.js").text
+    for value in (*gige_camera.TRIGGER_MODES, *gige_camera.TRIGGER_EDGES, *gige_camera.CAMERA_SETTING_KEYS):
+        assert f'"{value}"' in form, value
+    for key, (low, high) in gige_camera.SETTING_LIMITS.items():
+        assert re.search(rf'field\("{key}"[^\n]*min="{low}" max="{high}"', form), key
+    assert f'placeholder="{gige_camera.DEFAULT_TRIGGER_LINE}"' in form
+    # Industrial cameras are found and added under Connections (an IP Camera channel of type GigE Vision).
+    page = client.get("/dashboard").text
+    assert "/api/v1/cameras/discover/gige" in page and 'camera_kind === "gige"' in page
+
+
+def test_the_dashboard_scripts_parse(client, tmp_path):
+    """A quote in a text can end a script's string early: every script of the page must still parse."""
+    import re
+    import shutil
+    import subprocess
+
+    import pytest
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+    page = client.get("/dashboard").text
+    scripts = re.findall(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", page, re.S)
+    sources = re.findall(r'<script[^>]*\bsrc="(/assets/[^"?]+)', page)
+    assert scripts and sources
+    for index, code in enumerate([*scripts, *(client.get(src).text for src in sources)]):
+        path = tmp_path / f"script_{index}.js"
+        path.write_text(code, encoding="utf-8")
+        result = subprocess.run([node, "--check", str(path)], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr[:500]
+
+
+def test_an_opc_ua_address_is_asked_for_as_a_tag_name(client):
+    page = client.get("/dashboard").text
+    assert "Enter the full NodeId" not in page and "Tag name or NodeId" in page
+    assert 'opcua: ["OPC UA", "Tag_1",' in client.get("/assets/plc_signals.js").text

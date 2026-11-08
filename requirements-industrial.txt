@@ -1,0 +1,11 @@
+# Optional: GigE Vision and USB3 Vision cameras (GenICam).
+#   pip install -r requirements-industrial.txt
+# The server runs without it; only industrial cameras need it. The camera maker's
+# SDK is needed too: it brings the GenTL producer file (.cti) and sets
+# GENICAM_GENTL64_PATH (or set GENTL_CTI_PATH in .env).
+#
+# harvesters is pinned: the camera scan that leaves open cameras alone reads two
+# of its internal fields (app/hardware/camera/genicam_backend.py). It brings
+# genicam, which has ready-built files for Python 3.10 to 3.14 on Windows,
+# Linux (x86-64, ARM64, ARMv7) and macOS.
+harvesters==1.4.3

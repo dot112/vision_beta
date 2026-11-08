@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
-from sqlalchemy import DateTime, Index, String, func
+from sqlalchemy import JSON, DateTime, Index, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -25,6 +25,11 @@ class ProductList(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_list_id)
     name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    # The list's own fields: [{"key", "label", "type"}] (app.services.product_fields).
+    fields: Mapped[List[Dict[str, str]]] = mapped_column(JSON, nullable=False, default=list, server_default="[]")
+    # How the list's codes are built: {"mode": "whole" | "split" | "gs1", ...} (app.services.code_format).
+    code_format: Mapped[Dict[str, Any]] = mapped_column(JSON, nullable=False, default=lambda: {"mode": "whole"},
+                                                        server_default='{"mode": "whole"}')
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -46,6 +51,8 @@ class Product(Base):
     code: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     description: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    # The product's values for its list's fields: {key: value}; None when it has none.
+    data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

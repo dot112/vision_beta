@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
 from app.db.models.user import User
 from app.dependencies import require_operator, require_supervisor
@@ -75,6 +75,31 @@ async def scan_opcua_endpoints(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/opcua/certs", summary="List the uploaded OPC UA certificates and private keys (Level 2+ Supervisor)")
+async def list_opcua_certs(user: User = Depends(require_supervisor)) -> Dict[str, Any]:
+    """The files a secured OPC UA channel can use: ``certificates``, ``private_keys``, ``all_files`` (names only)."""
+    from app.services import opcua_cert_service
+
+    return opcua_cert_service.list_files()
+
+
+@router.post("/opcua/certs/upload", summary="Upload an OPC UA client certificate, private key or server certificate (Level 2+ Supervisor)")
+async def upload_opcua_cert(
+    file: UploadFile = File(..., description="A certificate (PEM or DER) or a private key without a password"),
+    kind: str = Form(..., description="client_cert, private_key or server_cert"),
+    user: User = Depends(require_supervisor),
+) -> Dict[str, Any]:
+    """Check and keep one file. The answer's ``filename`` is what a channel names in ``opcua_cert_file``,
+    ``opcua_key_file`` or ``opcua_server_cert_file``. A private key is never sent back."""
+    from app.services import opcua_cert_service
+
+    data = await file.read(opcua_cert_service.MAX_BYTES + 1)
+    try:
+        return opcua_cert_service.store(kind.strip().lower(), file.filename or "", data)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
@@ -254,13 +279,17 @@ async def test_plc_action(
         )
 
     svc = _get_svc()
-    _, card = _find_card(card_id, line_id)
+    found_line, card = _find_card(card_id, line_id)
     if not card and req.card:
         card = dict(req.card)
     if not card:
         card = next((c for c in _get_dispatcher()._cards if c.get("id") == card_id), None)
     if not card:
         raise HTTPException(status_code=404, detail=f"PLC action card '{card_id}' not found. Please save cards first.")
+    # The card's line: the one it is saved in, else the one asked for. A test with a product
+    # code looks the code up in that line's lists.
+    asked = _line_id(line_id) if isinstance(line_id, str) and line_id else None
+    card = {**card, "line_id": found_line or asked or card.get("line_id") or _line_id(None)}
     from app.services.plc_failsafe_service import validate_write_value
     try:
         validate_write_value(card)
@@ -289,7 +318,7 @@ async def test_plc_action(
     )
 
     dispatcher = _get_dispatcher()
-    result = await dispatcher.dispatch_manual(card)
+    result = await dispatcher.dispatch_manual(card, code=req.code)
 
     # Resolve endpoint name for the response
     ep_id = card.get("plc_endpoint_id", "")
@@ -309,6 +338,8 @@ async def test_plc_action(
         status=result.get("status") or ("sent" if result.get("success") else "failed"),
         endpoint_name=ep_name,
         protocol=ep_proto,
+        product_id=result.get("product_id"),
+        batch=result.get("batch"),
     )
 
 

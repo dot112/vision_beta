@@ -155,6 +155,105 @@ def _blend_filled_rect(
     roi[:] = cv2.addWeighted(overlay, alpha, roi, beta, 0)
 
 
+# ── The status bar on a camera's video ───────────────────────────────────────
+
+STATUS_BAR_COLOR = (20, 24, 33)
+# Why a camera's video shows no model results: said first in its status bar.
+STATUS_STOPPED = "LINE STOPPED"
+STATUS_NO_LINE = "NOT ON A LINE"
+STATUS_NO_MODEL = "NO MODEL"
+# A camera whose model runs only on the picture a trigger takes (One picture per trigger, by the system).
+STATUS_WAITING_TRIGGER = "WAITING FOR TRIGGER"
+
+
+def overlay_scale(w: int, h: int) -> float:
+    """How much bigger than on a 640 x 480 picture the bar and labels are drawn.
+
+    The dashboard fits each video into its box, so a picture of another size (an
+    ROI crop, a big camera) is shown smaller or bigger. Drawn this much bigger,
+    the bar and labels look the same size on screen for every picture.
+    """
+    return min(8.0, max(0.5, max(w / 640.0, h / 480.0)))
+
+
+def status_bar_layout(parts: List[str], w: int, h: int) -> Tuple[List[str], float, int, int, int]:
+    """(lines, font scale, thickness, line height, side padding) of the bar for a w x h picture.
+
+    The parts are joined with " | " on as few lines as fit the picture's width:
+    a narrow picture gets more lines, never a cut-off text. A part that is wider
+    than the picture on its own makes the whole bar's text smaller.
+    """
+    s = overlay_scale(w, h)
+    pad = int(round(10 * s))
+    font, thick = 0.48 * s, max(1, int(round(s)))
+    room = max(1, w - 2 * pad)
+
+    def width(text: str, scale: float) -> int:
+        return cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)[0][0]
+
+    lines: List[str] = []
+    for part in parts:
+        if lines and width(f"{lines[-1]} | {part}", font) <= room:
+            lines[-1] = f"{lines[-1]} | {part}"
+        else:
+            lines.append(part)
+    widest = max((width(line, font) for line in lines), default=0)
+    if widest > room:
+        font *= room / widest
+    return lines, font, thick, int(round(26 * s * font / (0.48 * s))), pad
+
+
+def status_bar_height(parts: List[str], w: int, h: int) -> int:
+    """How tall the bar for these parts is on a w x h picture (32 px for one line on 640 x 480)."""
+    if not parts:
+        return 0
+    lines, _, _, line_h, _ = status_bar_layout(parts, w, h)
+    edge = int(round(3 * overlay_scale(w, h)))
+    return min(h, edge + line_h * len(lines) + edge)
+
+
+def draw_status_bar(img: np.ndarray, parts: List[str]) -> int:
+    """The dark bar across the top of a camera's video. Returns its height in pixels."""
+    h, w = img.shape[:2]
+    if not parts:
+        return 0
+    lines, font, thick, line_h, pad = status_bar_layout(parts, w, h)
+    s = overlay_scale(w, h)
+    top = int(round(3 * s))
+    bar_h = status_bar_height(parts, w, h)
+    cv2.rectangle(img, (0, 0), (w, bar_h - 1), STATUS_BAR_COLOR, -1)
+    for i, line in enumerate(lines):
+        baseline = top + (i + 1) * line_h - int(round(7 * s * line_h / (26 * s)))
+        cv2.putText(img, line, (pad, baseline), cv2.FONT_HERSHEY_SIMPLEX, font, (255, 255, 255), thick)
+    return bar_h
+
+
+def _draw_label(img: np.ndarray, text: str, x: int, top: int, color: Tuple[int, int, int],
+                font: float, thick: int, s: float) -> None:
+    """An object's class and confidence in a filled box of its colour, its top edge at ``top``."""
+    (lw, lh), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font, thick)
+    pad = int(round(3 * s))
+    cv2.rectangle(img, (x, top), (x + lw + 2 * pad, top + lh + 2 * pad), color, -1)
+    cv2.putText(img, text, (x + pad, top + lh + int(round(2 * s))), cv2.FONT_HERSHEY_SIMPLEX, font, (0, 0, 0), thick)
+
+
+def hud_parts(counter: Any, fps: float, latency_ms: float, status: Optional[str]) -> List[str]:
+    """What the status bar of a camera's video says: why nothing is inspected, the line's counts, speed."""
+    parts = [status] if status else []
+    if status != STATUS_NO_LINE:
+        parts += [
+            f"TOTAL: {counter.total_inspected}",
+            f"GOOD: {counter.good_count}",
+            f"REJ: {counter.rejected_count}",
+            f"PPM: {counter.products_per_minute:.1f}",
+        ]
+    if fps > 0:
+        parts.append(f"FPS: {fps:.1f}")
+    if latency_ms > 0 and not status:
+        parts.append(f"YOLO: {latency_ms:.0f}ms")
+    return parts
+
+
 # Count line colours (BGR): A, where products enter, and B, where they are counted.
 COUNT_LINE_A_COLOR = (255, 200, 40)    # azure
 COUNT_LINE_B_COLOR = (40, 190, 255)    # amber
@@ -493,6 +592,66 @@ class InferenceEngine:
             image_height=orig_h,
         )
 
+    @staticmethod
+    def _instance_masks(
+        coeffs: np.ndarray,
+        protos: np.ndarray,
+        boxes: List[Tuple[int, int, int, int]],
+        orig_w: int,
+        orig_h: int,
+    ) -> List[Tuple[Optional[List[List[int]]], Optional[int]]]:
+        """(outline, area in pixels) of each object's mask, in picture coordinates.
+
+        ``coeffs`` has one row of 32 mask coefficients per object, ``protos`` is the
+        model's (32, h, w) mask output and ``boxes`` the objects' (x1, y1, x2, y2).
+        The mask is the same as scaling the model's mask to the whole picture and
+        keeping the part inside the box, but only the box is worked out.
+        """
+        proto = protos[0] if protos.ndim == 4 else protos
+        proto_h, proto_w = proto.shape[1], proto.shape[2]
+        raw = np.asarray(coeffs, np.float32).reshape(len(boxes), -1) @ proto.reshape(proto.shape[0], -1)
+        masks = (1.0 / (1.0 + np.exp(-raw))).reshape(len(boxes), proto_h, proto_w)
+        sx, sy = proto_w / float(orig_w), proto_h / float(orig_h)
+        results: List[Tuple[Optional[List[List[int]]], Optional[int]]] = []
+        for mask, (x1, y1, x2, y2) in zip(masks, boxes):
+            bw, bh = x2 - x1, y2 - y1
+            if bw <= 0 or bh <= 0:
+                results.append((None, None))
+                continue
+            # Picture pixel (x, y) is read from the model's mask at ((x + 0.5) * sx - 0.5, ...),
+            # as cv2.resize does; warpAffine samples just the box's pixels.
+            to_mask = np.float32([[sx, 0, (x1 + 0.5) * sx - 0.5], [0, sy, (y1 + 0.5) * sy - 0.5]])
+            local = cv2.warpAffine(mask, to_mask, (bw, bh), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                                   borderMode=cv2.BORDER_REPLICATE)
+            binary = (local > 0.5).astype(np.uint8)
+            area = int(cv2.countNonZero(binary))
+            polygon: Optional[List[List[int]]] = None
+            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE, offset=(x1, y1))
+            if contours:
+                largest = max(contours, key=cv2.contourArea)
+                if len(largest) >= 3:
+                    polygon = [[int(pt[0][0]), int(pt[0][1])] for pt in cv2.approxPolyDP(largest, 1.5, True)]
+            results.append((polygon, area))
+        return results
+
+    @classmethod
+    def _masks_or_none(
+        cls,
+        coeffs: Optional[np.ndarray],
+        protos: Optional[np.ndarray],
+        boxes: List[Tuple[int, int, int, int]],
+        orig_w: int,
+        orig_h: int,
+    ) -> List[Tuple[Optional[List[List[int]]], Optional[int]]]:
+        """_instance_masks, or no mask for any object when the model gives none or they cannot be worked out."""
+        if coeffs is None or protos is None or not boxes:
+            return [(None, None)] * len(boxes)
+        try:
+            return cls._instance_masks(coeffs, protos, boxes, orig_w, orig_h)
+        except Exception as seg_err:
+            logger.debug("Segmentation mask extraction error: %s", seg_err)
+            return [(None, None)] * len(boxes)
+
     def _postprocess_fast(
         self,
         output: np.ndarray,
@@ -528,12 +687,12 @@ class InferenceEngine:
                 return []
 
             filtered_output = output[mask]
+            kept: List[Tuple[int, int, int, int, int, float, int]] = []
             for i in range(len(filtered_output)):
                 row = filtered_output[i]
                 x1_val, y1_val, x2_val, y2_val = row[:4]
                 conf_val = float(row[4])
                 cid = int(round(row[5]))
-                cname = self.classes[cid] if 0 <= cid < len(self.classes) else f"class_{cid}"
 
                 if max(x2_val, y2_val) <= 1.0:
                     bx1 = int(np.clip(x1_val * orig_w, 0, orig_w))
@@ -550,31 +709,13 @@ class InferenceEngine:
                 bh = max(0, by2 - by1)
                 if bw == 0 or bh == 0:
                     continue
+                kept.append((bx1, by1, bx2, by2, cid, conf_val, i))
 
-                polygon: Optional[List[List[int]]] = None
-                mask_area: Optional[int] = None
-
-                if has_seg and protos is not None:
-                    try:
-                        coeff = row[6:38]
-                        proto_tensor = protos[0] if len(protos.shape) == 4 else protos
-                        proto_h, proto_w = proto_tensor.shape[1], proto_tensor.shape[2]
-                        mask_raw = np.matmul(coeff, proto_tensor.reshape(32, -1)).reshape(proto_h, proto_w)
-                        mask_sigmoid = 1.0 / (1.0 + np.exp(-mask_raw))
-                        mask_resized = cv2.resize(mask_sigmoid, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
-
-                        cropped = np.zeros((orig_h, orig_w), dtype=np.uint8)
-                        cropped[by1:by2, bx1:bx2] = (mask_resized[by1:by2, bx1:bx2] > 0.5).astype(np.uint8)
-                        mask_area = int(np.sum(cropped))
-                        contours, _ = cv2.findContours(cropped, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                        if contours:
-                            largest = max(contours, key=cv2.contourArea)
-                            if len(largest) >= 3:
-                                approx = cv2.approxPolyDP(largest, 1.5, True)
-                                polygon = [[int(pt[0][0]), int(pt[0][1])] for pt in approx]
-                    except Exception as seg_err:
-                        logger.debug("Segmentation mask extraction error: %s", seg_err)
-
+            outlines = self._masks_or_none(
+                filtered_output[[k[6] for k in kept], 6:38] if has_seg and kept else None,
+                protos, [k[:4] for k in kept], orig_w, orig_h)
+            for (bx1, by1, bx2, by2, cid, conf_val, _), (polygon, mask_area) in zip(kept, outlines):
+                cname = self.classes[cid] if 0 <= cid < len(self.classes) else f"class_{cid}"
                 detections.append(
                     DetectionItem(
                         class_id=cid,
@@ -654,38 +795,15 @@ class InferenceEngine:
         detections: List[DetectionItem] = []
 
         if len(indices) > 0:
-            for idx in indices.flatten():
-                bx, by, bw, bh = boxes_list[idx]
+            kept_idx = [int(i) for i in indices.flatten()]
+            kept_boxes = [(boxes_list[i][0], boxes_list[i][1], min(orig_w, boxes_list[i][0] + boxes_list[i][2]),
+                           min(orig_h, boxes_list[i][1] + boxes_list[i][3])) for i in kept_idx]
+            outlines = self._masks_or_none(
+                filtered_coeffs[kept_idx] if has_seg and filtered_coeffs is not None else None,
+                protos, kept_boxes, orig_w, orig_h)
+            for idx, (bx, by, x2, y2), (polygon, mask_area) in zip(kept_idx, kept_boxes, outlines):
                 cid = int(filtered_cids[idx])
                 cname = self.classes[cid] if cid < len(self.classes) else f"class_{cid}"
-
-                x2 = min(orig_w, bx + bw)
-                y2 = min(orig_h, by + bh)
-
-                polygon: Optional[List[List[int]]] = None
-                mask_area: Optional[int] = None
-
-                if has_seg and filtered_coeffs is not None and protos is not None:
-                    try:
-                        proto_tensor = protos[0] if len(protos.shape) == 4 else protos
-                        coeff = filtered_coeffs[idx]
-                        proto_h, proto_w = proto_tensor.shape[1], proto_tensor.shape[2]
-                        mask_raw = np.matmul(coeff, proto_tensor.reshape(32, -1)).reshape(proto_h, proto_w)
-                        mask_sigmoid = 1.0 / (1.0 + np.exp(-mask_raw))
-                        mask_resized = cv2.resize(mask_sigmoid, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
-
-                        cropped = np.zeros((orig_h, orig_w), dtype=np.uint8)
-                        cropped[by:y2, bx:x2] = (mask_resized[by:y2, bx:x2] > 0.5).astype(np.uint8)
-                        mask_area = int(np.sum(cropped))
-                        contours, _ = cv2.findContours(cropped, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                        if contours:
-                            largest = max(contours, key=cv2.contourArea)
-                            if len(largest) >= 3:
-                                approx = cv2.approxPolyDP(largest, 1.5, True)
-                                polygon = [[int(pt[0][0]), int(pt[0][1])] for pt in approx]
-                    except Exception as seg_err:
-                        logger.debug("Segmentation mask extraction error: %s", seg_err)
-
                 detections.append(
                     DetectionItem(
                         class_id=cid,
@@ -719,22 +837,35 @@ class InferenceEngine:
         camera_flip_h: Optional[bool] = None,
         camera_flip_v: Optional[bool] = None,
         camera_id: Optional[str] = None,
+        status: Optional[str] = None,
     ) -> np.ndarray:
         """
         Directly overlays wirelines, tracking trails, HUD, and bounding boxes onto BGR array.
         Zero JPEG encode/decode overhead!
         camera_id selects that camera's tracker; without it the default tracker is used.
         camera_rotation and the flips are accepted for older callers and not used:
-        the exit band is drawn where the camera's products flow out (exit_edge).
+        the exit band is drawn where the camera's products flow out (exit_edge); a camera in
+        trigger mode has none.
+        status: why the camera is not inspected now (STATUS_STOPPED, ...), said in the
+        bar. Its tracks are then old and not drawn; only ``detections`` are.
+        The bar and labels are drawn in proportion to the picture (overlay_scale).
         """
         h, w = img.shape[:2]
+        s = overlay_scale(w, h)
+        label_font, badge_font = 0.45 * s, 0.4 * s
+        text_thick = max(1, int(round(s)))
+        box_thick = max(2, int(round(2 * s)))
+        top_clear = 34                      # labels stay below the bar
 
         # Build allowed class filter from counting config (expected + defect classes)
         from app.services.line_service import line_manager
         counting_service = line_manager.counter_for_camera(camera_id)
         try:
             flow = counting_service.config
-            exit_side = exit_edge(flow.orientation, flow.direction, flow.line1_position, flow.line2_position)
+            # A camera in trigger mode tracks nothing, so no product leaves its picture: it has no exit
+            # band, and every box is drawn (a trigger's picture shows all the model found in it).
+            exit_side = None if getattr(flow, "count_mode", "track") == "trigger" else \
+                exit_edge(flow.orientation, flow.direction, flow.line1_position, flow.line2_position)
         except Exception:
             exit_side = exit_edge("horizontal")
         exit_rect = exit_zone(w, h, exit_side)
@@ -746,28 +877,31 @@ class InferenceEngine:
         except Exception:
             _allowed = set()
 
-        # 1. Wirelines & Object Counting HUD
+        # 1. Wirelines & Object Counting HUD (the bar itself is drawn last, over masks and boxes)
+        bar_parts: List[str] = []
         if draw_wirelines:
             try:
                 cfg = counting_service.config
-                total_insp = counting_service.total_inspected
-                good_c = counting_service.good_count
-                rej_c = counting_service.rejected_count
-                ppm_val = counting_service.products_per_minute
+                parts = hud_parts(counting_service, fps, latency_ms, status)
+                bar_h = status_bar_height(parts, w, h)
+                top_clear = bar_h + 2
 
-                # Count lines A and B (vertical lines when products move sideways).
+                # Count lines A and B (vertical lines when products move sideways). A camera
+                # in trigger mode has none: one picture per trigger makes its products.
+                tracking = getattr(cfg, "count_mode", "track") != "trigger"
                 since_count = time.time() - counting_service.last_count_at
-                _draw_count_lines(
-                    img,
-                    is_horizontal_movement(cfg.orientation),
-                    float(cfg.line1_position),
-                    float(cfg.line2_position),
-                    top=32,  # below the HUD bar
-                    flash=1.0 - since_count / COUNT_FLASH_SECONDS if since_count < COUNT_FLASH_SECONDS else 0.0,
-                )
+                if tracking and status != STATUS_NO_LINE:
+                    _draw_count_lines(
+                        img,
+                        is_horizontal_movement(cfg.orientation),
+                        float(cfg.line1_position),
+                        float(cfg.line2_position),
+                        top=bar_h,  # below the HUD bar
+                        flash=1.0 - since_count / COUNT_FLASH_SECONDS if since_count < COUNT_FLASH_SECONDS else 0.0,
+                    )
 
                 # Target markers — only for CONFIRMED tracks (no trail, no ghost dots)
-                for obj in list(counting_service.get_tracker(camera_id).objects.values()):
+                for obj in list(counting_service.get_tracker(camera_id).objects.values()) if tracking and not status else ():
                     if _allowed and obj.class_name.lower() not in _allowed:
                         continue
                     # Skip unconfirmed tracks to avoid ghost dots from newly-spawned tracks
@@ -787,24 +921,10 @@ class InferenceEngine:
                     if is_in_exit_zone(sc_x, sc_y, exit_side, exit_rect):
                         continue
 
-                    # Simple solid green dot (6px radius, no tail/trail)
-                    cv2.circle(img, (sc_x, sc_y), 6, (0, 255, 0), -1)
+                    # Simple solid green dot (6px radius on a 640 px picture, no tail/trail)
+                    cv2.circle(img, (sc_x, sc_y), max(3, int(round(6 * s))), (0, 255, 0), -1)
 
-                # HUD Banner alongside counters rendered in the video
-                hud_parts = [
-                    f"TOTAL: {total_insp}",
-                    f"GOOD: {good_c}",
-                    f"REJ: {rej_c}",
-                    f"PPM: {ppm_val:.1f}",
-                ]
-                if fps > 0:
-                    hud_parts.append(f"FPS: {fps:.1f}")
-                if latency_ms > 0:
-                    hud_parts.append(f"YOLO: {latency_ms:.0f}ms")
-
-                hud_text = " | ".join(hud_parts)
-                cv2.rectangle(img, (0, 0), (w, 32), (20, 24, 33), -1)
-                cv2.putText(img, hud_text, (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1)
+                bar_parts = parts
             except Exception as trk_err:
                 logger.debug("Tracker HUD error: %s", trk_err)
 
@@ -848,14 +968,15 @@ class InferenceEngine:
                 for class_id, pts in mask_polys:
                     color = colors[class_id % len(colors)]
                     cv2.fillPoly(mask_overlay, [pts], color, offset=(-rx1, -ry1))
-                    cv2.polylines(img, [pts], isClosed=True, color=color, thickness=2)
+                    cv2.polylines(img, [pts], isClosed=True, color=color, thickness=box_thick)
                 roi[:] = cv2.addWeighted(mask_overlay, 0.45, roi, 0.55, 0)
 
         # 3. Draw Bounding Boxes & HUD Labels (only for allowed classes)
         # In segmentation mode: NO bounding boxes are drawn (pixel masks only)
         active_tracks: Dict[int, Any] = {}
         try:
-            active_tracks = dict(counting_service.get_tracker(camera_id).objects)
+            # A camera that is not inspected now has only tracks from before: not drawn.
+            active_tracks = {} if status else dict(counting_service.get_tracker(camera_id).objects)
         except Exception:
             active_tracks = {}
 
@@ -893,30 +1014,23 @@ class InferenceEngine:
                     continue
 
                 if not is_segment_mode and bx2 > bx1 and by2 > by1:
-                    cv2.rectangle(img, (bx1, by1), (bx2, by2), color, 2)
+                    cv2.rectangle(img, (bx1, by1), (bx2, by2), color, box_thick)
 
                 anchor_x = bx1
                 anchor_y = by1
 
                 if is_confirmed:
                     badge = f"#{tid}"
-                    (bw, bh), _ = cv2.getTextSize(badge, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
-                    badge_y0 = max(34, anchor_y - 36)
-                    badge_y1 = badge_y0 + bh + 6
-                    cv2.rectangle(img, (anchor_x, badge_y0), (anchor_x + bw + 6, badge_y1), (20, 24, 33), -1)
-                    cv2.putText(img, badge, (anchor_x + 3, badge_y1 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 220, 255), 1)
-
-                    label = f"{cname} {int(conf * 100)}%"
+                    (bw, bh), _ = cv2.getTextSize(badge, cv2.FONT_HERSHEY_SIMPLEX, badge_font, text_thick)
+                    badge_y0 = max(top_clear, anchor_y - int(round(36 * s)))
+                    badge_y1 = badge_y0 + bh + int(round(6 * s))
+                    cv2.rectangle(img, (anchor_x, badge_y0), (anchor_x + bw + int(round(6 * s)), badge_y1), STATUS_BAR_COLOR, -1)
+                    cv2.putText(img, badge, (anchor_x + int(round(3 * s)), badge_y1 - int(round(3 * s))),
+                                cv2.FONT_HERSHEY_SIMPLEX, badge_font, (0, 220, 255), text_thick)
                     label_top = badge_y1
-                    (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-                    cv2.rectangle(img, (anchor_x, label_top), (anchor_x + lw + 6, label_top + lh + 6), color, -1)
-                    cv2.putText(img, label, (anchor_x + 3, label_top + lh + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
                 else:
-                    label = f"{cname} {int(conf * 100)}%"
-                    label_top = max(34, anchor_y - 18)
-                    (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-                    cv2.rectangle(img, (anchor_x, label_top), (anchor_x + lw + 6, label_top + lh + 6), color, -1)
-                    cv2.putText(img, label, (anchor_x + 3, label_top + lh + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
+                    label_top = max(top_clear, anchor_y - int(round(18 * s)))
+                _draw_label(img, f"{cname} {int(conf * 100)}%", anchor_x, label_top, color, label_font, text_thick, s)
         else:
             # Fallback if tracker has no objects: draw raw detections directly
             for item in detections:
@@ -937,14 +1051,10 @@ class InferenceEngine:
 
                 color = colors[item.class_id % len(colors)]
                 if not is_segment_mode and bx2 > bx1 and by2 > by1:
-                    cv2.rectangle(img, (bx1, by1), (bx2, by2), color, 2)
-                anchor_x = bx1
-                anchor_y = by1
-                label_top = max(34, anchor_y - 18)
-                label = f"{item.class_name} {int(item.confidence * 100)}%"
-                (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-                cv2.rectangle(img, (anchor_x, label_top), (anchor_x + lw + 6, label_top + lh + 6), color, -1)
-                cv2.putText(img, label, (anchor_x + 3, label_top + lh + 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
+                    cv2.rectangle(img, (bx1, by1), (bx2, by2), color, box_thick)
+                label_top = max(top_clear, by1 - int(round(18 * s)))
+                _draw_label(img, f"{item.class_name} {int(item.confidence * 100)}%", bx1, label_top, color,
+                            label_font, text_thick, s)
 
         # 4. Exit Line (20px wide transparent gray band at the edge the products flow out of;
         # none when they may move both ways).
@@ -955,6 +1065,8 @@ class InferenceEngine:
         if ex2 > ex1 and ey2 > ey1:
             _blend_filled_rect(img, (ex1, ey1), (ex2, ey2), (128, 128, 128), 0.40, 0.60)
 
+        # 5. The status bar, on top of everything: a mask or box near the top never covers it.
+        draw_status_bar(img, bar_parts)
         return img
 
 

@@ -20,7 +20,7 @@ from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.timing import TimingMiddleware
 from app.state.application_state import app_state
 from app.utils.logger import setup_logging
-from app.dependencies import require_operator
+from app.dependencies import enforce_config_lock, require_operator
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 from app.routes.v1 import system as system_router
@@ -44,6 +44,37 @@ from app.routes.v1 import lines as lines_router
 from app.routes.v1 import products as products_router
 from app.routes.v1 import send_actions as send_actions_router
 from app.routes.v1 import records as records_router
+from app.routes.v1 import config_lock as config_lock_router
+from app.routes.v1 import data_backups as data_backups_router
+from app.routes.v1 import match as match_router
+from app.routes.v1 import ocr as ocr_router
+
+# The API behind a sign-in (Level 1 or higher) and the configuration lock.
+PROTECTED_ROUTERS = (
+    system_router,
+    camera_router,
+    vision_router,
+    models_router,
+    qr_router,
+    rules_router,
+    flows_router,
+    actions_router,
+    control_router,
+    telemetry_router,
+    mqtt_router,
+    counting_router,
+    comms_router,
+    plc_router,
+    health_router,
+    lines_router,
+    products_router,
+    send_actions_router,
+    records_router,
+    config_lock_router,
+    data_backups_router,
+    ocr_router,
+    match_router,
+)
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -147,6 +178,43 @@ def _upgrade_schema(command_module, alembic_config, sync_connection) -> None:
     command_module.upgrade(alembic_config, "head")
 
 
+async def _backup_before_upgrade() -> None:
+    """Before the database is upgraded: a small backup of the settings and the configuration tables.
+
+    Only for a SQLite database that holds data and is not at the newest revision. A failed backup
+    raises the storage.backup_failed alarm and does not stop the start.
+    """
+    import asyncio
+    from app.events.alarm_events import AlarmCode, AlarmSeverity, raise_alarm
+    from app.services import backup_service, storage_state
+    from app.services.settings_persistence_service import _sqlite_path
+
+    db_path = _sqlite_path(settings.DATABASE_URL)
+    if not db_path:
+        return
+
+    def run() -> None:
+        if backup_service.needs_upgrade_backup(db_path, backup_service.script_head()):
+            backup_service.make_backup("upgrade", db_path)
+
+    try:
+        await asyncio.to_thread(run)
+    except Exception as exc:
+        logger.exception("Could not make the backup before the database upgrade; continuing with the upgrade")
+        raise_alarm(AlarmCode.STORAGE_BACKUP_FAILED, storage_state.STORAGE_SOURCE,
+                    f"The backup before the database upgrade could not be made: {exc}", AlarmSeverity.WARNING,
+                    {"error": str(exc), "kind": "upgrade"})
+
+
+async def _clean_up_references() -> None:
+    """Pattern check reference sets nothing names any more, and drafts unused for 30 days, go at start-up."""
+    import asyncio
+
+    from app.services.settings_persistence_service import SettingsPersistenceService
+
+    await asyncio.to_thread(SettingsPersistenceService.clean_up_references)
+
+
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -185,15 +253,39 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception:
             logger.exception("Could not write the version 1 backup; continuing with the upgrade")
 
+        # Then a small backup of the settings and the configuration tables, when the database
+        # is about to be upgraded.
+        await _backup_before_upgrade()
+
         alembic_config = Config(str(Path(__file__).resolve().parent / "alembic.ini"))
-        async with engine.begin() as conn:
-            await conn.run_sync(lambda sync_conn: _upgrade_schema(command, alembic_config, sync_conn))
+
+        async def upgrade() -> None:
+            async with engine.begin() as conn:
+                await conn.run_sync(lambda sync_conn: _upgrade_schema(command, alembic_config, sync_conn))
+
+        # A SQLite database is checked first (fully after an unclean end) and rebuilt from the newest
+        # backup when it is damaged: the server starts and the lines run whatever happened to the file.
+        from app.db import recovery
+        from app.services.settings_persistence_service import _sqlite_path
+        db_path = _sqlite_path(settings.DATABASE_URL)
+        if db_path:
+            await recovery.open_database(db_path, upgrade=upgrade, dispose=engine.dispose)
+        else:
+            await upgrade()
         app_state.db_ready = True
         logger.info("Database ready and schema verified")
 
         # Product records: queued by the counters from here on, written once a second.
         from app.services.production_records_service import production_recorder
         production_recorder.start()
+        # The data keeper: cleanup, archive, backups, the free-space floor (first tick in a minute).
+        from app.services.data_keeper import data_keeper
+        try:
+            # The newest record before the lines write any: the clock check judges the start by it.
+            await data_keeper.note_start()
+        except Exception:
+            logger.exception("Could not read the newest record for the clock check")
+        data_keeper.start()
 
         # 2. Seed Default 3-Level Access Clearance Users & Reset Active Sessions
         async with AsyncSessionLocal() as db:
@@ -208,6 +300,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         try:
             from app.services.settings_persistence_service import SettingsPersistenceService
             await SettingsPersistenceService.restore_on_startup()
+            await _clean_up_references()
         except Exception as st_err:
             logger.warning("Settings persistence restore error: %s", st_err)
 
@@ -319,7 +412,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await asyncio.to_thread(CameraStreamPipeline.stop_all)
     except Exception:
         logger.exception("Failed to stop camera stream workers cleanly")
+    try:
+        # Timer send cards: no more messages every N ms.
+        from app.services.send_dispatcher_service import SendDispatcherService
+        await SendDispatcherService.stop_timers()
+    except Exception:
+        logger.exception("Failed to stop the timer send cards cleanly")
 
+    try:
+        # No more signals are read from the PLCs: nothing starts a line or counts a product from here on.
+        from app.services.plc_input_service import PLCInputService
+        await PLCInputService.stop()
+    except Exception:
+        logger.exception("Failed to stop reading PLC signals cleanly")
     try:
         from app.services.plc_dispatcher_service import PLCDispatcherService
         await PLCDispatcherService.shutdown()
@@ -364,6 +469,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.exception("Failed to release cameras cleanly")
 
     try:
+        from app.services.data_keeper import data_keeper
+        await data_keeper.stop()
+    except Exception:
+        logger.exception("Failed to stop the data keeper cleanly")
+
+    try:
         # The last product records, while the database is still open.
         from app.services.production_records_service import production_recorder
         await production_recorder.stop()
@@ -372,6 +483,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     from app.db.session import engine
     await engine.dispose()
+    # A clean end: the next start needs no full check of the database.
+    from app.db import recovery
+    recovery.mark_stopped()
     from app.events.system_events import set_event_loop
     set_event_loop(None)
     logger.info("Shutdown complete")
@@ -431,28 +545,9 @@ def create_app() -> FastAPI:
     app.include_router(auth_router.router, prefix=API_PREFIX)
     app.include_router(health_router.public_router)
 
-    protected_api = APIRouter(prefix=API_PREFIX, dependencies=[Depends(require_operator)])
-    for router_mod in (
-        system_router,
-        camera_router,
-        vision_router,
-        models_router,
-        qr_router,
-        rules_router,
-        flows_router,
-        actions_router,
-        control_router,
-        telemetry_router,
-        mqtt_router,
-        counting_router,
-        comms_router,
-        plc_router,
-        health_router,
-        lines_router,
-        products_router,
-        send_actions_router,
-        records_router,
-    ):
+    # Sign-in first, so a request without one is 401 even while the configuration is locked.
+    protected_api = APIRouter(prefix=API_PREFIX, dependencies=[Depends(require_operator), Depends(enforce_config_lock)])
+    for router_mod in PROTECTED_ROUTERS:
         protected_api.include_router(router_mod.router)
     app.include_router(protected_api)
     # WebSockets authenticate with a token in their handshake; browsers cannot
@@ -479,11 +574,8 @@ def create_app() -> FastAPI:
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Access Restricted — Industrial Vision</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Poppins', sans-serif; }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
         body { background-color: #191B26; color: #FFFFFF; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
         .lock-card {
             background: #212332; border: 1px solid #2e3247; border-radius: 16px;
@@ -520,21 +612,18 @@ def create_app() -> FastAPI:
 </html>"""
 
     def _serve_dashboard_file(request: Request, filename: str) -> HTMLResponse:
-        # Verify if request is from local host, private network (Wi-Fi / LAN), or verified app
+        # Verify if request is from local host or a private network (Wi-Fi / LAN).
+        # Only the connecting address counts: the Host header is the client's
+        # own text, so naming localhost there must not let a request through.
         import ipaddress
         client_host = request.client.host if request.client else ""
-        req_host = request.url.hostname or ""
         is_private = False
         try:
             is_private = ipaddress.ip_address(client_host).is_private
         except ValueError:
             pass
 
-        is_local = (
-            client_host in ("127.0.0.1", "::1", "localhost", "testclient")
-            or req_host in ("127.0.0.1", "localhost")
-            or is_private
-        )
+        is_local = client_host in ("127.0.0.1", "::1", "localhost", "testclient") or is_private
         # This only limits dashboard delivery to the local network. API access
         # is separately authenticated with user tokens and role checks.
         is_app = is_local
@@ -574,7 +663,11 @@ def create_app() -> FastAPI:
 
     @app.get("/favicon.ico", include_in_schema=False)
     async def favicon() -> Response:
-        return Response(status_code=204)
+        # The Universalz Z mark, for browsers that ask for /favicon.ico themselves.
+        icon = _ASSETS_DIR / "universalz_mark.png"
+        if not icon.is_file():
+            return Response(status_code=204)
+        return FileResponse(icon, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
 
     @app.get("/", include_in_schema=False)
     async def root() -> JSONResponse:

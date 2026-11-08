@@ -4,17 +4,18 @@ Operator level. API keys need the records:read scope.
 """
 from __future__ import annotations
 
+import asyncio
 import re
-from datetime import timedelta, timezone
+from datetime import date, timedelta, timezone
 from typing import Any, Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_db
-from app.services import records_export
+from app.services import records_archive, records_export
 from app.services.production_records_service import (
     MAX_RANGE_DAYS,
     RecordFilter,
@@ -37,7 +38,7 @@ def record_filter(
     end: str = Query(..., description="Range end (not included), ISO 8601 with a time zone"),
     line_id: Optional[str] = Query(default=None, max_length=48, description="One line; empty = every line"),
     result: Optional[str] = Query(default=None, pattern="^(good|reject)$"),
-    kind: Optional[str] = Query(default=None, pattern="^(product|code)$"),
+    kind: Optional[str] = Query(default=None, pattern="^(product|code|verification)$"),
     batch: Optional[str] = Query(default=None, max_length=64),
     code: Optional[str] = Query(default=None, max_length=512, description="Rows whose code contains this"),
     camera_id: Optional[str] = Query(default=None, max_length=64),
@@ -139,3 +140,24 @@ async def export_records(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=headers,
     )
+
+
+@router.get("/archive", summary="The days archived as files, oldest first")
+async def get_archive() -> dict:
+    days = await asyncio.to_thread(records_archive.list_days)
+    return {"days": days, "oldest": days[0]["day"] if days else None, "newest": days[-1]["day"] if days else None}
+
+
+@router.get("/archive/{day}", summary="Download one archived day (gzip CSV)")
+async def get_archive_day(day: str) -> FileResponse:
+    # Only YYYY-MM-DD names a file: nothing else reaches the file system.
+    when = None
+    if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", day):
+        try:
+            when = date.fromisoformat(day)
+        except ValueError:
+            pass
+    if when is None or not await asyncio.to_thread(records_archive.has_file, when):
+        raise HTTPException(status_code=404, detail="No archive file for that day")
+    path = records_archive.file_for(when)
+    return FileResponse(path, media_type="application/gzip", filename=path.name)

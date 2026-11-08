@@ -1,6 +1,6 @@
 # Third-party notices
 
-Zagel Vision uses the open-source components below. Each remains under its
+Universalz Vision uses the open-source components below. Each remains under its
 own license, which applies to that component instead of the project
 [LICENSE](LICENSE). Licenses were listed from each project's published
 metadata and general knowledge, **not** from a full automated scan: before a
@@ -17,7 +17,7 @@ distribution method requires.
 | SQLAlchemy, Alembic, aiosqlite | MIT |
 | anyio, h11, httpx, httpcore | MIT / BSD-3-Clause |
 | python-dotenv, python-multipart, websockets | BSD-3-Clause / Apache-2.0 / BSD-3-Clause |
-| python-jose, passlib | MIT / BSD |
+| PyJWT, passlib | MIT / BSD |
 | bcrypt, cryptography | Apache-2.0 (cryptography: Apache-2.0 OR BSD-3-Clause) |
 | requests, packaging | Apache-2.0 (packaging: Apache-2.0 OR BSD-2-Clause) |
 | paho-mqtt | EPL-2.0 / EDL-1.0 (BSD-3-Clause) |

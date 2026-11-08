@@ -20,6 +20,7 @@ from xml.sax.saxutils import escape
 from sqlalchemy import func, literal, select, tuple_
 
 from app.db.models.production_record import ProductRecord
+from app.services.product_fields import data_text
 from app.services.product_service import _csv_safe
 from app.services.production_records_service import RecordFilter, utc
 
@@ -48,6 +49,11 @@ _FIELDS: Tuple[Tuple[str, Callable[[ProductRecord], Any]], ...] = (
     ("batch", lambda r: r.batch),
     ("reject_camera_id", lambda r: (r.details or {}).get("reject_camera_id") if isinstance(r.details, dict) else None),
     ("stations", lambda r: _stations(r.details)),
+    ("product_data", lambda r: _product_data(r.details)),
+    ("product_check", lambda r: (r.details or {}).get("product_check") if isinstance(r.details, dict) else None),
+    ("sequence", lambda r: (r.details or {}).get("sequence") if isinstance(r.details, dict) else None),
+    ("text", lambda r: _text(r.details)),
+    ("pattern", lambda r: _pattern(r.details)),
     ("id", lambda r: r.id),
 )
 
@@ -57,6 +63,33 @@ def _stations(details: Any) -> Optional[str]:
     if not stations:
         return None
     return json.dumps(stations, separators=(",", ":"), ensure_ascii=False)
+
+
+def _text(details: Any) -> Optional[str]:
+    """What a text reader read of the product: 'Expiry=12/03/2027; Lot=A12345'."""
+    text = details.get("text") if isinstance(details, dict) else None
+    if not isinstance(text, dict) or not text:
+        return None
+    return "; ".join(f"{name}={value}" for name, value in text.items())
+
+
+def _pattern(details: Any) -> Optional[str]:
+    """What a pattern check found of the product: 'Label 97% 0px; Cap 92% 48px' (or its status alone, 'error')."""
+    match = details.get("match") if isinstance(details, dict) else None
+    if not isinstance(match, dict):
+        return None
+    checks = match.get("checks")
+    if isinstance(checks, dict) and checks:
+        return "; ".join(f"{name} {check.get('score')}% {check.get('defect_px')}px"
+                         for name, check in checks.items() if isinstance(check, dict))
+    return match.get("status") or None
+
+
+def _product_data(details: Any) -> Optional[str]:
+    """The product's values when the item passed: 'lane=3; recipe=R-12'."""
+    product = details.get("product") if isinstance(details, dict) else None
+    text = data_text(product.get("fields")) if isinstance(product, dict) else ""
+    return text or None
 
 
 def time_headers(tz_name: str) -> List[str]:

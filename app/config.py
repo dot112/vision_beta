@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import List
-from pydantic import field_validator
+from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,7 +17,9 @@ class Settings(BaseSettings):
     APP_NAME: str = "Industrial Vision API"
     APP_VERSION: str = "1.0.0-beta"
     APP_ENV: str = "development"
-    DEBUG: bool = True
+    # Debug publishes /docs and /openapi.json, lets the live-video socket take
+    # its token in the URL, and reloads on code changes: off unless .env says so.
+    DEBUG: bool = False
     SECRET_KEY: str = ""
     ADMIN_INITIAL_PASSWORD: str = ""
 
@@ -63,6 +65,7 @@ class Settings(BaseSettings):
 
     # ── Model / Inference ─────────────────────────────────────────────────────
     MODEL_STORE_PATH: str = "./model_store"
+    OCR_MODEL_DIR: str = "./model_store/ocr"   # the text reader's tiny and medium models
     MAX_MODEL_UPLOAD_BYTES: int = 536870912
     MAX_IMAGE_UPLOAD_BYTES: int = 10485760
     INFERENCE_DEVICE: str = "auto"   # "auto" = GPU if available (DirectML/CUDA), else CPU
@@ -81,6 +84,10 @@ class Settings(BaseSettings):
 
     # Cameras connected at the same time, across all production lines.
     MAX_CONNECTED_CAMERAS: int = 8
+    # Industrial cameras (GigE Vision, USB3 Vision): the folders or files of the camera makers'
+    # GenTL producers (.cti), separated like PATH. Empty = GENICAM_GENTL64_PATH, which the
+    # makers' SDKs set. "simulator" = stand-in cameras, to try the server without hardware.
+    GENTL_CTI_PATH: str = ""
 
     # ─── Health monitoring ───────────────────────────────────────────────────
     HEALTH_CHECK_INTERVAL_SECONDS: float = 2.0
@@ -108,6 +115,31 @@ class Settings(BaseSettings):
     # database cannot keep up, the oldest are dropped past this and the
     # records.dropped alarm is raised.
     RECORDS_QUEUE_LIMIT: int = 100000
+
+    # ─── Disk space, archive and backups ─────────────────────────────────────
+    # The server keeps this much of the disk free (MB). When less is left it deletes the
+    # oldest data (detections first, then records that are in the archive, then archive
+    # files, last records that are in no archive) until there is room again, and raises
+    # the storage.full alarm. 0 = no floor.
+    STORAGE_MIN_FREE_MB: int = 2048
+    # The storage.low alarm is raised when the disk that holds data/ is this full (%).
+    STORAGE_WARN_PERCENT: float = 85
+    # Detection rows (the Detections page) older than this many days are deleted
+    # once an hour; 0 = keep them for ever.
+    DETECTIONS_RETENTION_DAYS: int = 30
+    # Each day's records are written to a compressed file in data/archive before
+    # RECORDS_RETENTION_DAYS deletes them, so an old record can be fetched back.
+    ARCHIVE_RECORDS: bool = True
+    # Archive files older than this many days are deleted once an hour; 0 = keep them
+    # until the disk needs the space.
+    ARCHIVE_RETENTION_DAYS: int = 365
+    # Nightly backups kept, the newest ones. Backups made before an upgrade or by hand are counted apart.
+    BACKUP_KEEP_NIGHTLY: int = 7
+    # A second folder (a USB stick or a network share) that gets a copy of the backups
+    # and the archive files. Empty = no copy.
+    BACKUP_COPY_DIR: str = ""
+    # Audit log entries older than this many days are deleted.
+    AUDIT_RETENTION_DAYS: int = 365
 
     LOG_LEVEL: str = "INFO"
     LOG_DIR: str = "./logs"
@@ -187,6 +219,27 @@ class Settings(BaseSettings):
     def validate_rate_limit_burst(cls, value: int) -> int:
         if value < 1:
             raise ValueError("RATE_LIMIT_BURST must be at least 1")
+        return value
+
+    @field_validator("STORAGE_MIN_FREE_MB", "DETECTIONS_RETENTION_DAYS", "ARCHIVE_RETENTION_DAYS")
+    @classmethod
+    def validate_storage_limit(cls, value: int, info: ValidationInfo) -> int:
+        if value < 0:
+            raise ValueError(f"{info.field_name} must be 0 (off) or more")
+        return value
+
+    @field_validator("STORAGE_WARN_PERCENT")
+    @classmethod
+    def validate_storage_warn_percent(cls, value: float) -> float:
+        if not 1 <= value <= 100:
+            raise ValueError("STORAGE_WARN_PERCENT must be between 1 and 100")
+        return value
+
+    @field_validator("BACKUP_KEEP_NIGHTLY", "AUDIT_RETENTION_DAYS")
+    @classmethod
+    def validate_kept_count(cls, value: int, info: ValidationInfo) -> int:
+        if value < 1:
+            raise ValueError(f"{info.field_name} must be at least 1")
         return value
 
     @field_validator("MAX_MODEL_UPLOAD_BYTES", "MAX_IMAGE_UPLOAD_BYTES")

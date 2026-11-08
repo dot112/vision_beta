@@ -1,0 +1,113 @@
+"""What a text reader read goes with its product: the product's message and PLC event (text,
+text_status), the values of output cards and messages (text.<field>, text_status), the product
+record, and the export's text column."""
+from __future__ import annotations
+
+import asyncio
+import csv
+import io
+from datetime import datetime, timezone
+
+from app.db.models.production_record import ProductRecord
+from app.services.event_values import values_for
+from app.services.production_records_service import build_row
+from app.services.records_export import csv_header, csv_rows
+from app.services.trigger_inspection import trigger_camera
+from app.services.vision_service import CameraStreamPipeline
+from tests.test_joined_cameras import _joined, _line, _run, lines  # noqa: F401  (a fixture)
+from tests.test_text_reader_line import GOOD, WRONG, _reader, _trigger_text, text_workers  # noqa: F401  (a fixture)
+from tests.test_trigger_inspection import _trigger_cam, workers  # noqa: F401  (a fixture)
+
+
+def test_values_of_a_text_product():
+    values = values_for({"result": "reject", "reject_reason": "text_wrong", "text": {"Lot": "LOT A1234"},
+                         "text_status": "wrong"})
+    assert values["text.Lot"] == "LOT A1234" and values["text_status"] == "wrong" and values["reject_reason"] == "text_wrong"
+    assert "text.Exp" not in values_for({"text": {"Lot": "X"}})
+    assert "text_status" not in values_for({"result": "good"})
+
+
+def test_a_send_card_sends_the_text():
+    """A text message's {text.<field>} and {text_status}; a JSON card's "read_text" field (spec: values of messages)."""
+    from pathlib import Path
+
+    from app.routes.v1.send_actions import FIELD_LABELS
+    from app.services.line_config import TEMPLATE_FIELDS, parse_template
+    from app.services.send_dispatcher_service import MESSAGE_FIELDS, build_message, render_template
+
+    assert parse_template("{text.Lot};{TEXT.Exp};{text_status}") == (
+        (True, "text.Lot"), (False, ";"), (True, "text.Exp"), (False, ";"), (True, "text_status"))
+    assert "text_status" in TEMPLATE_FIELDS
+    payload = {"event": "WIRELINE_OBJECT_CROSSED", "text": {"Lot": "LOT A12345"}, "text_status": "good"}
+    assert render_template("{text.Lot}|{text.Exp}|{text_status}", payload) == "LOT A12345||good"
+    assert MESSAGE_FIELDS["read_text"] == ("text", "text_status") and "read_text" in dict(FIELD_LABELS)
+    assert build_message({"fields": ["read_text"]}, payload) == {"text": {"Lot": "LOT A12345"}, "text_status": "good"}
+    # The dashboard's own check of a template takes {text.<field>} too.
+    page = (Path(__file__).resolve().parents[1] / "dashboard.html").read_text(encoding="utf-8")
+    assert "/^text\\.[a-z][a-z0-9_]{0,31}$/.test(name)" in page
+
+
+def test_only_when_rules_and_formulas_take_the_text():
+    """Review I2: the spec gives output cards and Only when rules text.<field> and text_status too."""
+    from app.services import formula
+    from app.services.rules import normalize_only_when, rules_pass
+
+    rules = normalize_only_when({"match": "all", "rules": [
+        {"left": "text_status", "op": "=", "right": "wrong", "right_kind": "constant"},
+        {"left": "text.Lot", "op": "!=", "right": "LOT A12345", "right_kind": "constant"}]}, "Card 1")
+    values = values_for({"text": {"Lot": "LOT A1234"}, "text_status": "wrong"})
+    assert rules_pass(rules, values) and not rules_pass(rules, values_for({"text": {"Lot": "LOT A12345"}, "text_status": "good"}))
+    assert formula.parse('if(text_status == "good", 1, 2)').evaluate(values) == 2
+    assert formula.parse("text(text.Lot)").evaluate(values) == "LOT A1234"     # the function and the root
+    assert formula.parse("text.Exp").evaluate(values) is formula.MISSING
+
+
+def test_a_record_keeps_the_text_and_the_export_shows_it():
+    row = build_row({"is_defect": False, "class_name": "text ok", "text": {"Expiry": "12/03/2027", "Lot": "A12345"},
+                     "text_status": "good", "camera_id": "t1", "line_id": "line-1"}, "product", False)
+    assert row["details"]["text"] == {"Expiry": "12/03/2027", "Lot": "A12345"} and row["details"]["text_status"] == "good"
+    header = next(csv.reader(io.StringIO(csv_header("UTC").lstrip("﻿"))))
+    assert header.index("text") == header.index("sequence") + 1
+
+    def record(details):
+        return ProductRecord(id=1, recorded_at=datetime(2026, 10, 27, 8, 0, tzinfo=timezone.utc), kind="product",
+                             counted=False, details=details)
+
+    rows = list(csv.reader(io.StringIO(csv_rows([record(row["details"]), record(None), record({"text": {}})],
+                                                timezone.utc))))
+    column = header.index("text")
+    assert [r[column] for r in rows] == ["Expiry=12/03/2027; Lot=A12345", "", ""]
+
+
+def test_an_own_product_carries_the_text(lines, text_workers, fake_camera):  # noqa: F811
+    runtime = _line(lines, [{"camera_id": "vis"}, _reader("t1")])
+    fake_camera("t1")
+
+    async def steps():
+        await _trigger_text(runtime, "t1", WRONG)
+
+    _run(steps)
+    payload, event = runtime.sent[0]
+    assert (payload["text"], payload["text_status"]) == ({"Lot": "LOT A1234"}, "wrong")
+    assert (event["text"], event["text_status"]) == ({"Lot": "LOT A1234"}, "wrong")
+    assert values_for(event)["text.Lot"] == "LOT A1234"
+    assert build_row(payload, "product", False)["details"]["text"] == {"Lot": "LOT A1234"}
+
+
+def test_a_joined_product_carries_the_readers_text(lines, workers, text_workers, fake_camera):  # noqa: F811
+    runtime = _line(lines, [_trigger_cam(), {**_reader("t1"), **_joined("t1", 0, 80, "reject")}])
+    fake_camera("vis")
+    fake_camera("t1")
+
+    async def steps():
+        task = asyncio.create_task(trigger_camera(runtime, "vis", timeout=1.0))
+        await asyncio.sleep(0.03)
+        CameraStreamPipeline.get_worker("vis").process("bottle")
+        await task
+        await _trigger_text(runtime, "t1", GOOD)
+        await asyncio.sleep(0.05)
+
+    _run(steps)
+    payload, event = runtime.sent[0]
+    assert (payload["result"], payload["text"], payload["text_status"]) == ("PASSED", {"Lot": "LOT A12345"}, "good")
+    assert (event["text"], event["text_status"]) == ({"Lot": "LOT A12345"}, "good")
